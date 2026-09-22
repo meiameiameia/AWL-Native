@@ -1,0 +1,24 @@
+ARCHITECT_NOTES.md
+.github/PULL_REQUEST_TEMPLATE.md
+rom/
+disc/
+disc_backup_*/
+build/
+tools/hmawl/
+tools/dolphin/
+
+# Local reverse-engineering databases may embed imported binary data.
+docs/ghidra/
+
+# Generated diagnostics derived from local disc assets.
+docs/research/*.obj
+docs/research/*.ppm
+docs/research/*.txt
+docs/research/decompiled_*.c
+docs/research/functions.csv
+
+# Local disc images and extracted executable/module binaries.
+*.dol
+*.rel
+*.iso
+*.rvz
