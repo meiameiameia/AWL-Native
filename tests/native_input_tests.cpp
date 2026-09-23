@@ -1,5 +1,7 @@
 #include "awl/input.h"
 
+#include <windows.h>
+#include <Xinput.h>
 #include <cstdio>
 
 namespace {
@@ -90,6 +92,171 @@ int main() {
     expect(input.frame().keyboard_pressed == 0 &&
            input.frame().gamepad_pressed == 0,
            "focus loss cancels undelivered presses");
+
+    awl::PadAdapter bridge;
+    bridge.reset();
+    input.reset(true);
+    input.set_key(awl::NativeKey::Space, true);
+    input.set_key(awl::NativeKey::W, true);
+    input.set_key(awl::NativeKey::Up, true);
+    input.begin_frame();
+    bridge.begin_frame(input.frame());
+    const uint16_t pad_a = awl::pad_button_mask(awl::PadButton::A);
+    const uint16_t pad_up = awl::pad_button_mask(awl::PadButton::Up);
+    expect(bridge.frame().sample.connected, "focused keyboard supplies PAD port 0");
+    expect(bridge.frame().sample.buttons == (pad_a | pad_up),
+           "keyboard face and D-pad buttons map to GC masks");
+    expect(bridge.frame().sample.stick_y == 127,
+           "W maps to positive main-stick Y");
+    expect(bridge.frame().pressed == (pad_a | pad_up),
+           "mapped buttons have rising edges");
+    input.begin_frame();
+    bridge.begin_frame(input.frame());
+    expect(bridge.frame().pressed == 0 && bridge.frame().sample.buttons == (pad_a | pad_up),
+           "mapped holds persist without a repeated press");
+
+    input.set_key(awl::NativeKey::Q, true);
+    input.set_key(awl::NativeKey::E, true);
+    input.set_key(awl::NativeKey::Z, true);
+    input.set_key(awl::NativeKey::X, true);
+    input.begin_frame();
+    bridge.begin_frame(input.frame());
+    expect(bridge.frame().sample.buttons ==
+               (pad_a | pad_up |
+                awl::pad_button_mask(awl::PadButton::L) |
+                awl::pad_button_mask(awl::PadButton::R) |
+                awl::pad_button_mask(awl::PadButton::Z) |
+                awl::pad_button_mask(awl::PadButton::X)) &&
+           bridge.frame().sample.trigger_l == 255 &&
+           bridge.frame().sample.trigger_r == 255,
+           "keyboard supplies the remaining digital buttons and full trigger clicks");
+
+    input.set_key(awl::NativeKey::Space, false);
+    input.set_key(awl::NativeKey::W, false);
+    input.set_key(awl::NativeKey::Up, false);
+    input.set_key(awl::NativeKey::Q, false);
+    input.set_key(awl::NativeKey::E, false);
+    input.set_key(awl::NativeKey::Z, false);
+    input.set_key(awl::NativeKey::X, false);
+    pad = {};
+    pad.connected = true;
+    pad.buttons = XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_X |
+                  XINPUT_GAMEPAD_BACK | XINPUT_GAMEPAD_DPAD_LEFT;
+    pad.left_x = -32768;
+    pad.left_y = 32767;
+    pad.right_x = 256;
+    pad.right_y = -256;
+    pad.left_trigger = 199;
+    pad.right_trigger = 200;
+    input.set_gamepad(pad);
+    input.begin_frame();
+    bridge.begin_frame(input.frame());
+    const uint16_t expected_gamepad = pad_a |
+        awl::pad_button_mask(awl::PadButton::X) |
+        awl::pad_button_mask(awl::PadButton::Z) |
+        awl::pad_button_mask(awl::PadButton::Left) |
+        awl::pad_button_mask(awl::PadButton::R);
+    expect(bridge.frame().sample.buttons == expected_gamepad,
+           "XInput face, Back, D-pad, and trigger map to GC bits");
+    expect(bridge.frame().released ==
+               (pad_up | awl::pad_button_mask(awl::PadButton::L)) &&
+           (bridge.frame().pressed & pad_a) == 0,
+           "switching A from keyboard to controller does not retrigger it");
+    expect(bridge.frame().sample.stick_x == -128 &&
+           bridge.frame().sample.stick_y == 127 &&
+           bridge.frame().sample.substick_x == 1 &&
+           bridge.frame().sample.substick_y == -1,
+           "XInput stick endpoints and C-stick scaling are preserved");
+    expect(bridge.frame().sample.trigger_l == 199 &&
+           bridge.frame().sample.trigger_r == 200 &&
+           (bridge.frame().sample.buttons &
+            awl::pad_button_mask(awl::PadButton::L)) == 0,
+           "analog triggers retain pressure and click at threshold");
+
+    input.set_key(awl::NativeKey::A, true);
+    input.set_key(awl::NativeKey::D, true);
+    input.begin_frame();
+    bridge.begin_frame(input.frame());
+    expect(bridge.frame().sample.stick_x == 0,
+           "opposed keyboard directions cancel the gamepad axis");
+
+    input.set_focused(false);
+    input.begin_frame();
+    bridge.begin_frame(input.frame());
+    expect(!bridge.frame().sample.connected &&
+           bridge.frame().sample.buttons == 0 &&
+           bridge.frame().sample.stick_y == 0 &&
+           bridge.frame().released == expected_gamepad,
+           "focus loss neutralizes and releases the PAD sample");
+
+    input.reset(true);
+    bridge.reset();
+    input.set_key(awl::NativeKey::Space, true);
+    input.set_key(awl::NativeKey::Space, false);
+    input.begin_frame();
+    bridge.begin_frame(input.frame());
+    expect(bridge.frame().sample.buttons == 0 &&
+           bridge.frame().pressed == pad_a && bridge.frame().released == pad_a,
+           "short keyboard taps survive a frame boundary without a false hold");
+
+    struct ButtonCase {
+        uint16_t native;
+        awl::PadButton expected;
+    };
+    const ButtonCase gamepad_cases[] = {
+        {XINPUT_GAMEPAD_DPAD_LEFT, awl::PadButton::Left},
+        {XINPUT_GAMEPAD_DPAD_RIGHT, awl::PadButton::Right},
+        {XINPUT_GAMEPAD_DPAD_DOWN, awl::PadButton::Down},
+        {XINPUT_GAMEPAD_DPAD_UP, awl::PadButton::Up},
+        {XINPUT_GAMEPAD_BACK, awl::PadButton::Z},
+        {XINPUT_GAMEPAD_RIGHT_SHOULDER, awl::PadButton::R},
+        {XINPUT_GAMEPAD_LEFT_SHOULDER, awl::PadButton::L},
+        {XINPUT_GAMEPAD_A, awl::PadButton::A},
+        {XINPUT_GAMEPAD_B, awl::PadButton::B},
+        {XINPUT_GAMEPAD_X, awl::PadButton::X},
+        {XINPUT_GAMEPAD_Y, awl::PadButton::Y},
+        {XINPUT_GAMEPAD_START, awl::PadButton::Start},
+    };
+    for (const ButtonCase& button_case : gamepad_cases) {
+        awl::NativeInputFrame frame;
+        frame.focused = true;
+        frame.gamepad.connected = true;
+        frame.gamepad.buttons = button_case.native;
+        bridge.reset();
+        bridge.begin_frame(frame);
+        expect(bridge.frame().sample.buttons ==
+                   awl::pad_button_mask(button_case.expected),
+               "each XInput button maps to its selected GC PAD bit");
+    }
+
+    struct KeyCase {
+        awl::NativeKey native;
+        awl::PadButton expected;
+    };
+    const KeyCase keyboard_cases[] = {
+        {awl::NativeKey::Left, awl::PadButton::Left},
+        {awl::NativeKey::Right, awl::PadButton::Right},
+        {awl::NativeKey::Down, awl::PadButton::Down},
+        {awl::NativeKey::Up, awl::PadButton::Up},
+        {awl::NativeKey::Z, awl::PadButton::Z},
+        {awl::NativeKey::E, awl::PadButton::R},
+        {awl::NativeKey::Q, awl::PadButton::L},
+        {awl::NativeKey::Space, awl::PadButton::A},
+        {awl::NativeKey::Backspace, awl::PadButton::B},
+        {awl::NativeKey::X, awl::PadButton::X},
+        {awl::NativeKey::Tab, awl::PadButton::Y},
+        {awl::NativeKey::Enter, awl::PadButton::Start},
+    };
+    for (const KeyCase& key_case : keyboard_cases) {
+        awl::NativeInputFrame frame;
+        frame.focused = true;
+        frame.keyboard_held = awl::native_key_mask(key_case.native);
+        bridge.reset();
+        bridge.begin_frame(frame);
+        expect(bridge.frame().sample.buttons ==
+                   awl::pad_button_mask(key_case.expected),
+               "each keyboard button maps to its selected GC PAD bit");
+    }
 
     if (failures == 0) {
         std::puts("Native input tests passed.");

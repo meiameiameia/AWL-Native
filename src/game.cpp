@@ -9,8 +9,8 @@ void game_init() {
 
 void game_update(double delta_time) {
     (void)delta_time;
-    // Native input is captured each frame, but no original player update has
-    // been translated yet. Do not infer game actions from the device state.
+    // Native input and a raw PAD-style sample are available each frame, but
+    // no original player update has been translated yet.
 }
 
 void game_shutdown() {

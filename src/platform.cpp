@@ -10,6 +10,7 @@ static HWND g_hwnd = nullptr;
 static bool g_running = true;
 static PlatformExitReason g_exit_reason = PlatformExitReason::None;
 static NativeInputAccumulator g_input;
+static PadAdapter g_pad;
 
 static bool key_from_virtual_key(WPARAM virtual_key, NativeKey* key) {
     switch (virtual_key) {
@@ -17,6 +18,10 @@ static bool key_from_virtual_key(WPARAM virtual_key, NativeKey* key) {
         case 'A': *key = NativeKey::A; return true;
         case 'S': *key = NativeKey::S; return true;
         case 'D': *key = NativeKey::D; return true;
+        case 'Q': *key = NativeKey::Q; return true;
+        case 'E': *key = NativeKey::E; return true;
+        case 'Z': *key = NativeKey::Z; return true;
+        case 'X': *key = NativeKey::X; return true;
         case VK_UP: *key = NativeKey::Up; return true;
         case VK_DOWN: *key = NativeKey::Down; return true;
         case VK_LEFT: *key = NativeKey::Left; return true;
@@ -222,10 +227,12 @@ double time_get_delta() {
 
 void input_init() {
     g_input.reset(g_hwnd && GetForegroundWindow() == g_hwnd);
+    g_pad.reset();
     AWL_LOG_INFO("Native keyboard and XInput capture initialized.");
 }
 void input_shutdown() {
     g_input.reset(false);
+    g_pad.reset();
     AWL_LOG_INFO("Native input capture shut down.");
 }
 
@@ -247,10 +254,15 @@ void input_begin_frame() {
     }
     g_input.set_gamepad(gamepad);
     g_input.begin_frame();
+    g_pad.begin_frame(g_input.frame());
 }
 
 const NativeInputFrame& input_frame() {
     return g_input.frame();
+}
+
+const PadFrame& pad_frame() {
+    return g_pad.frame();
 }
 
 void audio_init() {

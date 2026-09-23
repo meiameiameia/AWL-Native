@@ -4,10 +4,10 @@
 
 namespace awl {
 
-// Native device state only. Mapping these controls to GameCube PAD and game
-// actions requires a separate DOL-backed translation.
+// Native device state; PadAdapter below supplies a raw GameCube-style sample.
+// Game actions still require separate DOL-backed translation.
 enum class NativeKey : uint8_t {
-    W, A, S, D,
+    W, A, S, D, Q, E, Z, X,
     Up, Down, Left, Right,
     Space, Enter, Backspace, Tab,
     Count
@@ -36,6 +36,46 @@ struct NativeInputFrame {
     NativeGamepadState gamepad;
     uint16_t gamepad_pressed = 0;
     uint16_t gamepad_released = 0;
+};
+
+// SDK-compatible GameCube PAD button bits. This is a raw controller sample,
+// not the game's later HSD_Pad filtering, repeat state, or action mapping.
+enum class PadButton : uint16_t {
+    Left = 0x0001, Right = 0x0002, Down = 0x0004, Up = 0x0008,
+    Z = 0x0010, R = 0x0020, L = 0x0040,
+    A = 0x0100, B = 0x0200, X = 0x0400, Y = 0x0800,
+    Start = 0x1000
+};
+
+constexpr uint16_t pad_button_mask(PadButton button) {
+    return static_cast<uint16_t>(button);
+}
+
+struct PadSample {
+    bool connected = false;
+    uint16_t buttons = 0;
+    int8_t stick_x = 0;
+    int8_t stick_y = 0;
+    int8_t substick_x = 0;
+    int8_t substick_y = 0;
+    uint8_t trigger_l = 0;
+    uint8_t trigger_r = 0;
+};
+
+struct PadFrame {
+    PadSample sample;
+    uint16_t pressed = 0;
+    uint16_t released = 0;
+};
+
+class PadAdapter {
+public:
+    void reset();
+    void begin_frame(const NativeInputFrame& native);
+    const PadFrame& frame() const { return frame_; }
+
+private:
+    PadFrame frame_;
 };
 
 class NativeInputAccumulator {

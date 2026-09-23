@@ -18,7 +18,7 @@ The goal is a behaviorally faithful native Windows port of *Harvest Moon: A Wond
 
 The project is an early functional scaffold, not a playable port. The current executable is primarily a development harness: it creates a Win32/DX11 window, mounts the extracted disc tree, decodes selected TPL/GPL assets, and exercises a debug mesh rendering path. Placeholder subsystem calls are not verified game behavior.
 
-The native loop now captures keyboard and first-controller XInput state per frame. This is device acquisition only; no GameCube PAD mapping, player behavior, or collision has been translated. `FUN_8012f3e0` was checked against the verified DOL and must not be described as PAD initialization.
+The native loop captures keyboard and first-controller XInput state and maps it to a raw first-channel GameCube-style PAD sample. This is a PC control policy, not translated HSD filtering or gameplay; player behavior and collision remain untranslated. `FUN_8012f3e0` was checked against the verified DOL and must not be described as PAD initialization.
 
 The ground GPL/TPL path is an evidence-backed but deliberately narrow subset.
 Before changing it, read `docs/research/ground-rendering.md` and
@@ -103,4 +103,4 @@ MSVC Debug and Release builds must compile cleanly at `/W4`. Test decompiled or 
 
 Canonical background: [ground rendering evidence](docs/research/ground-rendering.md) and [reverse-engineering workflow](docs/re-pipeline.md).
 
-Input status: [the DOL-backed PAD-to-player trace](docs/research/input-player-trace.md) identifies polling, button transitions, world-map player ownership, and state dispatch. Native action mapping, world-space movement, and collision remain untranslated.
+Input status: [the DOL-backed PAD-to-player trace](docs/research/input-player-trace.md) identifies polling, button transitions, world-map player ownership, and state dispatch. A native raw-PAD bridge exists, but original HSD filtering, action mapping, world-space movement, and collision remain untranslated.

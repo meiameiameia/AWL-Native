@@ -1,6 +1,116 @@
 #include "awl/input.h"
 
+#include <windows.h>
+#include <Xinput.h>
+
 namespace awl {
+
+namespace {
+
+uint16_t mapped_buttons(uint32_t keys, uint16_t gamepad_buttons) {
+    uint16_t result = 0;
+    const auto add = [&result](bool active, PadButton button) {
+        if (active) {
+            result |= pad_button_mask(button);
+        }
+    };
+    const auto key = [keys](NativeKey value) {
+        return (keys & native_key_mask(value)) != 0;
+    };
+    const auto gamepad = [gamepad_buttons](uint16_t value) {
+        return (gamepad_buttons & value) != 0;
+    };
+
+    // Keyboard defaults: arrows=D-pad, WASD=main stick, Space=A,
+    // Backspace=B, X=X, Tab=Y, Z=Z, Q=L, E=R, Enter=Start.
+    add(key(NativeKey::Left) || gamepad(XINPUT_GAMEPAD_DPAD_LEFT), PadButton::Left);
+    add(key(NativeKey::Right) || gamepad(XINPUT_GAMEPAD_DPAD_RIGHT), PadButton::Right);
+    add(key(NativeKey::Down) || gamepad(XINPUT_GAMEPAD_DPAD_DOWN), PadButton::Down);
+    add(key(NativeKey::Up) || gamepad(XINPUT_GAMEPAD_DPAD_UP), PadButton::Up);
+    add(key(NativeKey::Z) || gamepad(XINPUT_GAMEPAD_BACK), PadButton::Z);
+    add(key(NativeKey::E) || gamepad(XINPUT_GAMEPAD_RIGHT_SHOULDER), PadButton::R);
+    add(key(NativeKey::Q) || gamepad(XINPUT_GAMEPAD_LEFT_SHOULDER), PadButton::L);
+    add(key(NativeKey::Space) || gamepad(XINPUT_GAMEPAD_A), PadButton::A);
+    add(key(NativeKey::Backspace) || gamepad(XINPUT_GAMEPAD_B), PadButton::B);
+    add(key(NativeKey::X) || gamepad(XINPUT_GAMEPAD_X), PadButton::X);
+    add(key(NativeKey::Tab) || gamepad(XINPUT_GAMEPAD_Y), PadButton::Y);
+    add(key(NativeKey::Enter) || gamepad(XINPUT_GAMEPAD_START), PadButton::Start);
+    return result;
+}
+
+int8_t scale_stick(int16_t value) {
+    return static_cast<int8_t>(value / 256);
+}
+
+int8_t keyboard_axis(uint32_t keys, NativeKey negative, NativeKey positive) {
+    const bool minus = (keys & native_key_mask(negative)) != 0;
+    const bool plus = (keys & native_key_mask(positive)) != 0;
+    return minus == plus ? 0 : static_cast<int8_t>(plus ? 127 : -127);
+}
+
+} // namespace
+
+void PadAdapter::reset() {
+    frame_ = PadFrame{};
+}
+
+void PadAdapter::begin_frame(const NativeInputFrame& native) {
+    const uint16_t previous = frame_.sample.buttons;
+    PadSample sample;
+    sample.connected = native.focused; // Keyboard acts as port 0 while focused.
+    if (native.focused) {
+        const NativeGamepadState& pad = native.gamepad;
+        const uint16_t gamepad_buttons = pad.connected ? pad.buttons : 0;
+        sample.buttons = mapped_buttons(native.keyboard_held, gamepad_buttons);
+        if (pad.connected) {
+            sample.stick_x = scale_stick(pad.left_x);
+            sample.stick_y = scale_stick(pad.left_y);
+            sample.substick_x = scale_stick(pad.right_x);
+            sample.substick_y = scale_stick(pad.right_y);
+            sample.trigger_l = pad.left_trigger;
+            sample.trigger_r = pad.right_trigger;
+        }
+        if ((native.keyboard_held & native_key_mask(NativeKey::Q)) != 0 ||
+            (gamepad_buttons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0) {
+            sample.trigger_l = 255;
+        }
+        if ((native.keyboard_held & native_key_mask(NativeKey::E)) != 0 ||
+            (gamepad_buttons & XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0) {
+            sample.trigger_r = 255;
+        }
+        // Keyboard overrides only the main-stick axis it is using.
+        const uint32_t horizontal = native_key_mask(NativeKey::A) |
+                                    native_key_mask(NativeKey::D);
+        const uint32_t vertical = native_key_mask(NativeKey::S) |
+                                  native_key_mask(NativeKey::W);
+        if ((native.keyboard_held & horizontal) != 0) {
+            sample.stick_x = keyboard_axis(native.keyboard_held,
+                                           NativeKey::A, NativeKey::D);
+        }
+        if ((native.keyboard_held & vertical) != 0) {
+            sample.stick_y = keyboard_axis(native.keyboard_held,
+                                           NativeKey::S, NativeKey::W);
+        }
+        // XInput triggers are analog; near-full travel emulates the GC click.
+        if (sample.trigger_l >= 200) {
+            sample.buttons |= pad_button_mask(PadButton::L);
+        }
+        if (sample.trigger_r >= 200) {
+            sample.buttons |= pad_button_mask(PadButton::R);
+        }
+    }
+
+    const uint16_t current = sample.buttons;
+    const uint16_t event_pressed = native.focused
+        ? mapped_buttons(native.keyboard_pressed, native.gamepad_pressed) : 0;
+    const uint16_t event_released = native.focused
+        ? mapped_buttons(native.keyboard_released, native.gamepad_released) : 0;
+    frame_.pressed = static_cast<uint16_t>((current & ~previous) |
+                                           (event_pressed & ~previous));
+    frame_.released = static_cast<uint16_t>((previous & ~current) |
+                                            (event_released & ~current));
+    frame_.sample = sample;
+}
 
 void NativeInputAccumulator::reset(bool focused) {
     *this = NativeInputAccumulator{};

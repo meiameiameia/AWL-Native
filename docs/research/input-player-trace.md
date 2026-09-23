@@ -16,6 +16,12 @@ Target: NTSC-U `GYWE41` `main.dol`, SHA1 `1ccfd9dfb5c250c2f45c70c74cc45e5d88d223
 - `FUN_80031D7C` writes the state ID at character offset `+0x1364`, then indexes the runtime callback table at `0x802A3AA8` with a `0x3C`-byte stride and jumps via `FUN_80235D7C`. For example, state `0xE0` indexes `0x802A6F28`; its read-only DOL template entry at `0x802A3670` points first to `FUN_80047D3C`. This establishes state dispatch, **not** the gameplay name or full effects of state `0xE0`.
 - `FUN_8003083C`, called from several character-state callbacks, reads signed stick bytes at `0x8034158C`/`0x8034158D`, derives a direction using world/camera-related state, updates character fields `+0x136C` through `+0x137C`, and passes proposed/resulting positions through `FUN_8001DE44`, `FUN_80152724`, and `FUN_80030E18`. The meanings and PC equivalents of these surrounding world-space operations remain to be established before faithful movement can be implemented.
 
+## Native PAD boundary
+
+`PadAdapter` now maps the first XInput controller and focused keyboard to a raw, first-channel GameCube-style button/stick/trigger sample. The button masks and signed-byte stick/trigger layout follow the [devkitPro libogc PAD header](https://github.com/devkitPro/libogc/blob/master/gc/ogc/pad.h); the target DOL's `0x100` and `0x1000` checks corroborate those two masks in this game. Keyboard defaults are WASD=main stick, arrows=D-pad, Space=A, Backspace=B, X=X, Tab=Y, Z=Z, Q=L, E=R, and Enter=Start. XInput face/D-pad buttons map by name, Back=Z, shoulders=L/R, and the analog triggers generate L/R clicks at pressure 200 or above. Focus loss clears the sample. Press/release edges also retain a complete native tap between sampled frames as a deliberate PC input policy.
+
+This is a platform equivalent and **not** a copy of `FUN_802136C8`/`FUN_80213B44`: original dead zones, stick-generated direction bits, button repeat, rumble, game actions, and player movement are not implemented. The XInput/keyboard layout and click threshold are PC control defaults, not claims about the GameCube game.
+
 ## Downstream leads, not yet translated
 
 - `FUN_800472BC` reads pressed bit `0x100` at `0x8034157C` before branching through a large context-dependent interaction/state path. `FUN_800471F8` checks pressed bit `0x1000` after a separate eligibility check, then calls `FUN_800310A4` and `FUN_80031D7C` with state `0xE0`. The gameplay meanings of these masks and state numbers have **not** been established from this trace.
@@ -24,4 +30,4 @@ Target: NTSC-U `GYWE41` `main.dol`, SHA1 `1ccfd9dfb5c250c2f45c70c74cc45e5d88d223
 
 ## Next translation boundary
 
-Resolve the specific world-space and character-state operations around `FUN_8003083C` before implementing movement, and the state guards/interaction targets around `FUN_800472BC` before implementing an action. Verify individual PAD masks, axes, dead zones, focus/disconnect behavior, and frame order against the DOL before connecting `NativeInputFrame` to an original-game command. The existing keyboard/XInput capture is only native device acquisition; it does not yet drive gameplay. No current native smoke demonstrates original player control.
+Resolve the specific world-space and character-state operations around `FUN_8003083C` before implementing movement, and the state guards/interaction targets around `FUN_800472BC` before implementing an action. Verify HSD filtering, dead zones, state guards, and frame order against the DOL before connecting the new raw PAD sample to an original-game command. Input does not yet drive gameplay; no current native smoke demonstrates original player control.
