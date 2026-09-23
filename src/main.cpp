@@ -657,6 +657,9 @@ int main(int argc, char** argv)
     int frame_count = 0;
     bool validation_smoke_completed = false;
     while (awl::platform_pump_messages()) {
+        awl::time_begin_frame();
+        awl::input_begin_frame();
+        awl::game_update(awl::time_get_delta());
         if (frame_count < 10) AWL_LOG_INFO("Frame %d: before render", frame_count);
 
         const uint64_t presented_before = render_ctx.presented_frame_count();

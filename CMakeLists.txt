@@ -18,6 +18,7 @@ set(SOURCES
     src/render_validation.cpp
     src/dvd.cpp
     src/platform.cpp
+    src/input.cpp
     src/game.cpp
     src/filesystem.cpp
     src/asset_inventory.cpp
@@ -45,7 +46,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 # Platform defines
 if(WIN32)
     target_compile_definitions(${PROJECT_NAME} PRIVATE AWL_PLATFORM_WINDOWS _CRT_SECURE_NO_WARNINGS)
-    target_link_libraries(${PROJECT_NAME} PRIVATE d3d11 d3dcompiler)
+    target_link_libraries(${PROJECT_NAME} PRIVATE d3d11 d3dcompiler xinput)
 endif()
 
 # Compiler options
@@ -89,12 +90,14 @@ add_executable(asset_parser_tests
     src/filesystem.cpp
     src/memory.cpp
     src/platform.cpp
+    src/input.cpp
 )
 target_include_directories(asset_parser_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
 if(WIN32)
     target_compile_definitions(asset_parser_tests PRIVATE AWL_PLATFORM_WINDOWS _CRT_SECURE_NO_WARNINGS)
+    target_link_libraries(asset_parser_tests PRIVATE xinput)
 endif()
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(asset_parser_tests PRIVATE
@@ -142,3 +145,17 @@ elseif(MSVC)
     )
 endif()
 add_test(NAME ground_material_tests COMMAND ground_material_tests)
+
+add_executable(native_input_tests
+    tests/native_input_tests.cpp
+    src/input.cpp
+)
+target_include_directories(native_input_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(native_input_tests PRIVATE -Wall -Wextra)
+elseif(MSVC)
+    target_compile_options(native_input_tests PRIVATE /W4)
+endif()
+add_test(NAME native_input_tests COMMAND native_input_tests)

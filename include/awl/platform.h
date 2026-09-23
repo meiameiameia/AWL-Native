@@ -1,6 +1,7 @@
 #pragma once
 
 #include "awl/types.h"
+#include "awl/input.h"
 
 namespace awl {
 
@@ -37,14 +38,13 @@ PlatformExitReason platform_get_exit_reason();
 
 // Timing infrastructure
 void time_begin_frame();
-void time_end_frame();
-double time_get_delta(); // Actual delta time, primarily for internal use/metrics
+double time_get_delta(); // Elapsed time between frame starts, clamped to 0.1 s
 
 // Input
 void input_init();
 void input_shutdown();
 void input_begin_frame();
-void input_end_frame();
+const NativeInputFrame& input_frame();
 
 // Audio
 void audio_init();

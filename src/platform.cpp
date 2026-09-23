@@ -1,5 +1,6 @@
 #include "awl/platform.h"
 #include <windows.h>
+#include <Xinput.h>
 #include <cstdio>
 #include <cstdarg>
 
@@ -8,11 +9,29 @@ namespace awl {
 static HWND g_hwnd = nullptr;
 static bool g_running = true;
 static PlatformExitReason g_exit_reason = PlatformExitReason::None;
+static NativeInputAccumulator g_input;
+
+static bool key_from_virtual_key(WPARAM virtual_key, NativeKey* key) {
+    switch (virtual_key) {
+        case 'W': *key = NativeKey::W; return true;
+        case 'A': *key = NativeKey::A; return true;
+        case 'S': *key = NativeKey::S; return true;
+        case 'D': *key = NativeKey::D; return true;
+        case VK_UP: *key = NativeKey::Up; return true;
+        case VK_DOWN: *key = NativeKey::Down; return true;
+        case VK_LEFT: *key = NativeKey::Left; return true;
+        case VK_RIGHT: *key = NativeKey::Right; return true;
+        case VK_SPACE: *key = NativeKey::Space; return true;
+        case VK_RETURN: *key = NativeKey::Enter; return true;
+        case VK_BACK: *key = NativeKey::Backspace; return true;
+        case VK_TAB: *key = NativeKey::Tab; return true;
+        default: return false;
+    }
+}
 
 // Timing state
 static LARGE_INTEGER g_timer_freq;
-static LARGE_INTEGER g_time_start;
-static LARGE_INTEGER g_time_end;
+static LARGE_INTEGER g_time_start = {};
 static double g_delta_time = 0.0;
 
 void logging_init() {
@@ -42,6 +61,8 @@ void log_error(const char* fmt, ...) {
 
 void platform_init() {
     QueryPerformanceFrequency(&g_timer_freq);
+    g_time_start.QuadPart = 0;
+    g_delta_time = 0.0;
 }
 
 void platform_shutdown() {
@@ -50,6 +71,12 @@ void platform_shutdown() {
 
 LRESULT CALLBACK window_proc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
+        case WM_SETFOCUS:
+            g_input.set_focused(true);
+            return 0;
+        case WM_KILLFOCUS:
+            g_input.set_focused(false);
+            return 0;
         case WM_CLOSE:
             g_running = false;
             if (g_exit_reason == PlatformExitReason::None) g_exit_reason = PlatformExitReason::WmClose;
@@ -68,8 +95,26 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                 g_running = false;
                 if (g_exit_reason == PlatformExitReason::None) g_exit_reason = PlatformExitReason::Escape;
                 DestroyWindow(hwnd);
+                return 0;
             }
-            return 0;
+            [[fallthrough]];
+        case WM_SYSKEYDOWN: {
+            NativeKey key;
+            if (key_from_virtual_key(wParam, &key)) {
+                g_input.set_key(key, true);
+                return 0;
+            }
+            break;
+        }
+        case WM_KEYUP:
+        case WM_SYSKEYUP: {
+            NativeKey key;
+            if (key_from_virtual_key(wParam, &key)) {
+                g_input.set_key(key, false);
+                return 0;
+            }
+            break;
+        }
     }
     return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
@@ -155,14 +200,17 @@ PlatformExitReason platform_get_exit_reason() {
 }
 
 void time_begin_frame() {
-    QueryPerformanceCounter(&g_time_start);
-}
-
-void time_end_frame() {
-    QueryPerformanceCounter(&g_time_end);
-    g_delta_time = static_cast<double>(g_time_end.QuadPart - g_time_start.QuadPart) / g_timer_freq.QuadPart;
-    
-    // Clamp delta time to prevent huge simulation jumps after breakpoints or dragging the window
+    LARGE_INTEGER now = {};
+    QueryPerformanceCounter(&now);
+    if (g_time_start.QuadPart != 0 && g_timer_freq.QuadPart > 0) {
+        g_delta_time = static_cast<double>(now.QuadPart - g_time_start.QuadPart) /
+                       static_cast<double>(g_timer_freq.QuadPart);
+    }
+    g_time_start = now;
+    if (g_delta_time < 0.0) {
+        g_delta_time = 0.0;
+    }
+    // Clamp pauses and window drags before a future game-state update uses dt.
     if (g_delta_time > 0.1) {
         g_delta_time = 0.1;
     }
@@ -172,18 +220,37 @@ double time_get_delta() {
     return g_delta_time;
 }
 
-// Subsystem stub implementations for now
 void input_init() {
-    AWL_LOG_INFO("Input init.");
+    g_input.reset(g_hwnd && GetForegroundWindow() == g_hwnd);
+    AWL_LOG_INFO("Native keyboard and XInput capture initialized.");
 }
 void input_shutdown() {
-    AWL_LOG_INFO("Input shutdown.");
+    g_input.reset(false);
+    AWL_LOG_INFO("Native input capture shut down.");
 }
 
 void input_begin_frame() {
+    g_input.set_focused(g_hwnd && GetForegroundWindow() == g_hwnd);
+    NativeGamepadState gamepad;
+    if (g_input.focused()) {
+        XINPUT_STATE state = {};
+        if (XInputGetState(0, &state) == ERROR_SUCCESS) {
+            gamepad.connected = true;
+            gamepad.buttons = state.Gamepad.wButtons;
+            gamepad.left_trigger = state.Gamepad.bLeftTrigger;
+            gamepad.right_trigger = state.Gamepad.bRightTrigger;
+            gamepad.left_x = state.Gamepad.sThumbLX;
+            gamepad.left_y = state.Gamepad.sThumbLY;
+            gamepad.right_x = state.Gamepad.sThumbRX;
+            gamepad.right_y = state.Gamepad.sThumbRY;
+        }
+    }
+    g_input.set_gamepad(gamepad);
+    g_input.begin_frame();
 }
 
-void input_end_frame() {
+const NativeInputFrame& input_frame() {
+    return g_input.frame();
 }
 
 void audio_init() {
