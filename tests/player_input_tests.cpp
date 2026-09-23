@@ -121,6 +121,33 @@ int main() {
     expect(near(state.facing_x, 0.0f) && near(state.facing_z, -1.0f),
            "camera yaw composes with the stick-derived angle");
 
+    awl::WorldMapPosition position{10.0f, 20.0f, 30.0f};
+    state = {};
+    state.direction_z = 1.0f;
+    state.current_speed = 0.09f;
+    awl::WorldMapPosition proposed =
+        awl::propose_world_map_position(position, half_pi, state);
+    expect(near(proposed.x, 10.09f) && near(proposed.y, 20.0f) &&
+           near(proposed.z, 30.0f),
+           "camera yaw rotates forward displacement into positive X");
+
+    state = {};
+    state.direction_x = 1.0f;
+    state.current_speed = 0.18f;
+    proposed = awl::propose_world_map_position(position, 0.0f, state);
+    expect(near(proposed.x, 10.179986f) && near(proposed.y, 20.0f) &&
+           near(proposed.z, 29.997738f),
+           "horizontal displacement uses the verified four-degree correction");
+
+    state = {};
+    state.direction_x = 0.6f;
+    state.direction_z = 0.8f;
+    state.current_speed = 0.0f;
+    proposed = awl::propose_world_map_position(position, half_pi, state);
+    expect(near(proposed.x, position.x) && near(proposed.y, position.y) &&
+           near(proposed.z, position.z),
+           "zero current speed produces no proposed displacement");
+
     if (failures == 0) {
         std::puts("Player input tests passed.");
     }

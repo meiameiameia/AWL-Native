@@ -18,7 +18,7 @@ The goal is a behaviorally faithful native Windows port of *Harvest Moon: A Wond
 
 The project is an early functional scaffold, not a playable port. The current executable is primarily a development harness: it creates a Win32/DX11 window, mounts the extracted disc tree, decodes selected TPL/GPL assets, and exercises a debug mesh rendering path. Placeholder subsystem calls are not verified game behavior.
 
-The native loop maps keyboard and first-controller XInput state to a raw first-channel GameCube-style PAD sample and applies a DOL-backed subset of stick/trigger filtering, synthesized direction bits, and button transition/repeat state. A separate translated helper derives normalized world-map steering, stepped speed, and camera-relative facing, but it is not connected to a gameplay scene. The controls themselves are a PC policy; position updates, collision, actions, scene-dependent repeat updates, and remaining PAD behavior remain untranslated. `FUN_8012f3e0` was checked against the verified DOL and must not be described as PAD initialization.
+The native loop maps keyboard and first-controller XInput state to a raw first-channel GameCube-style PAD sample and applies a DOL-backed subset of stick/trigger filtering, synthesized direction bits, and button transition/repeat state. Separate translated helpers derive normalized world-map steering, stepped speed, camera-relative facing, and a pre-collision position proposal, but they are not connected to a gameplay scene. The controls themselves are a PC policy; collision-resolved position updates, actions, scene-dependent repeat updates, and remaining PAD behavior remain untranslated. `FUN_8012f3e0` was checked against the verified DOL and must not be described as PAD initialization.
 
 The ground GPL/TPL path is an evidence-backed but deliberately narrow subset.
 Before changing it, read `docs/research/ground-rendering.md` and
@@ -103,4 +103,4 @@ MSVC Debug and Release builds must compile cleanly at `/W4`. Test decompiled or 
 
 Canonical background: [ground rendering evidence](docs/research/ground-rendering.md) and [reverse-engineering workflow](docs/re-pipeline.md).
 
-Input status: [the DOL-backed PAD-to-player trace](docs/research/input-player-trace.md) identifies polling, a translated first-channel HSD filtering subset, a translated but inactive steering/speed/facing core, world-map player ownership, and state dispatch. Scene-dependent repeat updates, remaining HSD status handling, action mapping, position updates, and collision remain untranslated.
+Input status: [the DOL-backed PAD-to-player trace](docs/research/input-player-trace.md) identifies polling, a translated first-channel HSD filtering subset, translated but inactive steering/speed/facing and pre-collision position helpers, world-map player ownership, and state dispatch. Scene-dependent repeat updates, remaining HSD status handling, action mapping, accepted position updates, and collision remain untranslated.

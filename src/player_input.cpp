@@ -14,6 +14,8 @@ constexpr float kHighSpeed = 0.18f;
 constexpr float kMediumSpeed = 0.09f;
 constexpr float kLowSpeed = 0.06f;
 constexpr float kSpeedStep = 0.03f;
+constexpr float kRadiansPerDegree = 0.017453292f;
+constexpr float kTurnRateDegrees = 4.0f;
 
 } // namespace
 
@@ -60,6 +62,27 @@ void update_world_map_steering(const HsdPadFrame& pad,
     } else {
         state.intensity = state.current_speed / kHighSpeed;
     }
+}
+
+WorldMapPosition propose_world_map_position(
+    const WorldMapPosition& current_position,
+    float camera_yaw_radians,
+    const WorldMapSteeringState& steering) {
+    const float scaled_x = steering.direction_x * steering.current_speed;
+    const float scaled_z = steering.direction_z * steering.current_speed;
+    const float yaw_correction =
+        kRadiansPerDegree * (scaled_x * kTurnRateDegrees);
+    const float x_component_yaw = camera_yaw_radians + yaw_correction;
+    const float z_component_yaw = camera_yaw_radians - yaw_correction;
+
+    // FUN_8003083C rotates (scaled_x, 0, 0) and (0, 0, scaled_z)
+    // separately before adding both vectors to the current position.
+    WorldMapPosition proposed = current_position;
+    proposed.x += std::cos(x_component_yaw) * scaled_x;
+    proposed.z -= std::sin(x_component_yaw) * scaled_x;
+    proposed.x += std::sin(z_component_yaw) * scaled_z;
+    proposed.z += std::cos(z_component_yaw) * scaled_z;
+    return proposed;
 }
 
 } // namespace awl
