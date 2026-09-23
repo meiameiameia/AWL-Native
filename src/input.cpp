@@ -112,6 +112,45 @@ void PadAdapter::begin_frame(const NativeInputFrame& native) {
     frame_.sample = sample;
 }
 
+void HsdButtonFilter::reset() {
+    frame_ = HsdButtonFrame{};
+    initial_delay_ = 15;
+    interval_ = 2;
+    countdown_ = initial_delay_;
+}
+
+void HsdButtonFilter::set_repeat_timing(uint32_t initial_delay,
+                                        uint32_t interval) {
+    // FUN_800126FC clamps both scene-dependent values to at least one.
+    initial_delay_ = initial_delay == 0 ? 1 : initial_delay;
+    interval_ = interval == 0 ? 1 : interval;
+}
+
+void HsdButtonFilter::begin_frame(const PadSample& sample) {
+    frame_.previous = frame_.current;
+    uint32_t current = 0;
+    if (sample.connected) {
+        current = sample.buttons;
+        // FUN_802129CC removes the runtime dead zone of 10 before
+        // FUN_80213180's strict >120 comparison. Both values are set by
+        // FUN_8000AD40; the raw PAD threshold is therefore 131.
+        if (sample.trigger_l > 130) current |= 0x01000000;
+        if (sample.trigger_r > 130) current |= 0x02000000;
+    }
+    frame_.current = current;
+    frame_.pressed = current & (frame_.previous ^ current);
+    frame_.released = frame_.previous & (frame_.previous ^ current);
+    if (current != frame_.previous) {
+        frame_.repeated = frame_.pressed;
+        countdown_ = initial_delay_;
+    } else if (--countdown_ == 0) {
+        frame_.repeated = current;
+        countdown_ = interval_;
+    } else {
+        frame_.repeated = 0;
+    }
+}
+
 void NativeInputAccumulator::reset(bool focused) {
     *this = NativeInputAccumulator{};
     focused_ = focused;

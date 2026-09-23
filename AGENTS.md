@@ -18,7 +18,7 @@ The goal is a behaviorally faithful native Windows port of *Harvest Moon: A Wond
 
 The project is an early functional scaffold, not a playable port. The current executable is primarily a development harness: it creates a Win32/DX11 window, mounts the extracted disc tree, decodes selected TPL/GPL assets, and exercises a debug mesh rendering path. Placeholder subsystem calls are not verified game behavior.
 
-The native loop captures keyboard and first-controller XInput state and maps it to a raw first-channel GameCube-style PAD sample. This is a PC control policy, not translated HSD filtering or gameplay; player behavior and collision remain untranslated. `FUN_8012f3e0` was checked against the verified DOL and must not be described as PAD initialization.
+The native loop maps keyboard and first-controller XInput state to a raw first-channel GameCube-style PAD sample and applies a DOL-backed button transition/repeat subset. The controls themselves are a PC policy; scene-dependent repeat updates, original stick filtering, gameplay, and collision remain untranslated. `FUN_8012f3e0` was checked against the verified DOL and must not be described as PAD initialization.
 
 The ground GPL/TPL path is an evidence-backed but deliberately narrow subset.
 Before changing it, read `docs/research/ground-rendering.md` and

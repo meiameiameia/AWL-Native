@@ -78,6 +78,30 @@ private:
     PadFrame frame_;
 };
 
+// Verified button-only subset of the game's HSD PAD consumer state. Analog
+// stick processing and its synthesized direction bits are not represented.
+struct HsdButtonFrame {
+    uint32_t current = 0;
+    uint32_t previous = 0;
+    uint32_t pressed = 0;
+    uint32_t repeated = 0;
+    uint32_t released = 0;
+};
+
+class HsdButtonFilter {
+public:
+    void reset();
+    void set_repeat_timing(uint32_t initial_delay, uint32_t interval);
+    void begin_frame(const PadSample& sample);
+    const HsdButtonFrame& frame() const { return frame_; }
+
+private:
+    HsdButtonFrame frame_;
+    uint32_t initial_delay_ = 15;
+    uint32_t interval_ = 2;
+    uint32_t countdown_ = 15;
+};
+
 class NativeInputAccumulator {
 public:
     void reset(bool focused);

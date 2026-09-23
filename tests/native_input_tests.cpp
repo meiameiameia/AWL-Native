@@ -258,6 +258,66 @@ int main() {
                "each keyboard button maps to its selected GC PAD bit");
     }
 
+    // Expected frame transitions come from the verified DOL's
+    // FUN_80213B44; 15/2 and the strict 120 processed-trigger threshold
+    // are runtime overrides in FUN_8000AD40, not initial template values.
+    // FUN_802129CC subtracts the runtime dead zone of 10 first.
+    awl::HsdButtonFilter hsd;
+    hsd.reset();
+    awl::PadSample sample;
+    sample.connected = true;
+    sample.buttons = pad_a;
+    sample.trigger_l = 130;
+    sample.trigger_r = 131;
+    hsd.begin_frame(sample);
+    expect(hsd.frame().current == (pad_a | 0x02000000) &&
+           hsd.frame().previous == 0 &&
+           hsd.frame().pressed == (pad_a | 0x02000000) &&
+           hsd.frame().repeated == hsd.frame().pressed &&
+           hsd.frame().released == 0,
+           "HSD first press and strict trigger threshold match the DOL");
+    for (int hold = 1; hold < 15; ++hold) {
+        hsd.begin_frame(sample);
+        expect(hsd.frame().pressed == 0 && hsd.frame().repeated == 0,
+               "HSD does not repeat before the 15-frame initial delay");
+    }
+    hsd.begin_frame(sample);
+    expect(hsd.frame().repeated == hsd.frame().current,
+           "HSD repeats after the initial delay");
+    hsd.begin_frame(sample);
+    expect(hsd.frame().repeated == 0,
+           "HSD waits one frame between two-frame repeat pulses");
+    hsd.begin_frame(sample);
+    expect(hsd.frame().repeated == hsd.frame().current,
+           "HSD repeats at the runtime interval");
+
+    sample.buttons = pad_up;
+    sample.trigger_l = 131;
+    sample.trigger_r = 130;
+    hsd.begin_frame(sample);
+    expect(hsd.frame().current == (pad_up | 0x01000000) &&
+           hsd.frame().pressed == (pad_up | 0x01000000) &&
+           hsd.frame().released == (pad_a | 0x02000000) &&
+           hsd.frame().repeated == hsd.frame().pressed,
+           "HSD simultaneous press and release resets repeat delay");
+    sample.connected = false;
+    hsd.begin_frame(sample);
+    expect(hsd.frame().current == 0 && hsd.frame().pressed == 0 &&
+           hsd.frame().released == (pad_up | 0x01000000),
+           "HSD disconnect clears current state and emits releases");
+
+    hsd.reset();
+    hsd.set_repeat_timing(1, 1);
+    hsd.begin_frame(sample);
+    sample.connected = true;
+    sample.buttons = pad_a;
+    sample.trigger_l = 0;
+    sample.trigger_r = 0;
+    hsd.begin_frame(sample);
+    hsd.begin_frame(sample);
+    expect(hsd.frame().repeated == pad_a,
+           "HSD repeat timing can follow a scene-specific update");
+
     if (failures == 0) {
         std::puts("Native input tests passed.");
     }
