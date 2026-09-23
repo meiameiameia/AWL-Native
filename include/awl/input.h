@@ -78,9 +78,15 @@ private:
     PadFrame frame_;
 };
 
-// Verified button-only subset of the game's HSD PAD consumer state. Analog
-// stick processing and its synthesized direction bits are not represented.
-struct HsdButtonFrame {
+// Verified first-channel HSD PAD subset. It omits error/status, sample queue,
+// rumble, and the remaining per-channel fields.
+struct HsdPadFrame {
+    int8_t stick_x = 0;
+    int8_t stick_y = 0;
+    int8_t substick_x = 0;
+    int8_t substick_y = 0;
+    uint8_t trigger_l = 0;
+    uint8_t trigger_r = 0;
     uint32_t current = 0;
     uint32_t previous = 0;
     uint32_t pressed = 0;
@@ -88,15 +94,15 @@ struct HsdButtonFrame {
     uint32_t released = 0;
 };
 
-class HsdButtonFilter {
+class HsdPadFilter {
 public:
     void reset();
     void set_repeat_timing(uint32_t initial_delay, uint32_t interval);
     void begin_frame(const PadSample& sample);
-    const HsdButtonFrame& frame() const { return frame_; }
+    const HsdPadFrame& frame() const { return frame_; }
 
 private:
-    HsdButtonFrame frame_;
+    HsdPadFrame frame_;
     uint32_t initial_delay_ = 15;
     uint32_t interval_ = 2;
     uint32_t countdown_ = 15;

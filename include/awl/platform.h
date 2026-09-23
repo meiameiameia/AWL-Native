@@ -46,7 +46,7 @@ void input_shutdown();
 void input_begin_frame();
 const NativeInputFrame& input_frame();
 const PadFrame& pad_frame();
-const HsdButtonFrame& hsd_button_frame();
+const HsdPadFrame& hsd_pad_frame();
 
 // Audio
 void audio_init();

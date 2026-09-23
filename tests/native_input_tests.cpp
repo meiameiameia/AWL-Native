@@ -262,7 +262,7 @@ int main() {
     // FUN_80213B44; 15/2 and the strict 120 processed-trigger threshold
     // are runtime overrides in FUN_8000AD40, not initial template values.
     // FUN_802129CC subtracts the runtime dead zone of 10 first.
-    awl::HsdButtonFilter hsd;
+    awl::HsdPadFilter hsd;
     hsd.reset();
     awl::PadSample sample;
     sample.connected = true;
@@ -317,6 +317,82 @@ int main() {
     hsd.begin_frame(sample);
     expect(hsd.frame().repeated == pad_a,
            "HSD repeat timing can follow a scene-specific update");
+
+    struct StickCase {
+        int8_t raw_x;
+        int8_t raw_y;
+        int8_t filtered_x;
+        int8_t filtered_y;
+        uint32_t direction;
+    };
+    const StickCase stick_cases[] = {
+        {9, 0, 0, 0, 0},           // Below the DOL's radial dead zone.
+        {10, 0, 0, 0, 0},          // Offset consumes the exact boundary.
+        {39, 0, 29, 0, 0},         // Below direction threshold after offset.
+        {40, 0, 30, 0, 0x80000},   // Right at the direction threshold.
+        {-40, 0, -30, 0, 0x40000}, // Left.
+        {0, 40, 0, 30, 0x10000},   // Up.
+        {0, -40, 0, -30, 0x20000}, // Down.
+        {127, 0, 72, 0, 0x80000}, // Radius capped to 82 then offset by 10.
+        {-128, 0, -72, 0, 0x40000},
+    };
+    for (const StickCase& stick_case : stick_cases) {
+        hsd.reset();
+        sample = {};
+        sample.connected = true;
+        sample.stick_x = stick_case.raw_x;
+        sample.stick_y = stick_case.raw_y;
+        hsd.begin_frame(sample);
+        expect(hsd.frame().stick_x == stick_case.filtered_x &&
+               hsd.frame().stick_y == stick_case.filtered_y &&
+               hsd.frame().current == stick_case.direction,
+               "HSD cardinal stick boundaries follow DOL radial and angular constants");
+    }
+
+    hsd.reset();
+    sample = {};
+    sample.connected = true;
+    sample.stick_x = 70;
+    sample.stick_y = 30;
+    sample.substick_y = -40;
+    hsd.begin_frame(sample);
+    expect((hsd.frame().current & 0x00ff0000) == (0x80000 | 0x200000) &&
+           hsd.frame().substick_x == 0 && hsd.frame().substick_y == -30,
+           "HSD applies direction sectors and radial filtering to both sticks");
+    sample.stick_x = -40;
+    sample.stick_y = 0;
+    sample.substick_y = 0;
+    hsd.begin_frame(sample);
+    expect(hsd.frame().current == 0x40000 &&
+           hsd.frame().pressed == 0x40000 &&
+           hsd.frame().released == (0x80000 | 0x200000),
+           "HSD direction changes produce synthesized press and release edges");
+    sample.stick_x = -39;
+    hsd.begin_frame(sample);
+    expect(hsd.frame().current == 0 && hsd.frame().released == 0x40000,
+           "HSD leaving the direction threshold releases the synthesized bit");
+
+    hsd.reset();
+    sample = {};
+    sample.connected = true;
+    sample.trigger_l = 9;
+    sample.trigger_r = 130;
+    hsd.begin_frame(sample);
+    expect(hsd.frame().trigger_l == 0 && hsd.frame().trigger_r == 120 &&
+           hsd.frame().current == 0,
+           "HSD trigger dead zone and strict synthesized-bit boundary");
+    sample.trigger_l = 255;
+    sample.trigger_r = 131;
+    hsd.begin_frame(sample);
+    expect(hsd.frame().trigger_l == 245 && hsd.frame().trigger_r == 121 &&
+           hsd.frame().current == 0x03000000,
+           "HSD processed trigger bytes feed synthesized button bits");
+    sample.connected = false;
+    hsd.begin_frame(sample);
+    expect(hsd.frame().stick_x == 0 && hsd.frame().substick_y == 0 &&
+           hsd.frame().trigger_l == 0 && hsd.frame().trigger_r == 0 &&
+           hsd.frame().released == 0x03000000,
+           "HSD disconnect clears processed axes and releases synthesized bits");
 
     if (failures == 0) {
         std::puts("Native input tests passed.");

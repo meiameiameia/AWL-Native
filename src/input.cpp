@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <Xinput.h>
+#include <cmath>
 
 namespace awl {
 
@@ -46,6 +47,58 @@ int8_t keyboard_axis(uint32_t keys, NativeKey negative, NativeKey positive) {
     const bool minus = (keys & native_key_mask(negative)) != 0;
     const bool plus = (keys & native_key_mask(positive)) != 0;
     return minus == plus ? 0 : static_cast<int8_t>(plus ? 127 : -127);
+}
+
+float stick_radius(int8_t x, int8_t y) {
+    const int horizontal = static_cast<int>(x);
+    const int vertical = static_cast<int>(y);
+    return std::sqrt(static_cast<float>(horizontal * horizontal +
+                                             vertical * vertical));
+}
+
+void filter_stick(int8_t& x, int8_t& y) {
+    // FUN_802129CC: startup configuration at 0x8034144C..4F applies the
+    // same radial dead zone (10), cap (82), and offset (10) to both sticks.
+    float radius = stick_radius(x, y);
+    if (radius < 10.0f) {
+        x = 0;
+        y = 0;
+        return;
+    }
+    if (radius > 82.0f) {
+        x = static_cast<int8_t>(static_cast<float>(x) * 82.0f / radius);
+        y = static_cast<int8_t>(static_cast<float>(y) * 82.0f / radius);
+        radius = stick_radius(x, y);
+    }
+    if (radius > 1.0e-10f) {
+        x = static_cast<int8_t>(static_cast<float>(x) -
+                                static_cast<float>(x) * 10.0f / radius);
+        y = static_cast<int8_t>(static_cast<float>(y) -
+                                static_cast<float>(y) * 10.0f / radius);
+    }
+}
+
+uint32_t stick_direction_bits(int8_t x, int8_t y, unsigned shift) {
+    // FUN_80213180: startup threshold is 30, angular margin is zero.
+    if (stick_radius(x, y) < 30.0f) return 0;
+    const float angle = static_cast<float>(std::atan2(
+        static_cast<double>(y), static_cast<double>(x)));
+    // Verified r2 constants at 0x8034C3C8..E0, in radians.
+    constexpr double first = -2.356194490192345;
+    constexpr double second = -0.7853981633974483;
+    constexpr double third = 0.7853981633974483;
+    constexpr double fourth = 2.356194490192345;
+    uint32_t bit = 0;
+    if (angle < first || angle > fourth) bit = 0x00040000;       // left
+    else if (angle <= second) bit = 0x00020000;                  // down
+    else if (angle < third) bit = 0x00080000;                    // right
+    else bit = 0x00010000;                                      // up
+    return bit << shift;
+}
+
+uint8_t filter_trigger(uint8_t raw) {
+    // FUN_802129CC; FUN_8000AD40 configures dead zone 10 and subtraction.
+    return raw < 10 ? 0 : static_cast<uint8_t>(raw - 10);
 }
 
 } // namespace
@@ -112,30 +165,41 @@ void PadAdapter::begin_frame(const NativeInputFrame& native) {
     frame_.sample = sample;
 }
 
-void HsdButtonFilter::reset() {
-    frame_ = HsdButtonFrame{};
+void HsdPadFilter::reset() {
+    frame_ = HsdPadFrame{};
     initial_delay_ = 15;
     interval_ = 2;
     countdown_ = initial_delay_;
 }
 
-void HsdButtonFilter::set_repeat_timing(uint32_t initial_delay,
-                                        uint32_t interval) {
+void HsdPadFilter::set_repeat_timing(uint32_t initial_delay,
+                                     uint32_t interval) {
     // FUN_800126FC clamps both scene-dependent values to at least one.
     initial_delay_ = initial_delay == 0 ? 1 : initial_delay;
     interval_ = interval == 0 ? 1 : interval;
 }
 
-void HsdButtonFilter::begin_frame(const PadSample& sample) {
+void HsdPadFilter::begin_frame(const PadSample& sample) {
     frame_.previous = frame_.current;
     uint32_t current = 0;
     if (sample.connected) {
         current = sample.buttons;
-        // FUN_802129CC removes the runtime dead zone of 10 before
-        // FUN_80213180's strict >120 comparison. Both values are set by
-        // FUN_8000AD40; the raw PAD threshold is therefore 131.
-        if (sample.trigger_l > 130) current |= 0x01000000;
-        if (sample.trigger_r > 130) current |= 0x02000000;
+        frame_.stick_x = sample.stick_x;
+        frame_.stick_y = sample.stick_y;
+        frame_.substick_x = sample.substick_x;
+        frame_.substick_y = sample.substick_y;
+        filter_stick(frame_.stick_x, frame_.stick_y);
+        filter_stick(frame_.substick_x, frame_.substick_y);
+        current |= stick_direction_bits(frame_.stick_x, frame_.stick_y, 0);
+        current |= stick_direction_bits(frame_.substick_x, frame_.substick_y, 4);
+        frame_.trigger_l = filter_trigger(sample.trigger_l);
+        frame_.trigger_r = filter_trigger(sample.trigger_r);
+        if (frame_.trigger_l > 120) current |= 0x01000000;
+        if (frame_.trigger_r > 120) current |= 0x02000000;
+    } else {
+        frame_.stick_x = frame_.stick_y = 0;
+        frame_.substick_x = frame_.substick_y = 0;
+        frame_.trigger_l = frame_.trigger_r = 0;
     }
     frame_.current = current;
     frame_.pressed = current & (frame_.previous ^ current);

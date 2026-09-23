@@ -11,7 +11,7 @@ static bool g_running = true;
 static PlatformExitReason g_exit_reason = PlatformExitReason::None;
 static NativeInputAccumulator g_input;
 static PadAdapter g_pad;
-static HsdButtonFilter g_hsd_buttons;
+static HsdPadFilter g_hsd_pad;
 
 static bool key_from_virtual_key(WPARAM virtual_key, NativeKey* key) {
     switch (virtual_key) {
@@ -229,13 +229,13 @@ double time_get_delta() {
 void input_init() {
     g_input.reset(g_hwnd && GetForegroundWindow() == g_hwnd);
     g_pad.reset();
-    g_hsd_buttons.reset();
+    g_hsd_pad.reset();
     AWL_LOG_INFO("Native keyboard and XInput capture initialized.");
 }
 void input_shutdown() {
     g_input.reset(false);
     g_pad.reset();
-    g_hsd_buttons.reset();
+    g_hsd_pad.reset();
     AWL_LOG_INFO("Native input capture shut down.");
 }
 
@@ -258,7 +258,7 @@ void input_begin_frame() {
     g_input.set_gamepad(gamepad);
     g_input.begin_frame();
     g_pad.begin_frame(g_input.frame());
-    g_hsd_buttons.begin_frame(g_pad.frame().sample);
+    g_hsd_pad.begin_frame(g_pad.frame().sample);
 }
 
 const NativeInputFrame& input_frame() {
@@ -269,8 +269,8 @@ const PadFrame& pad_frame() {
     return g_pad.frame();
 }
 
-const HsdButtonFrame& hsd_button_frame() {
-    return g_hsd_buttons.frame();
+const HsdPadFrame& hsd_pad_frame() {
+    return g_hsd_pad.frame();
 }
 
 void audio_init() {
