@@ -18,6 +18,7 @@ constexpr float kSpeedStep = 0.03f;
 } // namespace
 
 void update_world_map_steering(const HsdPadFrame& pad,
+                               float camera_yaw_radians,
                                WorldMapSteeringState& state) {
     const float x = static_cast<float>(pad.stick_x);
     const float z = -static_cast<float>(pad.stick_y);
@@ -30,6 +31,12 @@ void update_world_map_steering(const HsdPadFrame& pad,
         const float inverse_magnitude = 1.0f / std::sqrt(magnitude_squared);
         state.direction_x = x * inverse_magnitude;
         state.direction_z = z * inverse_magnitude;
+        // FUN_8003083C calls atan2(x, z), adds camera yaw, constructs the
+        // verified Y-axis rotation, and transforms the unit-forward vector.
+        const float angle = std::atan2(state.direction_x, state.direction_z) +
+                            camera_yaw_radians;
+        state.facing_x = std::sin(angle);
+        state.facing_z = std::cos(angle);
         if (magnitude_squared >= kHighMagnitudeSquared) {
             state.target_speed = kHighSpeed;
         } else if (magnitude_squared >= kMediumMagnitudeSquared) {
