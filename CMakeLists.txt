@@ -19,6 +19,7 @@ set(SOURCES
     src/dvd.cpp
     src/platform.cpp
     src/input.cpp
+    src/player_input.cpp
     src/game.cpp
     src/filesystem.cpp
     src/asset_inventory.cpp
@@ -35,6 +36,7 @@ set(HEADERS
     include/awl/render.h
     include/awl/render_validation.h
     include/awl/dvd.h
+    include/awl/player_input.h
 )
 
 add_executable(${PROJECT_NAME} ${SOURCES} ${HEADERS})
@@ -159,3 +161,17 @@ elseif(MSVC)
     target_compile_options(native_input_tests PRIVATE /W4)
 endif()
 add_test(NAME native_input_tests COMMAND native_input_tests)
+
+add_executable(player_input_tests
+    tests/player_input_tests.cpp
+    src/player_input.cpp
+)
+target_include_directories(player_input_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(player_input_tests PRIVATE -Wall -Wextra)
+elseif(MSVC)
+    target_compile_options(player_input_tests PRIVATE /W4)
+endif()
+add_test(NAME player_input_tests COMMAND player_input_tests)
