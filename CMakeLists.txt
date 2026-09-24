@@ -20,6 +20,7 @@ set(SOURCES
     src/platform.cpp
     src/input.cpp
     src/player_input.cpp
+    src/collision_asset.cpp
     src/game.cpp
     src/filesystem.cpp
     src/asset_inventory.cpp
@@ -37,6 +38,7 @@ set(HEADERS
     include/awl/render_validation.h
     include/awl/dvd.h
     include/awl/player_input.h
+    include/awl/collision_asset.h
 )
 
 add_executable(${PROJECT_NAME} ${SOURCES} ${HEADERS})
@@ -175,3 +177,17 @@ elseif(MSVC)
     target_compile_options(player_input_tests PRIVATE /W4)
 endif()
 add_test(NAME player_input_tests COMMAND player_input_tests)
+
+add_executable(collision_asset_tests
+    tests/collision_asset_tests.cpp
+    src/collision_asset.cpp
+)
+target_include_directories(collision_asset_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(collision_asset_tests PRIVATE -Wall -Wextra)
+elseif(MSVC)
+    target_compile_options(collision_asset_tests PRIVATE /W4)
+endif()
+add_test(NAME collision_asset_tests COMMAND collision_asset_tests)
