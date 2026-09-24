@@ -276,6 +276,57 @@ void test_primary_surface_sample() {
            "quadtree traversal does not search unrelated leaves");
 }
 
+void test_nearest_edge_fallback() {
+    awl::CollisionEdgeSample sample;
+    std::vector<uint8_t> bytes = make_sample_leaf();
+    expect(awl::project_type1_collision_to_edge(
+               bytes.data(), bytes.size(), 6.0f, -3.0f, &sample),
+           "outside point projects onto the nearest triangle edge");
+    expect(sample.position[0] == 6.0f && sample.position[1] == 6.0f &&
+               sample.position[2] == 0.0f &&
+               sample.distance_squared_xz == 9.0f &&
+               sample.surface_flags == 0x20 && sample.leaf_offset == 8 &&
+               sample.triangle_index == 0 && sample.edge_index == 0,
+           "edge projection and plane height match the triangle geometry");
+
+    expect(awl::project_type1_collision_to_edge(
+               bytes.data(), bytes.size(), 12.0f, -3.0f, &sample),
+           "projection clamps to the nearest edge endpoint");
+    expect(sample.position[0] == 10.0f && sample.position[1] == 10.0f &&
+               sample.position[2] == 0.0f &&
+               sample.distance_squared_xz == 13.0f && sample.edge_index == 0,
+           "endpoint ties keep the first edge in serialized order");
+
+    expect(awl::project_type1_collision_to_edge(
+               bytes.data(), bytes.size(), 8.0f, 8.0f, &sample),
+           "fallback selects the sloped triangle edge");
+    expect(sample.position[0] == 5.0f && sample.position[1] == 15.0f &&
+               sample.position[2] == 5.0f &&
+               sample.distance_squared_xz == 18.0f && sample.edge_index == 1,
+           "sloped edge projection has the expected height and distance");
+
+    expect(!awl::project_type1_collision_to_edge(
+               bytes.data(), bytes.size(),
+               std::numeric_limits<float>::infinity(), 0.0f, &sample),
+           "non-finite edge query is rejected");
+    expect(sample.position[0] == 0.0f && sample.surface_flags == 0,
+           "failed edge projection clears its output");
+
+    bytes = make_single_leaf();
+    expect(!awl::project_type1_collision_to_edge(
+               bytes.data(), bytes.size(), 0.0f, 0.0f, &sample),
+           "empty leaf has no edge projection");
+
+    bytes = make_one_level_sample_tree();
+    expect(awl::project_type1_collision_to_edge(
+               bytes.data(), bytes.size(), 18.0f, 18.0f, &sample) &&
+               sample.leaf_offset == 8 + 0x34 * 4,
+           "edge fallback uses the selected leaf");
+    expect(!awl::project_type1_collision_to_edge(
+               bytes.data(), bytes.size(), 2.0f, 2.0f, &sample),
+           "edge fallback does not search other leaves");
+}
+
 bool inspect_local_asset(const char* path) {
     std::ifstream input(path, std::ios::binary);
     if (!input) {
@@ -308,6 +359,20 @@ bool inspect_local_asset(const char* path) {
         std::printf("No primary surface sample at root center: x=%.3f z=%.3f\n",
                     sample_x, sample_z);
     }
+    awl::CollisionEdgeSample edge_sample;
+    const float outside_x = analysis.root_min[0] - 1.0f;
+    if (!awl::project_type1_collision_to_edge(
+            bytes.data(), bytes.size(), outside_x, sample_z, &edge_sample)) {
+        std::fprintf(stderr, "No edge fallback near root boundary: %s\n", path);
+        return false;
+    }
+    std::printf("Edge fallback sample: query=(%.3f, %.3f) "
+                "position=(%.3f, %.3f, %.3f) flags=0x%04X "
+                "leaf=%u triangle=%u edge=%u\n",
+                outside_x, sample_z, edge_sample.position[0],
+                edge_sample.position[1], edge_sample.position[2],
+                edge_sample.surface_flags, edge_sample.leaf_offset,
+                edge_sample.triangle_index, edge_sample.edge_index);
     return true;
 }
 
@@ -318,6 +383,7 @@ int main(int argc, char** argv) {
     test_rejects_unsupported_or_truncated_files();
     test_rejects_invalid_offsets();
     test_primary_surface_sample();
+    test_nearest_edge_fallback();
 
     for (int index = 1; index < argc; ++index) {
         if (!inspect_local_asset(argv[index])) {

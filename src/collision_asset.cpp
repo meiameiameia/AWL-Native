@@ -112,6 +112,84 @@ bool interpolate_height(const std::array<DecodedVertex, 3>& triangle,
     return std::isfinite(height);
 }
 
+uint32_t select_leaf(const uint8_t* data,
+                     float scale,
+                     float x,
+                     float z) {
+    uint32_t node_offset = kRootOffset;
+    while (read_be32(data + node_offset + kChildFields.front()) != 0) {
+        const uint8_t* node = data + node_offset;
+        const float split_x =
+            static_cast<float>(static_cast<int32_t>(read_be_s16(node)) +
+                               static_cast<int32_t>(read_be_s16(node + 6))) *
+            scale * 0.5f;
+        const float split_z =
+            static_cast<float>(static_cast<int32_t>(read_be_s16(node + 4)) +
+                               static_cast<int32_t>(read_be_s16(node + 10))) *
+            scale * 0.5f;
+        const size_t child = (x >= split_x ? 1u : 0u) +
+                             (z >= split_z ? 2u : 0u);
+        node_offset = read_be32(node + kChildFields[child]);
+    }
+    return node_offset;
+}
+
+std::array<DecodedVertex, 3> decode_triangle(const uint8_t* data,
+                                             size_t vertex_offset,
+                                             const uint8_t* record,
+                                             float scale) {
+    std::array<DecodedVertex, 3> triangle;
+    for (size_t vertex = 0; vertex < triangle.size(); ++vertex) {
+        const uint16_t vertex_index = read_be16(record + 2 + vertex * 2);
+        triangle[vertex] =
+            decode_vertex(data + vertex_offset +
+                              static_cast<size_t>(vertex_index) * kVertexStride,
+                          scale);
+    }
+    return triangle;
+}
+
+struct LeafPayload {
+    size_t triangles;
+    size_t vertices;
+    uint32_t triangle_count;
+};
+
+LeafPayload leaf_payload(const uint8_t* data, uint32_t node_offset) {
+    const uint8_t* node = data + node_offset;
+    return {static_cast<size_t>(node_offset) + read_be32(node + 0x28),
+            static_cast<size_t>(node_offset) + read_be32(node + 0x2c),
+            read_be32(node + 0x1c)};
+}
+
+struct EdgeProjection {
+    float x;
+    float z;
+    float distance_squared;
+};
+
+EdgeProjection project_to_edge(const DecodedVertex& start,
+                               const DecodedVertex& end,
+                               float x,
+                               float z) {
+    const float dx = end.x - start.x;
+    const float dz = end.z - start.z;
+    const float length_squared = dx * dx + dz * dz;
+    float projected_x = start.x;
+    float projected_z = start.z;
+    if (length_squared != 0.0f) {
+        const float along = std::clamp(
+            (dx * (x - start.x) + dz * (z - start.z)) / length_squared,
+            0.0f, 1.0f);
+        projected_x = start.x + dx * along;
+        projected_z = start.z + dz * along;
+    }
+    const float offset_x = projected_x - x;
+    const float offset_z = projected_z - z;
+    return {projected_x, projected_z,
+            offset_x * offset_x + offset_z * offset_z};
+}
+
 } // namespace
 
 bool analyze_type1_collision_asset(const uint8_t* data,
@@ -259,39 +337,14 @@ bool sample_type1_collision_surface(const uint8_t* data,
         return false;
     }
 
-    uint32_t node_offset = kRootOffset;
-    while (read_be32(data + node_offset + kChildFields.front()) != 0) {
-        const uint8_t* node = data + node_offset;
-        const float split_x =
-            static_cast<float>(static_cast<int32_t>(read_be_s16(node)) +
-                               static_cast<int32_t>(read_be_s16(node + 6))) *
-            analysis.coordinate_scale * 0.5f;
-        const float split_z =
-            static_cast<float>(static_cast<int32_t>(read_be_s16(node + 4)) +
-                               static_cast<int32_t>(read_be_s16(node + 10))) *
-            analysis.coordinate_scale * 0.5f;
-        const size_t child = (x >= split_x ? 1u : 0u) +
-                             (z >= split_z ? 2u : 0u);
-        node_offset = read_be32(node + kChildFields[child]);
-    }
-
-    const uint8_t* node = data + node_offset;
-    const uint32_t triangle_count = read_be32(node + 0x1c);
-    const size_t triangle_offset =
-        static_cast<size_t>(node_offset) + read_be32(node + 0x28);
-    const size_t vertex_offset =
-        static_cast<size_t>(node_offset) + read_be32(node + 0x2c);
-    for (uint32_t index = 0; index < triangle_count; ++index) {
+    const uint32_t node_offset =
+        select_leaf(data, analysis.coordinate_scale, x, z);
+    const LeafPayload leaf = leaf_payload(data, node_offset);
+    for (uint32_t index = 0; index < leaf.triangle_count; ++index) {
         const uint8_t* record =
-            data + triangle_offset + static_cast<size_t>(index) * kTriangleStride;
-        std::array<DecodedVertex, 3> triangle;
-        for (size_t vertex = 0; vertex < triangle.size(); ++vertex) {
-            const uint16_t vertex_index = read_be16(record + 2 + vertex * 2);
-            triangle[vertex] =
-                decode_vertex(data + vertex_offset +
-                                  static_cast<size_t>(vertex_index) * kVertexStride,
-                              analysis.coordinate_scale);
-        }
+            data + leaf.triangles + static_cast<size_t>(index) * kTriangleStride;
+        const auto triangle = decode_triangle(
+            data, leaf.vertices, record, analysis.coordinate_scale);
         if (!contains_xz(triangle, x, z)) {
             continue;
         }
@@ -306,6 +359,68 @@ bool sample_type1_collision_surface(const uint8_t* data,
         return true;
     }
     return false;
+}
+
+bool project_type1_collision_to_edge(const uint8_t* data,
+                                     size_t size,
+                                     float x,
+                                     float z,
+                                     CollisionEdgeSample* sample) {
+    if (sample != nullptr) {
+        *sample = {};
+    }
+    CollisionTreeAnalysis analysis;
+    if (sample == nullptr || !std::isfinite(x) || !std::isfinite(z) ||
+        !analyze_type1_collision_asset(data, size, &analysis)) {
+        return false;
+    }
+
+    const uint32_t node_offset =
+        select_leaf(data, analysis.coordinate_scale, x, z);
+    const LeafPayload leaf = leaf_payload(data, node_offset);
+    bool found = false;
+    uint32_t selected_triangle = 0;
+    uint8_t selected_edge = 0;
+    EdgeProjection closest{};
+    for (uint32_t index = 0; index < leaf.triangle_count; ++index) {
+        const uint8_t* record =
+            data + leaf.triangles + static_cast<size_t>(index) * kTriangleStride;
+        const auto triangle = decode_triangle(
+            data, leaf.vertices, record, analysis.coordinate_scale);
+        for (uint8_t edge = 0; edge < 3; ++edge) {
+            const EdgeProjection candidate =
+                project_to_edge(triangle[edge], triangle[(edge + 1) % 3], x, z);
+            if (!std::isfinite(candidate.distance_squared)) {
+                return false;
+            }
+            if (!found || candidate.distance_squared < closest.distance_squared) {
+                found = true;
+                closest = candidate;
+                selected_triangle = index;
+                selected_edge = edge;
+            }
+        }
+    }
+    if (!found) {
+        return false;
+    }
+
+    const uint8_t* record = data + leaf.triangles +
+                            static_cast<size_t>(selected_triangle) *
+                                kTriangleStride;
+    const auto triangle = decode_triangle(
+        data, leaf.vertices, record, analysis.coordinate_scale);
+    float height = 0.0f;
+    if (!interpolate_height(triangle, closest.x, closest.z, height)) {
+        return false;
+    }
+    sample->position = {closest.x, height, closest.z};
+    sample->surface_flags = read_be16(record);
+    sample->leaf_offset = node_offset;
+    sample->triangle_index = selected_triangle;
+    sample->edge_index = selected_edge;
+    sample->distance_squared_xz = closest.distance_squared;
+    return true;
 }
 
 } // namespace awl
