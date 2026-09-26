@@ -457,4 +457,75 @@ bool adjust_type1_collision_terrain_height(
     return true;
 }
 
+bool adjust_type1_collision_radius_vertex(
+    const uint8_t* data,
+    size_t size,
+    const std::array<float, 3>& proposed_position,
+    float radius,
+    CollisionRadiusVertexAdjustment* adjustment) {
+    if (adjustment != nullptr) {
+        *adjustment = {};
+    }
+    CollisionTreeAnalysis analysis;
+    if (adjustment == nullptr || !std::isfinite(radius) || radius < 0.0f ||
+        !std::isfinite(proposed_position[0]) ||
+        !std::isfinite(proposed_position[1]) ||
+        !std::isfinite(proposed_position[2]) ||
+        !analyze_type1_collision_asset(data, size, &analysis) ||
+        analysis.header_byte_6 != 1) {
+        return false;
+    }
+
+    adjustment->position = proposed_position;
+    const uint32_t node_offset = select_leaf(
+        data, analysis.coordinate_scale, proposed_position[0],
+        proposed_position[2]);
+    const LeafPayload leaf = leaf_payload(data, node_offset);
+    float nearest_distance = radius;
+    DecodedVertex nearest_vertex{};
+    for (uint32_t index = 0; index < leaf.triangle_count; ++index) {
+        const uint8_t* record = data + leaf.triangles +
+                                static_cast<size_t>(index) * kTriangleStride;
+        const uint16_t flags = read_be16(record);
+        const auto triangle = decode_triangle(
+            data, leaf.vertices, record, analysis.coordinate_scale);
+        for (uint8_t vertex = 0; vertex < 3; ++vertex) {
+            const uint16_t incident_edges = static_cast<uint16_t>(
+                (1u << (13 + vertex)) | (1u << (13 + (vertex + 2) % 3)));
+            if ((flags & incident_edges) == 0) {
+                continue;
+            }
+            const float dx = proposed_position[0] - triangle[vertex].x;
+            const float dz = proposed_position[2] - triangle[vertex].z;
+            const float distance = std::sqrt(dx * dx + dz * dz);
+            if (!std::isfinite(distance)) {
+                *adjustment = {};
+                return false;
+            }
+            if (distance < nearest_distance) {
+                nearest_distance = distance;
+                nearest_vertex = triangle[vertex];
+                adjustment->contact = true;
+                adjustment->triangle_index = index;
+                adjustment->vertex_index = vertex;
+            }
+        }
+    }
+    if (adjustment->contact && nearest_distance != 0.0f) {
+        const float scale = (radius + 0.01f) / nearest_distance;
+        adjustment->position = {
+            nearest_vertex.x +
+                (proposed_position[0] - nearest_vertex.x) * scale,
+            nearest_vertex.y,
+            nearest_vertex.z +
+                (proposed_position[2] - nearest_vertex.z) * scale};
+        if (!std::isfinite(adjustment->position[0]) ||
+            !std::isfinite(adjustment->position[2])) {
+            *adjustment = {};
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace awl

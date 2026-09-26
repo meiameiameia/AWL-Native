@@ -1,5 +1,6 @@
 #include "awl/collision_asset.h"
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
@@ -364,6 +365,67 @@ void test_terrain_height_adjustment() {
            "empty selected leaf cannot provide terrain adjustment");
 }
 
+void test_radius_vertex_adjustment() {
+    std::vector<uint8_t> bytes = make_sample_leaf();
+    awl::CollisionRadiusVertexAdjustment adjustment;
+    const std::array<float, 3> query{0.5f, 7.0f, 0.0f};
+    expect(awl::adjust_type1_collision_radius_vertex(
+               bytes.data(), bytes.size(), query, 1.0f, &adjustment),
+           "supported type-1 vertex radius query succeeds");
+    expect(!adjustment.contact && adjustment.position == query,
+           "unmarked triangle edges do not produce vertex contact");
+
+    put_be16(bytes, 8 + 0x34, 0x2000);
+    expect(awl::adjust_type1_collision_radius_vertex(
+               bytes.data(), bytes.size(), query, 1.0f, &adjustment),
+           "marked triangle edge participates in vertex radius query");
+    expect(adjustment.contact && adjustment.triangle_index == 0 &&
+               adjustment.vertex_index == 0 &&
+               std::fabs(adjustment.position[0] - 1.01f) < 0.0001f &&
+               adjustment.position[1] == 0.0f &&
+               adjustment.position[2] == 0.0f,
+           "nearest incident vertex pushes X/Z to radius plus 0.01 and uses vertex Y");
+
+    expect(awl::adjust_type1_collision_radius_vertex(
+               bytes.data(), bytes.size(), {0.0f, 7.0f, 0.0f}, 1.0f,
+               &adjustment) &&
+               adjustment.contact &&
+               adjustment.position == std::array<float, 3>{0.0f, 7.0f, 0.0f},
+           "exact vertex contact preserves the original point");
+    expect(awl::adjust_type1_collision_radius_vertex(
+               bytes.data(), bytes.size(), {1.0f, 7.0f, 0.0f}, 1.0f,
+               &adjustment) && !adjustment.contact,
+           "point exactly at radius has no vertex contact");
+
+    put_be16(bytes, 8 + 0x34, 0x4000);
+    expect(awl::adjust_type1_collision_radius_vertex(
+               bytes.data(), bytes.size(), query, 1.0f, &adjustment) &&
+               !adjustment.contact,
+           "edge-one bit does not mark the unrelated first vertex");
+    expect(awl::adjust_type1_collision_radius_vertex(
+               bytes.data(), bytes.size(), {0.0f, 7.0f, 9.5f}, 1.0f,
+               &adjustment) &&
+               adjustment.contact && adjustment.vertex_index == 2 &&
+               std::fabs(adjustment.position[2] - 8.99f) < 0.0001f &&
+               adjustment.position[1] == 20.0f,
+           "edge-one bit marks its second endpoint for radius response");
+
+    bytes[6] = 0;
+    expect(!awl::adjust_type1_collision_radius_vertex(
+               bytes.data(), bytes.size(), query, 1.0f, &adjustment),
+           "other collision mode is rejected by the bounded radius helper");
+    expect(adjustment.position == std::array<float, 3>{} &&
+               !adjustment.contact,
+           "failed vertex query clears its output");
+    bytes[6] = 1;
+    expect(!awl::adjust_type1_collision_radius_vertex(
+               bytes.data(), bytes.size(), query, -1.0f, &adjustment),
+           "negative radius is rejected");
+    expect(!awl::adjust_type1_collision_radius_vertex(
+               bytes.data(), bytes.size(), query, 1.0f, nullptr),
+           "null vertex query output is rejected");
+}
+
 bool inspect_local_asset(const char* path) {
     std::ifstream input(path, std::ios::binary);
     if (!input) {
@@ -420,6 +482,17 @@ bool inspect_local_asset(const char* path) {
         std::fprintf(stderr, "Terrain height adjustment failed: %s\n", path);
         return false;
     }
+    awl::CollisionRadiusVertexAdjustment vertex_adjustment;
+    if (!awl::adjust_type1_collision_radius_vertex(
+            bytes.data(), bytes.size(),
+            {sample_x, sample.height, sample_z}, 0.3f,
+            &vertex_adjustment) ||
+        !std::isfinite(vertex_adjustment.position[0]) ||
+        !std::isfinite(vertex_adjustment.position[1]) ||
+        !std::isfinite(vertex_adjustment.position[2])) {
+        std::fprintf(stderr, "Radius vertex query failed: %s\n", path);
+        return false;
+    }
     return true;
 }
 
@@ -432,6 +505,7 @@ int main(int argc, char** argv) {
     test_primary_surface_sample();
     test_nearest_edge_fallback();
     test_terrain_height_adjustment();
+    test_radius_vertex_adjustment();
 
     for (int index = 1; index < argc; ++index) {
         if (!inspect_local_asset(argv[index])) {
