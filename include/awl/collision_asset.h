@@ -104,7 +104,7 @@ struct CollisionDynamicObjectContactAdjustment {
     CollisionDynamicContactAdjustment local_narrow_phase{};
 };
 
-struct CollisionFirstPassObject {
+struct CollisionDynamicPassObject {
     uint64_t identity = 0;
     bool enabled = false;
     int32_t category = 0;
@@ -118,7 +118,7 @@ struct CollisionFirstPassObject {
     float radius = 0.0f;
 };
 
-struct CollisionFirstDynamicPassAdjustment {
+struct CollisionDynamicPassAdjustment {
     std::array<float, 3> position{};
     bool contact = false;
     uint32_t contact_flags_after = 0;
@@ -248,7 +248,7 @@ struct CollisionTerrainRadiusAdjustment {
 // caller-supplied type-1 COL and circle objects. The alternate 0x10 path is
 // unsupported. This does not own the game's object list or run later passes.
 [[nodiscard]] bool resolve_type1_first_dynamic_object_pass(
-    const CollisionFirstPassObject* objects,
+    const CollisionDynamicPassObject* objects,
     size_t object_count,
     uint64_t source_identity,
     int32_t category,
@@ -257,7 +257,22 @@ struct CollisionTerrainRadiusAdjustment {
     float moving_radius,
     uint32_t initial_contact_flags,
     uint32_t resolver_flags,
-    CollisionFirstDynamicPassAdjustment* adjustment);
+    CollisionDynamicPassAdjustment* adjustment);
+
+// Isolates FUN_8001E498's later ordered object-list pass (flag 0x2), after
+// terrain and static contact handling. It skips null entries, clears carried
+// contact bit 0x1 before traversal, and reports resolver contact bit 0x2.
+// The caller supplies this pass's distinct object list and starting position.
+[[nodiscard]] bool resolve_type1_later_dynamic_object_pass(
+    const CollisionDynamicPassObject* objects,
+    size_t object_count,
+    int32_t category,
+    const std::array<float, 3>& prior_position,
+    const std::array<float, 3>& proposed_position,
+    float moving_radius,
+    uint32_t initial_contact_flags,
+    uint32_t resolver_flags,
+    CollisionDynamicPassAdjustment* adjustment);
 
 // Isolates the type-1 +0x34 virtual (FUN_80194E30) used by the radius pass.
 // The preceding +0x30 edge pass and full resolver are not included.

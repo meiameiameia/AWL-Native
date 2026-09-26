@@ -838,7 +838,7 @@ void test_first_dynamic_object_pass() {
         1.0f, 0.0f, 0.0f, 0.0f,
         0.0f, 1.0f, 0.0f, 0.0f,
         0.0f, 0.0f, 1.0f, 0.0f};
-    awl::CollisionFirstPassObject object;
+    awl::CollisionDynamicPassObject object;
     object.identity = 1;
     object.enabled = true;
     object.category = 1;
@@ -848,7 +848,7 @@ void test_first_dynamic_object_pass() {
     object.world_to_object = identity;
     object.object_to_world = identity;
     object.center_local = {5.0f, 0.0f, 0.0f};
-    awl::CollisionFirstDynamicPassAdjustment adjustment;
+    awl::CollisionDynamicPassAdjustment adjustment;
     const std::array<float, 3> prior{5.0f, 7.0f, -2.0f};
     const std::array<float, 3> proposed{5.0f, 9.0f, -0.5f};
 
@@ -862,18 +862,18 @@ void test_first_dynamic_object_pass() {
                std::fabs(adjustment.position[2] + 1.01f) < 0.0001f,
            "first list pass applies one type-1 contact and sets sticky bit one");
 
-    awl::CollisionFirstPassObject skipped_self = object;
+    awl::CollisionDynamicPassObject skipped_self = object;
     skipped_self.identity = 99;
-    awl::CollisionFirstPassObject skipped_disabled = object;
+    awl::CollisionDynamicPassObject skipped_disabled = object;
     skipped_disabled.identity = 2;
     skipped_disabled.enabled = false;
-    awl::CollisionFirstPassObject skipped_category = object;
+    awl::CollisionDynamicPassObject skipped_category = object;
     skipped_category.identity = 3;
     skipped_category.category = 7;
-    awl::CollisionFirstPassObject skipped_flags = object;
+    awl::CollisionDynamicPassObject skipped_flags = object;
     skipped_flags.identity = 4;
     skipped_flags.collision_flags = 0;
-    const std::array<awl::CollisionFirstPassObject, 5> filtered{
+    const std::array<awl::CollisionDynamicPassObject, 5> filtered{
         skipped_self, skipped_disabled, skipped_category, skipped_flags,
         object};
     expect(awl::resolve_type1_first_dynamic_object_pass(
@@ -883,11 +883,11 @@ void test_first_dynamic_object_pass() {
                adjustment.contact_count == 1,
            "list pass skips self, disabled, wrong-category, and inert objects");
 
-    awl::CollisionFirstPassObject second = object;
+    awl::CollisionDynamicPassObject second = object;
     second.identity = 2;
     second.world_to_object[11] = 1.0f;
     second.object_to_world[11] = -1.0f;
-    const std::array<awl::CollisionFirstPassObject, 2> ordered{object, second};
+    const std::array<awl::CollisionDynamicPassObject, 2> ordered{object, second};
     expect(awl::resolve_type1_first_dynamic_object_pass(
                ordered.data(), ordered.size(), 0, 1, prior, proposed,
                1.0f, 0u, 4u, &adjustment) && adjustment.contact &&
@@ -910,7 +910,7 @@ void test_first_dynamic_object_pass() {
                1.0f, 0u, 0x14u, &adjustment) && !adjustment.contact &&
                adjustment.position == std::array<float, 3>{},
            "alternate flag-0x10 branch is rejected by this bounded pass");
-    awl::CollisionFirstPassObject circle = object;
+    awl::CollisionDynamicPassObject circle = object;
     circle.collision_flags = 1u;
     circle.center_world = {5.0f, 20.0f, 0.0f};
     circle.radius = 0.5f;
@@ -946,7 +946,7 @@ void test_first_dynamic_object_pass() {
                adjustment.position[1] == circle_center[1],
            "coincident circle centers use the DOL's positive-Z fallback");
     circle.center_world = {5.0f, 0.0f, -1.0f};
-    const std::array<awl::CollisionFirstPassObject, 2> mixed{object, circle};
+    const std::array<awl::CollisionDynamicPassObject, 2> mixed{object, circle};
     expect(awl::resolve_type1_first_dynamic_object_pass(
                mixed.data(), mixed.size(), 0, 1, prior, proposed, 1.0f,
                0u, 4u, &adjustment) && adjustment.contact &&
@@ -975,6 +975,96 @@ void test_first_dynamic_object_pass() {
                &object, 1, 0, 1, prior, proposed, -1.0f, 0u, 4u,
                &adjustment),
            "negative moving radius is rejected");
+}
+
+void test_later_dynamic_object_pass() {
+    std::vector<uint8_t> bytes = make_sample_leaf();
+    constexpr awl::CollisionAffineTransform identity{
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f};
+    awl::CollisionDynamicPassObject first;
+    first.identity = 1;
+    first.enabled = true;
+    first.category = 1;
+    first.collision_flags = 2u;
+    first.data = bytes.data();
+    first.size = bytes.size();
+    first.world_to_object = identity;
+    first.object_to_world = identity;
+    first.center_local = {5.0f, 0.0f, 0.0f};
+    const std::array<float, 3> prior{5.0f, 7.0f, -2.0f};
+    const std::array<float, 3> proposed{5.0f, 9.0f, -0.5f};
+    awl::CollisionDynamicPassAdjustment first_result;
+    expect(awl::resolve_type1_first_dynamic_object_pass(
+               &first, 1, 0, 1, prior, proposed, 1.0f, 0u, 0x67u,
+               &first_result) && first_result.contact &&
+               first_result.resolver_contact_bit == 4u,
+           "movement flags enter the pre-terrain object pass");
+
+    awl::CollisionDynamicPassObject later;
+    later.identity = 1;
+    later.enabled = true;
+    later.category = 1;
+    later.collision_flags = 1u;
+    later.center_world = {5.0f, 100.0f, -1.0f};
+    later.radius = 0.5f;
+    std::array<float, 3> after_terrain = first_result.position;
+    after_terrain[1] = 4.5f;
+    awl::CollisionDynamicPassAdjustment later_result;
+    expect(awl::resolve_type1_later_dynamic_object_pass(
+               &later, 1, 1, prior, after_terrain, 1.0f,
+               first_result.contact_flags_after, 0x67u,
+               &later_result) && later_result.contact &&
+               later_result.queried_objects == 1 &&
+               later_result.contact_count == 1 &&
+               later_result.resolver_contact_bit == 2u &&
+               later_result.contact_flags_after == 1u &&
+               std::fabs(later_result.position[2] + 2.51f) < 0.0001f &&
+               later_result.position[1] == after_terrain[1],
+           "later pass consumes the post-terrain candidate and reports bit two");
+
+    later.center_world[2] = 100.0f;
+    expect(awl::resolve_type1_later_dynamic_object_pass(
+               &later, 1, 1, prior, after_terrain, 1.0f,
+               0x21u, 0x67u, &later_result) && !later_result.contact &&
+               later_result.contact_flags_after == 0x20u &&
+               later_result.resolver_contact_bit == 0u &&
+               later_result.position == after_terrain,
+           "later pass clears inherited contact bit one before traversal");
+
+    expect(awl::resolve_type1_later_dynamic_object_pass(
+               &first, 1, 1, prior, proposed, 1.0f,
+               1u, 0x67u, &later_result) && later_result.contact &&
+               later_result.resolver_contact_bit == 2u &&
+               std::fabs(later_result.position[2] + 1.01f) < 0.0001f,
+           "later type-1 contact does not inherit first-pass reversion");
+
+    awl::CollisionDynamicPassObject null_entry = later;
+    null_entry.identity = 0;
+    null_entry.center_world = {5.0f, 0.0f, -1.0f};
+    const std::array<awl::CollisionDynamicPassObject, 2> entries{
+        null_entry, later};
+    expect(awl::resolve_type1_later_dynamic_object_pass(
+               entries.data(), entries.size(), 1, prior, after_terrain,
+               1.0f, 0u, 0x67u, &later_result) && !later_result.contact &&
+               later_result.queried_objects == 1 &&
+               later_result.position == after_terrain,
+           "later list skips null object entries");
+
+    expect(awl::resolve_type1_later_dynamic_object_pass(
+               &later, 1, 1, prior, after_terrain, 1.0f,
+               0x21u, 4u, &later_result) && !later_result.contact &&
+               later_result.queried_objects == 0 &&
+               later_result.contact_flags_after == 0x21u,
+           "later pass does not clear flags when its gate is disabled");
+
+    later.center_world = {5.0f, 0.0f, -1.0f};
+    expect(awl::resolve_type1_later_dynamic_object_pass(
+               &later, 1, 1, prior, after_terrain, 1.0f,
+               0u, 0x12u, &later_result) && later_result.contact &&
+               later_result.resolver_contact_bit == 2u,
+           "first-pass alternate bit does not block the later pass");
 }
 
 void test_radius_edge_adjustment() {
@@ -1326,6 +1416,7 @@ int main(int argc, char** argv) {
     test_dynamic_contact_narrow_phase();
     test_dynamic_object_contact();
     test_first_dynamic_object_pass();
+    test_later_dynamic_object_pass();
     test_radius_vertex_adjustment();
     test_radius_edge_adjustment();
     test_radius_pass_sequence();
