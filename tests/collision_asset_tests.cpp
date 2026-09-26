@@ -587,6 +587,69 @@ void test_dynamic_contact_vertex_adjustment() {
            "null dynamic vertex output is rejected");
 }
 
+void test_dynamic_contact_edge_adjustment() {
+    std::vector<uint8_t> bytes = make_sample_leaf();
+    awl::CollisionRadiusEdgeAdjustment adjustment;
+    const std::array<float, 3> prior{5.0f, 7.0f, -2.0f};
+    const std::array<float, 3> proposed{5.0f, 7.0f, -0.5f};
+    expect(awl::adjust_type1_dynamic_contact_edge(
+               bytes.data(), bytes.size(), prior, proposed, 1.0f, 0x20u,
+               &adjustment) && adjustment.contact &&
+               adjustment.surface_flags == 0x20 &&
+               adjustment.triangle_index == 0 && adjustment.edge_index == 0 &&
+               adjustment.position[0] == 5.0f &&
+               adjustment.position[1] == 7.0f &&
+               std::fabs(adjustment.position[2] + 1.01f) < 0.0001f,
+           "dynamic edge pass checks an unmarked edge on a matching surface");
+    expect(awl::adjust_type1_dynamic_contact_edge(
+               bytes.data(), bytes.size(), prior, proposed, 1.0f, 0x40u,
+               &adjustment) && !adjustment.contact &&
+               adjustment.position == proposed,
+           "dynamic edge pass excludes a nonmatching surface");
+    expect(awl::adjust_type1_dynamic_contact_edge(
+               bytes.data(), bytes.size(), prior, proposed, 1.0f,
+               0x10000u, &adjustment) && adjustment.contact,
+           "dynamic edge pass accepts the surface-mask bypass bit");
+    put_be16(bytes, 8 + 0x34, 0);
+    expect(awl::adjust_type1_dynamic_contact_edge(
+               bytes.data(), bytes.size(), prior, proposed, 1.0f, 0x40u,
+               &adjustment) && adjustment.contact,
+           "zero surface flags remain eligible for dynamic edge response");
+    expect(awl::adjust_type1_dynamic_contact_edge(
+               bytes.data(), bytes.size(), prior, {5.0f, 7.0f, 0.5f},
+               1.0f, 0x40u, &adjustment) && adjustment.contact &&
+               std::fabs(adjustment.position[2] + 1.01f) < 0.0001f,
+           "dynamic edge response handles a candidate crossing the plane");
+    expect(awl::adjust_type1_dynamic_contact_edge(
+               bytes.data(), bytes.size(), {5.0f, 7.0f, 0.0f}, proposed,
+               1.0f, 0x40u, &adjustment) && !adjustment.contact,
+           "prior point on the edge plane does not produce dynamic contact");
+    expect(awl::adjust_type1_dynamic_contact_edge(
+               bytes.data(), bytes.size(), prior, {10.0f, 7.0f, -0.5f},
+               1.0f, 0x40u, &adjustment) && !adjustment.contact,
+           "dynamic edge excludes its final endpoint");
+    expect(awl::adjust_type1_dynamic_contact_edge(
+               bytes.data(), bytes.size(), prior, proposed, 0.5f, 0x40u,
+               &adjustment) && !adjustment.contact,
+           "dynamic edge contact is strict at the radius boundary");
+
+    bytes[6] = 0;
+    expect(!awl::adjust_type1_dynamic_contact_edge(
+               bytes.data(), bytes.size(), prior, proposed, 1.0f, 0x40u,
+               &adjustment) && !adjustment.contact &&
+               adjustment.position == std::array<float, 3>{},
+           "unsupported collision mode rejects and clears dynamic edge output");
+    bytes[6] = 1;
+    expect(!awl::adjust_type1_dynamic_contact_edge(
+               bytes.data(), bytes.size(), prior, proposed, -1.0f, 0x40u,
+               &adjustment),
+           "negative dynamic edge radius is rejected");
+    expect(!awl::adjust_type1_dynamic_contact_edge(
+               bytes.data(), bytes.size(), prior, proposed, 1.0f, 0x40u,
+               nullptr),
+           "null dynamic edge output is rejected");
+}
+
 void test_radius_edge_adjustment() {
     std::vector<uint8_t> bytes = make_sample_leaf();
     awl::CollisionRadiusEdgeAdjustment adjustment;
@@ -931,6 +994,7 @@ int main(int argc, char** argv) {
     test_terrain_height_adjustment();
     test_resolver_height_resampling();
     test_dynamic_contact_broad_phase();
+    test_dynamic_contact_edge_adjustment();
     test_dynamic_contact_vertex_adjustment();
     test_radius_vertex_adjustment();
     test_radius_edge_adjustment();

@@ -157,6 +157,18 @@ struct CollisionTerrainRadiusAdjustment {
     uint32_t surface_mask,
     CollisionRadiusVertexAdjustment* adjustment);
 
+// Isolates type-1 +0x1C (FUN_80196D88) before the dynamic vertex pass.
+// Eligible triangles contribute all three edges, regardless of edge bits.
+// This does not run the containing-triangle check or repeated resolver.
+[[nodiscard]] bool adjust_type1_dynamic_contact_edge(
+    const uint8_t* data,
+    size_t size,
+    const std::array<float, 3>& prior_position,
+    const std::array<float, 3>& proposed_position,
+    float radius,
+    uint32_t surface_mask,
+    CollisionRadiusEdgeAdjustment* adjustment);
+
 // Isolates the type-1 +0x34 virtual (FUN_80194E30) used by the radius pass.
 // The preceding +0x30 edge pass and full resolver are not included.
 [[nodiscard]] bool adjust_type1_collision_radius_vertex(
