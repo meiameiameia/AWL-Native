@@ -45,6 +45,13 @@ struct CollisionTerrainAdjustment {
     bool used_edge_fallback = false;
 };
 
+struct CollisionResolverHeightAdjustment {
+    std::array<float, 3> position{};
+    uint16_t surface_flags = 0;
+    uint32_t leaf_offset = 0;
+    bool used_edge_fallback = false;
+};
+
 struct CollisionRadiusVertexAdjustment {
     std::array<float, 3> position{};
     bool contact = false;
@@ -114,6 +121,15 @@ struct CollisionTerrainRadiusAdjustment {
     size_t size,
     const std::array<float, 3>& proposed_position,
     CollisionTerrainAdjustment* adjustment);
+
+// Isolates FUN_8001FF70's height lookup used after a resolver object pass.
+// It selects a fresh leaf at the resulting X/Z and replaces only Y, even
+// when an edge fallback supplies that height. It does not run object passes.
+[[nodiscard]] bool resample_type1_collision_resolver_height(
+    const uint8_t* data,
+    size_t size,
+    const std::array<float, 3>& position,
+    CollisionResolverHeightAdjustment* adjustment);
 
 // Isolates the type-1 +0x34 virtual (FUN_80194E30) used by the radius pass.
 // The preceding +0x30 edge pass and full resolver are not included.

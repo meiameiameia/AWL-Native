@@ -449,6 +449,45 @@ bool project_type1_collision_to_edge(const uint8_t* data,
     return project_edge_in_leaf(data, analysis, node_offset, x, z, sample);
 }
 
+bool resample_type1_collision_resolver_height(
+    const uint8_t* data,
+    size_t size,
+    const std::array<float, 3>& position,
+    CollisionResolverHeightAdjustment* adjustment) {
+    if (adjustment != nullptr) {
+        *adjustment = {};
+    }
+    CollisionTreeAnalysis analysis;
+    if (adjustment == nullptr || !std::isfinite(position[0]) ||
+        !std::isfinite(position[1]) || !std::isfinite(position[2]) ||
+        !analyze_type1_collision_asset(data, size, &analysis) ||
+        analysis.header_byte_6 != 1) {
+        return false;
+    }
+
+    const uint32_t node_offset = select_leaf(
+        data, analysis.coordinate_scale, position[0], position[2]);
+    CollisionSurfaceSample surface;
+    if (sample_surface_in_leaf(data, analysis, node_offset, position[0],
+                               position[2], &surface)) {
+        adjustment->position = {position[0], surface.height, position[2]};
+        adjustment->surface_flags = surface.surface_flags;
+        adjustment->leaf_offset = node_offset;
+        return true;
+    }
+
+    CollisionEdgeSample edge;
+    if (!project_edge_in_leaf(data, analysis, node_offset, position[0],
+                              position[2], &edge)) {
+        return false;
+    }
+    adjustment->position = {position[0], edge.position[1], position[2]};
+    adjustment->surface_flags = edge.surface_flags;
+    adjustment->leaf_offset = node_offset;
+    adjustment->used_edge_fallback = true;
+    return true;
+}
+
 bool adjust_type1_collision_terrain_height(
     const uint8_t* data,
     size_t size,

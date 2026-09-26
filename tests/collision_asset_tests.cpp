@@ -365,6 +365,56 @@ void test_terrain_height_adjustment() {
            "empty selected leaf cannot provide terrain adjustment");
 }
 
+void test_resolver_height_resampling() {
+    std::vector<uint8_t> bytes = make_sample_leaf();
+    awl::CollisionResolverHeightAdjustment adjustment;
+    expect(awl::resample_type1_collision_resolver_height(
+               bytes.data(), bytes.size(), {2.0f, 50.0f, 2.0f},
+               &adjustment) &&
+               adjustment.position == std::array<float, 3>{2.0f, 6.0f, 2.0f} &&
+               adjustment.surface_flags == 0x20 &&
+               adjustment.leaf_offset == 8 &&
+               !adjustment.used_edge_fallback,
+           "resolver height samples the final position's containing triangle");
+    expect(awl::resample_type1_collision_resolver_height(
+               bytes.data(), bytes.size(), {6.0f, 50.0f, -3.0f},
+               &adjustment) &&
+               adjustment.position == std::array<float, 3>{6.0f, 6.0f, -3.0f} &&
+               adjustment.surface_flags == 0x20 &&
+               adjustment.used_edge_fallback,
+           "resolver fallback replaces Y without moving the final X/Z");
+
+    bytes = make_one_level_sample_tree();
+    constexpr uint32_t populated_leaf = 8 + 0x34 * 4;
+    expect(awl::resample_type1_collision_resolver_height(
+               bytes.data(), bytes.size(), {12.0f, 50.0f, 12.0f},
+               &adjustment) && adjustment.leaf_offset == populated_leaf &&
+               adjustment.position == std::array<float, 3>{12.0f, 6.0f, 12.0f},
+           "resolver height queries the populated final-position leaf");
+    expect(!awl::resample_type1_collision_resolver_height(
+               bytes.data(), bytes.size(), {2.0f, 50.0f, 2.0f},
+               &adjustment) &&
+               adjustment.position == std::array<float, 3>{} &&
+               adjustment.leaf_offset == 0,
+           "crossing into an empty leaf does not reuse the prior leaf");
+
+    bytes = make_sample_leaf();
+    bytes[6] = 0;
+    expect(!awl::resample_type1_collision_resolver_height(
+               bytes.data(), bytes.size(), {2.0f, 50.0f, 2.0f},
+               &adjustment),
+           "unverified resolver height mode is rejected");
+    bytes[6] = 1;
+    expect(!awl::resample_type1_collision_resolver_height(
+               bytes.data(), bytes.size(),
+               {2.0f, std::numeric_limits<float>::infinity(), 2.0f},
+               &adjustment),
+           "nonfinite resolver position is rejected");
+    expect(!awl::resample_type1_collision_resolver_height(
+               bytes.data(), bytes.size(), {2.0f, 50.0f, 2.0f}, nullptr),
+           "null resolver height output is rejected");
+}
+
 void test_radius_vertex_adjustment() {
     std::vector<uint8_t> bytes = make_sample_leaf();
     awl::CollisionRadiusVertexAdjustment adjustment;
@@ -699,6 +749,16 @@ bool inspect_local_asset(const char* path) {
         std::fprintf(stderr, "Terrain height adjustment failed: %s\n", path);
         return false;
     }
+    awl::CollisionResolverHeightAdjustment resolver_height;
+    if (!awl::resample_type1_collision_resolver_height(
+            bytes.data(), bytes.size(),
+            {outside_x, 100.0f, sample_z}, &resolver_height) ||
+        !resolver_height.used_edge_fallback ||
+        resolver_height.position !=
+            std::array<float, 3>{outside_x, edge_sample.position[1], sample_z}) {
+        std::fprintf(stderr, "Resolver height resample failed: %s\n", path);
+        return false;
+    }
     awl::CollisionRadiusVertexAdjustment vertex_adjustment;
     if (!awl::adjust_type1_collision_radius_vertex(
             bytes.data(), bytes.size(),
@@ -758,6 +818,7 @@ int main(int argc, char** argv) {
     test_primary_surface_sample();
     test_nearest_edge_fallback();
     test_terrain_height_adjustment();
+    test_resolver_height_resampling();
     test_radius_vertex_adjustment();
     test_radius_edge_adjustment();
     test_radius_pass_sequence();
