@@ -39,6 +39,12 @@ struct CollisionEdgeSample {
     float distance_squared_xz = 0.0f;
 };
 
+struct CollisionTerrainAdjustment {
+    std::array<float, 3> position{};
+    uint16_t surface_flags = 0;
+    bool used_edge_fallback = false;
+};
+
 // Validates the relocatable type-1 tree structure used by the verified
 // movement collision assets, including their indexed triangle payloads.
 [[nodiscard]] bool analyze_type1_collision_asset(
@@ -65,5 +71,14 @@ struct CollisionEdgeSample {
     float x,
     float z,
     CollisionEdgeSample* sample);
+
+// Isolates the height-enabled terrain lookup in FUN_8002009C: use the first
+// containing triangle, or project to the nearest edge in the selected leaf.
+// This does not apply the function's radius-aware passes or accept movement.
+[[nodiscard]] bool adjust_type1_collision_terrain_height(
+    const uint8_t* data,
+    size_t size,
+    const std::array<float, 3>& proposed_position,
+    CollisionTerrainAdjustment* adjustment);
 
 } // namespace awl

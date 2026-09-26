@@ -327,6 +327,43 @@ void test_nearest_edge_fallback() {
            "edge fallback does not search other leaves");
 }
 
+void test_terrain_height_adjustment() {
+    std::vector<uint8_t> bytes = make_sample_leaf();
+    awl::CollisionTerrainAdjustment adjustment;
+    expect(awl::adjust_type1_collision_terrain_height(
+               bytes.data(), bytes.size(), {2.0f, 50.0f, 2.0f}, &adjustment),
+           "terrain adjustment samples a containing triangle");
+    expect(adjustment.position == std::array<float, 3>{2.0f, 6.0f, 2.0f} &&
+               adjustment.surface_flags == 0x20 &&
+               !adjustment.used_edge_fallback,
+           "inside terrain replaces only height and reports no fallback");
+
+    expect(awl::adjust_type1_collision_terrain_height(
+               bytes.data(), bytes.size(), {6.0f, 50.0f, -3.0f}, &adjustment),
+           "terrain adjustment handles a point outside the triangle");
+    expect(adjustment.position == std::array<float, 3>{6.0f, 6.0f, 0.0f} &&
+               adjustment.surface_flags == 0x20 &&
+               adjustment.used_edge_fallback,
+           "outside terrain uses the nearest edge position and height");
+
+    expect(!awl::adjust_type1_collision_terrain_height(
+               bytes.data(), bytes.size(),
+               {0.0f, std::numeric_limits<float>::infinity(), 0.0f},
+               &adjustment),
+           "non-finite proposed height is rejected");
+    expect(adjustment.position == std::array<float, 3>{} &&
+               !adjustment.used_edge_fallback,
+           "failed terrain adjustment clears its output");
+    expect(!awl::adjust_type1_collision_terrain_height(
+               bytes.data(), bytes.size(), {2.0f, 0.0f, 2.0f}, nullptr),
+           "null terrain adjustment output is rejected");
+
+    bytes = make_single_leaf();
+    expect(!awl::adjust_type1_collision_terrain_height(
+               bytes.data(), bytes.size(), {0.0f, 0.0f, 0.0f}, &adjustment),
+           "empty selected leaf cannot provide terrain adjustment");
+}
+
 bool inspect_local_asset(const char* path) {
     std::ifstream input(path, std::ios::binary);
     if (!input) {
@@ -373,6 +410,16 @@ bool inspect_local_asset(const char* path) {
                 edge_sample.position[1], edge_sample.position[2],
                 edge_sample.surface_flags, edge_sample.leaf_offset,
                 edge_sample.triangle_index, edge_sample.edge_index);
+    awl::CollisionTerrainAdjustment adjustment;
+    if (!awl::adjust_type1_collision_terrain_height(
+            bytes.data(), bytes.size(), {outside_x, 100.0f, sample_z},
+            &adjustment) ||
+        !adjustment.used_edge_fallback ||
+        adjustment.position != edge_sample.position ||
+        adjustment.surface_flags != edge_sample.surface_flags) {
+        std::fprintf(stderr, "Terrain height adjustment failed: %s\n", path);
+        return false;
+    }
     return true;
 }
 
@@ -384,6 +431,7 @@ int main(int argc, char** argv) {
     test_rejects_invalid_offsets();
     test_primary_surface_sample();
     test_nearest_edge_fallback();
+    test_terrain_height_adjustment();
 
     for (int index = 1; index < argc; ++index) {
         if (!inspect_local_asset(argv[index])) {

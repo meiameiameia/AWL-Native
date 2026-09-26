@@ -423,4 +423,38 @@ bool project_type1_collision_to_edge(const uint8_t* data,
     return true;
 }
 
+bool adjust_type1_collision_terrain_height(
+    const uint8_t* data,
+    size_t size,
+    const std::array<float, 3>& proposed_position,
+    CollisionTerrainAdjustment* adjustment) {
+    if (adjustment != nullptr) {
+        *adjustment = {};
+    }
+    if (adjustment == nullptr || !std::isfinite(proposed_position[0]) ||
+        !std::isfinite(proposed_position[1]) ||
+        !std::isfinite(proposed_position[2])) {
+        return false;
+    }
+
+    CollisionSurfaceSample surface;
+    if (sample_type1_collision_surface(data, size, proposed_position[0],
+                                       proposed_position[2], &surface)) {
+        adjustment->position = {proposed_position[0], surface.height,
+                                proposed_position[2]};
+        adjustment->surface_flags = surface.surface_flags;
+        return true;
+    }
+
+    CollisionEdgeSample edge;
+    if (!project_type1_collision_to_edge(data, size, proposed_position[0],
+                                         proposed_position[2], &edge)) {
+        return false;
+    }
+    adjustment->position = edge.position;
+    adjustment->surface_flags = edge.surface_flags;
+    adjustment->used_edge_fallback = true;
+    return true;
+}
+
 } // namespace awl
