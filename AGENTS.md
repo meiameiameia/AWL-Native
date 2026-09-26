@@ -1,56 +1,36 @@
-# AGENTS
+# AWL Native agent guide
 
-This root file is the canonical repository guidance. Keep task-specific plans and results in the task; update this file only for durable project facts, decisions, or risks.
+## Authority and evidence
 
-## Working agreement
+- The owner decides intent and acceptance; own technical investigation and explain progress, tradeoffs, and gaps without requiring code literacy.
+- Reviews, diagnosis, and planning are read-only unless changes are requested. Verify workspace, branch, relevant diff, and actual paths before editing; preserve committed, uncommitted, and untracked work.
+- Complete scoped implementation through correction, targeted verification, and self-review. Stop at an agreed boundary or material intent, compatibility, data, cost, or authority decision, not merely a first draft.
+- Commit/push/publication/external-data actions require explicit authority. Reuse an existing scoped standing commit/push approval only for its verified branch/remote and conditions; it grants no deployment, spending, unrelated changes, or publication of game assets.
+- Separate independent/external audits or delegated tasks require an explicit owner request. Do not use Computer Use; give precise manual gameplay steps when owner input is needed.
+- Use native Windows/PowerShell. No WSL, Docker, Hyper-V, or other virtualization. Prefer existing/native facilities; production dependencies need approval.
+- Never weaken bounds checks, warnings, tests, or error reporting to pass a check. Never expose credentials or private data.
 
-- Lead with the verified outcome, material tradeoffs, remaining risk, and any action the owner must take; do not expect the owner to read code.
-- Trust the current code, configuration, binary evidence, and executed checks over status notes. `ARCHITECT_NOTES.md` is historical and may be stale.
-- Preserve existing committed, uncommitted, and untracked work. Inspect the relevant diff before editing; never reset, clean, mass-format, or overwrite unrelated work.
-- For implementation, choose the smallest coherent reversible slice, then review the diff and run targeted checks followed by the required build or smoke checks. Report checks as passed, failed, or not run.
-- Own scoped technical investigation and verification. Ask the owner only when an unresolved choice materially affects intent, compatibility, data, cost, or authority.
-- Require an explicit owner request before using a separate independent or external audit as a completion gate.
-- Do not commit, push, publish, deploy, or change external data unless explicitly requested.
+## Product and fidelity boundaries
 
-## Project and current stage
+- Goal: a behaviorally faithful native Windows port of Harvest Moon: A Wonderful Life, NTSC-U `GYWE41`. Verified target DOL SHA1: `1ccfd9dfb5c250c2f45c70c74cc45e5d88d22374`.
+- The harness and partial translations do not establish a playable port. Distinguish traced behavior, translated isolated helpers, connected runtime behavior, and owner-accepted gameplay; placeholders and diagnostic camera/scene fixtures are not original-game behavior.
+- Trace each translation to the verified DOL/REL disassembly; retain addresses, branch/layout evidence, confidence, and unresolved assumptions in the relevant research note.
+- `hmawl` is an unlicensed, read-only source of names/addresses only. Never copy its code or Git history. Do not invent bodies or responsibilities from labels.
+- Use justified native equivalents for GX/VI/OS/PAD/DVD/audio/memory behavior, not empty stubs. DirectX 11 is the renderer; native file I/O replaces DVD access.
+- Reject unsupported structures explicitly. One decoded section, draw range, asset, screenshot, or successful build does not validate the whole format or broader GX/game fidelity.
+- Do not connect an isolated movement helper as accepted gameplay movement before its required collision/state dependencies are justified.
+- Keep `rom/`, `disc/`, extracted assets, Ghidra data, raw decompiler output, and copyrighted debug payloads local and ignored. Never embed them in commits, synthetic fixtures, or public reports.
 
-The goal is a behaviorally faithful native Windows port of *Harvest Moon: A Wonderful Life* (NTSC-U, Game ID `GYWE41`). The verified target DOL SHA1 is `1ccfd9dfb5c250c2f45c70c74cc45e5d88d22374`.
+## Context and work sizing
 
-The project is an early functional scaffold, not a playable port. The current executable is primarily a development harness: it creates a Win32/DX11 window, mounts the extracted disc tree, decodes selected TPL/GPL assets, and exercises a debug mesh rendering path. Placeholder subsystem calls are not verified game behavior.
+- Use `docs/re-pipeline.md` for extraction/tracing; `docs/research/ground-rendering.md` for supported GPL/TPL/GX and scene boundaries; `docs/research/input-player-trace.md` for PAD, steering, collision, and remaining dependencies. Inspect relevant source/tests; `ARCHITECT_NOTES.md` may be historical.
+- Keep small dependent reverse-engineering/implementation slices with the same executor to retain useful local context. Propose a separate task only for a substantial bounded subsystem investigation or implementation; create it only when requested, with verified DOL identity, addresses, file baseline, scope, and acceptance.
+- At a completed slice, update the existing research note with new evidence, supported boundary, and remaining dependency; do not restate the trace in AGENTS.md. A task handoff needs only checkout/SHA plus dirty delta, authority, relevant note sections, checks/gaps, and next bounded step.
+- Read bounded exports and relevant sections, not whole disassembly/logs or every research document. Choose supported model/effort controls for the task; do not switch or rotate sessions just for cache. Reuse valid final-state evidence.
 
-The native loop maps keyboard and first-controller XInput state to a raw first-channel GameCube-style PAD sample and applies a DOL-backed subset of stick/trigger filtering, synthesized direction bits, and button transition/repeat state. Separate translated helpers derive normalized world-map steering, stepped speed, camera-relative facing, and a pre-collision position proposal, but they are not connected to a gameplay scene. The verified type-1 movement COL tree and indexed triangle payloads are validated; bounded helpers implement primary X/Z surface-height sampling, nearest-edge fallback within the selected leaf, the terrain height adjustment that combines them, and the radius-aware vertex pass. The broader collision resolver is not translated. The controls themselves are a PC policy; collision-resolved position updates, actions, scene-dependent repeat updates, and remaining PAD behavior remain untranslated. `FUN_8012f3e0` was checked against the verified DOL and must not be described as PAD initialization.
+## Native build and verification
 
-The ground GPL/TPL path is an evidence-backed but deliberately narrow subset.
-Before changing it, read `docs/research/ground-rendering.md` and
-the relevant current code and tests. Coverage claims apply only
-to explicitly validated layouts and assets. Passing builds, synthetic tests,
-or isolated previews does not establish broader GX fidelity or original-game
-equivalence.
-
-Unsupported structures must be rejected explicitly. Do not treat successful
-parsing of one section or draw range as validation of the complete asset; the
-current analysis path requires exactly one GPL section. Type `0x80`, other TEV
-words, lit and non-ground layouts, general scene selection/assembly, gameplay
-camera/projection, and broader game state remain untranslated. The current
-bounds-fitted camera is diagnostic rather than original game behavior.
-
-The bounded `--scene-smoke` assembles two adjacent verified ground chunks in
-their serialized world coordinates with per-batch texture and material state.
-It is a fixed integration fixture, not translated scene selection. Read
-the scene section of `docs/research/ground-rendering.md` before extending scene coverage.
-
-## Important paths
-
-- `src/`, `include/awl/` — native port and platform equivalents
-- `docs/research/ground-rendering.md` — compact ground evidence and supported boundary
-- `docs/re-pipeline.md` — reverse-engineering workflow
-- `tools/` — extraction and Ghidra helpers
-- `rom/`, `disc/` — local copyrighted binary/assets; never stage, commit, copy into tests, or expose
-- `build/` — generated CMake output
-
-## Native Windows workflow
-
-Prerequisites are Visual Studio 2022/MSVC, CMake, and the Windows SDK. Use PowerShell and native Windows tools; do not introduce WSL, Docker, Hyper-V, or another virtualization layer.
+Prerequisites: Visual Studio 2022/MSVC, CMake, Windows SDK. Command entry points from the repository root:
 
 ```powershell
 cmake -S . -B build
@@ -60,47 +40,15 @@ cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 build\Debug\awl-decomp.exe --target-smoke
 build\Debug\awl-decomp.exe --scene-smoke
-build\Debug\awl-decomp.exe
 certutil -hashfile rom\main.dol SHA1
 ```
 
-Run the executable from the repository root because the current development mount is relative to `disc/`. A renderer/asset change is not validated solely by compilation: use relevant parser tests plus a bounded runtime smoke, and close every process started for validation.
-
-For non-interactive visual evidence, set `AWL_CAPTURE_FRAME` to a native BMP
-path before `--target-smoke`. The renderer reads back the first completed DX11
-back buffer before `Present`; keep generated captures under ignored `build/`
-output and clear the environment variable afterward.
-
-For a bounded development preview of another supported GPL, set
-`AWL_PREVIEW_GPL` to its logical `/files/...` path and run
-`--preview-smoke`. It renders ten frames and exits; it is not target
-acceptance, and `--target-smoke` rejects this override.
-
-Validation smoke success requires ten actually presented frames. Cancellation,
-occlusion, render failure, timeout, or early window closure must fail rather
-than silently approve an incomplete run.
-
-`tools/extract_disc.ps1` extracts to an isolated ignored staging directory,
-verifies Game ID and the target DOL SHA1, preserves any existing extraction,
-and only then promotes the staged result. Do not bypass that staged workflow or
-manually replace a valid extraction with unverified output.
-
-## Reverse-engineering and implementation constraints
-
-- Decompiled behavior must trace to the actual verified DOL/REL disassembly. Record original addresses and confidence where applicable; label hypotheses and unknowns.
-- Never invent function bodies or present guessed responsibilities, placeholder logs, or debug scaffolding as completed decompilation.
-- `hmawl` is read-only for names and addresses only. It has no license; do not copy or fork its code.
-- GX, VI, OS, PAD, DVD, audio, and memory behavior require justified PC equivalents, not empty stubs disguised as completion. DirectX 11 is the renderer and standard native file I/O replaces DVD access.
-- Prefer existing/native facilities. Add no dependency without a concrete material benefit and owner approval for a production dependency.
-- Keep ROMs, extracted disc files, credentials, machine-private data, and copyrighted debug payloads out of commits and reports.
-- Do not expand material or scene coverage on unverified decoder or GX command-layout assumptions. Resolve the relevant state and command boundaries for each evidence-backed slice.
-- A required asset, parse, upload, or draw failure must make its validation mode fail; debug fallback geometry cannot satisfy the target smoke check.
-- Do not weaken warnings, bounds checks, tests, validation, or error reporting to make a result pass.
-
-## Completion standard
-
-MSVC Debug and Release builds must compile cleanly at `/W4`. Test decompiled or translated subsystems independently when practical. For asset/rendering work, validate decoded bounds and topology and exercise the visible DX11 path with local assets when available. Synthetic tests must use independently justified expectations rather than repeating the implementation. Reuse verification evidence that remains valid for the final state; repeat checks after invalidating changes, failures, or unresolved relevant risks. Review the final diff for scope, evidence, generated artifacts, secrets, and preservation of pre-existing changes.
-
-Canonical background: [ground rendering evidence](docs/research/ground-rendering.md) and [reverse-engineering workflow](docs/re-pipeline.md).
-
-Input status: [the DOL-backed PAD-to-player trace](docs/research/input-player-trace.md) identifies polling, a translated first-channel HSD filtering subset, translated but inactive steering/speed/facing and pre-collision position helpers, the movement collision profile and COL asset, world-map player ownership, and state dispatch. Type-1 COL structure and indexed leaf geometry are validated, with primary height sampling, nearest-edge projection, terrain height adjustment, and the radius vertex pass translated. Collision resolution, accepted position updates, action mapping, scene-dependent repeat updates, and remaining HSD status handling remain untranslated.
+- Run focused checks during iteration; completed code increments require clean MSVC Debug/Release builds at `/W4` and relevant tests. Guidance-only edits require guidance/diff checks, not product builds or launches.
+- For asset/rendering changes, check bounds/topology and the relevant bounded DX11 smoke with local assets when available. Synthetic expectations must be independently justified, not copies of the implementation.
+- The executable currently mounts `disc/` relative to the working directory; run it from the root. Smoke success requires ten actually presented frames. Occlusion, cancellation, timeout, early closure, or parse/upload/draw failure must fail; fallback geometry cannot satisfy target acceptance.
+- `--scene-smoke` is a fixed adjacent-ground integration fixture, not translated scene selection. Read the ground research note before expanding material or scene coverage.
+- For generated evidence, `AWL_CAPTURE_FRAME` selects a native BMP under ignored `build/`; it captures the first completed DX11 back buffer before Present. Clear the variable afterward.
+- `AWL_PREVIEW_GPL` selects a supported logical `/files/...` path for the ten-frame `--preview-smoke`. It is a development preview, not target acceptance; `--target-smoke` must reject the override. Clear it after use.
+- `tools/extract_disc.ps1` stages extraction, verifies Game ID/DOL hash, preserves existing extraction, then promotes. Never replace a valid extraction manually with unverified output.
+- Reuse passing checks until changes, failures, or unresolved risk invalidate them. Review the final diff/new files and report exact evidence/gaps; builds and synthetic tests do not establish original-game equivalence.
+- Close only task-created validation processes/helpers. Preserve user sessions. Keep the final handoff short and separate technical verification from actual gameplay acceptance.

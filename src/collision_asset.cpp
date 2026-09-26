@@ -528,4 +528,115 @@ bool adjust_type1_collision_radius_vertex(
     return true;
 }
 
+bool adjust_type1_collision_radius_edge(
+    const uint8_t* data,
+    size_t size,
+    const std::array<float, 3>& prior_position,
+    const std::array<float, 3>& proposed_position,
+    float radius,
+    CollisionRadiusEdgeAdjustment* adjustment) {
+    if (adjustment != nullptr) {
+        *adjustment = {};
+    }
+    CollisionTreeAnalysis analysis;
+    if (adjustment == nullptr || !std::isfinite(radius) || radius < 0.0f ||
+        !std::isfinite(prior_position[0]) ||
+        !std::isfinite(prior_position[1]) ||
+        !std::isfinite(prior_position[2]) ||
+        !std::isfinite(proposed_position[0]) ||
+        !std::isfinite(proposed_position[1]) ||
+        !std::isfinite(proposed_position[2]) ||
+        !analyze_type1_collision_asset(data, size, &analysis) ||
+        analysis.header_byte_6 != 1) {
+        return false;
+    }
+
+    adjustment->position = proposed_position;
+    const uint32_t node_offset = select_leaf(
+        data, analysis.coordinate_scale, proposed_position[0],
+        proposed_position[2]);
+    const LeafPayload leaf = leaf_payload(data, node_offset);
+    float nearest_distance = 0.0f;
+    float selected_normal_x = 0.0f;
+    float selected_normal_z = 0.0f;
+    for (uint32_t index = 0; index < leaf.triangle_count; ++index) {
+        const uint8_t* record = data + leaf.triangles +
+                                static_cast<size_t>(index) * kTriangleStride;
+        const uint16_t flags = read_be16(record);
+        const auto triangle = decode_triangle(
+            data, leaf.vertices, record, analysis.coordinate_scale);
+        for (uint8_t edge = 0; edge < 3; ++edge) {
+            if ((flags & (1u << (13 + edge))) == 0) {
+                continue;
+            }
+            const DecodedVertex& start = triangle[edge];
+            const DecodedVertex& end = triangle[(edge + 1) % 3];
+            const float dx = end.x - start.x;
+            const float dz = end.z - start.z;
+            const float length_squared = dx * dx + dz * dz;
+            if (!std::isfinite(length_squared)) {
+                *adjustment = {};
+                return false;
+            }
+            if (length_squared == 0.0f) {
+                continue;
+            }
+            const float length = std::sqrt(length_squared);
+            // FUN_8017C918 crosses the edge with the verified (0, -1, 0)
+            // vector at 0x8026AA84, producing this X/Z plane normal.
+            const float normal_x = dz / length;
+            const float normal_z = -dx / length;
+            const float prior_distance =
+                (prior_position[0] - start.x) * normal_x +
+                (prior_position[2] - start.z) * normal_z;
+            if (!std::isfinite(prior_distance)) {
+                *adjustment = {};
+                return false;
+            }
+            if (prior_distance <= 0.0f) {
+                continue;
+            }
+            const float proposed_dx = proposed_position[0] - start.x;
+            const float proposed_dz = proposed_position[2] - start.z;
+            const float along =
+                (proposed_dx * dx + proposed_dz * dz) / length_squared;
+            if (!std::isfinite(along)) {
+                *adjustment = {};
+                return false;
+            }
+            if (along < 0.0f || along >= 1.0f) {
+                continue;
+            }
+            const float distance =
+                proposed_dx * normal_x + proposed_dz * normal_z;
+            if (!std::isfinite(distance)) {
+                *adjustment = {};
+                return false;
+            }
+            if (distance >= radius ||
+                (adjustment->contact && distance >= nearest_distance)) {
+                continue;
+            }
+            nearest_distance = distance;
+            selected_normal_x = normal_x;
+            selected_normal_z = normal_z;
+            adjustment->contact = true;
+            adjustment->surface_flags = flags;
+            adjustment->triangle_index = index;
+            adjustment->edge_index = edge;
+        }
+    }
+    if (adjustment->contact) {
+        const float push = radius - nearest_distance + 0.01f;
+        adjustment->position[0] += selected_normal_x * push;
+        adjustment->position[2] += selected_normal_z * push;
+        if (!std::isfinite(adjustment->position[0]) ||
+            !std::isfinite(adjustment->position[2])) {
+            *adjustment = {};
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace awl

@@ -426,6 +426,66 @@ void test_radius_vertex_adjustment() {
            "null vertex query output is rejected");
 }
 
+void test_radius_edge_adjustment() {
+    std::vector<uint8_t> bytes = make_sample_leaf();
+    awl::CollisionRadiusEdgeAdjustment adjustment;
+    const std::array<float, 3> prior{5.0f, 7.0f, -2.0f};
+    const std::array<float, 3> proposed{5.0f, 7.0f, -0.5f};
+    expect(awl::adjust_type1_collision_radius_edge(
+               bytes.data(), bytes.size(), prior, proposed, 1.0f,
+               &adjustment) &&
+               !adjustment.contact && adjustment.position == proposed,
+           "unmarked triangle edge does not produce radius contact");
+
+    put_be16(bytes, 8 + 0x34, 0x2000);
+    expect(awl::adjust_type1_collision_radius_edge(
+               bytes.data(), bytes.size(), prior, proposed, 1.0f,
+               &adjustment),
+           "marked edge radius query succeeds");
+    expect(adjustment.contact && adjustment.surface_flags == 0x2000 &&
+               adjustment.triangle_index == 0 && adjustment.edge_index == 0 &&
+               adjustment.position[0] == 5.0f &&
+               adjustment.position[1] == 7.0f &&
+               std::fabs(adjustment.position[2] + 1.01f) < 0.0001f,
+           "edge pushes the candidate to radius plus 0.01 on its allowed side");
+    expect(awl::adjust_type1_collision_radius_edge(
+               bytes.data(), bytes.size(), prior, {5.0f, 7.0f, 0.5f},
+               1.0f, &adjustment) &&
+               adjustment.contact &&
+               std::fabs(adjustment.position[2] + 1.01f) < 0.0001f,
+           "edge response handles a candidate that crossed the plane");
+    expect(awl::adjust_type1_collision_radius_edge(
+               bytes.data(), bytes.size(), {5.0f, 7.0f, 2.0f}, proposed,
+               1.0f, &adjustment) && !adjustment.contact,
+           "prior point on the other side does not produce edge contact");
+    expect(awl::adjust_type1_collision_radius_edge(
+               bytes.data(), bytes.size(), prior, {10.0f, 7.0f, -0.5f},
+               1.0f, &adjustment) && !adjustment.contact,
+           "edge segment excludes its final endpoint");
+    expect(awl::adjust_type1_collision_radius_edge(
+               bytes.data(), bytes.size(), prior, proposed, 0.5f,
+               &adjustment) && !adjustment.contact,
+           "candidate exactly at radius has no edge contact");
+
+    bytes[6] = 0;
+    expect(!awl::adjust_type1_collision_radius_edge(
+               bytes.data(), bytes.size(), prior, proposed, 1.0f,
+               &adjustment),
+           "other collision mode is rejected by the bounded edge helper");
+    expect(adjustment.position == std::array<float, 3>{} &&
+               !adjustment.contact,
+           "failed edge query clears its output");
+    bytes[6] = 1;
+    expect(!awl::adjust_type1_collision_radius_edge(
+               bytes.data(), bytes.size(), prior, proposed, -1.0f,
+               &adjustment),
+           "negative edge radius is rejected");
+    expect(!awl::adjust_type1_collision_radius_edge(
+               bytes.data(), bytes.size(), prior, proposed, 1.0f,
+               nullptr),
+           "null edge query output is rejected");
+}
+
 bool inspect_local_asset(const char* path) {
     std::ifstream input(path, std::ios::binary);
     if (!input) {
@@ -493,6 +553,18 @@ bool inspect_local_asset(const char* path) {
         std::fprintf(stderr, "Radius vertex query failed: %s\n", path);
         return false;
     }
+    awl::CollisionRadiusEdgeAdjustment edge_adjustment;
+    if (!awl::adjust_type1_collision_radius_edge(
+            bytes.data(), bytes.size(),
+            {sample_x, sample.height, sample_z - 1.0f},
+            {sample_x, sample.height, sample_z}, 0.3f,
+            &edge_adjustment) ||
+        !std::isfinite(edge_adjustment.position[0]) ||
+        !std::isfinite(edge_adjustment.position[1]) ||
+        !std::isfinite(edge_adjustment.position[2])) {
+        std::fprintf(stderr, "Radius edge query failed: %s\n", path);
+        return false;
+    }
     return true;
 }
 
@@ -506,6 +578,7 @@ int main(int argc, char** argv) {
     test_nearest_edge_fallback();
     test_terrain_height_adjustment();
     test_radius_vertex_adjustment();
+    test_radius_edge_adjustment();
 
     for (int index = 1; index < argc; ++index) {
         if (!inspect_local_asset(argv[index])) {

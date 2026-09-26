@@ -52,6 +52,14 @@ struct CollisionRadiusVertexAdjustment {
     uint8_t vertex_index = 0;
 };
 
+struct CollisionRadiusEdgeAdjustment {
+    std::array<float, 3> position{};
+    bool contact = false;
+    uint16_t surface_flags = 0;
+    uint32_t triangle_index = 0;
+    uint8_t edge_index = 0;
+};
+
 // Validates the relocatable type-1 tree structure used by the verified
 // movement collision assets, including their indexed triangle payloads.
 [[nodiscard]] bool analyze_type1_collision_asset(
@@ -96,5 +104,15 @@ struct CollisionRadiusVertexAdjustment {
     const std::array<float, 3>& proposed_position,
     float radius,
     CollisionRadiusVertexAdjustment* adjustment);
+
+// Isolates the type-1 +0x30 virtual (FUN_801969BC) used by the radius pass.
+// This does not run the following vertex pass or the three-pass resolver.
+[[nodiscard]] bool adjust_type1_collision_radius_edge(
+    const uint8_t* data,
+    size_t size,
+    const std::array<float, 3>& prior_position,
+    const std::array<float, 3>& proposed_position,
+    float radius,
+    CollisionRadiusEdgeAdjustment* adjustment);
 
 } // namespace awl
