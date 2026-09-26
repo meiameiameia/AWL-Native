@@ -457,29 +457,16 @@ bool adjust_type1_collision_terrain_height(
     return true;
 }
 
-bool adjust_type1_collision_radius_vertex(
+namespace {
+
+bool adjust_radius_vertex_in_leaf(
     const uint8_t* data,
-    size_t size,
+    const CollisionTreeAnalysis& analysis,
+    uint32_t node_offset,
     const std::array<float, 3>& proposed_position,
     float radius,
     CollisionRadiusVertexAdjustment* adjustment) {
-    if (adjustment != nullptr) {
-        *adjustment = {};
-    }
-    CollisionTreeAnalysis analysis;
-    if (adjustment == nullptr || !std::isfinite(radius) || radius < 0.0f ||
-        !std::isfinite(proposed_position[0]) ||
-        !std::isfinite(proposed_position[1]) ||
-        !std::isfinite(proposed_position[2]) ||
-        !analyze_type1_collision_asset(data, size, &analysis) ||
-        analysis.header_byte_6 != 1) {
-        return false;
-    }
-
     adjustment->position = proposed_position;
-    const uint32_t node_offset = select_leaf(
-        data, analysis.coordinate_scale, proposed_position[0],
-        proposed_position[2]);
     const LeafPayload leaf = leaf_payload(data, node_offset);
     float nearest_distance = radius;
     DecodedVertex nearest_vertex{};
@@ -528,21 +515,19 @@ bool adjust_type1_collision_radius_vertex(
     return true;
 }
 
-bool adjust_type1_collision_radius_edge(
+} // namespace
+
+bool adjust_type1_collision_radius_vertex(
     const uint8_t* data,
     size_t size,
-    const std::array<float, 3>& prior_position,
     const std::array<float, 3>& proposed_position,
     float radius,
-    CollisionRadiusEdgeAdjustment* adjustment) {
+    CollisionRadiusVertexAdjustment* adjustment) {
     if (adjustment != nullptr) {
         *adjustment = {};
     }
     CollisionTreeAnalysis analysis;
     if (adjustment == nullptr || !std::isfinite(radius) || radius < 0.0f ||
-        !std::isfinite(prior_position[0]) ||
-        !std::isfinite(prior_position[1]) ||
-        !std::isfinite(prior_position[2]) ||
         !std::isfinite(proposed_position[0]) ||
         !std::isfinite(proposed_position[1]) ||
         !std::isfinite(proposed_position[2]) ||
@@ -551,10 +536,24 @@ bool adjust_type1_collision_radius_edge(
         return false;
     }
 
-    adjustment->position = proposed_position;
     const uint32_t node_offset = select_leaf(
         data, analysis.coordinate_scale, proposed_position[0],
         proposed_position[2]);
+    return adjust_radius_vertex_in_leaf(data, analysis, node_offset,
+                                        proposed_position, radius, adjustment);
+}
+
+namespace {
+
+bool adjust_radius_edge_in_leaf(
+    const uint8_t* data,
+    const CollisionTreeAnalysis& analysis,
+    uint32_t node_offset,
+    const std::array<float, 3>& prior_position,
+    const std::array<float, 3>& proposed_position,
+    float radius,
+    CollisionRadiusEdgeAdjustment* adjustment) {
+    adjustment->position = proposed_position;
     const LeafPayload leaf = leaf_payload(data, node_offset);
     float nearest_distance = 0.0f;
     float selected_normal_x = 0.0f;
@@ -639,6 +638,39 @@ bool adjust_type1_collision_radius_edge(
     return true;
 }
 
+} // namespace
+
+bool adjust_type1_collision_radius_edge(
+    const uint8_t* data,
+    size_t size,
+    const std::array<float, 3>& prior_position,
+    const std::array<float, 3>& proposed_position,
+    float radius,
+    CollisionRadiusEdgeAdjustment* adjustment) {
+    if (adjustment != nullptr) {
+        *adjustment = {};
+    }
+    CollisionTreeAnalysis analysis;
+    if (adjustment == nullptr || !std::isfinite(radius) || radius < 0.0f ||
+        !std::isfinite(prior_position[0]) ||
+        !std::isfinite(prior_position[1]) ||
+        !std::isfinite(prior_position[2]) ||
+        !std::isfinite(proposed_position[0]) ||
+        !std::isfinite(proposed_position[1]) ||
+        !std::isfinite(proposed_position[2]) ||
+        !analyze_type1_collision_asset(data, size, &analysis) ||
+        analysis.header_byte_6 != 1) {
+        return false;
+    }
+
+    const uint32_t node_offset = select_leaf(
+        data, analysis.coordinate_scale, proposed_position[0],
+        proposed_position[2]);
+    return adjust_radius_edge_in_leaf(data, analysis, node_offset,
+                                      prior_position, proposed_position,
+                                      radius, adjustment);
+}
+
 bool adjust_type1_collision_radius_passes(
     const uint8_t* data,
     size_t size,
@@ -668,23 +700,16 @@ bool adjust_type1_collision_radius_passes(
     std::array<float, 3> candidate = proposed_position;
     bool first_pass_contact = false;
     for (uint8_t pass = 1; pass <= 3; ++pass) {
-        if (select_leaf(data, analysis.coordinate_scale, candidate[0],
-                        candidate[2]) != initial_leaf) {
-            return false;
-        }
         CollisionRadiusEdgeAdjustment edge;
-        if (!adjust_type1_collision_radius_edge(
-                data, size, prior_position, candidate, radius, &edge)) {
+        if (!adjust_radius_edge_in_leaf(data, analysis, initial_leaf,
+                                        prior_position, candidate, radius,
+                                        &edge)) {
             return false;
         }
         candidate = edge.position;
-        if (select_leaf(data, analysis.coordinate_scale, candidate[0],
-                        candidate[2]) != initial_leaf) {
-            return false;
-        }
         CollisionRadiusVertexAdjustment vertex;
-        if (!adjust_type1_collision_radius_vertex(
-                data, size, candidate, radius, &vertex)) {
+        if (!adjust_radius_vertex_in_leaf(data, analysis, initial_leaf,
+                                          candidate, radius, &vertex)) {
             return false;
         }
         candidate = vertex.position;

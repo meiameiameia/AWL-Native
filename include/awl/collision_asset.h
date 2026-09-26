@@ -122,9 +122,8 @@ struct CollisionRadiusPassesAdjustment {
     float radius,
     CollisionRadiusEdgeAdjustment* adjustment);
 
-// Runs FUN_80191FD0's edge-then-vertex sequence. If an intermediate response
-// crosses a leaf before another query, this fails until the DOL's pinned-leaf
-// behavior is supported by the underlying helpers.
+// Runs FUN_80191FD0's edge-then-vertex sequence against the initially selected
+// leaf, including when a response moves the candidate across a leaf boundary.
 [[nodiscard]] bool adjust_type1_collision_radius_passes(
     const uint8_t* data,
     size_t size,

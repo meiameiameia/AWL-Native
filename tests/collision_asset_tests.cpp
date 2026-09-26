@@ -519,13 +519,23 @@ void test_radius_pass_sequence() {
     bytes = make_one_level_sample_tree();
     constexpr uint32_t payload = 8 + 0x34 * 5;
     put_be16(bytes, payload, 0x2000);
-    expect(!awl::adjust_type1_collision_radius_passes(
+    expect(awl::adjust_type1_collision_radius_passes(
                bytes.data(), bytes.size(), {15.0f, 7.0f, 9.0f},
-               {15.0f, 7.0f, 10.5f}, 1.0f, &adjustment),
-           "candidate crossing the initially selected leaf is rejected");
-    expect(adjustment.position == std::array<float, 3>{} &&
-               adjustment.pass_count == 0,
-           "unsupported leaf crossing clears the sequence output");
+               {15.0f, 7.0f, 10.5f}, 1.0f, &adjustment) &&
+               adjustment.contact && !adjustment.reverted_to_prior &&
+               adjustment.pass_count == 2 &&
+               std::fabs(adjustment.position[2] - 8.99f) < 0.0001f,
+           "edge response crossing into an empty leaf keeps the initial leaf for the next pass");
+
+    put_be_s16(bytes, payload + 8, 11);
+    put_be_s16(bytes, payload + 12, 11);
+    expect(awl::adjust_type1_collision_radius_passes(
+               bytes.data(), bytes.size(), {10.1f, 7.0f, 11.0f},
+               {10.1f, 7.0f, 11.0f}, 1.0f, &adjustment) &&
+               adjustment.contact && !adjustment.reverted_to_prior &&
+               adjustment.pass_count == 2 &&
+               std::fabs(adjustment.position[0] - 9.99f) < 0.0001f,
+           "vertex response crossing into an empty leaf keeps the initial leaf for the next pass");
     expect(!awl::adjust_type1_collision_radius_passes(
                bytes.data(), bytes.size(), prior, proposed, -1.0f,
                &adjustment),

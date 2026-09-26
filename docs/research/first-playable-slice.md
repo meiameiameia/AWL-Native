@@ -19,7 +19,7 @@ Both local image formats report disc ID `GYWEE9`, and the extracted `disc/sys/bo
 
 ## Next small increments and observable checks
 
-1. Complete pinned-leaf behavior in the isolated type-1 radius passes. Test a candidate whose intermediate response crosses a leaf, retain the already verified no-contact route behavior, and pass Debug/Release `/W4` builds and CTest. This remains an inactive translation helper.
+1. Completed: the isolated type-1 radius passes keep their initially selected leaf after edge or vertex responses cross its boundary. Synthetic tests cover both crossings, Debug and Release builds and all seven tests pass, and the local route still yields 80 supported no-contact steps per COL variant. The helper remains inactive in gameplay.
 2. Translate the remaining `FUN_8002009C` terrain-adjustment sequence, then the necessary `FUN_8001DE44` metadata and shared-resolver acceptance boundary. Check slopes, edge/wall contact, failure, and both COL variants before connecting player position updates.
 3. Add a fixed development scene using the two supported chunks, a clearly marked temporary player marker, a fixed spawn on the probed route, and a controlled camera. A focused native smoke should show input moving the marker across the seam while collision changes its accepted Y; loss of input focus should stop movement. This is a rehearsal milestone, not the first playable MVP.
 4. Decode only the verified player ARC/SKN resources and states needed for idle/walk on this patch, with asset bounds and visible native checks. Replace the marker only after that path is supported.
