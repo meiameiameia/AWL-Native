@@ -912,10 +912,61 @@ void test_first_dynamic_object_pass() {
            "alternate flag-0x10 branch is rejected by this bounded pass");
     awl::CollisionFirstPassObject circle = object;
     circle.collision_flags = 1u;
+    circle.center_world = {5.0f, 20.0f, 0.0f};
+    circle.radius = 0.5f;
+    expect(awl::resolve_type1_first_dynamic_object_pass(
+               &circle, 1, 0, 1, prior, proposed, 1.0f, 0u, 4u,
+               &adjustment) && adjustment.contact &&
+               adjustment.queried_objects == 1 &&
+               adjustment.contact_count == 1 &&
+               adjustment.contact_flags_after == 1u &&
+               adjustment.resolver_contact_bit == 4u &&
+               std::fabs(adjustment.position[2] + 1.51f) < 0.0001f &&
+               adjustment.position[1] == proposed[1],
+           "circle overlap pushes in X/Z and preserves the proposed height");
+    const std::array<float, 3> circle_boundary{5.0f, 9.0f, -1.5f};
+    expect(awl::resolve_type1_first_dynamic_object_pass(
+               &circle, 1, 0, 1, prior, circle_boundary, 1.0f, 0u, 4u,
+               &adjustment) && !adjustment.contact &&
+               adjustment.position == circle_boundary &&
+               adjustment.queried_objects == 1,
+           "circle contact uses a strict radius boundary");
+    const std::array<float, 3> circle_outside{5.0f, 9.0f, -2.0f};
+    expect(awl::resolve_type1_first_dynamic_object_pass(
+               &circle, 1, 0, 1, prior, circle_outside, 1.0f, 0u, 4u,
+               &adjustment) && !adjustment.contact &&
+               adjustment.position == circle_outside,
+           "separated circles leave the candidate unchanged");
+    const std::array<float, 3> circle_center{5.0f, 9.0f, 0.0f};
+    expect(awl::resolve_type1_first_dynamic_object_pass(
+               &circle, 1, 0, 1, prior, circle_center, 1.0f, 0u, 4u,
+               &adjustment) && adjustment.contact &&
+               adjustment.position[0] == circle_center[0] &&
+               std::fabs(adjustment.position[2] - 1.51f) < 0.0001f &&
+               adjustment.position[1] == circle_center[1],
+           "coincident circle centers use the DOL's positive-Z fallback");
+    circle.center_world = {5.0f, 0.0f, -1.0f};
+    const std::array<awl::CollisionFirstPassObject, 2> mixed{object, circle};
+    expect(awl::resolve_type1_first_dynamic_object_pass(
+               mixed.data(), mixed.size(), 0, 1, prior, proposed, 1.0f,
+               0u, 4u, &adjustment) && adjustment.contact &&
+               adjustment.queried_objects == 2 &&
+               adjustment.contact_count == 2 &&
+               std::fabs(adjustment.position[2] + 2.51f) < 0.0001f &&
+               adjustment.position[1] == 0.0f,
+           "circle response uses the type-1 result in ordered traversal");
+    circle.collision_flags = 3u;
+    expect(awl::resolve_type1_first_dynamic_object_pass(
+               &circle, 1, 0, 1, prior, proposed, 1.0f, 0u, 4u,
+               &adjustment) && adjustment.contact &&
+               std::fabs(adjustment.position[2] + 1.01f) < 0.0001f,
+           "type-1 path takes priority when both collision bits are set");
+    circle.collision_flags = 1u;
+    circle.radius = -0.5f;
     expect(!awl::resolve_type1_first_dynamic_object_pass(
                &circle, 1, 0, 1, prior, proposed, 1.0f, 0u, 4u,
                &adjustment),
-           "eligible circle contact is rejected until its path is translated");
+           "invalid circle radius is rejected");
     expect(!awl::resolve_type1_first_dynamic_object_pass(
                nullptr, 1, 0, 1, prior, proposed, 1.0f, 0u, 4u,
                &adjustment),

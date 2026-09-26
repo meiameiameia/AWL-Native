@@ -114,6 +114,7 @@ struct CollisionFirstPassObject {
     CollisionAffineTransform world_to_object{};
     CollisionAffineTransform object_to_world{};
     std::array<float, 3> center_local{};
+    std::array<float, 3> center_world{};
     float radius = 0.0f;
 };
 
@@ -244,9 +245,8 @@ struct CollisionTerrainRadiusAdjustment {
     CollisionDynamicObjectContactAdjustment* adjustment);
 
 // Isolates FUN_8001E498's first ordered object-list pass (flag 0x4) for
-// caller-supplied type-1 COL objects. The alternate 0x10 path and eligible
-// circle objects are unsupported. This does not own the game's object list or
-// run later resolver passes.
+// caller-supplied type-1 COL and circle objects. The alternate 0x10 path is
+// unsupported. This does not own the game's object list or run later passes.
 [[nodiscard]] bool resolve_type1_first_dynamic_object_pass(
     const CollisionFirstPassObject* objects,
     size_t object_count,

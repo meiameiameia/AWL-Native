@@ -1000,6 +1000,38 @@ bool finite_position(const std::array<float, 3>& position) {
            std::isfinite(position[2]);
 }
 
+bool resolve_circle_contact(const std::array<float, 3>& center,
+                            float combined_radius,
+                            std::array<float, 3>* candidate,
+                            bool* contact) {
+    if (!finite_position(center) || !std::isfinite(combined_radius) ||
+        combined_radius < 0.0f || candidate == nullptr || contact == nullptr) {
+        return false;
+    }
+    *contact = false;
+    const float dx = (*candidate)[0] - center[0];
+    const float dz = (*candidate)[2] - center[2];
+    const float distance = std::sqrt(dx * dx + dz * dz);
+    if (!std::isfinite(distance)) {
+        return false;
+    }
+    if (distance >= combined_radius) {
+        return true;
+    }
+    const float pushed_radius = combined_radius + 0.01f;
+    if (!std::isfinite(pushed_radius)) {
+        return false;
+    }
+    const float scale = distance == 0.0f ? 0.0f : pushed_radius / distance;
+    (*candidate)[0] = center[0] + dx * scale;
+    (*candidate)[2] = center[2] + (distance == 0.0f ? pushed_radius : dz * scale);
+    if (!finite_position(*candidate)) {
+        return false;
+    }
+    *contact = true;
+    return true;
+}
+
 } // namespace
 
 bool resolve_type1_dynamic_object_contact(
@@ -1132,8 +1164,19 @@ bool resolve_type1_first_dynamic_object_pass(
                 result.contact_flags_after |= 1u;
             }
         } else if ((object.collision_flags & 1u) != 0) {
-            // FUN_8017C600 is a separate circle-contact path.
-            return false;
+            const float combined_radius = moving_radius + object.radius;
+            bool contact = false;
+            if (!std::isfinite(object.radius) || object.radius < 0.0f ||
+                !resolve_circle_contact(object.center_world, combined_radius,
+                                        &result.position, &contact)) {
+                return false;
+            }
+            ++result.queried_objects;
+            if (contact) {
+                result.contact = true;
+                ++result.contact_count;
+                result.contact_flags_after |= 1u;
+            }
         }
     }
     if (result.contact) {
