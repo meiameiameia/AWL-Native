@@ -42,6 +42,7 @@ The first-channel `HsdPadFilter` now applies the verified radial main/C-stick pr
 ## Downstream leads, not yet translated
 
 - `FUN_800472BC` reads pressed bit `0x100` at `0x8034157C` before branching through a large context-dependent interaction/state path. `FUN_800471F8` checks pressed bit `0x1000` after a separate eligibility check, then calls `FUN_800310A4` and `FUN_80031D7C` with state `0xE0`. The gameplay meanings of these masks and state numbers have **not** been established from this trace.
+- For the [first playable slice candidate](first-playable-slice.md), `FUN_8002BBB8` was checked against the verified DOL: its model-name table beginning at `0x80249A6C` starts with `boy_0.arc`. `FUN_80028104` uses an animation-name table beginning at `0x80248B40` with `boy_0.anm.arc` and subarchives. These strengthen the world-map player asset lead but do not establish the selected variant or a supported native ARC/SKN decoder. A bounded recheck of `FUN_800472BC` found a context-code `0x10` branch to internal case `1`, but the world target and inspect/return semantics are still unknown.
 - `FUN_800372D8` reads held bit `0x100` at `0x80341574`. The state callbacks and `FUN_8003083C` are now linked to the world-map character object, but action semantics, movement/collision effects, and state guards are not fully translated.
 - The prior hypothesis that `FUN_8012F3E0` initializes input is disproven: its body and `FUN_8012F480` operate a registry of world subsystems. It must not be translated as PAD setup.
 
