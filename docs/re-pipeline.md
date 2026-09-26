@@ -1,6 +1,6 @@
 # Reverse engineering workflow
 
-The target is the NTSC-U `GYWE41` game. The verified `main.dol` SHA1 is `1ccfd9dfb5c250c2f45c70c74cc45e5d88d22374`. Work from the owner's local game image and keep binaries, extracted files, Ghidra projects, decompiler output, and screenshots in ignored directories.
+The target is the NTSC-U `GYWEE9` game. The verified `main.dol` SHA1 is `1ccfd9dfb5c250c2f45c70c74cc45e5d88d22374`. Both local ISO and RVZ headers, the extracted `boot.bin`, and [Dolphin's title listing](https://wiki.dolphin-emu.org/index.php?title=Harvest_Moon:_A_Wonderful_Life) identify `GYWEE9`; the DOL embedded in the local ISO also matches the target SHA1. The earlier `GYWE41` label was incorrect. Work from the owner's local game image and keep binaries, extracted files, Ghidra projects, decompiler output, and screenshots in ignored directories.
 
 1. Extract the disc with [`tools/extract_disc.ps1`](../tools/extract_disc.ps1). It stages the extraction, checks the Game ID and DOL hash, and preserves any existing extraction until validation succeeds. Do not manually replace `disc/` with unverified output.
 2. Verify `rom/main.dol` separately with `certutil -hashfile rom\main.dol SHA1` before tracing DOL addresses. The Ghidra project is local under ignored `docs/ghidra/`; import the verified DOL with a GameCube loader and run analysis there.

@@ -1,6 +1,6 @@
 # AWL Native
 
-An experimental native Windows port of *Harvest Moon: A Wonderful Life* (NTSC-U, Game ID `GYWE41`). This project is in an early development stage and is not yet a playable game.
+An experimental native Windows port of *Harvest Moon: A Wonderful Life* (NTSC-U, Game ID `GYWEE9`). This project is in an early development stage and is not yet a playable game.
 
 The current executable is a Win32/DirectX 11 development harness. It can load selected assets from a locally extracted game disc and exercise bounded rendering checks. These checks do not establish full game behavior or rendering fidelity.
 

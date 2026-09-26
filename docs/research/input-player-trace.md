@@ -1,6 +1,6 @@
 # Input-to-player trace (in progress)
 
-Target: NTSC-U `GYWE41` `main.dol`, SHA1 `1ccfd9dfb5c250c2f45c70c74cc45e5d88d22374`. Addresses below were checked against that DOL with the repository's read-only Ghidra scripts. Raw decompilation and instruction exports are local, ignored `build/player-input-trace/` files. Function labels describe observed behavior only; they are not claims of completed translation.
+Target: NTSC-U `GYWEE9` `main.dol`, SHA1 `1ccfd9dfb5c250c2f45c70c74cc45e5d88d22374`. Addresses below were checked against that DOL with the repository's read-only Ghidra scripts. Raw decompilation and instruction exports are local, ignored `build/player-input-trace/` files. Function labels describe observed behavior only; they are not claims of completed translation.
 
 ## Confirmed PAD pipeline
 

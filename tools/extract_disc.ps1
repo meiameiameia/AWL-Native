@@ -7,7 +7,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$ExpectedGameId = "GYWE41"
+$ExpectedGameId = "GYWEE9"
 $ExpectedDolSha1 = "1CCFD9DFB5C250C2F45C70C74CC45E5D88D22374"
 
 function Get-NormalizedPath {

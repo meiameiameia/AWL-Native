@@ -1,6 +1,6 @@
 # Ground rendering: verified native subset
 
-Target: NTSC-U `GYWE41` `main.dol`, SHA1 `1ccfd9dfb5c250c2f45c70c74cc45e5d88d22374`. The findings below come from bounded assets, local Ghidra 12.1.2 traces of that DOL, independent GX references, parser tests, and native DX11 smokes. Raw DOL, disc assets, decompiler output, and captures remain local under ignored paths.
+Target: NTSC-U `GYWEE9` `main.dol`, SHA1 `1ccfd9dfb5c250c2f45c70c74cc45e5d88d22374`. The findings below come from bounded assets, local Ghidra 12.1.2 traces of that DOL, independent GX references, parser tests, and native DX11 smokes. Raw DOL, disc assets, decompiler output, and captures remain local under ignored paths.
 
 ## What the harness implements
 

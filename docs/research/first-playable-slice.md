@@ -13,9 +13,9 @@ This is a bounded development candidate, not a claim that the game is playable o
 - `FUN_80013F60` constructs the world-map character through `FUN_8002FDF8` at scene offset `+0x24`. The constructor gets a model-related resource from slot zero through `FUN_8007DECC`/`FUN_8007E248`. `FUN_8002BBB8` reads a table beginning at `0x80249A6C` whose first name is `boy_0.arc`, and `FUN_80028104` reads an animation table beginning at `0x80248B40` with `boy_0.anm.arc` and subarchives. These are strong player-asset leads, but the selected model variant, archive contents, skeleton, and rendering path are not validated. The native project has no ARC/SKN player-model decoder.
 - `FUN_800472BC` tests newly pressed bit `0x100` after querying nearby context through `FUN_80010A94`. It branches on a context code and may create an action object through `FUN_80011680` before state changes through `FUN_80031D7C`. The branch for context code `0x10` maps to internal case `1`; its world target, response, and return behavior are still unknown. Do not present this as a verified inspect action or assign it to a placed object yet.
 
-## Identity discrepancy
+## Target identity
 
-Both local image formats report disc ID `GYWEE9`, and the extracted `disc/sys/boot.bin` agrees. The extracted `main.dol` and `rom/main.dol` match the project's verified SHA1. Repository guidance and `tools/extract_disc.ps1` currently expect `GYWE41`, so the extraction script would reject these local images. Preserve the current extraction; resolve which ID the project should authorize before changing the extraction rule or replacing files.
+Both local image formats report disc ID `GYWEE9`, and the extracted `disc/sys/boot.bin` agrees. The extracted `main.dol` and `rom/main.dol` match the project's verified SHA1. The earlier `GYWE41` label in repository guidance and the extraction script was corrected to `GYWEE9`. The existing extraction was preserved.
 
 ## Next small increments and observable checks
 

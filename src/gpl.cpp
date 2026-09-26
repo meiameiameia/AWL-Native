@@ -31,7 +31,7 @@ constexpr uint8_t kGxDrawTriangleFan = 0xA0;
 constexpr uint8_t kGxPrimitiveTypeMask = 0xF8;
 constexpr uint8_t kGxVatMask = 0x07;
 
-// GYWE41 FUN_801A5950 decodes the type-2 command word as two-bit GX
+// GYWEE9 FUN_801A5950 decodes the type-2 command word as two-bit GX
 // component modes. 0x828 is Position INDEX8, Normal INDEX8, Tex0 INDEX8;
 // 0x8A8 adds Color0 INDEX8 between Normal and Tex0. 0x8AC changes Position
 // to INDEX16 while retaining INDEX8 for the remaining attributes. 0x8EC also
@@ -209,7 +209,7 @@ bool find_geometry_command(const GplFile& gpl, const GplSection& section,
         const uint32_t attached_display_list_size =
             read_be32(raw + command_offset + 12);
         if (command_type != kGplGeometryCommandType) {
-            // GYWE41 FUN_801A3000 may draw the range attached to type 1, 3,
+            // GYWEE9 FUN_801A3000 may draw the range attached to type 1, 3,
             // and 0x80 commands after applying their state. Until the native
             // path preserves that full command order, accepting one range
             // would silently render only part of the object.

@@ -12,7 +12,7 @@
 
 ## Product and fidelity boundaries
 
-- Goal: a behaviorally faithful native Windows port of Harvest Moon: A Wonderful Life, NTSC-U `GYWE41`. Verified target DOL SHA1: `1ccfd9dfb5c250c2f45c70c74cc45e5d88d22374`.
+- Goal: a behaviorally faithful native Windows port of Harvest Moon: A Wonderful Life, NTSC-U `GYWEE9`. Verified target DOL SHA1: `1ccfd9dfb5c250c2f45c70c74cc45e5d88d22374`.
 - The harness and partial translations do not establish a playable port. Distinguish traced behavior, translated isolated helpers, connected runtime behavior, and owner-accepted gameplay; placeholders and diagnostic camera/scene fixtures are not original-game behavior.
 - Trace each translation to the verified DOL/REL disassembly; retain addresses, branch/layout evidence, confidence, and unresolved assumptions in the relevant research note.
 - `hmawl` is an unlicensed, read-only source of names/addresses only. Never copy its code or Git history. Do not invent bodies or responsibilities from labels.

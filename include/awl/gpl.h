@@ -138,14 +138,14 @@ struct GplDrawSequenceAnalysis {
 };
 
 // Parses type-1 material commands from the first GPL section. The serialized
-// layout and bit extraction are verified against GYWE41 FUN_801A3DB8,
+// layout and bit extraction are verified against GYWEE9 FUN_801A3DB8,
 // FUN_801A4078, FUN_801A50E8, and FUN_801A5F6C. Unsupported or malformed
 // layouts fail closed.
 bool gpl_parse_texture_commands_for_analysis(
     const GplFile& gpl, std::vector<GplTextureCommand>* out_commands);
 
 // Evidence-limited material parser for the verified unlit ground layouts.
-// GYWE41 FUN_801A4C94 selects a register color when Sub[1] has one element and
+// GYWEE9 FUN_801A4C94 selects a register color when Sub[1] has one element and
 // COLOR0 when it has multiple elements. FUN_801A59C0 decodes the supported
 // RGB565/RGBA4 values, while FUN_801A714C maps type-3 word 1 to texture RGBA
 // multiplied by raster RGBA. Other layouts and TEV words fail closed.
@@ -154,7 +154,7 @@ bool gpl_parse_target_material_for_analysis(
 
 // Replays the verified ground command subset in serialized order. Type-1
 // attached ranges draw with the previously active texture before the command's
-// new texture is installed, matching GYWE41 FUN_801A3000. Type 2 installs the
+// new texture is installed, matching GYWEE9 FUN_801A3000. Type 2 installs the
 // VCD before drawing and type 3 installs verified TEV word 1 before drawing.
 // Unknown state, missing prerequisites, malformed ranges, and unsupported
 // command types fail closed.
