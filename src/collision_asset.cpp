@@ -1070,6 +1070,79 @@ bool resolve_type1_dynamic_object_contact(
     return true;
 }
 
+bool resolve_type1_first_dynamic_object_pass(
+    const CollisionFirstPassObject* objects,
+    size_t object_count,
+    uint64_t source_identity,
+    int32_t category,
+    const std::array<float, 3>& prior_position,
+    const std::array<float, 3>& proposed_position,
+    float moving_radius,
+    uint32_t initial_contact_flags,
+    uint32_t resolver_flags,
+    CollisionFirstDynamicPassAdjustment* adjustment) {
+    if (adjustment != nullptr) {
+        *adjustment = {};
+    }
+    if (adjustment == nullptr ||
+        (object_count != 0 && objects == nullptr) ||
+        !finite_position(prior_position) ||
+        !finite_position(proposed_position) ||
+        !std::isfinite(moving_radius) || moving_radius < 0.0f) {
+        return false;
+    }
+
+    CollisionFirstDynamicPassAdjustment result;
+    result.position = proposed_position;
+    result.contact_flags_after = initial_contact_flags;
+    if ((resolver_flags & 4u) == 0) {
+        *adjustment = result;
+        return true;
+    }
+    if ((resolver_flags & 0x10u) != 0) {
+        return false;
+    }
+
+    for (size_t index = 0; index < object_count; ++index) {
+        const CollisionFirstPassObject& object = objects[index];
+        if (object.identity == source_identity || !object.enabled ||
+            object.category != category) {
+            continue;
+        }
+        if ((object.collision_flags & 2u) != 0) {
+            CollisionDynamicObjectQuery query;
+            query.world_to_object = object.world_to_object;
+            query.object_to_world = object.object_to_world;
+            query.object_center_local = object.center_local;
+            query.object_radius = object.radius;
+            query.moving_radius = moving_radius;
+            query.surface_mask = 0x10000u;
+            query.contact_flags = result.contact_flags_after;
+            CollisionDynamicObjectContactAdjustment contact;
+            if (!resolve_type1_dynamic_object_contact(
+                    object.data, object.size, query, prior_position,
+                    result.position, &contact)) {
+                return false;
+            }
+            result.position = contact.position;
+            ++result.queried_objects;
+            if (contact.contact) {
+                result.contact = true;
+                ++result.contact_count;
+                result.contact_flags_after |= 1u;
+            }
+        } else if ((object.collision_flags & 1u) != 0) {
+            // FUN_8017C600 is a separate circle-contact path.
+            return false;
+        }
+    }
+    if (result.contact) {
+        result.resolver_contact_bit = 4u;
+    }
+    *adjustment = result;
+    return true;
+}
+
 namespace {
 
 bool adjust_radius_passes_in_leaf(

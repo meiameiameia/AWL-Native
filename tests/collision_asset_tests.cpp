@@ -832,6 +832,100 @@ void test_dynamic_object_contact() {
            "null object contact output is rejected");
 }
 
+void test_first_dynamic_object_pass() {
+    std::vector<uint8_t> bytes = make_sample_leaf();
+    constexpr awl::CollisionAffineTransform identity{
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f};
+    awl::CollisionFirstPassObject object;
+    object.identity = 1;
+    object.enabled = true;
+    object.category = 1;
+    object.collision_flags = 2u;
+    object.data = bytes.data();
+    object.size = bytes.size();
+    object.world_to_object = identity;
+    object.object_to_world = identity;
+    object.center_local = {5.0f, 0.0f, 0.0f};
+    awl::CollisionFirstDynamicPassAdjustment adjustment;
+    const std::array<float, 3> prior{5.0f, 7.0f, -2.0f};
+    const std::array<float, 3> proposed{5.0f, 9.0f, -0.5f};
+
+    expect(awl::resolve_type1_first_dynamic_object_pass(
+               &object, 1, 0, 1, prior, proposed, 1.0f, 0u, 4u,
+               &adjustment) && adjustment.contact &&
+               adjustment.queried_objects == 1 &&
+               adjustment.contact_count == 1 &&
+               adjustment.contact_flags_after == 1u &&
+               adjustment.resolver_contact_bit == 4u &&
+               std::fabs(adjustment.position[2] + 1.01f) < 0.0001f,
+           "first list pass applies one type-1 contact and sets sticky bit one");
+
+    awl::CollisionFirstPassObject skipped_self = object;
+    skipped_self.identity = 99;
+    awl::CollisionFirstPassObject skipped_disabled = object;
+    skipped_disabled.identity = 2;
+    skipped_disabled.enabled = false;
+    awl::CollisionFirstPassObject skipped_category = object;
+    skipped_category.identity = 3;
+    skipped_category.category = 7;
+    awl::CollisionFirstPassObject skipped_flags = object;
+    skipped_flags.identity = 4;
+    skipped_flags.collision_flags = 0;
+    const std::array<awl::CollisionFirstPassObject, 5> filtered{
+        skipped_self, skipped_disabled, skipped_category, skipped_flags,
+        object};
+    expect(awl::resolve_type1_first_dynamic_object_pass(
+               filtered.data(), filtered.size(), 99, 1, prior, proposed,
+               1.0f, 0u, 4u, &adjustment) && adjustment.contact &&
+               adjustment.queried_objects == 1 &&
+               adjustment.contact_count == 1,
+           "list pass skips self, disabled, wrong-category, and inert objects");
+
+    awl::CollisionFirstPassObject second = object;
+    second.identity = 2;
+    second.world_to_object[11] = 1.0f;
+    second.object_to_world[11] = -1.0f;
+    const std::array<awl::CollisionFirstPassObject, 2> ordered{object, second};
+    expect(awl::resolve_type1_first_dynamic_object_pass(
+               ordered.data(), ordered.size(), 0, 1, prior, proposed,
+               1.0f, 0u, 4u, &adjustment) && adjustment.contact &&
+               adjustment.queried_objects == 2 &&
+               adjustment.contact_count == 2 &&
+               adjustment.contact_flags_after == 1u &&
+               adjustment.position[0] == prior[0] &&
+               adjustment.position[2] == prior[2],
+           "second object sees the first response and sticky contact flag");
+
+    expect(awl::resolve_type1_first_dynamic_object_pass(
+               ordered.data(), ordered.size(), 0, 1, prior, proposed,
+               1.0f, 0x20u, 0u, &adjustment) && !adjustment.contact &&
+               adjustment.queried_objects == 0 &&
+               adjustment.contact_flags_after == 0x20u &&
+               adjustment.position == proposed,
+           "disabled resolver pass leaves the proposal and flags unchanged");
+    expect(!awl::resolve_type1_first_dynamic_object_pass(
+               ordered.data(), ordered.size(), 0, 1, prior, proposed,
+               1.0f, 0u, 0x14u, &adjustment) && !adjustment.contact &&
+               adjustment.position == std::array<float, 3>{},
+           "alternate flag-0x10 branch is rejected by this bounded pass");
+    awl::CollisionFirstPassObject circle = object;
+    circle.collision_flags = 1u;
+    expect(!awl::resolve_type1_first_dynamic_object_pass(
+               &circle, 1, 0, 1, prior, proposed, 1.0f, 0u, 4u,
+               &adjustment),
+           "eligible circle contact is rejected until its path is translated");
+    expect(!awl::resolve_type1_first_dynamic_object_pass(
+               nullptr, 1, 0, 1, prior, proposed, 1.0f, 0u, 4u,
+               &adjustment),
+           "missing nonempty object list is rejected");
+    expect(!awl::resolve_type1_first_dynamic_object_pass(
+               &object, 1, 0, 1, prior, proposed, -1.0f, 0u, 4u,
+               &adjustment),
+           "negative moving radius is rejected");
+}
+
 void test_radius_edge_adjustment() {
     std::vector<uint8_t> bytes = make_sample_leaf();
     awl::CollisionRadiusEdgeAdjustment adjustment;
@@ -1180,6 +1274,7 @@ int main(int argc, char** argv) {
     test_dynamic_contact_vertex_adjustment();
     test_dynamic_contact_narrow_phase();
     test_dynamic_object_contact();
+    test_first_dynamic_object_pass();
     test_radius_vertex_adjustment();
     test_radius_edge_adjustment();
     test_radius_pass_sequence();

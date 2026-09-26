@@ -104,6 +104,28 @@ struct CollisionDynamicObjectContactAdjustment {
     CollisionDynamicContactAdjustment local_narrow_phase{};
 };
 
+struct CollisionFirstPassObject {
+    uint64_t identity = 0;
+    bool enabled = false;
+    int32_t category = 0;
+    uint32_t collision_flags = 0;
+    const uint8_t* data = nullptr;
+    size_t size = 0;
+    CollisionAffineTransform world_to_object{};
+    CollisionAffineTransform object_to_world{};
+    std::array<float, 3> center_local{};
+    float radius = 0.0f;
+};
+
+struct CollisionFirstDynamicPassAdjustment {
+    std::array<float, 3> position{};
+    bool contact = false;
+    uint32_t contact_flags_after = 0;
+    uint32_t resolver_contact_bit = 0;
+    size_t queried_objects = 0;
+    size_t contact_count = 0;
+};
+
 struct CollisionTerrainRadiusAdjustment {
     std::array<float, 3> position{};
     uint16_t surface_flags = 0;
@@ -220,6 +242,22 @@ struct CollisionTerrainRadiusAdjustment {
     const std::array<float, 3>& prior_world_position,
     const std::array<float, 3>& proposed_world_position,
     CollisionDynamicObjectContactAdjustment* adjustment);
+
+// Isolates FUN_8001E498's first ordered object-list pass (flag 0x4) for
+// caller-supplied type-1 COL objects. The alternate 0x10 path and eligible
+// circle objects are unsupported. This does not own the game's object list or
+// run later resolver passes.
+[[nodiscard]] bool resolve_type1_first_dynamic_object_pass(
+    const CollisionFirstPassObject* objects,
+    size_t object_count,
+    uint64_t source_identity,
+    int32_t category,
+    const std::array<float, 3>& prior_position,
+    const std::array<float, 3>& proposed_position,
+    float moving_radius,
+    uint32_t initial_contact_flags,
+    uint32_t resolver_flags,
+    CollisionFirstDynamicPassAdjustment* adjustment);
 
 // Isolates the type-1 +0x34 virtual (FUN_80194E30) used by the radius pass.
 // The preceding +0x30 edge pass and full resolver are not included.
