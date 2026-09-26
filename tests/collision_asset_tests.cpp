@@ -415,6 +415,56 @@ void test_resolver_height_resampling() {
            "null resolver height output is rejected");
 }
 
+void test_dynamic_contact_broad_phase() {
+    constexpr awl::CollisionAffineTransform identity{
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f};
+    bool may_contact = false;
+    expect(awl::evaluate_dynamic_contact_broad_phase(
+               identity, {3.0f, 100.0f, 4.0f}, {0.0f, -50.0f, 0.0f},
+               2.0f, 3.0f, &may_contact) && may_contact,
+           "exact combined-radius boundary reaches narrow phase in X/Z");
+    expect(awl::evaluate_dynamic_contact_broad_phase(
+               identity, {3.0f, 100.0f, 4.0f}, {0.0f, 0.0f, 0.0f},
+               2.0f, 2.0f, &may_contact) && !may_contact,
+           "candidate beyond the combined radius skips narrow phase");
+
+    awl::CollisionAffineTransform translated = identity;
+    translated[3] = 10.0f;
+    translated[11] = -5.0f;
+    translated[1] = 1000.0f;
+    translated[9] = 1000.0f;
+    expect(awl::evaluate_dynamic_contact_broad_phase(
+               translated, {3.0f, 100.0f, 4.0f}, {13.0f, -50.0f, -1.0f},
+               0.0f, 0.0f, &may_contact) && may_contact,
+           "world-to-object translation applies after the query Y is cleared");
+
+    awl::CollisionAffineTransform rotated = identity;
+    rotated[0] = 0.0f;
+    rotated[2] = 1.0f;
+    rotated[8] = -1.0f;
+    rotated[10] = 0.0f;
+    expect(awl::evaluate_dynamic_contact_broad_phase(
+               rotated, {3.0f, 0.0f, 4.0f}, {4.0f, 0.0f, -3.0f},
+               0.0f, 0.0f, &may_contact) && may_contact,
+           "world-to-object rotation affects the local X/Z distance");
+
+    expect(!awl::evaluate_dynamic_contact_broad_phase(
+               identity, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f},
+               -1.0f, 0.0f, &may_contact) && !may_contact,
+           "negative collision radius is rejected and output is cleared");
+    translated[0] = std::numeric_limits<float>::quiet_NaN();
+    expect(!awl::evaluate_dynamic_contact_broad_phase(
+               translated, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f},
+               1.0f, 1.0f, &may_contact) && !may_contact,
+           "nonfinite transform is rejected");
+    expect(!awl::evaluate_dynamic_contact_broad_phase(
+               identity, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f},
+               1.0f, 1.0f, nullptr),
+           "null broad-phase output is rejected");
+}
+
 void test_radius_vertex_adjustment() {
     std::vector<uint8_t> bytes = make_sample_leaf();
     awl::CollisionRadiusVertexAdjustment adjustment;
@@ -819,6 +869,7 @@ int main(int argc, char** argv) {
     test_nearest_edge_fallback();
     test_terrain_height_adjustment();
     test_resolver_height_resampling();
+    test_dynamic_contact_broad_phase();
     test_radius_vertex_adjustment();
     test_radius_edge_adjustment();
     test_radius_pass_sequence();

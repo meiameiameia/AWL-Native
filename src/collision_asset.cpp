@@ -488,6 +488,54 @@ bool resample_type1_collision_resolver_height(
     return true;
 }
 
+bool evaluate_dynamic_contact_broad_phase(
+    const CollisionAffineTransform& world_to_object,
+    const std::array<float, 3>& proposed_position,
+    const std::array<float, 3>& object_center_local,
+    float object_radius,
+    float moving_radius,
+    bool* may_contact) {
+    if (may_contact == nullptr) {
+        return false;
+    }
+    *may_contact = false;
+    for (float element : world_to_object) {
+        if (!std::isfinite(element)) {
+            return false;
+        }
+    }
+    for (float element : proposed_position) {
+        if (!std::isfinite(element)) {
+            return false;
+        }
+    }
+    for (float element : object_center_local) {
+        if (!std::isfinite(element)) {
+            return false;
+        }
+    }
+    if (!std::isfinite(object_radius) || object_radius < 0.0f ||
+        !std::isfinite(moving_radius) || moving_radius < 0.0f) {
+        return false;
+    }
+
+    const float x = proposed_position[0];
+    const float z = proposed_position[2];
+    const float local_x = world_to_object[0] * x +
+                          world_to_object[2] * z + world_to_object[3];
+    const float local_z = world_to_object[8] * x +
+                          world_to_object[10] * z + world_to_object[11];
+    const float delta_x = object_center_local[0] - local_x;
+    const float delta_z = object_center_local[2] - local_z;
+    const float distance = std::sqrt(delta_x * delta_x + delta_z * delta_z);
+    const float combined_radius = object_radius + moving_radius;
+    if (!std::isfinite(distance) || !std::isfinite(combined_radius)) {
+        return false;
+    }
+    *may_contact = distance <= combined_radius;
+    return true;
+}
+
 bool adjust_type1_collision_terrain_height(
     const uint8_t* data,
     size_t size,

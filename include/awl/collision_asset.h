@@ -52,6 +52,9 @@ struct CollisionResolverHeightAdjustment {
     bool used_edge_fallback = false;
 };
 
+// Row-major 3x4 world-to-object transform used by the traced contact query.
+using CollisionAffineTransform = std::array<float, 12>;
+
 struct CollisionRadiusVertexAdjustment {
     std::array<float, 3> position{};
     bool contact = false;
@@ -130,6 +133,17 @@ struct CollisionTerrainRadiusAdjustment {
     size_t size,
     const std::array<float, 3>& position,
     CollisionResolverHeightAdjustment* adjustment);
+
+// Isolates FUN_80191B7C's X/Z distance gate before its narrow-phase query.
+// The position's Y is cleared before transformation. A true result means the
+// inputs were supported; *may_contact only means narrow phase must be checked.
+[[nodiscard]] bool evaluate_dynamic_contact_broad_phase(
+    const CollisionAffineTransform& world_to_object,
+    const std::array<float, 3>& proposed_position,
+    const std::array<float, 3>& object_center_local,
+    float object_radius,
+    float moving_radius,
+    bool* may_contact);
 
 // Isolates the type-1 +0x34 virtual (FUN_80194E30) used by the radius pass.
 // The preceding +0x30 edge pass and full resolver are not included.
