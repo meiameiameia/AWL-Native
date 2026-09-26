@@ -87,6 +87,23 @@ struct CollisionDynamicContactAdjustment {
     uint8_t pass_count = 0;
 };
 
+struct CollisionDynamicObjectQuery {
+    CollisionAffineTransform world_to_object{};
+    CollisionAffineTransform object_to_world{};
+    std::array<float, 3> object_center_local{};
+    float object_radius = 0.0f;
+    float moving_radius = 0.0f;
+    uint32_t surface_mask = 0;
+    uint32_t contact_flags = 0;
+};
+
+struct CollisionDynamicObjectContactAdjustment {
+    std::array<float, 3> position{};
+    bool contact = false;
+    bool broad_phase_passed = false;
+    CollisionDynamicContactAdjustment local_narrow_phase{};
+};
+
 struct CollisionTerrainRadiusAdjustment {
     std::array<float, 3> position{};
     uint16_t surface_flags = 0;
@@ -192,6 +209,17 @@ struct CollisionTerrainRadiusAdjustment {
     uint32_t surface_mask,
     uint32_t contact_flags,
     CollisionDynamicContactAdjustment* adjustment);
+
+// Isolates FUN_80191B7C for a caller-supplied type-1 object and matrices.
+// A miss preserves the proposed world point; contact transforms a local
+// response back with local Y cleared. Object-list ownership is not included.
+[[nodiscard]] bool resolve_type1_dynamic_object_contact(
+    const uint8_t* data,
+    size_t size,
+    const CollisionDynamicObjectQuery& query,
+    const std::array<float, 3>& prior_world_position,
+    const std::array<float, 3>& proposed_world_position,
+    CollisionDynamicObjectContactAdjustment* adjustment);
 
 // Isolates the type-1 +0x34 virtual (FUN_80194E30) used by the radius pass.
 // The preceding +0x30 edge pass and full resolver are not included.

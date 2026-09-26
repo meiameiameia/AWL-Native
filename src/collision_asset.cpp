@@ -984,6 +984,94 @@ bool resolve_type1_dynamic_contact_narrow_phase(
 
 namespace {
 
+std::array<float, 3> transform_horizontal_point(
+    const CollisionAffineTransform& transform,
+    const std::array<float, 3>& position) {
+    const float x = position[0];
+    const float z = position[2];
+    return {
+        transform[0] * x + transform[2] * z + transform[3],
+        transform[4] * x + transform[6] * z + transform[7],
+        transform[8] * x + transform[10] * z + transform[11]};
+}
+
+bool finite_position(const std::array<float, 3>& position) {
+    return std::isfinite(position[0]) && std::isfinite(position[1]) &&
+           std::isfinite(position[2]);
+}
+
+} // namespace
+
+bool resolve_type1_dynamic_object_contact(
+    const uint8_t* data,
+    size_t size,
+    const CollisionDynamicObjectQuery& query,
+    const std::array<float, 3>& prior_world_position,
+    const std::array<float, 3>& proposed_world_position,
+    CollisionDynamicObjectContactAdjustment* adjustment) {
+    if (adjustment != nullptr) {
+        *adjustment = {};
+    }
+    if (adjustment == nullptr || !finite_position(prior_world_position) ||
+        !finite_position(proposed_world_position)) {
+        return false;
+    }
+    for (const float element : query.object_to_world) {
+        if (!std::isfinite(element)) {
+            return false;
+        }
+    }
+    CollisionTreeAnalysis analysis;
+    if (!analyze_type1_collision_asset(data, size, &analysis) ||
+        analysis.header_byte_6 != 1) {
+        return false;
+    }
+
+    bool may_contact = false;
+    if (!evaluate_dynamic_contact_broad_phase(
+            query.world_to_object, proposed_world_position,
+            query.object_center_local, query.object_radius,
+            query.moving_radius, &may_contact)) {
+        return false;
+    }
+    CollisionDynamicObjectContactAdjustment result;
+    result.broad_phase_passed = may_contact;
+    result.position = proposed_world_position;
+    if (!may_contact) {
+        *adjustment = result;
+        return true;
+    }
+
+    const auto local_prior = transform_horizontal_point(
+        query.world_to_object, prior_world_position);
+    const auto local_proposed = transform_horizontal_point(
+        query.world_to_object, proposed_world_position);
+    if (!finite_position(local_prior) || !finite_position(local_proposed)) {
+        return false;
+    }
+    const uint32_t node_offset = select_leaf(
+        data, analysis.coordinate_scale, local_proposed[0],
+        local_proposed[2]);
+    if (!resolve_dynamic_contact_in_leaf(
+            data, analysis, node_offset, local_prior, local_proposed,
+            query.moving_radius, query.surface_mask, query.contact_flags,
+            &result.local_narrow_phase)) {
+        return false;
+    }
+    result.contact = result.local_narrow_phase.contact;
+    if (result.contact) {
+        result.position = transform_horizontal_point(
+            query.object_to_world, result.local_narrow_phase.position);
+        if (!finite_position(result.position)) {
+            return false;
+        }
+    }
+    *adjustment = result;
+    return true;
+}
+
+namespace {
+
 bool adjust_radius_passes_in_leaf(
     const uint8_t* data,
     const CollisionTreeAnalysis& analysis,

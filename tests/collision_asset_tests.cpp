@@ -736,6 +736,102 @@ void test_dynamic_contact_narrow_phase() {
            "null dynamic narrow-phase output is rejected");
 }
 
+void test_dynamic_object_contact() {
+    std::vector<uint8_t> bytes = make_sample_leaf();
+    constexpr awl::CollisionAffineTransform identity{
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f};
+    awl::CollisionDynamicObjectQuery query;
+    query.world_to_object = identity;
+    query.object_to_world = identity;
+    query.object_center_local = {5.0f, 0.0f, 0.0f};
+    query.moving_radius = 1.0f;
+    query.surface_mask = 0x20u;
+    awl::CollisionDynamicObjectContactAdjustment adjustment;
+    const std::array<float, 3> prior{5.0f, 7.0f, -2.0f};
+    const std::array<float, 3> proposed{5.0f, 9.0f, -0.5f};
+    expect(awl::resolve_type1_dynamic_object_contact(
+               bytes.data(), bytes.size(), query, prior, proposed,
+               &adjustment) && adjustment.broad_phase_passed &&
+               adjustment.contact && adjustment.local_narrow_phase.contact &&
+               adjustment.position[0] == 5.0f &&
+               adjustment.position[1] == 0.0f &&
+               std::fabs(adjustment.position[2] + 1.01f) < 0.0001f,
+           "contacted object response clears local Y before world transform");
+
+    query.object_center_local = {100.0f, 0.0f, 0.0f};
+    expect(awl::resolve_type1_dynamic_object_contact(
+               bytes.data(), bytes.size(), query, prior, proposed,
+               &adjustment) && !adjustment.broad_phase_passed &&
+               !adjustment.contact && adjustment.position == proposed,
+           "broad-phase miss preserves the original world proposal");
+    query.object_center_local = {5.0f, 0.0f, -2.0f};
+    expect(awl::resolve_type1_dynamic_object_contact(
+               bytes.data(), bytes.size(), query, prior, prior,
+               &adjustment) && adjustment.broad_phase_passed &&
+               !adjustment.contact &&
+               adjustment.local_narrow_phase.pass_count == 1 &&
+               adjustment.position == prior,
+           "narrow-phase miss also preserves the original world proposal");
+
+    query.world_to_object = identity;
+    query.object_to_world = identity;
+    query.world_to_object[1] = 1000.0f;
+    query.world_to_object[9] = 1000.0f;
+    query.world_to_object[3] = 10.0f;
+    query.world_to_object[7] = -42.0f;
+    query.world_to_object[11] = -5.0f;
+    query.object_to_world[1] = 1000.0f;
+    query.object_to_world[9] = 1000.0f;
+    query.object_to_world[3] = -10.0f;
+    query.object_to_world[7] = 42.0f;
+    query.object_to_world[11] = 5.0f;
+    query.object_center_local = {5.0f, 0.0f, 0.0f};
+    expect(awl::resolve_type1_dynamic_object_contact(
+               bytes.data(), bytes.size(), query, {-5.0f, 7.0f, 3.0f},
+               {-5.0f, 9.0f, 4.5f}, &adjustment) &&
+               adjustment.contact && adjustment.position[0] == -5.0f &&
+               adjustment.position[1] == 42.0f &&
+               std::fabs(adjustment.position[2] - 3.99f) < 0.0001f,
+           "translation uses horizontal inputs and transforms contacted local output");
+
+    query.world_to_object = {
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        -1.0f, 0.0f, 0.0f, 0.0f};
+    query.object_to_world = {
+        0.0f, 0.0f, -1.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        1.0f, 0.0f, 0.0f, 0.0f};
+    expect(awl::resolve_type1_dynamic_object_contact(
+               bytes.data(), bytes.size(), query, {2.0f, 7.0f, 5.0f},
+               {0.5f, 9.0f, 5.0f}, &adjustment) &&
+               adjustment.contact &&
+               std::fabs(adjustment.position[0] - 1.01f) < 0.0001f &&
+               adjustment.position[1] == 0.0f &&
+               adjustment.position[2] == 5.0f,
+           "rotation takes the local contact result back to world X/Z");
+
+    query.object_to_world[0] = std::numeric_limits<float>::quiet_NaN();
+    expect(!awl::resolve_type1_dynamic_object_contact(
+               bytes.data(), bytes.size(), query, prior, proposed,
+               &adjustment) && !adjustment.contact &&
+               adjustment.position == std::array<float, 3>{},
+           "nonfinite output transform is rejected and clears output");
+    query.object_to_world = identity;
+    bytes[6] = 0;
+    expect(!awl::resolve_type1_dynamic_object_contact(
+               bytes.data(), bytes.size(), query, prior, proposed,
+               &adjustment),
+           "unsupported object collision mode is rejected");
+    bytes[6] = 1;
+    expect(!awl::resolve_type1_dynamic_object_contact(
+               bytes.data(), bytes.size(), query, prior, proposed,
+               nullptr),
+           "null object contact output is rejected");
+}
+
 void test_radius_edge_adjustment() {
     std::vector<uint8_t> bytes = make_sample_leaf();
     awl::CollisionRadiusEdgeAdjustment adjustment;
@@ -1083,6 +1179,7 @@ int main(int argc, char** argv) {
     test_dynamic_contact_edge_adjustment();
     test_dynamic_contact_vertex_adjustment();
     test_dynamic_contact_narrow_phase();
+    test_dynamic_object_contact();
     test_radius_vertex_adjustment();
     test_radius_edge_adjustment();
     test_radius_pass_sequence();
