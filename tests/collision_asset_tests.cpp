@@ -546,6 +546,89 @@ void test_radius_pass_sequence() {
            "null sequence output is rejected");
 }
 
+void test_terrain_radius_adjustment() {
+    std::vector<uint8_t> bytes = make_sample_leaf();
+    awl::CollisionTerrainRadiusAdjustment adjustment;
+    const std::array<float, 3> prior{2.0f, 7.0f, 2.0f};
+    const std::array<float, 3> proposed{2.0f, 50.0f, 2.0f};
+    expect(awl::adjust_type1_collision_terrain_with_radius(
+               bytes.data(), bytes.size(), prior, proposed, 0.0f,
+               &adjustment) &&
+               adjustment.position == std::array<float, 3>{2.0f, 6.0f, 2.0f} &&
+               adjustment.surface_flags == 0x20 &&
+               !adjustment.initial_edge_fallback &&
+               !adjustment.final_edge_fallback &&
+               !adjustment.radius_contact && adjustment.radius_pass_count == 0,
+           "zero radius keeps the primary height and skips radius passes");
+
+    expect(awl::adjust_type1_collision_terrain_with_radius(
+               bytes.data(), bytes.size(), prior, proposed, 1.0f,
+               &adjustment) &&
+               adjustment.position == std::array<float, 3>{2.0f, 6.0f, 2.0f} &&
+               !adjustment.radius_contact && adjustment.radius_pass_count == 1,
+           "clear radius pass keeps the first sampled height");
+
+    expect(awl::adjust_type1_collision_terrain_with_radius(
+               bytes.data(), bytes.size(), prior, {6.0f, 50.0f, -3.0f},
+               0.0f, &adjustment) &&
+               adjustment.position == std::array<float, 3>{6.0f, 6.0f, 0.0f} &&
+               adjustment.initial_edge_fallback &&
+               !adjustment.final_edge_fallback,
+           "initial miss projects onto the selected leaf edge");
+
+    put_be16(bytes, 8 + 0x34, 0x2000);
+    expect(awl::adjust_type1_collision_terrain_with_radius(
+               bytes.data(), bytes.size(), {0.5f, 7.0f, 0.0f},
+               {0.5f, 50.0f, 0.0f}, 1.0f, &adjustment) &&
+               adjustment.radius_contact && !adjustment.reverted_to_prior &&
+               adjustment.radius_pass_count == 2 &&
+               std::fabs(adjustment.position[0] - 1.01f) < 0.0001f &&
+               std::fabs(adjustment.position[1] - 1.01f) < 0.0001f &&
+               !adjustment.final_edge_fallback,
+           "vertex contact resamples height at the adjusted X/Z");
+
+    expect(awl::adjust_type1_collision_terrain_with_radius(
+               bytes.data(), bytes.size(), {0.0f, 7.0f, 2.0f},
+               {0.0f, 50.0f, 0.0f}, 1.0f, &adjustment) &&
+               adjustment.radius_contact && adjustment.reverted_to_prior &&
+               adjustment.radius_pass_count == 3 &&
+               adjustment.position == std::array<float, 3>{0.0f, 4.0f, 2.0f},
+           "third-pass revert resamples terrain height at the prior X/Z");
+
+    bytes = make_one_level_sample_tree();
+    constexpr uint32_t payload = 8 + 0x34 * 5;
+    put_be16(bytes, payload, 0x2000);
+    expect(awl::adjust_type1_collision_terrain_with_radius(
+               bytes.data(), bytes.size(), {15.0f, 7.0f, 9.0f},
+               {15.0f, 50.0f, 10.5f}, 1.0f, &adjustment) &&
+               adjustment.radius_contact && adjustment.radius_pass_count == 2 &&
+               adjustment.final_edge_fallback &&
+               adjustment.position == std::array<float, 3>{15.0f, 5.0f, 10.0f},
+           "post-contact height fallback stays in the original leaf after crossing");
+
+    bytes = make_single_leaf();
+    expect(!awl::adjust_type1_collision_terrain_with_radius(
+               bytes.data(), bytes.size(), prior, proposed, 1.0f,
+               &adjustment) &&
+               adjustment.position == std::array<float, 3>{},
+           "empty selected leaf fails and clears its output");
+    bytes = make_sample_leaf();
+    bytes[6] = 0;
+    expect(!awl::adjust_type1_collision_terrain_with_radius(
+               bytes.data(), bytes.size(), prior, proposed, 1.0f,
+               &adjustment),
+           "untranslated radius mode is rejected");
+    bytes[6] = 1;
+    expect(!awl::adjust_type1_collision_terrain_with_radius(
+               bytes.data(), bytes.size(), prior, proposed, -1.0f,
+               &adjustment),
+           "negative radius is rejected");
+    expect(!awl::adjust_type1_collision_terrain_with_radius(
+               bytes.data(), bytes.size(), prior, proposed, 1.0f,
+               nullptr),
+           "null terrain radius output is rejected");
+}
+
 bool inspect_local_asset(const char* path) {
     std::ifstream input(path, std::ios::binary);
     if (!input) {
@@ -637,6 +720,18 @@ bool inspect_local_asset(const char* path) {
         std::fprintf(stderr, "Radius pass sequence failed: %s\n", path);
         return false;
     }
+    awl::CollisionTerrainRadiusAdjustment terrain_radius;
+    if (!awl::adjust_type1_collision_terrain_with_radius(
+            bytes.data(), bytes.size(),
+            {sample_x, sample.height, sample_z},
+            {sample_x, sample.height, sample_z}, 0.3f,
+            &terrain_radius) ||
+        !std::isfinite(terrain_radius.position[0]) ||
+        !std::isfinite(terrain_radius.position[1]) ||
+        !std::isfinite(terrain_radius.position[2])) {
+        std::fprintf(stderr, "Terrain radius branch failed: %s\n", path);
+        return false;
+    }
     return true;
 }
 
@@ -652,6 +747,7 @@ int main(int argc, char** argv) {
     test_radius_vertex_adjustment();
     test_radius_edge_adjustment();
     test_radius_pass_sequence();
+    test_terrain_radius_adjustment();
 
     for (int index = 1; index < argc; ++index) {
         if (!inspect_local_asset(argv[index])) {

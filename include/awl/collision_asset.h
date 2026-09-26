@@ -67,6 +67,16 @@ struct CollisionRadiusPassesAdjustment {
     uint8_t pass_count = 0;
 };
 
+struct CollisionTerrainRadiusAdjustment {
+    std::array<float, 3> position{};
+    uint16_t surface_flags = 0;
+    bool initial_edge_fallback = false;
+    bool final_edge_fallback = false;
+    bool radius_contact = false;
+    bool reverted_to_prior = false;
+    uint8_t radius_pass_count = 0;
+};
+
 // Validates the relocatable type-1 tree structure used by the verified
 // movement collision assets, including their indexed triangle payloads.
 [[nodiscard]] bool analyze_type1_collision_asset(
@@ -131,5 +141,17 @@ struct CollisionRadiusPassesAdjustment {
     const std::array<float, 3>& proposed_position,
     float radius,
     CollisionRadiusPassesAdjustment* adjustment);
+
+// Isolates FUN_8002009C's height-enabled, header-byte-6 = 1 terrain branch.
+// The initial query pins one leaf for height/edge fallback, radius passes, and
+// contact-triggered height resampling. This is not the shared resolver or an
+// accepted gameplay position update.
+[[nodiscard]] bool adjust_type1_collision_terrain_with_radius(
+    const uint8_t* data,
+    size_t size,
+    const std::array<float, 3>& prior_position,
+    const std::array<float, 3>& proposed_position,
+    float radius,
+    CollisionTerrainRadiusAdjustment* adjustment);
 
 } // namespace awl

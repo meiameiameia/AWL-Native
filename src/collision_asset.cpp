@@ -323,22 +323,14 @@ bool analyze_type1_collision_asset(const uint8_t* data,
     return true;
 }
 
-bool sample_type1_collision_surface(const uint8_t* data,
-                                    size_t size,
-                                    float x,
-                                    float z,
-                                    CollisionSurfaceSample* sample) {
-    if (sample != nullptr) {
-        *sample = {};
-    }
-    CollisionTreeAnalysis analysis;
-    if (sample == nullptr || !std::isfinite(x) || !std::isfinite(z) ||
-        !analyze_type1_collision_asset(data, size, &analysis)) {
-        return false;
-    }
+namespace {
 
-    const uint32_t node_offset =
-        select_leaf(data, analysis.coordinate_scale, x, z);
+bool sample_surface_in_leaf(const uint8_t* data,
+                            const CollisionTreeAnalysis& analysis,
+                            uint32_t node_offset,
+                            float x,
+                            float z,
+                            CollisionSurfaceSample* sample) {
     const LeafPayload leaf = leaf_payload(data, node_offset);
     for (uint32_t index = 0; index < leaf.triangle_count; ++index) {
         const uint8_t* record =
@@ -361,11 +353,13 @@ bool sample_type1_collision_surface(const uint8_t* data,
     return false;
 }
 
-bool project_type1_collision_to_edge(const uint8_t* data,
-                                     size_t size,
-                                     float x,
-                                     float z,
-                                     CollisionEdgeSample* sample) {
+} // namespace
+
+bool sample_type1_collision_surface(const uint8_t* data,
+                                    size_t size,
+                                    float x,
+                                    float z,
+                                    CollisionSurfaceSample* sample) {
     if (sample != nullptr) {
         *sample = {};
     }
@@ -377,6 +371,17 @@ bool project_type1_collision_to_edge(const uint8_t* data,
 
     const uint32_t node_offset =
         select_leaf(data, analysis.coordinate_scale, x, z);
+    return sample_surface_in_leaf(data, analysis, node_offset, x, z, sample);
+}
+
+namespace {
+
+bool project_edge_in_leaf(const uint8_t* data,
+                          const CollisionTreeAnalysis& analysis,
+                          uint32_t node_offset,
+                          float x,
+                          float z,
+                          CollisionEdgeSample* sample) {
     const LeafPayload leaf = leaf_payload(data, node_offset);
     bool found = false;
     uint32_t selected_triangle = 0;
@@ -421,6 +426,27 @@ bool project_type1_collision_to_edge(const uint8_t* data,
     sample->edge_index = selected_edge;
     sample->distance_squared_xz = closest.distance_squared;
     return true;
+}
+
+} // namespace
+
+bool project_type1_collision_to_edge(const uint8_t* data,
+                                     size_t size,
+                                     float x,
+                                     float z,
+                                     CollisionEdgeSample* sample) {
+    if (sample != nullptr) {
+        *sample = {};
+    }
+    CollisionTreeAnalysis analysis;
+    if (sample == nullptr || !std::isfinite(x) || !std::isfinite(z) ||
+        !analyze_type1_collision_asset(data, size, &analysis)) {
+        return false;
+    }
+
+    const uint32_t node_offset =
+        select_leaf(data, analysis.coordinate_scale, x, z);
+    return project_edge_in_leaf(data, analysis, node_offset, x, z, sample);
 }
 
 bool adjust_type1_collision_terrain_height(
@@ -671,6 +697,49 @@ bool adjust_type1_collision_radius_edge(
                                       radius, adjustment);
 }
 
+namespace {
+
+bool adjust_radius_passes_in_leaf(
+    const uint8_t* data,
+    const CollisionTreeAnalysis& analysis,
+    uint32_t node_offset,
+    const std::array<float, 3>& prior_position,
+    const std::array<float, 3>& proposed_position,
+    float radius,
+    CollisionRadiusPassesAdjustment* adjustment) {
+    std::array<float, 3> candidate = proposed_position;
+    bool first_pass_contact = false;
+    for (uint8_t pass = 1; pass <= 3; ++pass) {
+        CollisionRadiusEdgeAdjustment edge;
+        if (!adjust_radius_edge_in_leaf(data, analysis, node_offset,
+                                        prior_position, candidate, radius,
+                                        &edge)) {
+            return false;
+        }
+        candidate = edge.position;
+        CollisionRadiusVertexAdjustment vertex;
+        if (!adjust_radius_vertex_in_leaf(data, analysis, node_offset,
+                                          candidate, radius, &vertex)) {
+            return false;
+        }
+        candidate = vertex.position;
+        const bool contact = edge.contact || vertex.contact;
+        if (pass == 1) {
+            first_pass_contact = contact;
+        }
+        if (!contact || pass == 3) {
+            adjustment->position = contact ? prior_position : candidate;
+            adjustment->contact = first_pass_contact;
+            adjustment->reverted_to_prior = contact;
+            adjustment->pass_count = pass;
+            return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
+
 bool adjust_type1_collision_radius_passes(
     const uint8_t* data,
     size_t size,
@@ -694,38 +763,106 @@ bool adjust_type1_collision_radius_passes(
         return false;
     }
 
-    const uint32_t initial_leaf = select_leaf(
+    const uint32_t node_offset = select_leaf(
+        data, analysis.coordinate_scale, proposed_position[0],
+        proposed_position[2]);
+    return adjust_radius_passes_in_leaf(data, analysis, node_offset,
+                                        prior_position, proposed_position,
+                                        radius, adjustment);
+}
+
+namespace {
+
+bool query_height_in_leaf(const uint8_t* data,
+                          const CollisionTreeAnalysis& analysis,
+                          uint32_t node_offset,
+                          std::array<float, 3>& candidate,
+                          float& height,
+                          uint16_t& surface_flags,
+                          bool& used_edge_fallback) {
+    CollisionSurfaceSample surface;
+    if (sample_surface_in_leaf(data, analysis, node_offset, candidate[0],
+                               candidate[2], &surface)) {
+        height = surface.height;
+        surface_flags = surface.surface_flags;
+        used_edge_fallback = false;
+        return true;
+    }
+
+    CollisionEdgeSample edge;
+    if (!project_edge_in_leaf(data, analysis, node_offset, candidate[0],
+                              candidate[2], &edge)) {
+        return false;
+    }
+    candidate = edge.position;
+    height = edge.position[1];
+    surface_flags = edge.surface_flags;
+    used_edge_fallback = true;
+    return true;
+}
+
+} // namespace
+
+bool adjust_type1_collision_terrain_with_radius(
+    const uint8_t* data,
+    size_t size,
+    const std::array<float, 3>& prior_position,
+    const std::array<float, 3>& proposed_position,
+    float radius,
+    CollisionTerrainRadiusAdjustment* adjustment) {
+    if (adjustment != nullptr) {
+        *adjustment = {};
+    }
+    CollisionTreeAnalysis analysis;
+    if (adjustment == nullptr || !std::isfinite(radius) || radius < 0.0f ||
+        !std::isfinite(prior_position[0]) ||
+        !std::isfinite(prior_position[1]) ||
+        !std::isfinite(prior_position[2]) ||
+        !std::isfinite(proposed_position[0]) ||
+        !std::isfinite(proposed_position[1]) ||
+        !std::isfinite(proposed_position[2]) ||
+        !analyze_type1_collision_asset(data, size, &analysis) ||
+        analysis.header_byte_6 != 1) {
+        return false;
+    }
+
+    const uint32_t node_offset = select_leaf(
         data, analysis.coordinate_scale, proposed_position[0],
         proposed_position[2]);
     std::array<float, 3> candidate = proposed_position;
-    bool first_pass_contact = false;
-    for (uint8_t pass = 1; pass <= 3; ++pass) {
-        CollisionRadiusEdgeAdjustment edge;
-        if (!adjust_radius_edge_in_leaf(data, analysis, initial_leaf,
-                                        prior_position, candidate, radius,
-                                        &edge)) {
+    float height = 0.0f;
+    uint16_t surface_flags = 0;
+    bool initial_fallback = false;
+    if (!query_height_in_leaf(data, analysis, node_offset, candidate, height,
+                              surface_flags, initial_fallback)) {
+        return false;
+    }
+
+    CollisionRadiusPassesAdjustment radius_adjustment;
+    bool final_fallback = false;
+    if (radius > 0.0f) {
+        if (!adjust_radius_passes_in_leaf(data, analysis, node_offset,
+                                          prior_position, candidate, radius,
+                                          &radius_adjustment)) {
             return false;
         }
-        candidate = edge.position;
-        CollisionRadiusVertexAdjustment vertex;
-        if (!adjust_radius_vertex_in_leaf(data, analysis, initial_leaf,
-                                          candidate, radius, &vertex)) {
+        candidate = radius_adjustment.position;
+        if (radius_adjustment.contact &&
+            !query_height_in_leaf(data, analysis, node_offset, candidate,
+                                  height, surface_flags, final_fallback)) {
             return false;
-        }
-        candidate = vertex.position;
-        const bool contact = edge.contact || vertex.contact;
-        if (pass == 1) {
-            first_pass_contact = contact;
-        }
-        if (!contact || pass == 3) {
-            adjustment->position = contact ? prior_position : candidate;
-            adjustment->contact = first_pass_contact;
-            adjustment->reverted_to_prior = contact;
-            adjustment->pass_count = pass;
-            return true;
         }
     }
-    return false;
+
+    candidate[1] = height;
+    adjustment->position = candidate;
+    adjustment->surface_flags = surface_flags;
+    adjustment->initial_edge_fallback = initial_fallback;
+    adjustment->final_edge_fallback = final_fallback;
+    adjustment->radius_contact = radius_adjustment.contact;
+    adjustment->reverted_to_prior = radius_adjustment.reverted_to_prior;
+    adjustment->radius_pass_count = radius_adjustment.pass_count;
+    return true;
 }
 
 } // namespace awl
