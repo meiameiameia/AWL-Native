@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <limits>
 
 namespace {
 
@@ -147,6 +148,58 @@ int main() {
     expect(near(proposed.x, position.x) && near(proposed.y, position.y) &&
            near(proposed.z, position.z),
            "zero current speed produces no proposed displacement");
+
+    const awl::WorldMapPosition origin{};
+    uint8_t contact_code = 7;
+    expect(awl::classify_world_map_directional_contact(
+               origin, {0.0f, 5.0f, -1.0f}, 0.0f, 1.0f, 0x1,
+               &contact_code) && contact_code == 0,
+           "first contact direction faces against negative Z movement");
+    expect(awl::classify_world_map_directional_contact(
+               origin, {0.0f, 0.0f, 1.0f}, 0.0f, 1.0f, 0x2,
+               &contact_code) && contact_code == 1,
+           "second contact direction is the opposite heading");
+    expect(awl::classify_world_map_directional_contact(
+               origin, {-1.0f, 0.0f, 0.0f}, 0.0f, 1.0f, 0x4,
+               &contact_code) && contact_code == 3,
+           "third contact direction maps to code three without bit zero");
+    expect(awl::classify_world_map_directional_contact(
+               origin, {-1.0f, 0.0f, 0.0f}, 0.0f, 1.0f, 0x5,
+               &contact_code) && contact_code == 2,
+           "bit zero changes the third direction code even when it fails its own angle");
+    expect(awl::classify_world_map_directional_contact(
+               origin, {1.0f, 0.0f, 0.0f}, 0.0f, 1.0f, 0x8,
+               &contact_code) && contact_code == 5,
+           "fourth contact direction maps to code five without bit zero");
+    expect(awl::classify_world_map_directional_contact(
+               origin, {1.0f, 0.0f, 0.0f}, 0.0f, 1.0f, 0x9,
+               &contact_code) && contact_code == 4,
+           "bit zero changes the fourth direction code");
+    expect(awl::classify_world_map_directional_contact(
+               origin, {-1.0f, 0.0f, 0.0f}, 1.0f, 0.0f, 0x1,
+               &contact_code) && contact_code == 0,
+           "collider orientation rotates the directional test");
+    expect(!awl::classify_world_map_directional_contact(
+               origin, {0.6f, 0.0f, -0.8f}, 0.0f, 1.0f, 0x1,
+               &contact_code) && contact_code == 7,
+           "movement outside the thirty-degree contact cone does not qualify");
+    expect(!awl::classify_world_map_directional_contact(
+               origin, {0.0f, 1.0f, 0.0f}, 0.0f, 1.0f, 0xf,
+               &contact_code) && contact_code == 7,
+           "vertical-only movement does not supply a directional contact");
+    expect(!awl::classify_world_map_directional_contact(
+               origin, {0.0f, 0.0f, -1.0f}, 0.0f, 1.0f, 0x10,
+               &contact_code) && contact_code == 7,
+           "unsupported contact mask bits are rejected");
+    expect(!awl::classify_world_map_directional_contact(
+               origin, {0.0f, 0.0f, -1.0f},
+               std::numeric_limits<float>::quiet_NaN(), 1.0f, 0x1,
+               &contact_code) && contact_code == 7,
+           "nonfinite contact orientation is rejected");
+    expect(!awl::classify_world_map_directional_contact(
+               origin, {0.0f, 0.0f, -1.0f}, 0.0f, 1.0f, 0x1,
+               nullptr),
+           "null contact-code output is rejected");
 
     if (failures == 0) {
         std::puts("Player input tests passed.");

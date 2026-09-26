@@ -2,6 +2,8 @@
 
 #include "awl/input.h"
 
+#include <cstdint>
+
 namespace awl {
 
 // Pure, DOL-backed front half of FUN_8003083C. This is not a complete player
@@ -34,5 +36,16 @@ void update_world_map_steering(const HsdPadFrame& pad,
     const WorldMapPosition& current_position,
     float camera_yaw_radians,
     const WorldMapSteeringState& steering);
+
+// Isolates the directional-code selection after FUN_8001DE44 receives a
+// contact mask. The caller must first perform that untranslated contact query.
+// Returns false with code 7 for no qualifying direction or unsupported input.
+[[nodiscard]] bool classify_world_map_directional_contact(
+    const WorldMapPosition& prior_position,
+    const WorldMapPosition& proposed_position,
+    float contact_axis_x,
+    float contact_axis_z,
+    uint32_t contact_mask,
+    uint8_t* direction_code);
 
 } // namespace awl

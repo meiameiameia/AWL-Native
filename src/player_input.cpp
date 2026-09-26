@@ -16,6 +16,8 @@ constexpr float kLowSpeed = 0.06f;
 constexpr float kSpeedStep = 0.03f;
 constexpr float kRadiansPerDegree = 0.017453292f;
 constexpr float kTurnRateDegrees = 4.0f;
+constexpr float kContactDirectionThreshold = 0.8660254f;
+constexpr float kContactAngleDegrees[4] = {0.0f, 180.0f, 90.0f, -90.0f};
 
 } // namespace
 
@@ -83,6 +85,56 @@ WorldMapPosition propose_world_map_position(
     proposed.x += std::sin(z_component_yaw) * scaled_z;
     proposed.z += std::cos(z_component_yaw) * scaled_z;
     return proposed;
+}
+
+bool classify_world_map_directional_contact(
+    const WorldMapPosition& prior_position,
+    const WorldMapPosition& proposed_position,
+    float contact_axis_x,
+    float contact_axis_z,
+    uint32_t contact_mask,
+    uint8_t* direction_code) {
+    if (direction_code == nullptr) {
+        return false;
+    }
+    *direction_code = 7;
+    const float delta_x = proposed_position.x - prior_position.x;
+    const float delta_z = proposed_position.z - prior_position.z;
+    if (!std::isfinite(delta_x) || !std::isfinite(delta_z) ||
+        !std::isfinite(contact_axis_x) || !std::isfinite(contact_axis_z) ||
+        (contact_axis_x == 0.0f && contact_axis_z == 0.0f) ||
+        (contact_mask & ~0xFu) != 0) {
+        return false;
+    }
+    const float distance = std::sqrt(delta_x * delta_x + delta_z * delta_z);
+    if (distance == 0.0f || !std::isfinite(distance)) {
+        return false;
+    }
+    const float movement_x = delta_x / distance;
+    const float movement_z = delta_z / distance;
+    const float contact_angle = std::atan2(contact_axis_x, contact_axis_z);
+    for (uint8_t index = 0; index < 4; ++index) {
+        if ((contact_mask & (1u << index)) == 0) {
+            continue;
+        }
+        const float angle = contact_angle +
+                            kContactAngleDegrees[index] * kRadiansPerDegree;
+        const float dot = std::sin(angle) * movement_x +
+                          std::cos(angle) * movement_z;
+        if (-dot >= kContactDirectionThreshold) {
+            if (index < 2) {
+                *direction_code = index;
+            } else {
+                uint8_t code = index == 2 ? 3 : 5;
+                if ((contact_mask & 1u) != 0) {
+                    --code;
+                }
+                *direction_code = code;
+            }
+            return true;
+        }
+    }
+    return false;
 }
 
 } // namespace awl
