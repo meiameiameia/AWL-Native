@@ -572,12 +572,14 @@ bool adjust_type1_collision_terrain_height(
 
 namespace {
 
-bool adjust_radius_vertex_in_leaf(
+bool adjust_vertex_in_leaf(
     const uint8_t* data,
     const CollisionTreeAnalysis& analysis,
     uint32_t node_offset,
     const std::array<float, 3>& proposed_position,
     float radius,
+    uint32_t surface_mask,
+    bool require_incident_edge,
     CollisionRadiusVertexAdjustment* adjustment) {
     adjustment->position = proposed_position;
     const LeafPayload leaf = leaf_payload(data, node_offset);
@@ -587,12 +589,16 @@ bool adjust_radius_vertex_in_leaf(
         const uint8_t* record = data + leaf.triangles +
                                 static_cast<size_t>(index) * kTriangleStride;
         const uint16_t flags = read_be16(record);
+        if ((surface_mask & 0x10000u) == 0 &&
+            (flags & surface_mask) == 0 && flags != 0) {
+            continue;
+        }
         const auto triangle = decode_triangle(
             data, leaf.vertices, record, analysis.coordinate_scale);
         for (uint8_t vertex = 0; vertex < 3; ++vertex) {
             const uint16_t incident_edges = static_cast<uint16_t>(
                 (1u << (13 + vertex)) | (1u << (13 + (vertex + 2) % 3)));
-            if ((flags & incident_edges) == 0) {
+            if (require_incident_edge && (flags & incident_edges) == 0) {
                 continue;
             }
             const float dx = proposed_position[0] - triangle[vertex].x;
@@ -652,8 +658,37 @@ bool adjust_type1_collision_radius_vertex(
     const uint32_t node_offset = select_leaf(
         data, analysis.coordinate_scale, proposed_position[0],
         proposed_position[2]);
-    return adjust_radius_vertex_in_leaf(data, analysis, node_offset,
-                                        proposed_position, radius, adjustment);
+    return adjust_vertex_in_leaf(data, analysis, node_offset,
+                                 proposed_position, radius, 0x10000u, true,
+                                 adjustment);
+}
+
+bool adjust_type1_dynamic_contact_vertex(
+    const uint8_t* data,
+    size_t size,
+    const std::array<float, 3>& proposed_position,
+    float radius,
+    uint32_t surface_mask,
+    CollisionRadiusVertexAdjustment* adjustment) {
+    if (adjustment != nullptr) {
+        *adjustment = {};
+    }
+    CollisionTreeAnalysis analysis;
+    if (adjustment == nullptr || !std::isfinite(radius) || radius < 0.0f ||
+        !std::isfinite(proposed_position[0]) ||
+        !std::isfinite(proposed_position[1]) ||
+        !std::isfinite(proposed_position[2]) ||
+        !analyze_type1_collision_asset(data, size, &analysis) ||
+        analysis.header_byte_6 != 1) {
+        return false;
+    }
+
+    const uint32_t node_offset = select_leaf(
+        data, analysis.coordinate_scale, proposed_position[0],
+        proposed_position[2]);
+    return adjust_vertex_in_leaf(data, analysis, node_offset,
+                                 proposed_position, radius, surface_mask,
+                                 false, adjustment);
 }
 
 namespace {
@@ -805,8 +840,9 @@ bool adjust_radius_passes_in_leaf(
         }
         candidate = edge.position;
         CollisionRadiusVertexAdjustment vertex;
-        if (!adjust_radius_vertex_in_leaf(data, analysis, node_offset,
-                                          candidate, radius, &vertex)) {
+        if (!adjust_vertex_in_leaf(data, analysis, node_offset,
+                                   candidate, radius, 0x10000u, true,
+                                   &vertex)) {
             return false;
         }
         candidate = vertex.position;

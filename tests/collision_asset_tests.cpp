@@ -526,6 +526,67 @@ void test_radius_vertex_adjustment() {
            "null vertex query output is rejected");
 }
 
+void test_dynamic_contact_vertex_adjustment() {
+    std::vector<uint8_t> bytes = make_sample_leaf();
+    awl::CollisionRadiusVertexAdjustment adjustment;
+    const std::array<float, 3> query{0.5f, 7.0f, 0.0f};
+    expect(awl::adjust_type1_dynamic_contact_vertex(
+               bytes.data(), bytes.size(), query, 1.0f, 0x20u,
+               &adjustment) &&
+               adjustment.contact && adjustment.triangle_index == 0 &&
+               adjustment.vertex_index == 0 &&
+               std::fabs(adjustment.position[0] - 1.01f) < 0.0001f &&
+               adjustment.position[1] == 0.0f &&
+               adjustment.position[2] == 0.0f,
+           "dynamic vertex pass accepts an unmarked vertex on a matching surface");
+
+    expect(awl::adjust_type1_dynamic_contact_vertex(
+               bytes.data(), bytes.size(), query, 1.0f, 0x40u,
+               &adjustment) &&
+               !adjustment.contact && adjustment.position == query,
+           "surface mask excludes a nonmatching nonzero triangle flag");
+    expect(awl::adjust_type1_dynamic_contact_vertex(
+               bytes.data(), bytes.size(), query, 1.0f, 0x10000u,
+               &adjustment) && adjustment.contact,
+           "surface mask bypass bit accepts the triangle");
+    put_be16(bytes, 8 + 0x34, 0);
+    expect(awl::adjust_type1_dynamic_contact_vertex(
+               bytes.data(), bytes.size(), query, 1.0f, 0x40u,
+               &adjustment) && adjustment.contact,
+           "zero surface flags pass the mask filter");
+
+    expect(awl::adjust_type1_dynamic_contact_vertex(
+               bytes.data(), bytes.size(), {0.0f, 7.0f, 0.0f}, 1.0f,
+               0x40u, &adjustment) && adjustment.contact &&
+               adjustment.position == std::array<float, 3>{0.0f, 7.0f, 0.0f},
+           "exact dynamic vertex contact leaves the candidate unchanged");
+    expect(awl::adjust_type1_dynamic_contact_vertex(
+               bytes.data(), bytes.size(), {1.0f, 7.0f, 0.0f}, 1.0f,
+               0x40u, &adjustment) && !adjustment.contact,
+           "dynamic vertex radius boundary is strict");
+    expect(awl::adjust_type1_dynamic_contact_vertex(
+               bytes.data(), bytes.size(), {5.0f, 7.0f, 0.0f}, 6.0f,
+               0x40u, &adjustment) && adjustment.contact &&
+               adjustment.vertex_index == 0 &&
+               std::fabs(adjustment.position[0] - 6.01f) < 0.0001f,
+           "equal-distance vertices keep the first serialized vertex");
+
+    bytes[6] = 0;
+    expect(!awl::adjust_type1_dynamic_contact_vertex(
+               bytes.data(), bytes.size(), query, 1.0f, 0x40u,
+               &adjustment) && !adjustment.contact &&
+               adjustment.position == std::array<float, 3>{},
+           "unsupported collision mode rejects and clears dynamic vertex output");
+    bytes[6] = 1;
+    expect(!awl::adjust_type1_dynamic_contact_vertex(
+               bytes.data(), bytes.size(), query, -1.0f, 0x40u,
+               &adjustment),
+           "negative dynamic vertex radius is rejected");
+    expect(!awl::adjust_type1_dynamic_contact_vertex(
+               bytes.data(), bytes.size(), query, 1.0f, 0x40u, nullptr),
+           "null dynamic vertex output is rejected");
+}
+
 void test_radius_edge_adjustment() {
     std::vector<uint8_t> bytes = make_sample_leaf();
     awl::CollisionRadiusEdgeAdjustment adjustment;
@@ -870,6 +931,7 @@ int main(int argc, char** argv) {
     test_terrain_height_adjustment();
     test_resolver_height_resampling();
     test_dynamic_contact_broad_phase();
+    test_dynamic_contact_vertex_adjustment();
     test_radius_vertex_adjustment();
     test_radius_edge_adjustment();
     test_radius_pass_sequence();
