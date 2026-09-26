@@ -639,4 +639,68 @@ bool adjust_type1_collision_radius_edge(
     return true;
 }
 
+bool adjust_type1_collision_radius_passes(
+    const uint8_t* data,
+    size_t size,
+    const std::array<float, 3>& prior_position,
+    const std::array<float, 3>& proposed_position,
+    float radius,
+    CollisionRadiusPassesAdjustment* adjustment) {
+    if (adjustment != nullptr) {
+        *adjustment = {};
+    }
+    CollisionTreeAnalysis analysis;
+    if (adjustment == nullptr || !std::isfinite(radius) || radius < 0.0f ||
+        !std::isfinite(prior_position[0]) ||
+        !std::isfinite(prior_position[1]) ||
+        !std::isfinite(prior_position[2]) ||
+        !std::isfinite(proposed_position[0]) ||
+        !std::isfinite(proposed_position[1]) ||
+        !std::isfinite(proposed_position[2]) ||
+        !analyze_type1_collision_asset(data, size, &analysis) ||
+        analysis.header_byte_6 != 1) {
+        return false;
+    }
+
+    const uint32_t initial_leaf = select_leaf(
+        data, analysis.coordinate_scale, proposed_position[0],
+        proposed_position[2]);
+    std::array<float, 3> candidate = proposed_position;
+    bool first_pass_contact = false;
+    for (uint8_t pass = 1; pass <= 3; ++pass) {
+        if (select_leaf(data, analysis.coordinate_scale, candidate[0],
+                        candidate[2]) != initial_leaf) {
+            return false;
+        }
+        CollisionRadiusEdgeAdjustment edge;
+        if (!adjust_type1_collision_radius_edge(
+                data, size, prior_position, candidate, radius, &edge)) {
+            return false;
+        }
+        candidate = edge.position;
+        if (select_leaf(data, analysis.coordinate_scale, candidate[0],
+                        candidate[2]) != initial_leaf) {
+            return false;
+        }
+        CollisionRadiusVertexAdjustment vertex;
+        if (!adjust_type1_collision_radius_vertex(
+                data, size, candidate, radius, &vertex)) {
+            return false;
+        }
+        candidate = vertex.position;
+        const bool contact = edge.contact || vertex.contact;
+        if (pass == 1) {
+            first_pass_contact = contact;
+        }
+        if (!contact || pass == 3) {
+            adjustment->position = contact ? prior_position : candidate;
+            adjustment->contact = first_pass_contact;
+            adjustment->reverted_to_prior = contact;
+            adjustment->pass_count = pass;
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace awl

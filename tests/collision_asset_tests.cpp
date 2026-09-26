@@ -486,6 +486,56 @@ void test_radius_edge_adjustment() {
            "null edge query output is rejected");
 }
 
+void test_radius_pass_sequence() {
+    std::vector<uint8_t> bytes = make_sample_leaf();
+    awl::CollisionRadiusPassesAdjustment adjustment;
+    const std::array<float, 3> prior{5.0f, 7.0f, -2.0f};
+    const std::array<float, 3> proposed{5.0f, 7.0f, -0.5f};
+    expect(awl::adjust_type1_collision_radius_passes(
+               bytes.data(), bytes.size(), prior, proposed, 1.0f,
+               &adjustment) &&
+               !adjustment.contact && !adjustment.reverted_to_prior &&
+               adjustment.pass_count == 1 && adjustment.position == proposed,
+           "no radius contact stops after one edge-vertex pass");
+
+    put_be16(bytes, 8 + 0x34, 0x2000);
+    expect(awl::adjust_type1_collision_radius_passes(
+               bytes.data(), bytes.size(), prior, proposed, 1.0f,
+               &adjustment) &&
+               adjustment.contact && !adjustment.reverted_to_prior &&
+               adjustment.pass_count == 2 &&
+               std::fabs(adjustment.position[2] + 1.01f) < 0.0001f,
+           "one edge contact is followed by a clear second pass");
+
+    const std::array<float, 3> blocked_prior{0.0f, 7.0f, 2.0f};
+    expect(awl::adjust_type1_collision_radius_passes(
+               bytes.data(), bytes.size(), blocked_prior,
+               {0.0f, 7.0f, 0.0f}, 1.0f, &adjustment) &&
+               adjustment.contact && adjustment.reverted_to_prior &&
+               adjustment.pass_count == 3 &&
+               adjustment.position == blocked_prior,
+           "persistent vertex contact restores the prior position after three passes");
+
+    bytes = make_one_level_sample_tree();
+    constexpr uint32_t payload = 8 + 0x34 * 5;
+    put_be16(bytes, payload, 0x2000);
+    expect(!awl::adjust_type1_collision_radius_passes(
+               bytes.data(), bytes.size(), {15.0f, 7.0f, 9.0f},
+               {15.0f, 7.0f, 10.5f}, 1.0f, &adjustment),
+           "candidate crossing the initially selected leaf is rejected");
+    expect(adjustment.position == std::array<float, 3>{} &&
+               adjustment.pass_count == 0,
+           "unsupported leaf crossing clears the sequence output");
+    expect(!awl::adjust_type1_collision_radius_passes(
+               bytes.data(), bytes.size(), prior, proposed, -1.0f,
+               &adjustment),
+           "negative sequence radius is rejected");
+    expect(!awl::adjust_type1_collision_radius_passes(
+               bytes.data(), bytes.size(), prior, proposed, 1.0f,
+               nullptr),
+           "null sequence output is rejected");
+}
+
 bool inspect_local_asset(const char* path) {
     std::ifstream input(path, std::ios::binary);
     if (!input) {
@@ -565,6 +615,18 @@ bool inspect_local_asset(const char* path) {
         std::fprintf(stderr, "Radius edge query failed: %s\n", path);
         return false;
     }
+    awl::CollisionRadiusPassesAdjustment passes;
+    if (!awl::adjust_type1_collision_radius_passes(
+            bytes.data(), bytes.size(),
+            {sample_x, sample.height, sample_z - 1.0f},
+            {sample_x, sample.height, sample_z}, 0.3f,
+            &passes) ||
+        !std::isfinite(passes.position[0]) ||
+        !std::isfinite(passes.position[1]) ||
+        !std::isfinite(passes.position[2])) {
+        std::fprintf(stderr, "Radius pass sequence failed: %s\n", path);
+        return false;
+    }
     return true;
 }
 
@@ -579,6 +641,7 @@ int main(int argc, char** argv) {
     test_terrain_height_adjustment();
     test_radius_vertex_adjustment();
     test_radius_edge_adjustment();
+    test_radius_pass_sequence();
 
     for (int index = 1; index < argc; ++index) {
         if (!inspect_local_asset(argv[index])) {

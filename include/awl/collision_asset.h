@@ -60,6 +60,13 @@ struct CollisionRadiusEdgeAdjustment {
     uint8_t edge_index = 0;
 };
 
+struct CollisionRadiusPassesAdjustment {
+    std::array<float, 3> position{};
+    bool contact = false;
+    bool reverted_to_prior = false;
+    uint8_t pass_count = 0;
+};
+
 // Validates the relocatable type-1 tree structure used by the verified
 // movement collision assets, including their indexed triangle payloads.
 [[nodiscard]] bool analyze_type1_collision_asset(
@@ -114,5 +121,16 @@ struct CollisionRadiusEdgeAdjustment {
     const std::array<float, 3>& proposed_position,
     float radius,
     CollisionRadiusEdgeAdjustment* adjustment);
+
+// Runs FUN_80191FD0's edge-then-vertex sequence. If an intermediate response
+// crosses a leaf before another query, this fails until the DOL's pinned-leaf
+// behavior is supported by the underlying helpers.
+[[nodiscard]] bool adjust_type1_collision_radius_passes(
+    const uint8_t* data,
+    size_t size,
+    const std::array<float, 3>& prior_position,
+    const std::array<float, 3>& proposed_position,
+    float radius,
+    CollisionRadiusPassesAdjustment* adjustment);
 
 } // namespace awl
