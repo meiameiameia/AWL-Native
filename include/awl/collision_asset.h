@@ -77,6 +77,16 @@ struct CollisionRadiusPassesAdjustment {
     uint8_t pass_count = 0;
 };
 
+struct CollisionDynamicContactAdjustment {
+    std::array<float, 3> position{};
+    bool contact = false;
+    bool used_containment_shortcut = false;
+    bool reverted_to_prior = false;
+    bool first_edge_contact = false;
+    uint16_t first_edge_surface_flags = 0;
+    uint8_t pass_count = 0;
+};
+
 struct CollisionTerrainRadiusAdjustment {
     std::array<float, 3> position{};
     uint16_t surface_flags = 0;
@@ -168,6 +178,20 @@ struct CollisionTerrainRadiusAdjustment {
     float radius,
     uint32_t surface_mask,
     CollisionRadiusEdgeAdjustment* adjustment);
+
+// Isolates type-1 FUN_80191898 after the object's broad-phase distance gate.
+// The first containing triangle check uses the prior point; repeated edge and
+// vertex responses stay in the leaf selected from the proposed point. This
+// does not transform object coordinates or accept world-space movement.
+[[nodiscard]] bool resolve_type1_dynamic_contact_narrow_phase(
+    const uint8_t* data,
+    size_t size,
+    const std::array<float, 3>& prior_position,
+    const std::array<float, 3>& proposed_position,
+    float radius,
+    uint32_t surface_mask,
+    uint32_t contact_flags,
+    CollisionDynamicContactAdjustment* adjustment);
 
 // Isolates the type-1 +0x34 virtual (FUN_80194E30) used by the radius pass.
 // The preceding +0x30 edge pass and full resolver are not included.

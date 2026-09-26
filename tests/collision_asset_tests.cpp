@@ -650,6 +650,92 @@ void test_dynamic_contact_edge_adjustment() {
            "null dynamic edge output is rejected");
 }
 
+void test_dynamic_contact_narrow_phase() {
+    std::vector<uint8_t> bytes = make_sample_leaf();
+    awl::CollisionDynamicContactAdjustment adjustment;
+    const std::array<float, 3> prior{5.0f, 7.0f, -2.0f};
+    const std::array<float, 3> proposed{5.0f, 7.0f, -0.5f};
+    expect(awl::resolve_type1_dynamic_contact_narrow_phase(
+               bytes.data(), bytes.size(), prior, prior, 1.0f, 0x20u,
+               0u, &adjustment) && !adjustment.contact &&
+               adjustment.pass_count == 1 && adjustment.position == prior,
+           "clear dynamic narrow phase ends after one edge-vertex pass");
+    expect(awl::resolve_type1_dynamic_contact_narrow_phase(
+               bytes.data(), bytes.size(), prior, proposed, 1.0f, 0x20u,
+               0u, &adjustment) && adjustment.contact &&
+               adjustment.first_edge_contact &&
+               adjustment.first_edge_surface_flags == 0x20 &&
+               !adjustment.reverted_to_prior && adjustment.pass_count == 2 &&
+               std::fabs(adjustment.position[2] + 1.01f) < 0.0001f,
+           "first dynamic edge contact clears on the second pinned-leaf pass");
+    expect(awl::resolve_type1_dynamic_contact_narrow_phase(
+               bytes.data(), bytes.size(), prior, proposed, 1.0f, 0x20u,
+               1u, &adjustment) && adjustment.contact &&
+               adjustment.reverted_to_prior && adjustment.pass_count == 1 &&
+               adjustment.position == prior,
+           "contact flag one restores the prior position after the first hit");
+    expect(awl::resolve_type1_dynamic_contact_narrow_phase(
+               bytes.data(), bytes.size(), {0.0f, 7.0f, 2.0f},
+               {0.0f, 7.0f, 0.0f}, 1.0f, 0x20u, 0u, &adjustment) &&
+               adjustment.contact && adjustment.reverted_to_prior &&
+               adjustment.pass_count == 3 &&
+               adjustment.position == std::array<float, 3>{0.0f, 7.0f, 2.0f},
+           "persistent dynamic vertex contact restores the prior position");
+
+    const std::array<float, 3> inside_prior{2.0f, 7.0f, 2.0f};
+    const std::array<float, 3> inside_proposed{3.0f, 7.0f, 2.0f};
+    expect(awl::resolve_type1_dynamic_contact_narrow_phase(
+               bytes.data(), bytes.size(), inside_prior, inside_proposed,
+               1.0f, 0x20u, 2u, &adjustment) &&
+               adjustment.used_containment_shortcut && adjustment.contact &&
+               adjustment.reverted_to_prior && adjustment.pass_count == 0 &&
+               adjustment.position == inside_prior,
+           "matching prior triangle with flag two reports contact and prior point");
+    expect(awl::resolve_type1_dynamic_contact_narrow_phase(
+               bytes.data(), bytes.size(), inside_prior, inside_proposed,
+               1.0f, 0x20u, 4u, &adjustment) &&
+               adjustment.used_containment_shortcut && !adjustment.contact &&
+               !adjustment.reverted_to_prior && adjustment.pass_count == 0 &&
+               adjustment.position == inside_proposed,
+           "matching prior triangle with flag four keeps the proposed point");
+    expect(awl::resolve_type1_dynamic_contact_narrow_phase(
+               bytes.data(), bytes.size(), inside_prior, inside_proposed,
+               1.0f, 0x40u, 2u, &adjustment) &&
+               !adjustment.used_containment_shortcut && !adjustment.contact &&
+               adjustment.pass_count == 1 &&
+               adjustment.position == inside_proposed,
+           "nonmatching surface mask bypasses the containment shortcut");
+    expect(awl::resolve_type1_dynamic_contact_narrow_phase(
+               bytes.data(), bytes.size(), prior, {5.0f, 7.0f, 0.5f},
+               1.0f, 0x20u, 2u, &adjustment) &&
+               !adjustment.used_containment_shortcut && adjustment.contact,
+           "containment shortcut tests the prior point, not the proposal");
+
+    bytes = make_one_level_sample_tree();
+    expect(awl::resolve_type1_dynamic_contact_narrow_phase(
+               bytes.data(), bytes.size(), {15.0f, 7.0f, 9.0f},
+               {15.0f, 7.0f, 10.5f}, 1.0f, 0x20u, 0u,
+               &adjustment) && adjustment.contact &&
+               !adjustment.reverted_to_prior && adjustment.pass_count == 2 &&
+               std::fabs(adjustment.position[2] - 8.99f) < 0.0001f,
+           "dynamic response keeps its selected leaf after crossing a boundary");
+    bytes[6] = 0;
+    expect(!awl::resolve_type1_dynamic_contact_narrow_phase(
+               bytes.data(), bytes.size(), prior, proposed, 1.0f,
+               0x20u, 0u, &adjustment) && !adjustment.contact &&
+               adjustment.position == std::array<float, 3>{},
+           "unsupported dynamic collision mode rejects and clears output");
+    bytes[6] = 1;
+    expect(!awl::resolve_type1_dynamic_contact_narrow_phase(
+               bytes.data(), bytes.size(), prior, proposed, -1.0f,
+               0x20u, 0u, &adjustment),
+           "negative dynamic narrow-phase radius is rejected");
+    expect(!awl::resolve_type1_dynamic_contact_narrow_phase(
+               bytes.data(), bytes.size(), prior, proposed, 1.0f,
+               0x20u, 0u, nullptr),
+           "null dynamic narrow-phase output is rejected");
+}
+
 void test_radius_edge_adjustment() {
     std::vector<uint8_t> bytes = make_sample_leaf();
     awl::CollisionRadiusEdgeAdjustment adjustment;
@@ -996,6 +1082,7 @@ int main(int argc, char** argv) {
     test_dynamic_contact_broad_phase();
     test_dynamic_contact_edge_adjustment();
     test_dynamic_contact_vertex_adjustment();
+    test_dynamic_contact_narrow_phase();
     test_radius_vertex_adjustment();
     test_radius_edge_adjustment();
     test_radius_pass_sequence();

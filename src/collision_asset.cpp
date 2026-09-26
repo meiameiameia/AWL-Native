@@ -860,6 +860,130 @@ bool adjust_type1_dynamic_contact_edge(
 
 namespace {
 
+bool first_containing_flags_in_leaf(
+    const uint8_t* data,
+    const CollisionTreeAnalysis& analysis,
+    uint32_t node_offset,
+    const std::array<float, 3>& position,
+    uint16_t& surface_flags) {
+    const LeafPayload leaf = leaf_payload(data, node_offset);
+    for (uint32_t index = 0; index < leaf.triangle_count; ++index) {
+        const uint8_t* record = data + leaf.triangles +
+                                static_cast<size_t>(index) * kTriangleStride;
+        const auto triangle = decode_triangle(
+            data, leaf.vertices, record, analysis.coordinate_scale);
+        if (contains_xz(triangle, position[0], position[2])) {
+            surface_flags = read_be16(record);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool resolve_dynamic_contact_in_leaf(
+    const uint8_t* data,
+    const CollisionTreeAnalysis& analysis,
+    uint32_t node_offset,
+    const std::array<float, 3>& prior_position,
+    const std::array<float, 3>& proposed_position,
+    float radius,
+    uint32_t surface_mask,
+    uint32_t contact_flags,
+    CollisionDynamicContactAdjustment* adjustment) {
+    if ((contact_flags & 6u) != 0) {
+        uint16_t flags = 0;
+        if (first_containing_flags_in_leaf(data, analysis, node_offset,
+                                           prior_position, flags) &&
+            ((surface_mask & 0x10000u) != 0 ||
+             (flags & surface_mask) != 0 || flags == 0)) {
+            adjustment->used_containment_shortcut = true;
+            adjustment->contact = (contact_flags & 2u) != 0;
+            adjustment->reverted_to_prior = adjustment->contact;
+            adjustment->position = adjustment->contact ? prior_position
+                                                        : proposed_position;
+            return true;
+        }
+    }
+
+    std::array<float, 3> candidate = proposed_position;
+    for (uint8_t pass = 1; pass <= 3; ++pass) {
+        CollisionRadiusEdgeAdjustment edge;
+        if (!adjust_edge_in_leaf(data, analysis, node_offset,
+                                 prior_position, candidate, radius,
+                                 surface_mask, false, &edge)) {
+            return false;
+        }
+        candidate = edge.position;
+        CollisionRadiusVertexAdjustment vertex;
+        if (!adjust_vertex_in_leaf(data, analysis, node_offset,
+                                   candidate, radius, surface_mask, false,
+                                   &vertex)) {
+            return false;
+        }
+        candidate = vertex.position;
+        const bool contact = edge.contact || vertex.contact;
+        if (pass == 1) {
+            adjustment->contact = contact;
+            adjustment->first_edge_contact = edge.contact;
+            if (edge.contact) {
+                adjustment->first_edge_surface_flags = edge.surface_flags;
+            }
+        }
+        if (!contact || (contact_flags & 1u) != 0 || pass == 3) {
+            adjustment->reverted_to_prior =
+                contact && ((contact_flags & 1u) != 0 || pass == 3);
+            adjustment->position = adjustment->reverted_to_prior
+                                       ? prior_position : candidate;
+            adjustment->pass_count = pass;
+            return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
+
+bool resolve_type1_dynamic_contact_narrow_phase(
+    const uint8_t* data,
+    size_t size,
+    const std::array<float, 3>& prior_position,
+    const std::array<float, 3>& proposed_position,
+    float radius,
+    uint32_t surface_mask,
+    uint32_t contact_flags,
+    CollisionDynamicContactAdjustment* adjustment) {
+    if (adjustment != nullptr) {
+        *adjustment = {};
+    }
+    CollisionTreeAnalysis analysis;
+    if (adjustment == nullptr || !std::isfinite(radius) || radius < 0.0f ||
+        !std::isfinite(prior_position[0]) ||
+        !std::isfinite(prior_position[1]) ||
+        !std::isfinite(prior_position[2]) ||
+        !std::isfinite(proposed_position[0]) ||
+        !std::isfinite(proposed_position[1]) ||
+        !std::isfinite(proposed_position[2]) ||
+        !analyze_type1_collision_asset(data, size, &analysis) ||
+        analysis.header_byte_6 != 1) {
+        return false;
+    }
+
+    const uint32_t node_offset = select_leaf(
+        data, analysis.coordinate_scale, proposed_position[0],
+        proposed_position[2]);
+    CollisionDynamicContactAdjustment result;
+    if (!resolve_dynamic_contact_in_leaf(data, analysis, node_offset,
+                                         prior_position, proposed_position,
+                                         radius, surface_mask, contact_flags,
+                                         &result)) {
+        return false;
+    }
+    *adjustment = result;
+    return true;
+}
+
+namespace {
+
 bool adjust_radius_passes_in_leaf(
     const uint8_t* data,
     const CollisionTreeAnalysis& analysis,
