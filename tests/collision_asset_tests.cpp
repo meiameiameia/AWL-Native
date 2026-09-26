@@ -556,6 +556,7 @@ void test_terrain_radius_adjustment() {
                &adjustment) &&
                adjustment.position == std::array<float, 3>{2.0f, 6.0f, 2.0f} &&
                adjustment.surface_flags == 0x20 &&
+               !adjustment.terrain_contact &&
                !adjustment.initial_edge_fallback &&
                !adjustment.final_edge_fallback &&
                !adjustment.radius_contact && adjustment.radius_pass_count == 0,
@@ -565,22 +566,32 @@ void test_terrain_radius_adjustment() {
                bytes.data(), bytes.size(), prior, proposed, 1.0f,
                &adjustment) &&
                adjustment.position == std::array<float, 3>{2.0f, 6.0f, 2.0f} &&
-               !adjustment.radius_contact && adjustment.radius_pass_count == 1,
+               !adjustment.terrain_contact && !adjustment.radius_contact &&
+               adjustment.radius_pass_count == 1,
            "clear radius pass keeps the first sampled height");
 
     expect(awl::adjust_type1_collision_terrain_with_radius(
                bytes.data(), bytes.size(), prior, {6.0f, 50.0f, -3.0f},
                0.0f, &adjustment) &&
                adjustment.position == std::array<float, 3>{6.0f, 6.0f, 0.0f} &&
+               adjustment.terrain_contact && !adjustment.radius_contact &&
                adjustment.initial_edge_fallback &&
                !adjustment.final_edge_fallback,
            "initial miss projects onto the selected leaf edge");
+
+    expect(awl::adjust_type1_collision_terrain_with_radius(
+               bytes.data(), bytes.size(), prior, {6.0f, 50.0f, -3.0f},
+               1.0f, &adjustment) && adjustment.terrain_contact &&
+               adjustment.initial_edge_fallback && !adjustment.radius_contact &&
+               adjustment.radius_pass_count == 1,
+           "initial edge fallback remains terrain contact after a clear radius pass");
 
     put_be16(bytes, 8 + 0x34, 0x2000);
     expect(awl::adjust_type1_collision_terrain_with_radius(
                bytes.data(), bytes.size(), {0.5f, 7.0f, 0.0f},
                {0.5f, 50.0f, 0.0f}, 1.0f, &adjustment) &&
-               adjustment.radius_contact && !adjustment.reverted_to_prior &&
+               adjustment.terrain_contact && adjustment.radius_contact &&
+               !adjustment.reverted_to_prior &&
                adjustment.radius_pass_count == 2 &&
                std::fabs(adjustment.position[0] - 1.01f) < 0.0001f &&
                std::fabs(adjustment.position[1] - 1.01f) < 0.0001f &&
@@ -590,7 +601,8 @@ void test_terrain_radius_adjustment() {
     expect(awl::adjust_type1_collision_terrain_with_radius(
                bytes.data(), bytes.size(), {0.0f, 7.0f, 2.0f},
                {0.0f, 50.0f, 0.0f}, 1.0f, &adjustment) &&
-               adjustment.radius_contact && adjustment.reverted_to_prior &&
+               adjustment.terrain_contact && adjustment.radius_contact &&
+               adjustment.reverted_to_prior &&
                adjustment.radius_pass_count == 3 &&
                adjustment.position == std::array<float, 3>{0.0f, 4.0f, 2.0f},
            "third-pass revert resamples terrain height at the prior X/Z");
@@ -601,7 +613,8 @@ void test_terrain_radius_adjustment() {
     expect(awl::adjust_type1_collision_terrain_with_radius(
                bytes.data(), bytes.size(), {15.0f, 7.0f, 9.0f},
                {15.0f, 50.0f, 10.5f}, 1.0f, &adjustment) &&
-               adjustment.radius_contact && adjustment.radius_pass_count == 2 &&
+               adjustment.terrain_contact && adjustment.radius_contact &&
+               adjustment.radius_pass_count == 2 &&
                adjustment.final_edge_fallback &&
                adjustment.position == std::array<float, 3>{15.0f, 5.0f, 10.0f},
            "post-contact height fallback stays in the original leaf after crossing");
@@ -610,7 +623,8 @@ void test_terrain_radius_adjustment() {
     expect(!awl::adjust_type1_collision_terrain_with_radius(
                bytes.data(), bytes.size(), prior, proposed, 1.0f,
                &adjustment) &&
-               adjustment.position == std::array<float, 3>{},
+               adjustment.position == std::array<float, 3>{} &&
+               !adjustment.terrain_contact,
            "empty selected leaf fails and clears its output");
     bytes = make_sample_leaf();
     bytes[6] = 0;

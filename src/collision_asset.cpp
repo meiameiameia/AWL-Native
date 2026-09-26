@@ -857,6 +857,7 @@ bool adjust_type1_collision_terrain_with_radius(
     candidate[1] = height;
     adjustment->position = candidate;
     adjustment->surface_flags = surface_flags;
+    adjustment->terrain_contact = initial_fallback || radius_adjustment.contact;
     adjustment->initial_edge_fallback = initial_fallback;
     adjustment->final_edge_fallback = final_fallback;
     adjustment->radius_contact = radius_adjustment.contact;

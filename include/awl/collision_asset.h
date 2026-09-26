@@ -70,6 +70,8 @@ struct CollisionRadiusPassesAdjustment {
 struct CollisionTerrainRadiusAdjustment {
     std::array<float, 3> position{};
     uint16_t surface_flags = 0;
+    // FUN_8002009C's return for this branch: initial miss OR radius contact.
+    bool terrain_contact = false;
     bool initial_edge_fallback = false;
     bool final_edge_fallback = false;
     bool radius_contact = false;
