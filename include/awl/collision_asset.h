@@ -321,6 +321,22 @@ struct CollisionCategory1MovementAdjustment {
     uint32_t resolver_flags,
     CollisionDynamicPassAdjustment* adjustment);
 
+// Isolates FUN_8001E498's ordered third-list pass (flag 0x8) when the source
+// object is absent or lacks collision flag 0x2. The source-flag-0x2 branch
+// uses a different object-space query and is rejected until translated.
+[[nodiscard]] bool resolve_type1_third_dynamic_object_pass(
+    const CollisionDynamicPassObject* objects,
+    size_t object_count,
+    uint64_t source_identity,
+    uint32_t source_collision_flags,
+    int32_t category,
+    const std::array<float, 3>& prior_position,
+    const std::array<float, 3>& proposed_position,
+    float moving_radius,
+    uint32_t initial_contact_flags,
+    uint32_t resolver_flags,
+    CollisionDynamicPassAdjustment* adjustment);
+
 // Builds FUN_8001D1E8's category-1 surface mask from its observed runtime
 // booleans and the shared resolver's flags.
 [[nodiscard]] uint32_t category1_static_surface_mask(

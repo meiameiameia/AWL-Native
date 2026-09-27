@@ -30,7 +30,9 @@ struct WorldMapCollisionSnapshot {
     std::vector<CollisionDynamicPassObject> first_resolver;
     std::vector<WorldMapContactObject> first_directional;
     std::vector<CollisionDynamicPassObject> later_resolver;
-    // The flag-0x8 third-list resolver behavior is not translated yet.
+    // Caller-supplied view for the bounded third-list pass. The alternate
+    // source-flag-0x2 branch remains unsupported.
+    std::vector<CollisionDynamicPassObject> third_resolver;
     std::vector<WorldMapRegisteredCollisionObject> third_objects;
 };
 

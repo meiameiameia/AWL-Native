@@ -112,6 +112,7 @@ WorldMapCollisionSnapshot WorldMapCollisionRegistry::snapshot() const {
     result.first_resolver.reserve(first.size());
     result.first_directional.reserve(first.size());
     result.later_resolver.reserve(later.size());
+    result.third_resolver.reserve(third.size());
     result.third_objects.reserve(third.size());
     for (const WorldMapRegisteredCollisionObject& object : first) {
         result.first_resolver.push_back(object.collision);
@@ -121,6 +122,7 @@ WorldMapCollisionSnapshot WorldMapCollisionRegistry::snapshot() const {
         result.later_resolver.push_back(object.collision);
     }
     for (const WorldMapRegisteredCollisionObject& object : third) {
+        result.third_resolver.push_back(object.collision);
         result.third_objects.push_back(object);
     }
     return result;

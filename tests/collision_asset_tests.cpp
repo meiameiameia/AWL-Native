@@ -1290,6 +1290,75 @@ void test_later_dynamic_object_pass() {
            "first-pass alternate bit does not block the later pass");
 }
 
+void test_third_dynamic_object_pass() {
+    std::vector<uint8_t> bytes = make_sample_leaf();
+    constexpr awl::CollisionAffineTransform identity{
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f};
+    awl::CollisionDynamicPassObject type1;
+    type1.identity = 1;
+    type1.enabled = true;
+    type1.category = 1;
+    type1.collision_flags = 2u;
+    type1.data = bytes.data();
+    type1.size = bytes.size();
+    type1.world_to_object = identity;
+    type1.object_to_world = identity;
+    type1.center_local = {5.0f, 0.0f, 0.0f};
+    const std::array<float, 3> prior{5.0f, 7.0f, -2.0f};
+    const std::array<float, 3> proposed{5.0f, 9.0f, -0.5f};
+    awl::CollisionDynamicPassAdjustment result;
+    expect(awl::resolve_type1_third_dynamic_object_pass(
+               &type1, 1, 0, 0, 1, prior, proposed, 1.0f, 4u, 0x8u,
+               &result) && result.contact && result.queried_objects == 1 &&
+               result.contact_count == 1 &&
+               result.contact_flags_after == 5u &&
+               result.resolver_contact_bit == 8u &&
+               std::fabs(result.position[2] + 1.01f) < 0.0001f,
+           "third-list type-1 contact carries flags and reports resolver bit eight");
+
+    awl::CollisionDynamicPassObject self = type1;
+    self.identity = 99;
+    awl::CollisionDynamicPassObject disabled = type1;
+    disabled.identity = 2;
+    disabled.enabled = false;
+    awl::CollisionDynamicPassObject wrong_category = type1;
+    wrong_category.identity = 3;
+    wrong_category.category = 7;
+    awl::CollisionDynamicPassObject circle = type1;
+    circle.identity = 4;
+    circle.collision_flags = 1u;
+    circle.center_world = {5.0f, 0.0f, 0.0f};
+    circle.radius = 0.5f;
+    const std::array<awl::CollisionDynamicPassObject, 5> ordered{
+        self, disabled, wrong_category, type1, circle};
+    expect(awl::resolve_type1_third_dynamic_object_pass(
+               ordered.data(), ordered.size(), 99, 0, 1, prior, proposed,
+               1.0f, 4u, 0x8u, &result) && result.contact &&
+               result.queried_objects == 2 && result.contact_count == 2 &&
+               std::fabs(result.position[2] + 1.51f) < 0.0001f,
+           "third-list traversal filters entries and gives each contact the prior response");
+    expect(awl::resolve_type1_third_dynamic_object_pass(
+               &type1, 1, 0, 2u, 1, prior, proposed, 1.0f, 4u, 0u,
+               &result) && !result.contact && result.position == proposed &&
+               result.queried_objects == 0,
+           "disabled third-list gate leaves the proposal untouched");
+    expect(awl::resolve_type1_third_dynamic_object_pass(
+               &type1, 1, 0, 2u, 1, prior, proposed, 1.0f, 4u, 0x8u,
+               &result) && result.contact &&
+               result.resolver_contact_bit == 8u,
+           "an absent source selects the ordinary third-list branch");
+    expect(!awl::resolve_type1_third_dynamic_object_pass(
+               &type1, 1, 99, 2u, 1, prior, proposed, 1.0f, 4u, 0x8u,
+               &result) && result.position == std::array<float, 3>{},
+           "source flag two selects the still-unsupported alternate branch");
+    expect(!awl::resolve_type1_third_dynamic_object_pass(
+               nullptr, 1, 0, 0, 1, prior, proposed, 1.0f, 4u, 0x8u,
+               &result),
+           "a nonempty third list requires object data");
+}
+
 void test_category1_static_and_movement_candidate() {
     std::vector<uint8_t> terrain = make_sample_leaf();
     const std::array<float, 3> prior{2.0f, 7.0f, 2.0f};
@@ -2126,6 +2195,8 @@ void test_world_map_collision_registry() {
     later.collision.collision_flags = 1u;
     awl::WorldMapRegisteredCollisionObject third = later;
     third.collision.identity = 44;
+    third.collision.center_world = {5.0f, 0.0f, 0.0f};
+    third.collision.radius = 0.5f;
     awl::WorldMapCollisionRegistry registry;
     expect(registry.register_object(awl::WorldMapCollisionList::First, first) &&
                registry.register_object(awl::WorldMapCollisionList::First,
@@ -2142,9 +2213,19 @@ void test_world_map_collision_registry() {
                snapshot.first_resolver[1].identity == 11 &&
                snapshot.later_resolver.size() == 1 &&
                snapshot.later_resolver[0].identity == 33 &&
+               snapshot.third_resolver.size() == 1 &&
+               snapshot.third_resolver[0].identity == 44 &&
                snapshot.third_objects.size() == 1 &&
                snapshot.third_objects[0].collision.identity == 44,
            "first, later, and third lists retain separate traversal order");
+    awl::CollisionDynamicPassAdjustment third_contact;
+    expect(awl::resolve_type1_third_dynamic_object_pass(
+               snapshot.third_resolver.data(), snapshot.third_resolver.size(),
+               99, 0, 1, {5.0f, 7.0f, -2.0f}, {5.0f, 9.0f, -0.5f},
+               1.0f, 4u, 0x8u, &third_contact) && third_contact.contact &&
+               third_contact.resolver_contact_bit == 8u &&
+               std::fabs(third_contact.position[2] + 1.51f) < 0.0001f,
+           "the third-list snapshot supplies its own ordered contact pass");
     expect(snapshot.first_directional[1].metadata == 41u &&
                snapshot.first_directional[1].world_position ==
                    first.world_position &&
@@ -2166,6 +2247,8 @@ void test_world_map_collision_registry() {
            "one node can move from first to third list");
     snapshot = registry.snapshot();
     expect(snapshot.first_resolver.size() == 1 &&
+               snapshot.third_resolver.size() == 2 &&
+               snapshot.third_resolver[0].identity == 22 &&
                snapshot.third_objects.size() == 2 &&
                snapshot.third_objects[0].collision.identity == 22 &&
                snapshot.third_objects[1].collision.identity == 44,
@@ -2189,7 +2272,8 @@ void test_world_map_collision_registry() {
            "clearing a list removes every member");
     registry.clear(awl::WorldMapCollisionList::Third);
     expect(registry.size(awl::WorldMapCollisionList::Third) == 0 &&
-               registry.snapshot().third_objects.empty(),
+               registry.snapshot().third_objects.empty() &&
+               registry.snapshot().third_resolver.empty(),
            "clearing the third list does not restore moved nodes");
     first.collision.identity = 0;
     expect(!registry.register_object(awl::WorldMapCollisionList::First, first) &&
@@ -2956,6 +3040,7 @@ int main(int argc, char** argv) {
     test_dynamic_object_contact();
     test_first_dynamic_object_pass();
     test_later_dynamic_object_pass();
+    test_third_dynamic_object_pass();
     test_category1_static_and_movement_candidate();
     test_world_map_directional_contact_search();
     test_world_map_movement_candidate_sequence();

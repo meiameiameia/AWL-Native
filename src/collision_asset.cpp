@@ -1104,6 +1104,8 @@ bool resolve_type1_dynamic_object_contact(
 
 namespace {
 
+enum class DynamicPassKind { First, Later, Third };
+
 bool resolve_type1_ordered_dynamic_object_pass(
     const CollisionDynamicPassObject* objects,
     size_t object_count,
@@ -1114,7 +1116,8 @@ bool resolve_type1_ordered_dynamic_object_pass(
     float moving_radius,
     uint32_t initial_contact_flags,
     uint32_t resolver_flags,
-    bool later_pass,
+    DynamicPassKind pass,
+    uint32_t source_collision_flags,
     CollisionDynamicPassAdjustment* adjustment) {
     if (adjustment != nullptr) {
         *adjustment = {};
@@ -1130,22 +1133,28 @@ bool resolve_type1_ordered_dynamic_object_pass(
     CollisionDynamicPassAdjustment result;
     result.position = proposed_position;
     result.contact_flags_after = initial_contact_flags;
-    const uint32_t gate = later_pass ? 2u : 4u;
+    const uint32_t gate = pass == DynamicPassKind::First ? 4u :
+                          pass == DynamicPassKind::Later ? 2u : 8u;
     if ((resolver_flags & gate) == 0) {
         *adjustment = result;
         return true;
     }
-    if (!later_pass && (resolver_flags & 0x10u) != 0) {
+    if (pass == DynamicPassKind::First && (resolver_flags & 0x10u) != 0) {
         return false;
     }
-    if (later_pass) {
+    if (pass == DynamicPassKind::Third && source_identity != 0 &&
+        (source_collision_flags & 2u) != 0) {
+        return false;
+    }
+    if (pass == DynamicPassKind::Later) {
         result.contact_flags_after &= ~1u;
     }
 
     for (size_t index = 0; index < object_count; ++index) {
         const CollisionDynamicPassObject& object = objects[index];
-        if ((later_pass ? object.identity == 0 :
-                          object.identity == source_identity) || !object.enabled ||
+        if ((pass == DynamicPassKind::Later ? object.identity == 0 :
+                                               object.identity == source_identity) ||
+            !object.enabled ||
             object.category != category) {
             continue;
         }
@@ -1210,7 +1219,7 @@ bool resolve_type1_first_dynamic_object_pass(
     return resolve_type1_ordered_dynamic_object_pass(
         objects, object_count, source_identity, category, prior_position,
         proposed_position, moving_radius, initial_contact_flags,
-        resolver_flags, false, adjustment);
+        resolver_flags, DynamicPassKind::First, 0, adjustment);
 }
 
 bool resolve_type1_later_dynamic_object_pass(
@@ -1226,7 +1235,26 @@ bool resolve_type1_later_dynamic_object_pass(
     return resolve_type1_ordered_dynamic_object_pass(
         objects, object_count, 0, category, prior_position,
         proposed_position, moving_radius, initial_contact_flags,
-        resolver_flags, true, adjustment);
+        resolver_flags, DynamicPassKind::Later, 0, adjustment);
+}
+
+bool resolve_type1_third_dynamic_object_pass(
+    const CollisionDynamicPassObject* objects,
+    size_t object_count,
+    uint64_t source_identity,
+    uint32_t source_collision_flags,
+    int32_t category,
+    const std::array<float, 3>& prior_position,
+    const std::array<float, 3>& proposed_position,
+    float moving_radius,
+    uint32_t initial_contact_flags,
+    uint32_t resolver_flags,
+    CollisionDynamicPassAdjustment* adjustment) {
+    return resolve_type1_ordered_dynamic_object_pass(
+        objects, object_count, source_identity, category, prior_position,
+        proposed_position, moving_radius, initial_contact_flags,
+        resolver_flags, DynamicPassKind::Third, source_collision_flags,
+        adjustment);
 }
 
 namespace {
