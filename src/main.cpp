@@ -140,6 +140,7 @@ int main(int argc, char** argv)
     awl::WorldMapCollisionSnapshot rehearsal_collision_snapshot;
     std::array<float, 3> rehearsal_actor_center{};
     bool rehearsal_actor_contact_logged = false;
+    bool rehearsal_actor_passed_logged = false;
     awl::WorldMapSceneBucketRegistry rehearsal_scene;
     awl::WorldMapSteeringState rehearsal_steering;
     std::array<float, 3> rehearsal_position{};
@@ -804,7 +805,7 @@ int main(int argc, char** argv)
                 exit_code = 1;
                 goto shutdown;
             }
-            AWL_LOG_INFO("Development actor rehearsal: hold D to approach the smaller stationary marker. First-list circle contact will be logged.");
+            AWL_LOG_INFO("Development actor rehearsal: hold D to approach and skirt the smaller stationary marker. Circle contact and passing its center will be logged.");
         } else if (wall_rehearsal) {
             AWL_LOG_INFO("Development wall rehearsal: green marker starts one unit outside a data-derived static edge. Hold D+S to approach; contact will be logged.");
         } else {
@@ -858,6 +859,20 @@ int main(int argc, char** argv)
                     exit_code = 1;
                     break;
                 }
+                float actor_separation = 0.0f;
+                if (actor_rehearsal) {
+                    const float dx = candidate.resolved_position[0] -
+                                     rehearsal_actor_center[0];
+                    const float dz = candidate.resolved_position[2] -
+                                     rehearsal_actor_center[2];
+                    actor_separation = std::sqrt(dx * dx + dz * dz);
+                    if (!std::isfinite(actor_separation) ||
+                        actor_separation < 1.199f) {
+                        AWL_LOG_ERROR("Actor rehearsal violated the combined collision radius.");
+                        exit_code = 1;
+                        break;
+                    }
+                }
                 const float next_position[3] = {
                     candidate.resolved_position[0],
                     candidate.resolved_position[1],
@@ -873,12 +888,15 @@ int main(int argc, char** argv)
                     candidate.collision.first_pass.contact &&
                     !rehearsal_actor_contact_logged) {
                     rehearsal_actor_contact_logged = true;
-                    const float dx = rehearsal_position[0] -
-                                     rehearsal_actor_center[0];
-                    const float dz = rehearsal_position[2] -
-                                     rehearsal_actor_center[2];
                     AWL_LOG_INFO("Actor rehearsal first-list contact: center separation %.3f.",
-                                 std::sqrt(dx * dx + dz * dz));
+                                 actor_separation);
+                }
+                if (actor_rehearsal && rehearsal_actor_contact_logged &&
+                    !rehearsal_actor_passed_logged &&
+                    rehearsal_position[0] > rehearsal_actor_center[0] + 0.5f) {
+                    rehearsal_actor_passed_logged = true;
+                    AWL_LOG_INFO("Actor rehearsal passed the actor center while keeping %.3f separation.",
+                                 actor_separation);
                 }
                 if (wall_rehearsal &&
                     candidate.collision.static_contact.contact &&

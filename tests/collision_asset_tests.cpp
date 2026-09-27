@@ -4086,8 +4086,10 @@ bool replay_local_first_actor_route(
     native.set_key(awl::NativeKey::D, true);
     bool saw_contact = false;
     float last_distance = 2.0f;
-    for (int frame = 0; frame < 38; ++frame) {
-        if (frame == 30) {
+    float minimum_distance = 2.0f;
+    bool passed_center_x = false;
+    for (int frame = 0; frame < 128; ++frame) {
+        if (frame == 120) {
             native.set_key(awl::NativeKey::D, false);
         }
         native.begin_frame();
@@ -4119,6 +4121,8 @@ bool replay_local_first_actor_route(
         const float dx = position[0] - center[0];
         const float dz = position[2] - center[2];
         last_distance = std::sqrt(dx * dx + dz * dz);
+        minimum_distance = std::min(minimum_distance, last_distance);
+        passed_center_x = passed_center_x || dx > 0.5f;
         if (!std::isfinite(last_distance) || last_distance < 1.199f ||
             !std::isfinite(position[1])) {
             return false;
@@ -4132,10 +4136,12 @@ bool replay_local_first_actor_route(
         }
         saw_contact = saw_contact || candidate.collision.first_pass.contact;
     }
-    std::printf("Local first actor route: distance=%.3f contact=%d\n",
-                last_distance, saw_contact ? 1 : 0);
-    return saw_contact && last_distance < 1.5f &&
-           steering.current_speed == 0.0f;
+    std::printf("Local first actor route: final distance=%.3f minimum=%.3f crossed center X=%d contact=%d\n",
+                last_distance, minimum_distance, passed_center_x ? 1 : 0,
+                saw_contact ? 1 : 0);
+    return saw_contact && passed_center_x &&
+           minimum_distance >= 1.199f && minimum_distance < 1.22f &&
+           last_distance > 2.0f && steering.current_speed == 0.0f;
 }
 
 bool inspect_local_catalog(const char* disc_root) {
