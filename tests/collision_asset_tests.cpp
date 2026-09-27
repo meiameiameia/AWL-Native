@@ -3707,6 +3707,35 @@ bool replay_local_player_route(const char* disc_root) {
 }
 
 void test_world_map_collision_asset_provider() {
+    constexpr uint32_t unit = 34560000u;
+    struct PhaseCase {
+        uint32_t counter;
+        uint32_t phase;
+    };
+    constexpr std::array<PhaseCase, 12> phase_cases{{
+        {0u, 0u}, {unit - 1u, 0u}, {unit, 1u},
+        {3u * unit - 1u, 1u}, {3u * unit, 2u},
+        {6u * unit - 1u, 2u}, {6u * unit, 3u},
+        {8u * unit - 1u, 3u}, {8u * unit, 4u},
+        {9u * unit - 1u, 4u}, {9u * unit, 5u},
+        {std::numeric_limits<uint32_t>::max(), 5u},
+    }};
+    awl::WorldMapCollisionSelection selection;
+    for (const PhaseCase& sample : phase_cases) {
+        expect(awl::derive_world_map_collision_selection(
+                   {sample.counter, 0u}, &selection) &&
+                   selection.phase_index == sample.phase &&
+                   !selection.alternate_terrain,
+               "raw counter selects the ordered DOL phase boundary");
+    }
+    expect(awl::derive_world_map_collision_selection(
+               {6u * unit, 1u}, &selection) &&
+               selection.phase_index == 3u && selection.alternate_terrain,
+           "raw state byte selects the alternate terrain asset");
+    expect(!awl::derive_world_map_collision_selection({0u, 2u}, &selection) &&
+               selection.phase_index == 0u && !selection.alternate_terrain &&
+               !awl::derive_world_map_collision_selection({0u, 0u}, nullptr),
+           "unsupported terrain selector and null output are rejected");
     constexpr const char* expected_static[6] = {
         "/files/mapobj.col", "/files/mapobj2.col",
         "/files/mapobj3.col", "/files/mapobj4.col",
@@ -3797,6 +3826,12 @@ void test_world_map_collision_asset_provider() {
                    result.position == std::array<float, 3>{2.0f, 6.0f, 2.0f},
                "bound mode-zero static data yields a clear full candidate");
         expect(!assets.bind(nullptr), "null query binding is rejected");
+        expect(!assets.load_from_source_state({0u, 2u}) &&
+                   assets.terrain_bytes().empty() &&
+                   assets.static_bytes().empty() &&
+                   assets.paths().terrain == nullptr &&
+                   assets.load_from_source_state({0u, 0u}),
+               "invalid raw state clears owned assets and valid state reloads");
 
         awl::WorldMapSceneFirstCollisionObjects scene;
         scene.category1_actor.collision.identity = 103;
@@ -4247,10 +4282,22 @@ bool inspect_local_catalog(const char* disc_root) {
                         pools.record_count(1));
         }
     }
+    constexpr std::array<uint32_t, 6> phase_starts{0u, 1u, 3u, 6u, 8u, 9u};
     for (uint32_t phase = 0; valid && phase < 6; ++phase) {
         for (int alternate = 0; alternate < 2; ++alternate) {
             awl::WorldMapCollisionAssets assets;
-            valid = assets.load(phase, alternate != 0);
+            const awl::WorldMapCollisionSourceState source{
+                phase_starts[phase] * 34560000u,
+                static_cast<uint8_t>(alternate)};
+            awl::WorldMapCollisionSelection selected;
+            valid = awl::derive_world_map_collision_selection(
+                        source, &selected) &&
+                    selected.phase_index == phase &&
+                    selected.alternate_terrain == (alternate != 0) &&
+                    assets.load_from_source_state(source) &&
+                    std::strcmp(assets.paths().terrain,
+                                alternate != 0 ? "/files/jimen1-move.col"
+                                               : "/files/jimen-move.col") == 0;
             if (!valid) {
                 std::fprintf(stderr, "COL catalog failed at phase %u terrain %d\n",
                              phase, alternate);

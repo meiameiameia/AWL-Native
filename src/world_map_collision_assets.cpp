@@ -37,6 +37,32 @@ bool read_supported_col(const char* path,
 
 } // namespace
 
+bool derive_world_map_collision_selection(
+    const WorldMapCollisionSourceState& source,
+    WorldMapCollisionSelection* selection) {
+    if (selection != nullptr) {
+        *selection = {};
+    }
+    if (selection == nullptr || source.terrain_variant_byte > 1) {
+        return false;
+    }
+    // FUN_8000FFB0's unsigned division, followed by FUN_8000FEE8's
+    // six ordered unsigned subtract-and-compare thresholds at 0x8023DF70.
+    uint32_t remaining = source.phase_counter_word / 34560000u;
+    constexpr std::array<uint32_t, 6> thresholds{1u, 2u, 3u, 2u, 1u, 1u};
+    uint32_t phase = 0;
+    for (const uint32_t threshold : thresholds) {
+        if (remaining < threshold) {
+            break;
+        }
+        remaining -= threshold;
+        ++phase;
+    }
+    selection->phase_index = phase < 6 ? phase : 5;
+    selection->alternate_terrain = source.terrain_variant_byte == 1;
+    return true;
+}
+
 bool select_world_map_collision_asset_paths(
     uint32_t phase_index,
     bool alternate_terrain,
@@ -80,6 +106,16 @@ bool WorldMapCollisionAssets::load(uint32_t phase_index,
     terrain_analysis_ = terrain_analysis;
     static_analysis_ = static_analysis;
     return true;
+}
+
+bool WorldMapCollisionAssets::load_from_source_state(
+    const WorldMapCollisionSourceState& source) {
+    WorldMapCollisionSelection selection;
+    if (!derive_world_map_collision_selection(source, &selection)) {
+        clear();
+        return false;
+    }
+    return load(selection.phase_index, selection.alternate_terrain);
 }
 
 void WorldMapCollisionAssets::clear() {
