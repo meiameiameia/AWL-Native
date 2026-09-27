@@ -54,4 +54,28 @@ private:
     std::array<std::vector<WorldMapRegisteredCollisionObject>, 3> lists_{};
 };
 
+// FUN_80021440 reads eight records at state +0x123D0. The direct byte is at
+// record +0x14 and the variant word is at +0x18. Callers decode those words
+// and supply the separate state byte +0x299AE.
+struct WorldMapFixedCollisionState {
+    std::array<uint8_t, 8> direct_enabled{};
+    std::array<uint32_t, 8> selected_variant{};
+    uint8_t state_299ae = 0;
+};
+
+// In construction order: eight direct objects, eight variant-0 objects,
+// eight variant-1 objects, and one final state-gated object.
+[[nodiscard]] std::array<bool, 25> world_map_fixed_collision_activation(
+    const WorldMapFixedCollisionState& state);
+
+// Registers supplied fixed objects in FUN_80021440 order. The DOL adds flag
+// 0x2 to each object and inserts it at the later-list head. Asset pointers,
+// categories, matrices, and unique identities are supplied by the caller.
+// Invalid identities leave the registry unchanged; this does not discover
+// game-owned objects or connect scene loading.
+[[nodiscard]] bool register_world_map_fixed_collision_objects(
+    const WorldMapFixedCollisionState& state,
+    const std::array<WorldMapRegisteredCollisionObject, 25>& objects,
+    WorldMapCollisionRegistry* registry);
+
 } // namespace awl

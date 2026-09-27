@@ -1,6 +1,7 @@
 #include "awl/world_map_collision_registry.h"
 
 #include <algorithm>
+#include <utility>
 
 namespace awl {
 
@@ -126,6 +127,51 @@ WorldMapCollisionSnapshot WorldMapCollisionRegistry::snapshot() const {
         result.third_objects.push_back(object);
     }
     return result;
+}
+
+std::array<bool, 25> world_map_fixed_collision_activation(
+    const WorldMapFixedCollisionState& state) {
+    std::array<bool, 25> enabled{};
+    for (size_t i = 0; i < 8; ++i) {
+        enabled[i] = state.direct_enabled[i] != 0;
+        enabled[8 + i] = state.selected_variant[i] == 0;
+        enabled[16 + i] = state.selected_variant[i] == 1;
+    }
+    enabled[24] = state.state_299ae != 0;
+    return enabled;
+}
+
+bool register_world_map_fixed_collision_objects(
+    const WorldMapFixedCollisionState& state,
+    const std::array<WorldMapRegisteredCollisionObject, 25>& objects,
+    WorldMapCollisionRegistry* registry) {
+    if (registry == nullptr) {
+        return false;
+    }
+    for (size_t i = 0; i < objects.size(); ++i) {
+        const uint64_t identity = objects[i].collision.identity;
+        if (identity == 0) {
+            return false;
+        }
+        for (size_t j = 0; j < i; ++j) {
+            if (objects[j].collision.identity == identity) {
+                return false;
+            }
+        }
+    }
+
+    const auto enabled = world_map_fixed_collision_activation(state);
+    WorldMapCollisionRegistry staged = *registry;
+    for (size_t i = 0; i < objects.size(); ++i) {
+        WorldMapRegisteredCollisionObject object = objects[i];
+        object.collision.enabled = enabled[i];
+        object.collision.collision_flags |= 2u;
+        if (!staged.register_object(WorldMapCollisionList::Later, object)) {
+            return false;
+        }
+    }
+    *registry = std::move(staged);
+    return true;
 }
 
 } // namespace awl

@@ -2169,6 +2169,74 @@ void test_world_map_collision_mode_flags() {
            "unsupported modes and missing output are rejected");
 }
 
+void test_world_map_fixed_collision_registration() {
+    awl::WorldMapFixedCollisionState state;
+    state.direct_enabled = {1, 0, 2, 0, 0, 0, 0, 0};
+    state.selected_variant = {0, 1, 2, 0, 1, 2, 0, 1};
+    state.state_299ae = 3;
+    constexpr std::array<bool, 25> expected{
+        true, false, true, false, false, false, false, false,
+        true, false, false, true, false, false, true, false,
+        false, true, false, false, true, false, false, true,
+        true};
+    expect(awl::world_map_fixed_collision_activation(state) == expected,
+           "fixed later-list activation uses direct bytes and exact variant equality");
+
+    std::array<awl::WorldMapRegisteredCollisionObject, 25> objects{};
+    for (size_t i = 0; i < objects.size(); ++i) {
+        objects[i].collision.identity = 100 + i;
+        objects[i].collision.category = 1;
+        objects[i].collision.collision_flags = 1u;
+    }
+    awl::WorldMapCollisionRegistry registry;
+    awl::WorldMapRegisteredCollisionObject unrelated;
+    unrelated.collision.identity = 50;
+    unrelated.collision.enabled = true;
+    expect(registry.register_object(awl::WorldMapCollisionList::First,
+                                    unrelated),
+           "unrelated first-list record is present before fixed registration");
+    expect(awl::register_world_map_fixed_collision_objects(
+               state, objects, &registry),
+           "25 fixed objects register from caller-supplied state and records");
+    const auto snapshot = registry.snapshot();
+    bool ordered = snapshot.later_resolver.size() == 25;
+    for (size_t i = 0; ordered && i < 25; ++i) {
+        const auto& record = snapshot.later_resolver[i];
+        ordered = record.identity == 124 - i &&
+                  record.enabled == expected[24 - i] &&
+                  record.collision_flags == 3u;
+    }
+    expect(ordered && snapshot.first_resolver.size() == 1 &&
+               snapshot.first_resolver[0].identity == 50,
+           "head insertion reverses fixed construction order and leaves other lists intact");
+
+    awl::WorldMapFixedCollisionState updated;
+    updated.selected_variant.fill(2);
+    expect(awl::register_world_map_fixed_collision_objects(
+               updated, objects, &registry) &&
+               registry.snapshot().later_resolver.size() == 25 &&
+               registry.snapshot().later_resolver.front().identity == 124 &&
+               !registry.snapshot().later_resolver.front().enabled &&
+               !registry.snapshot().later_resolver.back().enabled,
+           "reloading fixed records updates active state without duplicating nodes");
+
+    const auto before = registry.snapshot();
+    objects[13].collision.identity = objects[0].collision.identity;
+    expect(!awl::register_world_map_fixed_collision_objects(
+               state, objects, &registry) &&
+               registry.snapshot().later_resolver.size() ==
+                   before.later_resolver.size() &&
+               registry.snapshot().later_resolver.front().identity ==
+                   before.later_resolver.front().identity,
+           "duplicate fixed identities fail without changing the registry");
+    objects[13].collision.identity = 0;
+    expect(!awl::register_world_map_fixed_collision_objects(
+               state, objects, &registry) &&
+               !awl::register_world_map_fixed_collision_objects(
+                   state, objects, nullptr),
+           "missing identity and registry are rejected");
+}
+
 void test_world_map_collision_registry() {
     std::vector<uint8_t> bytes = make_sample_leaf();
     awl::WorldMapRegisteredCollisionObject first;
@@ -3047,6 +3115,7 @@ int main(int argc, char** argv) {
     test_world_map_scene_position_bucket_decision();
     test_world_map_scene_bucket_registry();
     test_world_map_collision_mode_flags();
+    test_world_map_fixed_collision_registration();
     test_world_map_collision_registry();
     test_radius_vertex_adjustment();
     test_radius_edge_adjustment();
