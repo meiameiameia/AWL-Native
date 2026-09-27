@@ -1,4 +1,5 @@
 #include "awl/collision_asset.h"
+#include "awl/world_map_contact.h"
 
 #include <cmath>
 #include <cstdint>
@@ -1169,6 +1170,15 @@ void test_category1_static_and_movement_candidate() {
                std::fabs(result.position[1] - final_edge.position[1]) < 0.0001f,
            "static response outside terrain gets edge-projected final height");
 
+    const std::array<float, 3> inside_static_prior{5.0f, 7.0f, 2.0f};
+    expect(awl::resolve_type1_category1_movement_candidate(
+               query, inside_static_prior, static_proposed, &result) &&
+               !result.static_contact.contact &&
+               result.static_contact.narrow_phase.used_containment_shortcut &&
+               result.resolver_contact_bits == 0u &&
+               !result.final_height_resampled,
+           "player contact flag four keeps a matching prior surface clear");
+
     terrain[6] = 0;
     expect(!awl::resolve_type1_category1_movement_candidate(
                query, prior, proposed, &result) &&
@@ -1184,6 +1194,95 @@ void test_category1_static_and_movement_candidate() {
                query, prior, proposed, &result) &&
                result.position == std::array<float, 3>{},
            "invalid moving radius rejects the full candidate");
+}
+
+void test_world_map_directional_contact_search() {
+    std::vector<uint8_t> bytes = make_sample_leaf();
+    put_be16(bytes, 8 + 0x34, 1u);
+    constexpr awl::CollisionAffineTransform identity{
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f};
+    awl::WorldMapContactObject object;
+    object.enabled = true;
+    object.category = 1;
+    object.collision_flags = 2u;
+    object.data = bytes.data();
+    object.size = bytes.size();
+    object.contact_query.world_to_object = identity;
+    object.contact_query.object_to_world = identity;
+    object.contact_query.object_center_local = {5.0f, 0.0f, 0.0f};
+    object.contact_query.object_radius = 10.0f;
+    object.world_position = {20.0f, 30.0f, 40.0f};
+    object.heading_axis = {0.0f, 0.0f, -1.0f};
+    object.metadata = 42u;
+    const std::array<float, 3> prior{5.0f, 7.0f, -2.0f};
+    const std::array<float, 3> proposed{5.0f, 9.0f, -0.1f};
+    const std::array<float, 3> fallback_axis{0.0f, 0.0f, 1.0f};
+    awl::WorldMapContactResult result;
+    expect(awl::query_world_map_directional_contact(
+               &object, 1, 1, prior, proposed, fallback_axis, &result) &&
+               result.matched && result.direction_code == 0 &&
+               result.metadata == 42u &&
+               result.world_position == object.world_position &&
+               result.heading_axis == object.heading_axis &&
+               result.queried_objects == 1 &&
+               result.contacting_objects == 1,
+           "first qualifying type-1 edge returns its direction and metadata");
+
+    const std::array<float, 3> vertical_only{5.0f, 20.0f, -2.0f};
+    expect(awl::query_world_map_directional_contact(
+               &object, 1, 1, prior, vertical_only, fallback_axis,
+               &result) && !result.matched && result.direction_code == 7 &&
+               result.queried_objects == 0 &&
+               result.world_position == vertical_only &&
+               result.heading_axis == fallback_axis,
+           "zero horizontal motion returns the caller's fallback without search");
+
+    awl::WorldMapContactObject disabled = object;
+    disabled.enabled = false;
+    awl::WorldMapContactObject wrong_category = object;
+    wrong_category.category = 7;
+    awl::WorldMapContactObject circle_only = object;
+    circle_only.collision_flags = 1u;
+    const std::array<awl::WorldMapContactObject, 4> filtered{
+        disabled, wrong_category, circle_only, object};
+    expect(awl::query_world_map_directional_contact(
+               filtered.data(), filtered.size(), 1, prior, proposed,
+               fallback_axis, &result) && result.matched &&
+               result.queried_objects == 1 &&
+               result.contacting_objects == 1,
+           "search skips disabled, wrong-category, and circle-only objects");
+
+    awl::WorldMapContactObject wrong_heading = object;
+    wrong_heading.heading_axis = {0.0f, 0.0f, 1.0f};
+    wrong_heading.metadata = 99u;
+    const std::array<awl::WorldMapContactObject, 2> ordered{
+        wrong_heading, object};
+    expect(awl::query_world_map_directional_contact(
+               ordered.data(), ordered.size(), 1, prior, proposed,
+               fallback_axis, &result) && result.matched &&
+               result.metadata == 42u && result.queried_objects == 2 &&
+               result.contacting_objects == 2,
+           "a contact without matching heading leaves the next object eligible");
+
+    expect(awl::query_world_map_directional_contact(
+               &wrong_heading, 1, 1, prior, proposed, fallback_axis,
+               &result) && !result.matched && result.direction_code == 7 &&
+               result.metadata == 0u && result.world_position == proposed &&
+               result.heading_axis == fallback_axis,
+           "no qualifying heading uses the caller's code-seven fallback");
+
+    bytes[6] = 0;
+    expect(!awl::query_world_map_directional_contact(
+               &object, 1, 1, prior, proposed, fallback_axis, &result) &&
+               !result.matched && result.world_position ==
+                   std::array<float, 3>{},
+           "unsupported contact COL mode rejects the search");
+    bytes[6] = 1;
+    expect(!awl::query_world_map_directional_contact(
+               nullptr, 1, 1, prior, proposed, fallback_axis, &result),
+           "missing nonempty object list is rejected");
 }
 
 void test_radius_edge_adjustment() {
@@ -1553,6 +1652,7 @@ int main(int argc, char** argv) {
     test_first_dynamic_object_pass();
     test_later_dynamic_object_pass();
     test_category1_static_and_movement_candidate();
+    test_world_map_directional_contact_search();
     test_radius_vertex_adjustment();
     test_radius_edge_adjustment();
     test_radius_pass_sequence();

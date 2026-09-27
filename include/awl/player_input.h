@@ -38,7 +38,8 @@ void update_world_map_steering(const HsdPadFrame& pad,
     const WorldMapSteeringState& steering);
 
 // Isolates the directional-code selection after FUN_8001DE44 receives a
-// contact mask. The caller must first perform that untranslated contact query.
+// contact mask. The caller supplies a verified mask; world_map_contact.h
+// composes the supported type-1 query for caller-supplied objects.
 // Returns false with code 7 for no qualifying direction or unsupported input.
 [[nodiscard]] bool classify_world_map_directional_contact(
     const WorldMapPosition& prior_position,

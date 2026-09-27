@@ -1494,11 +1494,12 @@ bool resolve_type1_category1_movement_candidate(
     }
 
     constexpr uint32_t movement_resolver_flags = 0x67u;
+    constexpr uint32_t initial_contact_flags = 4u;
     CollisionCategory1MovementAdjustment result;
     if (!resolve_type1_first_dynamic_object_pass(
             query.first_objects, query.first_object_count,
             query.source_identity, 1, prior_position, proposed_position,
-            query.moving_radius, query.initial_contact_flags,
+            query.moving_radius, initial_contact_flags,
             movement_resolver_flags, &result.first_pass)) {
         return false;
     }

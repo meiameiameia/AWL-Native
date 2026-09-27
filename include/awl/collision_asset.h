@@ -171,7 +171,6 @@ struct CollisionCategory1MovementQuery {
     size_t later_object_count = 0;
     uint64_t source_identity = 0;
     float moving_radius = 0.0f;
-    uint32_t initial_contact_flags = 0;
     CollisionCategory1StaticFlags static_flags{};
 };
 
@@ -341,9 +340,10 @@ struct CollisionCategory1MovementAdjustment {
     CollisionCategory1StaticAdjustment* adjustment);
 
 // Composes the supported category-1 type-1 path for the movement object's
-// verified 0x67 resolver flags: first objects, terrain, slot-2 static contact,
-// later objects, and contact-triggered final height lookup. Inputs stand in
-// for runtime asset/list/flag providers. It never updates a player object.
+// verified 0x67 resolver flags and initial contact flags 0x4: first objects,
+// terrain, slot-2 static contact, later objects, and final height lookup.
+// Inputs stand in for runtime asset/list/flag providers. It never updates a
+// player object.
 [[nodiscard]] bool resolve_type1_category1_movement_candidate(
     const CollisionCategory1MovementQuery& query,
     const std::array<float, 3>& prior_position,

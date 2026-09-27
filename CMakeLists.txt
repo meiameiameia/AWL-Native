@@ -20,6 +20,7 @@ set(SOURCES
     src/platform.cpp
     src/input.cpp
     src/player_input.cpp
+    src/world_map_contact.cpp
     src/collision_asset.cpp
     src/game.cpp
     src/filesystem.cpp
@@ -38,6 +39,7 @@ set(HEADERS
     include/awl/render_validation.h
     include/awl/dvd.h
     include/awl/player_input.h
+    include/awl/world_map_contact.h
     include/awl/collision_asset.h
 )
 
@@ -181,6 +183,8 @@ add_test(NAME player_input_tests COMMAND player_input_tests)
 add_executable(collision_asset_tests
     tests/collision_asset_tests.cpp
     src/collision_asset.cpp
+    src/world_map_contact.cpp
+    src/player_input.cpp
 )
 target_include_directories(collision_asset_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/include
