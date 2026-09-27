@@ -1,5 +1,6 @@
 #include "awl/world_map_scene_index.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace awl {
@@ -26,14 +27,15 @@ uint8_t bin_coordinate(float coordinate,
 
 bool plan_world_map_scene_position_update(
     int32_t scene_type,
-    uint8_t previous_bucket,
+    int32_t previous_bucket,
     const std::array<float, 3>& resolved_position,
     WorldMapScenePositionUpdate* update) {
     if (update != nullptr) {
         *update = {};
     }
     if (update == nullptr || scene_type < 0 || scene_type > 44 ||
-        previous_bucket > 58 || !std::isfinite(resolved_position[0]) ||
+        previous_bucket < -1 || previous_bucket > 58 ||
+        !std::isfinite(resolved_position[0]) ||
         !std::isfinite(resolved_position[1]) ||
         !std::isfinite(resolved_position[2])) {
         return false;
@@ -57,6 +59,110 @@ bool plan_world_map_scene_position_update(
     candidate.relink_required = candidate.next_bucket != previous_bucket;
     *update = candidate;
     return true;
+}
+
+bool WorldMapSceneBucketRegistry::register_object(
+    uint64_t identity,
+    int32_t scene_type,
+    const std::array<float, 3>& position) {
+    WorldMapScenePositionUpdate update;
+    if (identity == 0 || !plan_world_map_scene_position_update(
+                             scene_type, -1, position, &update)) {
+        return false;
+    }
+    for (const auto& bucket : buckets_) {
+        if (std::any_of(bucket.begin(), bucket.end(),
+                        [identity](const WorldMapSceneObject& object) {
+                            return object.identity == identity;
+                        })) {
+            return false;
+        }
+    }
+    // FUN_800110D4 initializes the bucket key to -1; FUN_800109C0
+    // registers that node before the first FUN_800107A4 position write.
+    auto& initial_bucket = buckets_[0];
+    initial_bucket.insert(initial_bucket.begin(),
+                          WorldMapSceneObject{identity, scene_type, position,
+                                              -1});
+    return true;
+}
+
+bool WorldMapSceneBucketRegistry::update_position(
+    uint64_t identity,
+    const std::array<float, 3>& position,
+    WorldMapScenePositionUpdate* update) {
+    if (update != nullptr) {
+        *update = {};
+    }
+    if (identity == 0 || update == nullptr) {
+        return false;
+    }
+    for (auto& bucket : buckets_) {
+        const auto found = std::find_if(
+            bucket.begin(), bucket.end(),
+            [identity](const WorldMapSceneObject& object) {
+                return object.identity == identity;
+            });
+        if (found == bucket.end()) {
+            continue;
+        }
+        WorldMapScenePositionUpdate planned;
+        if (!plan_world_map_scene_position_update(
+                found->scene_type, found->bucket, position, &planned)) {
+            return false;
+        }
+        if (!planned.relink_required) {
+            found->position = position;
+        } else {
+            auto& next = buckets_[static_cast<size_t>(planned.next_bucket) + 1];
+            next.reserve(next.size() + 1);
+            WorldMapSceneObject moved = *found;
+            moved.position = position;
+            moved.bucket = planned.next_bucket;
+            bucket.erase(found);
+            next.insert(next.begin(), moved);
+        }
+        *update = planned;
+        return true;
+    }
+    return false;
+}
+
+bool WorldMapSceneBucketRegistry::unregister_object(uint64_t identity) {
+    if (identity == 0) {
+        return false;
+    }
+    for (auto& bucket : buckets_) {
+        const auto found = std::find_if(
+            bucket.begin(), bucket.end(),
+            [identity](const WorldMapSceneObject& object) {
+                return object.identity == identity;
+            });
+        if (found != bucket.end()) {
+            bucket.erase(found);
+            return true;
+        }
+    }
+    return false;
+}
+
+void WorldMapSceneBucketRegistry::clear() {
+    for (auto& bucket : buckets_) {
+        bucket.clear();
+    }
+}
+
+size_t WorldMapSceneBucketRegistry::size(int32_t bucket) const {
+    return bucket >= -1 && bucket <= 58
+               ? buckets_[static_cast<size_t>(bucket + 1)].size()
+               : 0;
+}
+
+std::vector<WorldMapSceneObject> WorldMapSceneBucketRegistry::snapshot(
+    int32_t bucket) const {
+    return bucket >= -1 && bucket <= 58
+               ? buckets_[static_cast<size_t>(bucket + 1)]
+               : std::vector<WorldMapSceneObject>{};
 }
 
 } // namespace awl

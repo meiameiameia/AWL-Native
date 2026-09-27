@@ -1,13 +1,15 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <vector>
 
 namespace awl {
 
 struct WorldMapScenePositionUpdate {
     std::array<float, 3> position{};
-    uint8_t previous_bucket = 0;
+    int32_t previous_bucket = 0;
     uint8_t next_bucket = 0;
     bool relink_required = false;
 };
@@ -18,8 +20,39 @@ struct WorldMapScenePositionUpdate {
 // neither mutates an object nor performs the target's list operations.
 [[nodiscard]] bool plan_world_map_scene_position_update(
     int32_t scene_type,
-    uint8_t previous_bucket,
+    int32_t previous_bucket,
     const std::array<float, 3>& resolved_position,
     WorldMapScenePositionUpdate* update);
+
+struct WorldMapSceneObject {
+    // Identity represents the target scene object's intrusive list node.
+    uint64_t identity = 0;
+    int32_t scene_type = 0;
+    std::array<float, 3> position{};
+    int32_t bucket = -1;
+};
+
+// Caller-supplied scene objects start in the constructor's -1 bucket, then
+// move to a supported 0..58 spatial bucket on the first position update.
+// FUN_8000C2BC inserts at a bucket's front. FUN_800107A4 writes XYZ on
+// every supported position update and relinks only when the key changes.
+// This registry does not discover scene objects or update live gameplay.
+class WorldMapSceneBucketRegistry {
+public:
+    [[nodiscard]] bool register_object(uint64_t identity,
+                                       int32_t scene_type,
+                                       const std::array<float, 3>& position);
+    [[nodiscard]] bool update_position(uint64_t identity,
+                                       const std::array<float, 3>& position,
+                                       WorldMapScenePositionUpdate* update);
+    [[nodiscard]] bool unregister_object(uint64_t identity);
+    void clear();
+    [[nodiscard]] size_t size(int32_t bucket) const;
+    [[nodiscard]] std::vector<WorldMapSceneObject> snapshot(int32_t bucket) const;
+
+private:
+    // Array index zero is the constructor's key -1; indices 1..59 are 0..58.
+    std::array<std::vector<WorldMapSceneObject>, 60> buckets_{};
+};
 
 } // namespace awl

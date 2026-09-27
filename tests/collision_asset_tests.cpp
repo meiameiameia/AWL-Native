@@ -1496,6 +1496,10 @@ void test_world_map_scene_position_bucket_decision() {
                update.previous_bucket == 0 && update.next_bucket == 16,
            "switching from bucket zero plans entry to the selected grid bucket");
     expect(awl::plan_world_map_scene_position_update(
+               1, -1, crossing, &update) && update.relink_required &&
+               update.previous_bucket == -1 && update.next_bucket == 16,
+           "constructor key minus one plans first entry into a spatial bucket");
+    expect(awl::plan_world_map_scene_position_update(
                0, 0, crossing, &update) && update.next_bucket == 0 &&
                !update.relink_required && update.position == crossing,
            "constructor's initial type zero keeps bucket zero across position bins");
@@ -1526,8 +1530,92 @@ void test_world_map_scene_position_bucket_decision() {
                1, 59, crossing, &update),
            "prior bucket beyond verified range is rejected");
     expect(!awl::plan_world_map_scene_position_update(
+               1, -2, crossing, &update),
+           "prior bucket below constructor key is rejected");
+    expect(!awl::plan_world_map_scene_position_update(
                1, 0, crossing, nullptr),
            "missing scene position result is rejected");
+}
+
+void test_world_map_scene_bucket_registry() {
+    awl::WorldMapSceneBucketRegistry registry;
+    const std::array<float, 3> start{10.0f, 3.0f, 10.0f};
+    const std::array<float, 3> same_bucket{20.0f, 4.0f, 20.0f};
+    const std::array<float, 3> across_x{54.0f, 5.0f, 10.0f};
+    expect(registry.register_object(11, 1, start) &&
+               registry.register_object(22, 2, start) &&
+               registry.register_object(33, 1, across_x),
+           "scene objects register in the constructor's unpositioned bucket");
+    expect(registry.size(-1) == 3 && registry.snapshot(-1)[0].identity == 33 &&
+               registry.snapshot(-1)[1].identity == 22 &&
+               registry.snapshot(-1)[2].identity == 11,
+           "constructor bucket insertion keeps newest object first");
+
+    awl::WorldMapScenePositionUpdate update;
+    expect(registry.update_position(11, start, &update) &&
+               update.relink_required && update.previous_bucket == -1 &&
+               update.next_bucket == 1 && registry.size(-1) == 2 &&
+               registry.update_position(22, start, &update) &&
+               registry.update_position(33, across_x, &update) &&
+               registry.size(-1) == 0 &&
+               registry.size(1) == 2 && registry.size(5) == 1 &&
+               registry.snapshot(1)[0].identity == 22 &&
+               registry.snapshot(1)[1].identity == 11,
+           "first position writes move objects into computed spatial buckets");
+
+    expect(registry.update_position(11, same_bucket, &update) &&
+               !update.relink_required && update.next_bucket == 1 &&
+               registry.snapshot(1)[0].identity == 22 &&
+               registry.snapshot(1)[1].position == same_bucket,
+           "same-bucket position write preserves list order");
+    expect(registry.update_position(11, across_x, &update) &&
+               update.relink_required && update.previous_bucket == 1 &&
+               update.next_bucket == 5 && registry.size(1) == 1 &&
+               registry.snapshot(5)[0].identity == 11 &&
+               registry.snapshot(5)[1].identity == 33,
+           "crossing a bin detaches and inserts at the new bucket head");
+    expect(registry.update_position(22, across_x, &update) &&
+               registry.snapshot(5)[0].identity == 22 &&
+               registry.snapshot(5)[1].identity == 11,
+           "a later crossing moves ahead of existing destination entries");
+
+    expect(registry.register_object(44, 0, start) &&
+               registry.size(-1) == 1 &&
+               registry.update_position(44, across_x, &update) &&
+               update.relink_required && update.previous_bucket == -1 &&
+               registry.update_position(44, start, &update) &&
+               !update.relink_required && registry.size(0) == 1 &&
+               registry.snapshot(0)[0].position == start,
+           "type zero first enters bucket zero, then retains it across XYZ changes");
+    expect(registry.register_object(55, 44, start) &&
+               registry.update_position(55, start, &update) &&
+               registry.size(58) == 1,
+           "fixed scene type forty-four enters the final supported bucket");
+
+    const std::array<float, 3> nonfinite{
+        std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f};
+    const auto before = registry.snapshot(5);
+    expect(!registry.register_object(11, 1, start) &&
+               !registry.register_object(0, 1, start) &&
+               !registry.register_object(66, 45, start) &&
+               !registry.update_position(11, nonfinite, &update) &&
+               !registry.update_position(99, start, &update) &&
+               !registry.update_position(11, start, nullptr) &&
+               registry.snapshot(5).size() == before.size() &&
+               registry.snapshot(5)[1].position == before[1].position &&
+               update.next_bucket == 0,
+           "invalid registration and position updates leave buckets unchanged");
+    expect(registry.unregister_object(11) &&
+               !registry.unregister_object(11) && registry.size(5) == 2 &&
+               registry.snapshot(5)[0].identity == 22,
+           "unregister removes exactly one scene node");
+    registry.clear();
+    expect(registry.size(-1) == 0 && registry.size(0) == 0 &&
+               registry.size(1) == 0 &&
+               registry.size(5) == 0 && registry.size(58) == 0 &&
+               registry.snapshot(59).empty() &&
+               registry.snapshot(-2).empty(),
+           "clear removes all buckets and unknown bucket queries stay empty");
 }
 
 void test_world_map_collision_registry() {
@@ -2001,6 +2089,7 @@ int main(int argc, char** argv) {
     test_world_map_directional_contact_search();
     test_world_map_movement_candidate_sequence();
     test_world_map_scene_position_bucket_decision();
+    test_world_map_scene_bucket_registry();
     test_world_map_collision_registry();
     test_radius_vertex_adjustment();
     test_radius_edge_adjustment();
