@@ -1,5 +1,6 @@
 #include "awl/collision_asset.h"
 #include "awl/world_map_contact.h"
+#include "awl/world_map_movement.h"
 
 #include <cmath>
 #include <cstdint>
@@ -1285,6 +1286,138 @@ void test_world_map_directional_contact_search() {
            "missing nonempty object list is rejected");
 }
 
+void test_world_map_movement_candidate_sequence() {
+    std::vector<uint8_t> terrain = make_sample_leaf();
+    awl::WorldMapMovementQuery query;
+    query.pad.stick_x = 80;
+    query.current_position = {2.0f, 7.0f, 2.0f};
+    query.current_axis = {0.0f, 0.0f, 1.0f};
+    query.collision.terrain_data = terrain.data();
+    query.collision.terrain_size = terrain.size();
+    awl::WorldMapMovementCandidate result;
+    expect(awl::calculate_world_map_movement_candidate(query, &result) &&
+               result.movement_enabled &&
+               std::fabs(result.steering.current_speed - 0.03f) < 0.0001f &&
+               result.proposed_position[0] > query.current_position[0] &&
+               result.proposed_position[1] == query.current_position[1] &&
+               !result.directional_contact.matched &&
+               result.directional_contact.direction_code == 7 &&
+               result.directional_contact.world_position ==
+                   result.proposed_position &&
+               result.resolved_position[1] != result.proposed_position[1] &&
+               result.collision.resolver_contact_bits == 0u,
+           "enabled movement runs steering, proposal, contact fallback, and terrain in order");
+    awl::CollisionSurfaceSample surface;
+    expect(awl::sample_type1_collision_surface(
+               terrain.data(), terrain.size(), result.resolved_position[0],
+               result.resolved_position[2], &surface) &&
+               std::fabs(result.resolved_position[1] - surface.height) <
+                   0.0001f,
+           "composed movement candidate height matches independent terrain sampling");
+
+    awl::CollisionDynamicPassObject circle;
+    circle.identity = 2;
+    circle.enabled = true;
+    circle.category = 1;
+    circle.collision_flags = 1u;
+    circle.center_world = result.proposed_position;
+    circle.radius = 0.5f;
+    awl::WorldMapContactObject directional;
+    directional.enabled = true;
+    directional.category = 1;
+    directional.collision_flags = 1u;
+    query.collision.first_objects = &circle;
+    query.collision.first_object_count = 1;
+    query.collision.moving_radius = -99.0f;
+    query.directional_objects = &directional;
+    query.directional_object_count = 1;
+    expect(awl::calculate_world_map_movement_candidate(query, &result) &&
+               result.movement_enabled && result.collision.first_pass.contact &&
+               result.collision.resolver_contact_bits == 4u &&
+               result.directional_contact.queried_objects == 0 &&
+               std::fabs(result.collision.first_pass.position[2] -
+                         result.proposed_position[2] - 0.81f) < 0.0002f,
+           "first-list circle uses the player's fixed radius while directional search skips it");
+    directional.category = 2;
+    expect(!awl::calculate_world_map_movement_candidate(query, &result) &&
+               !result.movement_enabled,
+           "inconsistent first-list views are rejected before movement work");
+    directional.category = 1;
+
+    put_be16(terrain, 8 + 0x34, 1u);
+    constexpr awl::CollisionAffineTransform identity{
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f};
+    awl::CollisionDynamicPassObject wall;
+    wall.identity = 3;
+    wall.enabled = true;
+    wall.category = 1;
+    wall.collision_flags = 2u;
+    wall.data = terrain.data();
+    wall.size = terrain.size();
+    wall.world_to_object = identity;
+    wall.object_to_world = identity;
+    wall.center_local = {5.0f, 0.0f, 0.0f};
+    wall.radius = 10.0f;
+    awl::WorldMapContactObject wall_direction;
+    wall_direction.enabled = wall.enabled;
+    wall_direction.category = wall.category;
+    wall_direction.collision_flags = wall.collision_flags;
+    wall_direction.data = wall.data;
+    wall_direction.size = wall.size;
+    wall_direction.contact_query.world_to_object = wall.world_to_object;
+    wall_direction.contact_query.object_to_world = wall.object_to_world;
+    wall_direction.contact_query.object_center_local = wall.center_local;
+    wall_direction.contact_query.object_radius = wall.radius;
+    wall_direction.world_position = {20.0f, 30.0f, 40.0f};
+    wall_direction.heading_axis = {0.0f, 0.0f, -1.0f};
+    wall_direction.metadata = 42u;
+    awl::WorldMapMovementQuery wall_query;
+    wall_query.pad.stick_y = -80;
+    wall_query.current_position = {5.0f, 7.0f, -0.1f};
+    wall_query.current_axis = {0.0f, 0.0f, 1.0f};
+    wall_query.directional_objects = &wall_direction;
+    wall_query.directional_object_count = 1;
+    wall_query.collision.terrain_data = terrain.data();
+    wall_query.collision.terrain_size = terrain.size();
+    wall_query.collision.first_objects = &wall;
+    wall_query.collision.first_object_count = 1;
+    expect(awl::calculate_world_map_movement_candidate(
+               wall_query, &result) && result.movement_enabled &&
+               result.directional_contact.matched &&
+               result.directional_contact.direction_code == 0 &&
+               result.directional_contact.metadata == 42u &&
+               result.collision.first_pass.queried_objects == 1,
+           "same supplied type-one entry reaches direction metadata and collision pass");
+
+    query.state_680 = 0;
+    query.collision.terrain_data = nullptr;
+    query.collision.terrain_size = 0;
+    expect(awl::calculate_world_map_movement_candidate(query, &result) &&
+               !result.movement_enabled &&
+               result.resolved_position == query.current_position &&
+               result.proposed_position == query.current_position &&
+               result.steering.current_speed == 0.0f &&
+               result.directional_contact.queried_objects == 0,
+           "blocked world-map state avoids steering and collision queries");
+
+    query.state_680 = -1;
+    query.state_58c = 1;
+    expect(awl::calculate_world_map_movement_candidate(query, &result) &&
+               !result.movement_enabled &&
+               result.resolved_position == query.current_position,
+           "nonzero second state guard also blocks the movement sequence");
+
+    query.state_58c = 0;
+    expect(!awl::calculate_world_map_movement_candidate(query, &result) &&
+               !result.movement_enabled &&
+               result.resolved_position == std::array<float, 3>{},
+           "unsupported enabled collision input rejects the whole candidate");
+    expect(!awl::calculate_world_map_movement_candidate(query, nullptr),
+           "missing movement result is rejected");
+}
+
 void test_radius_edge_adjustment() {
     std::vector<uint8_t> bytes = make_sample_leaf();
     awl::CollisionRadiusEdgeAdjustment adjustment;
@@ -1631,6 +1764,26 @@ bool inspect_local_asset(const char* path) {
                      path);
         return false;
     }
+    awl::WorldMapMovementQuery sequence;
+    sequence.pad.stick_x = 80;
+    sequence.current_position = route_point;
+    sequence.current_axis = {0.0f, 0.0f, 1.0f};
+    sequence.collision.terrain_data = bytes.data();
+    sequence.collision.terrain_size = bytes.size();
+    awl::WorldMapMovementCandidate candidate;
+    awl::CollisionSurfaceSample moved_surface;
+    if (!awl::calculate_world_map_movement_candidate(
+            sequence, &candidate) || !candidate.movement_enabled ||
+        candidate.proposed_position[0] <= route_point[0] ||
+        !awl::sample_type1_collision_surface(
+            bytes.data(), bytes.size(), candidate.resolved_position[0],
+            candidate.resolved_position[2], &moved_surface) ||
+        std::fabs(candidate.resolved_position[1] - moved_surface.height) >
+            0.0001f) {
+        std::fprintf(stderr, "Movement sequence at local sample failed: %s\n",
+                     path);
+        return false;
+    }
     return true;
 }
 
@@ -1653,6 +1806,7 @@ int main(int argc, char** argv) {
     test_later_dynamic_object_pass();
     test_category1_static_and_movement_candidate();
     test_world_map_directional_contact_search();
+    test_world_map_movement_candidate_sequence();
     test_radius_vertex_adjustment();
     test_radius_edge_adjustment();
     test_radius_pass_sequence();
