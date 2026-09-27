@@ -1,9 +1,11 @@
 #include "awl/collision_asset.h"
 #include "awl/world_map_contact.h"
 #include "awl/world_map_movement.h"
+#include "awl/world_map_scene_index.h"
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <cstdio>
 #include <fstream>
 #include <iterator>
@@ -1314,6 +1316,13 @@ void test_world_map_movement_candidate_sequence() {
                std::fabs(result.resolved_position[1] - surface.height) <
                    0.0001f,
            "composed movement candidate height matches independent terrain sampling");
+    awl::WorldMapScenePositionUpdate scene_update;
+    expect(awl::plan_world_map_scene_position_update(
+               0, 0, result.resolved_position, &scene_update) &&
+               scene_update.position == result.resolved_position &&
+               scene_update.next_bucket == 0 &&
+               !scene_update.relink_required,
+           "collision-adjusted position retains the constructor's bucket-zero scene type");
 
     awl::CollisionDynamicPassObject circle;
     circle.identity = 2;
@@ -1416,6 +1425,104 @@ void test_world_map_movement_candidate_sequence() {
            "unsupported enabled collision input rejects the whole candidate");
     expect(!awl::calculate_world_map_movement_candidate(query, nullptr),
            "missing movement result is rejected");
+}
+
+void test_world_map_scene_position_bucket_decision() {
+    constexpr float third_x_threshold = 152.97621f;
+    uint32_t threshold_bits = 0;
+    std::memcpy(&threshold_bits, &third_x_threshold, sizeof(threshold_bits));
+    expect(threshold_bits == 0x4318F9E9u,
+           "native third X threshold retains the verified DOL float bits");
+    constexpr float x_positions[4] = {0.0f, 54.0f, 99.0f, 152.97621f};
+    constexpr float z_positions[4] = {0.0f, 64.0f, 130.0f, 194.0f};
+    constexpr uint8_t expected[4][4] = {
+        {1, 2, 3, 4},
+        {5, 6, 7, 8},
+        {9, 10, 11, 12},
+        {13, 14, 15, 16}};
+    for (size_t x = 0; x < 4; ++x) {
+        for (size_t z = 0; z < 4; ++z) {
+            const std::array<float, 3> position{
+                x_positions[x], 500.0f, z_positions[z]};
+            awl::WorldMapScenePositionUpdate update;
+            expect(awl::plan_world_map_scene_position_update(
+                       1, expected[x][z], position, &update) &&
+                       update.next_bucket == expected[x][z] &&
+                       !update.relink_required &&
+                       update.position == position,
+                   "verified sixteen-entry scene table uses X-major and Z-minor bins");
+        }
+    }
+    for (size_t index = 1; index < 4; ++index) {
+        const std::array<float, 3> before_x{
+            std::nextafter(x_positions[index],
+                           -std::numeric_limits<float>::infinity()),
+            0.0f, 0.0f};
+        const std::array<float, 3> before_z{
+            0.0f, 0.0f,
+            std::nextafter(z_positions[index],
+                           -std::numeric_limits<float>::infinity())};
+        awl::WorldMapScenePositionUpdate boundary;
+        expect(awl::plan_world_map_scene_position_update(
+                   1, expected[index - 1][0], before_x, &boundary) &&
+                   boundary.next_bucket == expected[index - 1][0],
+               "one float below each X threshold stays in the lower bin");
+        expect(awl::plan_world_map_scene_position_update(
+                   1, expected[0][index - 1], before_z, &boundary) &&
+                   boundary.next_bucket == expected[0][index - 1],
+               "one float below each Z threshold stays in the lower bin");
+    }
+
+    awl::WorldMapScenePositionUpdate update;
+    const std::array<float, 3> below_third_x{
+        std::nextafter(152.97621f, -std::numeric_limits<float>::infinity()),
+        -10.0f, 194.0f};
+    expect(awl::plan_world_map_scene_position_update(
+               2, 12, below_third_x, &update) &&
+               update.next_bucket == 12 && !update.relink_required,
+           "one float below the third X threshold stays in the preceding bin");
+    const std::array<float, 3> crossing{152.97621f, -10.0f, 194.0f};
+    expect(awl::plan_world_map_scene_position_update(
+               2, 12, crossing, &update) && update.next_bucket == 16 &&
+               update.relink_required && update.position == crossing,
+           "crossing a threshold plans a relink while retaining the full position");
+    expect(awl::plan_world_map_scene_position_update(
+               1, 0, crossing, &update) && update.relink_required &&
+               update.previous_bucket == 0 && update.next_bucket == 16,
+           "switching from bucket zero plans entry to the selected grid bucket");
+    expect(awl::plan_world_map_scene_position_update(
+               0, 0, crossing, &update) && update.next_bucket == 0 &&
+               !update.relink_required && update.position == crossing,
+           "constructor's initial type zero keeps bucket zero across position bins");
+    expect(awl::plan_world_map_scene_position_update(
+               0, 16, crossing, &update) && update.next_bucket == 0 &&
+               update.relink_required,
+           "changing back to scene type zero plans a move to bucket zero");
+    for (int32_t type = 3; type <= 44; ++type) {
+        expect(awl::plan_world_map_scene_position_update(
+                   type, 0, crossing, &update) &&
+                   update.next_bucket == static_cast<uint8_t>(type + 14) &&
+                   update.relink_required,
+               "verified fixed scene-type table maps types three through forty-four");
+    }
+
+    const std::array<float, 3> nonfinite{
+        std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f};
+    expect(!awl::plan_world_map_scene_position_update(
+               1, 0, nonfinite, &update) && update.next_bucket == 0,
+           "nonfinite scene position is rejected without an update plan");
+    expect(!awl::plan_world_map_scene_position_update(
+               45, 0, crossing, &update) && update.next_bucket == 0,
+           "scene type beyond verified table is rejected");
+    expect(!awl::plan_world_map_scene_position_update(
+               -1, 0, crossing, &update),
+           "negative scene type is rejected");
+    expect(!awl::plan_world_map_scene_position_update(
+               1, 59, crossing, &update),
+           "prior bucket beyond verified range is rejected");
+    expect(!awl::plan_world_map_scene_position_update(
+               1, 0, crossing, nullptr),
+           "missing scene position result is rejected");
 }
 
 void test_radius_edge_adjustment() {
@@ -1807,6 +1914,7 @@ int main(int argc, char** argv) {
     test_category1_static_and_movement_candidate();
     test_world_map_directional_contact_search();
     test_world_map_movement_candidate_sequence();
+    test_world_map_scene_position_bucket_decision();
     test_radius_vertex_adjustment();
     test_radius_edge_adjustment();
     test_radius_pass_sequence();
