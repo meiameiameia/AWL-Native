@@ -1,5 +1,6 @@
 #include "awl/collision_asset.h"
 #include "awl/world_map_contact.h"
+#include "awl/world_map_collision_registry.h"
 #include "awl/world_map_movement.h"
 #include "awl/world_map_scene_index.h"
 
@@ -1331,15 +1332,19 @@ void test_world_map_movement_candidate_sequence() {
     circle.collision_flags = 1u;
     circle.center_world = result.proposed_position;
     circle.radius = 0.5f;
-    awl::WorldMapContactObject directional;
-    directional.enabled = true;
-    directional.category = 1;
-    directional.collision_flags = 1u;
-    query.collision.first_objects = &circle;
-    query.collision.first_object_count = 1;
+    awl::WorldMapCollisionRegistry circle_registry;
+    awl::WorldMapRegisteredCollisionObject circle_entry;
+    circle_entry.collision = circle;
+    expect(circle_registry.register_object(
+               awl::WorldMapCollisionList::First, circle_entry),
+           "circle entry registers in the first collision list");
+    awl::WorldMapCollisionSnapshot circle_snapshot =
+        circle_registry.snapshot();
+    query.collision.first_objects = circle_snapshot.first_resolver.data();
+    query.collision.first_object_count = circle_snapshot.first_resolver.size();
     query.collision.moving_radius = -99.0f;
-    query.directional_objects = &directional;
-    query.directional_object_count = 1;
+    query.directional_objects = circle_snapshot.first_directional.data();
+    query.directional_object_count = circle_snapshot.first_directional.size();
     expect(awl::calculate_world_map_movement_candidate(query, &result) &&
                result.movement_enabled && result.collision.first_pass.contact &&
                result.collision.resolver_contact_bits == 4u &&
@@ -1347,11 +1352,11 @@ void test_world_map_movement_candidate_sequence() {
                std::fabs(result.collision.first_pass.position[2] -
                          result.proposed_position[2] - 0.81f) < 0.0002f,
            "first-list circle uses the player's fixed radius while directional search skips it");
-    directional.category = 2;
+    circle_snapshot.first_directional[0].category = 2;
     expect(!awl::calculate_world_map_movement_candidate(query, &result) &&
                !result.movement_enabled,
            "inconsistent first-list views are rejected before movement work");
-    directional.category = 1;
+    circle_snapshot.first_directional[0].category = 1;
 
     put_be16(terrain, 8 + 0x34, 1u);
     constexpr awl::CollisionAffineTransform identity{
@@ -1369,29 +1374,29 @@ void test_world_map_movement_candidate_sequence() {
     wall.object_to_world = identity;
     wall.center_local = {5.0f, 0.0f, 0.0f};
     wall.radius = 10.0f;
-    awl::WorldMapContactObject wall_direction;
-    wall_direction.enabled = wall.enabled;
-    wall_direction.category = wall.category;
-    wall_direction.collision_flags = wall.collision_flags;
-    wall_direction.data = wall.data;
-    wall_direction.size = wall.size;
-    wall_direction.contact_query.world_to_object = wall.world_to_object;
-    wall_direction.contact_query.object_to_world = wall.object_to_world;
-    wall_direction.contact_query.object_center_local = wall.center_local;
-    wall_direction.contact_query.object_radius = wall.radius;
-    wall_direction.world_position = {20.0f, 30.0f, 40.0f};
-    wall_direction.heading_axis = {0.0f, 0.0f, -1.0f};
-    wall_direction.metadata = 42u;
+    awl::WorldMapCollisionRegistry wall_registry;
+    awl::WorldMapRegisteredCollisionObject wall_entry;
+    wall_entry.collision = wall;
+    wall_entry.world_position = {20.0f, 30.0f, 40.0f};
+    wall_entry.heading_axis = {0.0f, 0.0f, -1.0f};
+    wall_entry.metadata = 42u;
+    expect(wall_registry.register_object(
+               awl::WorldMapCollisionList::First, wall_entry),
+           "type-one entry registers in the first collision list");
+    const awl::WorldMapCollisionSnapshot wall_snapshot =
+        wall_registry.snapshot();
     awl::WorldMapMovementQuery wall_query;
     wall_query.pad.stick_y = -80;
     wall_query.current_position = {5.0f, 7.0f, -0.1f};
     wall_query.current_axis = {0.0f, 0.0f, 1.0f};
-    wall_query.directional_objects = &wall_direction;
-    wall_query.directional_object_count = 1;
+    wall_query.directional_objects = wall_snapshot.first_directional.data();
+    wall_query.directional_object_count =
+        wall_snapshot.first_directional.size();
     wall_query.collision.terrain_data = terrain.data();
     wall_query.collision.terrain_size = terrain.size();
-    wall_query.collision.first_objects = &wall;
-    wall_query.collision.first_object_count = 1;
+    wall_query.collision.first_objects = wall_snapshot.first_resolver.data();
+    wall_query.collision.first_object_count =
+        wall_snapshot.first_resolver.size();
     expect(awl::calculate_world_map_movement_candidate(
                wall_query, &result) && result.movement_enabled &&
                result.directional_contact.matched &&
@@ -1523,6 +1528,87 @@ void test_world_map_scene_position_bucket_decision() {
     expect(!awl::plan_world_map_scene_position_update(
                1, 0, crossing, nullptr),
            "missing scene position result is rejected");
+}
+
+void test_world_map_collision_registry() {
+    std::vector<uint8_t> bytes = make_sample_leaf();
+    awl::WorldMapRegisteredCollisionObject first;
+    first.collision.identity = 11;
+    first.collision.enabled = true;
+    first.collision.category = 1;
+    first.collision.collision_flags = 2u;
+    first.collision.data = bytes.data();
+    first.collision.size = bytes.size();
+    first.collision.radius = 4.0f;
+    first.collision.center_local = {1.0f, 2.0f, 3.0f};
+    first.world_position = {4.0f, 5.0f, 6.0f};
+    first.heading_axis = {0.0f, 0.0f, -1.0f};
+    first.metadata = 41u;
+    awl::WorldMapRegisteredCollisionObject second;
+    second.collision.identity = 22;
+    second.collision.enabled = true;
+    second.collision.category = 1;
+    second.collision.collision_flags = 1u;
+    awl::WorldMapRegisteredCollisionObject later;
+    later.collision.identity = 33;
+    later.collision.enabled = true;
+    later.collision.category = 1;
+    later.collision.collision_flags = 1u;
+    awl::WorldMapCollisionRegistry registry;
+    expect(registry.register_object(awl::WorldMapCollisionList::First, first) &&
+               registry.register_object(awl::WorldMapCollisionList::First,
+                                        second) &&
+               registry.register_object(awl::WorldMapCollisionList::Later,
+                                        later),
+           "collision objects register into their distinct lists");
+    awl::WorldMapCollisionSnapshot snapshot = registry.snapshot();
+    expect(snapshot.first_resolver.size() == 2 &&
+               snapshot.first_directional.size() == 2 &&
+               snapshot.first_resolver[0].identity == 22 &&
+               snapshot.first_resolver[1].identity == 11 &&
+               snapshot.later_resolver.size() == 1 &&
+               snapshot.later_resolver[0].identity == 33,
+           "newest first-list entry leads traversal and later list stays separate");
+    expect(snapshot.first_directional[1].metadata == 41u &&
+               snapshot.first_directional[1].world_position ==
+                   first.world_position &&
+               snapshot.first_directional[1].contact_query.object_radius ==
+                   first.collision.radius &&
+               snapshot.first_directional[1].data == bytes.data(),
+           "one registered entry supplies matching directional and resolver views");
+
+    first.metadata = 42u;
+    expect(registry.register_object(awl::WorldMapCollisionList::First, first),
+           "registering an existing object moves its node to the front");
+    snapshot = registry.snapshot();
+    expect(snapshot.first_resolver.size() == 2 &&
+               snapshot.first_resolver[0].identity == 11 &&
+               snapshot.first_directional[0].metadata == 42u,
+           "re-registration replaces the record without duplicating it");
+
+    expect(registry.register_object(awl::WorldMapCollisionList::Later, second),
+           "the same node can move from first to later list");
+    snapshot = registry.snapshot();
+    expect(snapshot.first_resolver.size() == 1 &&
+               snapshot.first_resolver[0].identity == 11 &&
+               snapshot.later_resolver.size() == 2 &&
+               snapshot.later_resolver[0].identity == 22 &&
+               snapshot.later_resolver[1].identity == 33,
+           "cross-list move removes the old membership and inserts at the new front");
+    expect(registry.unregister_object(11) &&
+               !registry.unregister_object(11) &&
+               registry.size(awl::WorldMapCollisionList::First) == 0,
+           "unregister removes one known node only once");
+    registry.clear(awl::WorldMapCollisionList::Later);
+    expect(registry.size(awl::WorldMapCollisionList::Later) == 0 &&
+               registry.snapshot().later_resolver.empty(),
+           "clearing a list removes every member");
+    first.collision.identity = 0;
+    expect(!registry.register_object(awl::WorldMapCollisionList::First, first) &&
+               !registry.register_object(
+                   static_cast<awl::WorldMapCollisionList>(2), second) &&
+               registry.size(awl::WorldMapCollisionList::First) == 0,
+           "null identity and unknown list are rejected without mutation");
 }
 
 void test_radius_edge_adjustment() {
@@ -1915,6 +2001,7 @@ int main(int argc, char** argv) {
     test_world_map_directional_contact_search();
     test_world_map_movement_candidate_sequence();
     test_world_map_scene_position_bucket_decision();
+    test_world_map_collision_registry();
     test_radius_vertex_adjustment();
     test_radius_edge_adjustment();
     test_radius_pass_sequence();

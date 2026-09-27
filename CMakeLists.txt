@@ -23,6 +23,7 @@ set(SOURCES
     src/world_map_contact.cpp
     src/world_map_movement.cpp
     src/world_map_scene_index.cpp
+    src/world_map_collision_registry.cpp
     src/collision_asset.cpp
     src/game.cpp
     src/filesystem.cpp
@@ -44,6 +45,7 @@ set(HEADERS
     include/awl/world_map_contact.h
     include/awl/world_map_movement.h
     include/awl/world_map_scene_index.h
+    include/awl/world_map_collision_registry.h
     include/awl/collision_asset.h
 )
 
@@ -190,6 +192,7 @@ add_executable(collision_asset_tests
     src/world_map_contact.cpp
     src/world_map_movement.cpp
     src/world_map_scene_index.cpp
+    src/world_map_collision_registry.cpp
     src/player_input.cpp
 )
 target_include_directories(collision_asset_tests PRIVATE
