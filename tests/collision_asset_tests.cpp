@@ -2290,6 +2290,116 @@ void test_world_map_collision_asset_provider() {
     expect(!error, "collision fixture directory is cleaned up");
 }
 
+bool probe_local_static_wall(const awl::WorldMapCollisionAssets& assets,
+                             awl::CollisionCategory1StaticAdjustment* result) {
+    const auto& bytes = assets.static_bytes();
+    const auto& analysis = assets.static_analysis();
+    awl::CollisionEdgeSample edge;
+    const float center_z =
+        (analysis.root_min[2] + analysis.root_max[2]) * 0.5f;
+    if (!awl::project_type1_collision_to_edge(
+            bytes.data(), bytes.size(), analysis.root_min[0] - 1.0f,
+            center_z, &edge) || (edge.surface_flags & 0xC1u) == 0 ||
+        edge.edge_index >= 3 || edge.leaf_offset > bytes.size() ||
+        bytes.size() - edge.leaf_offset < 0x34) {
+        return false;
+    }
+    const auto be16 = [&bytes](size_t offset) {
+        return static_cast<uint16_t>((static_cast<uint16_t>(bytes[offset]) << 8) |
+                                     bytes[offset + 1]);
+    };
+    const auto be32 = [&bytes](size_t offset) {
+        return (static_cast<uint32_t>(bytes[offset]) << 24) |
+               (static_cast<uint32_t>(bytes[offset + 1]) << 16) |
+               (static_cast<uint32_t>(bytes[offset + 2]) << 8) |
+               bytes[offset + 3];
+    };
+    const size_t triangles = edge.leaf_offset + be32(edge.leaf_offset + 0x28);
+    const size_t vertices = edge.leaf_offset + be32(edge.leaf_offset + 0x2c);
+    if (triangles > bytes.size() ||
+        edge.triangle_index >= (bytes.size() - triangles) / 8 ||
+        vertices > bytes.size()) {
+        return false;
+    }
+    const size_t record = triangles + static_cast<size_t>(edge.triangle_index) * 8;
+    const uint16_t start_index = be16(record + 2 + edge.edge_index * 2);
+    const uint16_t end_index = be16(record + 2 + ((edge.edge_index + 1) % 3) * 2);
+    if (start_index >= (bytes.size() - vertices) / 8 ||
+        end_index >= (bytes.size() - vertices) / 8) {
+        return false;
+    }
+    const auto signed_coordinate = [&be16](size_t offset) {
+        const int32_t raw = be16(offset);
+        return raw >= 32768 ? raw - 65536 : raw;
+    };
+    const size_t start = vertices + static_cast<size_t>(start_index) * 8;
+    const size_t end = vertices + static_cast<size_t>(end_index) * 8;
+    const float x0 = signed_coordinate(start) * analysis.coordinate_scale;
+    const float z0 = signed_coordinate(start + 4) * analysis.coordinate_scale;
+    const float x1 = signed_coordinate(end) * analysis.coordinate_scale;
+    const float z1 = signed_coordinate(end + 4) * analysis.coordinate_scale;
+    const float dx = x1 - x0;
+    const float dz = z1 - z0;
+    const float length = std::sqrt(dx * dx + dz * dz);
+    if (!std::isfinite(length) || length == 0.0f) {
+        return false;
+    }
+    // FUN_8017C918 uses (0, -1, 0) for this edge plane. Construct a
+    // positive-side prior point and a candidate just across the plane.
+    const float nx = dz / length;
+    const float nz = -dx / length;
+    const float mid_x = (x0 + x1) * 0.5f;
+    const float mid_z = (z0 + z1) * 0.5f;
+    const std::array<float, 3> prior{mid_x + nx, 0.0f, mid_z + nz};
+    const std::array<float, 3> proposed{
+        mid_x - nx * 0.1f, 0.0f, mid_z - nz * 0.1f};
+    const awl::CollisionCategory1StaticFlags flags;
+    if (!awl::resolve_type1_category1_static_contact(
+            bytes.data(), bytes.size(), flags, 0x67u, prior, proposed,
+            0.3f, 0u, result) || !result->slot_present || !result->contact ||
+        !result->narrow_phase.first_edge_contact ||
+        !std::isfinite(result->position[0]) ||
+        !std::isfinite(result->position[1]) ||
+        !std::isfinite(result->position[2])) {
+        return false;
+    }
+    const float signed_distance =
+        (result->position[0] - mid_x) * nx +
+        (result->position[2] - mid_z) * nz;
+    if (signed_distance < 0.309f) {
+        return false;
+    }
+    awl::CollisionCategory1MovementQuery query;
+    query.moving_radius = 0.3f;
+    if (!assets.bind(&query)) {
+        return false;
+    }
+    awl::CollisionCategory1MovementAdjustment composed;
+    if (!awl::resolve_type1_category1_movement_candidate(
+            query, prior, proposed, &composed) ||
+        !composed.static_contact.contact ||
+        (composed.resolver_contact_bits & 1u) == 0 ||
+        !composed.final_height_resampled ||
+        !std::isfinite(composed.position[0]) ||
+        !std::isfinite(composed.position[1]) ||
+        !std::isfinite(composed.position[2])) {
+        return false;
+    }
+    awl::CollisionSurfaceSample terrain_surface;
+    if (awl::sample_type1_collision_surface(
+            assets.terrain_bytes().data(), assets.terrain_bytes().size(),
+            composed.position[0], composed.position[2], &terrain_surface)) {
+        return std::fabs(composed.position[1] - terrain_surface.height) <
+               0.0002f;
+    }
+    awl::CollisionEdgeSample terrain_edge;
+    return awl::project_type1_collision_to_edge(
+               assets.terrain_bytes().data(), assets.terrain_bytes().size(),
+               composed.position[0], composed.position[2], &terrain_edge) &&
+           std::fabs(composed.position[1] - terrain_edge.position[1]) <
+               0.0002f;
+}
+
 bool inspect_local_catalog(const char* disc_root) {
     awl_memory_init();
     awl::filesystem_init();
@@ -2323,12 +2433,21 @@ bool inspect_local_catalog(const char* disc_root) {
                              phase, alternate);
                 break;
             }
-            std::printf("COL phase %u terrain %d: %s (%zu bytes), %s (%zu bytes), candidate=(%.3f, %.3f, %.3f)\n",
+            awl::CollisionCategory1StaticAdjustment wall;
+            valid = probe_local_static_wall(assets, &wall);
+            if (!valid) {
+                std::fprintf(stderr,
+                             "COL static wall probe failed at phase %u terrain %d\n",
+                             phase, alternate);
+                break;
+            }
+            std::printf("COL phase %u terrain %d: %s (%zu bytes), %s (%zu bytes), candidate=(%.3f, %.3f, %.3f), static wall contact=%d\n",
                         phase, alternate, assets.paths().terrain,
                         assets.terrain_bytes().size(),
                         assets.paths().static_objects,
                         assets.static_bytes().size(), result.position[0],
-                        result.position[1], result.position[2]);
+                        result.position[1], result.position[2],
+                        wall.contact ? 1 : 0);
         }
     }
     awl::filesystem_shutdown();
