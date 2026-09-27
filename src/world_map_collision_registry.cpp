@@ -3,6 +3,7 @@
 #include "awl/world_map_collision_records.h"
 
 #include <algorithm>
+#include <cmath>
 #include <utility>
 
 namespace awl {
@@ -61,6 +62,74 @@ bool world_map_collision_flags_for_mode(int32_t mode, uint32_t* flags) {
     constexpr std::array<uint32_t, 5> mode_bits{
         0x27u, 0x94u, 0x12fu, 0x12fu, 0x10fu};
     *flags = mode_bits[static_cast<size_t>(mode)] | 0x40u;
+    return true;
+}
+
+WorldMapFirstActorCircleSpec world_map_first_actor_circle_spec(
+    int32_t actor_id) {
+    // FUN_80152218: the +0x24 radius values are from r2=0x80351E40.
+    if (actor_id == 0x15 || actor_id == 0x23) {
+        return {1, 0.6f};
+    }
+    if (actor_id == 0x25) {
+        return {1, 0.3f};
+    }
+    if (actor_id >= 0x27 && actor_id <= 0x30) {
+        return {2, actor_id == 0x2f ? 0.9f : 0.3f};
+    }
+    return {1, 0.5f};
+}
+
+bool register_world_map_scene_first_collision_objects(
+    const WorldMapSceneFirstCollisionObjects& scene,
+    WorldMapCollisionRegistry* registry) {
+    if (registry == nullptr || scene.category1_actor.collision.identity == 0) {
+        return false;
+    }
+    const uint64_t category1_identity = scene.category1_actor.collision.identity;
+    const auto valid_optional = [category1_identity](
+                                    const std::optional<WorldMapRegisteredCollisionObject>&
+                                        object) {
+        return !object || (object->collision.identity != 0 &&
+                           object->collision.identity != category1_identity);
+    };
+    if (!valid_optional(scene.conditional_a) ||
+        !valid_optional(scene.conditional_b) ||
+        (scene.conditional_a && scene.conditional_b &&
+         scene.conditional_a->collision.identity ==
+             scene.conditional_b->collision.identity)) {
+        return false;
+    }
+    for (float component : scene.category1_actor.world_position) {
+        if (!std::isfinite(component)) {
+            return false;
+        }
+    }
+
+    WorldMapCollisionRegistry staged = *registry;
+    if (scene.conditional_a &&
+        !staged.register_object(WorldMapCollisionList::First,
+                                *scene.conditional_a)) {
+        return false;
+    }
+    if (scene.conditional_b &&
+        !staged.register_object(WorldMapCollisionList::First,
+                                *scene.conditional_b)) {
+        return false;
+    }
+    WorldMapRegisteredCollisionObject category1 = scene.category1_actor;
+    category1.collision.enabled = true;
+    category1.collision.category = 1;
+    category1.collision.collision_flags = 1u;
+    category1.collision.data = nullptr;
+    category1.collision.size = 0;
+    category1.collision.radius =
+        world_map_first_actor_circle_spec(scene.category1_actor_id).radius;
+    category1.collision.center_world = category1.world_position;
+    if (!staged.register_object(WorldMapCollisionList::First, category1)) {
+        return false;
+    }
+    *registry = std::move(staged);
     return true;
 }
 

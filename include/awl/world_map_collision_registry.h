@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace awl {
@@ -55,6 +56,31 @@ public:
 private:
     std::array<std::vector<WorldMapRegisteredCollisionObject>, 3> lists_{};
 };
+
+// FUN_80152218 configures the circular collision object used by the
+// FUN_80159A28 actor. Unknown IDs take the DOL's default branch.
+struct WorldMapFirstActorCircleSpec {
+    int32_t mode = 1;
+    float radius = 0.0f;
+};
+
+[[nodiscard]] WorldMapFirstActorCircleSpec
+world_map_first_actor_circle_spec(int32_t actor_id);
+
+// FUN_80013F60 constructs two conditional first-list actors, then the
+// FUN_80159A28 actor whose scene category is 1. Objects and optional-actor
+// presence are supplied by the caller; only the final actor's verified
+// circle setup is applied here. No live scene state is discovered.
+struct WorldMapSceneFirstCollisionObjects {
+    std::optional<WorldMapRegisteredCollisionObject> conditional_a;
+    std::optional<WorldMapRegisteredCollisionObject> conditional_b;
+    WorldMapRegisteredCollisionObject category1_actor{};
+    int32_t category1_actor_id = 0;
+};
+
+[[nodiscard]] bool register_world_map_scene_first_collision_objects(
+    const WorldMapSceneFirstCollisionObjects& scene,
+    WorldMapCollisionRegistry* registry);
 
 // FUN_80021440 reads eight records at state +0x123D0. The direct byte is at
 // record +0x14 and the variant word is at +0x18. Callers decode those words

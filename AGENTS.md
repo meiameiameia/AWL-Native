@@ -13,12 +13,14 @@
 ## Product and fidelity boundaries
 
 - Goal: a behaviorally faithful native Windows port of Harvest Moon: A Wonderful Life, NTSC-U `GYWEE9`. Verified target DOL SHA1: `1ccfd9dfb5c250c2f45c70c74cc45e5d88d22374`.
+- Fidelity means reproducing supported game behavior and state transitions on Windows. Preserve verified branch order, data layout, flags, and numerical behavior where they affect results; document any necessary native difference. Matching the original PowerPC instructions or rebuilding a byte-identical DOL is not this port's completion criterion.
 - The harness and partial translations do not establish a playable port. Distinguish traced behavior, translated isolated helpers, connected runtime behavior, and owner-accepted gameplay; placeholders and diagnostic camera/scene fixtures are not original-game behavior.
 - Trace each translation to the verified DOL/REL disassembly; retain addresses, branch/layout evidence, confidence, and unresolved assumptions in the relevant research note.
 - `hmawl` is an unlicensed, read-only source of names/addresses only. Never copy its code or Git history. Do not invent bodies or responsibilities from labels.
 - Use justified native equivalents for GX/VI/OS/PAD/DVD/audio/memory behavior, not empty stubs. DirectX 11 is the renderer; native file I/O replaces DVD access.
 - Reject unsupported structures explicitly. One decoded section, draw range, asset, screenshot, or successful build does not validate the whole format or broader GX/game fidelity.
 - Do not connect an isolated movement helper as accepted gameplay movement before its required collision/state dependencies are justified.
+- At connected gameplay boundaries, prefer repeatable input and state comparisons with the original when feasible. Record the compared scenario, observed agreement or difference, and evidence gaps; synthetic tests and native smokes alone do not establish gameplay fidelity.
 - Keep `rom/`, `disc/`, extracted assets, Ghidra data, raw decompiler output, and copyrighted debug payloads local and ignored. Never embed them in commits, synthetic fixtures, or public reports.
 
 ## Context and work sizing

@@ -2169,6 +2169,91 @@ void test_world_map_collision_mode_flags() {
            "unsupported modes and missing output are rejected");
 }
 
+void test_world_map_scene_first_collision_registration() {
+    const auto check_spec = [](int32_t id, int32_t mode, float radius) {
+        const auto actual = awl::world_map_first_actor_circle_spec(id);
+        return actual.mode == mode && actual.radius == radius;
+    };
+    expect(check_spec(0x15, 1, 0.6f) && check_spec(0x23, 1, 0.6f) &&
+               check_spec(0x25, 1, 0.3f) && check_spec(0x27, 2, 0.3f) &&
+               check_spec(0x2c, 2, 0.3f) && check_spec(0x2e, 2, 0.3f) &&
+               check_spec(0x2f, 2, 0.9f) && check_spec(0x30, 2, 0.3f) &&
+               check_spec(0x31, 1, 0.5f),
+           "first actor collision setup follows the DOL ID branches and radii");
+
+    awl::WorldMapSceneFirstCollisionObjects scene;
+    scene.conditional_a.emplace();
+    scene.conditional_a->collision.identity = 101;
+    scene.conditional_a->collision.category = 2;
+    scene.conditional_a->collision.enabled = true;
+    scene.conditional_b.emplace();
+    scene.conditional_b->collision.identity = 102;
+    scene.conditional_b->collision.category = 1;
+    scene.category1_actor.collision.identity = 103;
+    scene.category1_actor.collision.category = 99;
+    scene.category1_actor.collision.collision_flags = 2u;
+    scene.category1_actor.world_position = {5.0f, 4.0f, 0.0f};
+    scene.category1_actor_id = 0x2f;
+    awl::WorldMapCollisionRegistry registry;
+    awl::WorldMapRegisteredCollisionObject unrelated;
+    unrelated.collision.identity = 80;
+    expect(registry.register_object(awl::WorldMapCollisionList::Later, unrelated) &&
+               awl::register_world_map_scene_first_collision_objects(
+                   scene, &registry),
+           "scene constructor first-list objects register from supplied presence");
+    auto snapshot = registry.snapshot();
+    const auto& first = snapshot.first_resolver;
+    expect(first.size() == 3 && first[0].identity == 103 &&
+               first[1].identity == 102 && first[2].identity == 101 &&
+               first[0].enabled && first[0].category == 1 &&
+               first[0].collision_flags == 1u && first[0].radius == 0.9f &&
+               first[0].center_world == scene.category1_actor.world_position &&
+               first[0].data == nullptr && first[0].size == 0 &&
+               snapshot.first_directional.size() == 3 &&
+               snapshot.later_resolver.size() == 1 &&
+               snapshot.later_resolver[0].identity == 80,
+           "known category-1 circle heads the first list without altering other lists");
+    if (first.size() == 3) {
+        awl::CollisionDynamicPassAdjustment contact;
+        const std::array<float, 3> prior{5.0f, 7.0f, 2.0f};
+        const std::array<float, 3> proposal{5.0f, 7.0f, 1.0f};
+        expect(awl::resolve_type1_first_dynamic_object_pass(
+                   first.data(), first.size(), 999, 1, prior, proposal,
+                   0.3f, 4u, 0x67u, &contact) && contact.contact &&
+                   contact.queried_objects == 1 &&
+                   std::fabs(contact.position[2] - 1.21f) < 0.0001f,
+               "registered category-1 actor contributes a circle contact");
+    }
+
+    const auto before = registry.snapshot();
+    scene.conditional_b->collision.identity = 101;
+    expect(!awl::register_world_map_scene_first_collision_objects(
+               scene, &registry) &&
+               registry.snapshot().first_resolver.size() ==
+                   before.first_resolver.size() &&
+               registry.snapshot().first_resolver.front().identity == 103,
+           "duplicate scene identities reject without changing list order");
+    scene.conditional_b.reset();
+    scene.conditional_a.reset();
+    scene.category1_actor.collision.identity = 104;
+    scene.category1_actor_id = 0x2c;
+    awl::WorldMapCollisionRegistry only_actor;
+    expect(awl::register_world_map_scene_first_collision_objects(
+               scene, &only_actor) &&
+               only_actor.snapshot().first_resolver.size() == 1 &&
+               only_actor.snapshot().first_resolver.front().identity == 104 &&
+               only_actor.snapshot().first_resolver.front().radius == 0.3f,
+           "absent conditional actors leave the required category-1 actor");
+    scene.category1_actor.world_position[0] =
+        std::numeric_limits<float>::quiet_NaN();
+    expect(!awl::register_world_map_scene_first_collision_objects(
+               scene, &only_actor) &&
+               only_actor.snapshot().first_resolver.size() == 1 &&
+               !awl::register_world_map_scene_first_collision_objects(
+                   scene, nullptr),
+           "invalid scene position and missing registry are rejected");
+}
+
 void test_world_map_fixed_collision_registration() {
     const auto keys = awl::world_map_fixed_collision_record_keys();
     constexpr std::array<uint32_t, 25> expected_indices{
@@ -3149,6 +3234,7 @@ int main(int argc, char** argv) {
     test_world_map_scene_position_bucket_decision();
     test_world_map_scene_bucket_registry();
     test_world_map_collision_mode_flags();
+    test_world_map_scene_first_collision_registration();
     test_world_map_fixed_collision_registration();
     test_world_map_collision_registry();
     test_radius_vertex_adjustment();
