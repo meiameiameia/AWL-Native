@@ -28,6 +28,21 @@ constexpr std::array<MapseTableRow, 21> kMapseTable{{
     {2, 1}, {3, 1}, {4, 1}, {5, 1}, {6, 1}, {7, 1}, {8, 1},
     {9, 1}, {10, 1}, {11, 2}, {12, 2}, {13, 2}, {14, 1}, {15, 1}}};
 
+struct RoomRecordIndexRow {
+    uint8_t id;
+    uint8_t record_index;
+};
+
+// Non-sentinel entries for input IDs 0..0x51 in 0x80299790. All other
+// entries in that bounded range are 0xFFFFFFFF (no record).
+constexpr std::array<RoomRecordIndexRow, 30> kRoomRecordIndices{{
+    {3, 40}, {5, 41}, {6, 42}, {7, 52}, {9, 53}, {10, 49},
+    {12, 44}, {19, 51}, {20, 10}, {23, 43}, {25, 9},
+    {31, 12}, {32, 11}, {33, 6}, {34, 13}, {35, 7},
+    {36, 14}, {40, 0}, {43, 8}, {45, 45}, {46, 46},
+    {47, 47}, {49, 48}, {50, 52}, {51, 50},
+    {77, 1}, {78, 2}, {79, 3}, {80, 4}, {81, 5}}};
+
 uint32_t be32(const uint8_t* p) {
     return (static_cast<uint32_t>(p[0]) << 24) |
            (static_cast<uint32_t>(p[1]) << 16) |
@@ -59,6 +74,54 @@ bool read_archive(const char* path, WorldMapCollisionArchive* archive) {
 }
 
 } // namespace
+
+WorldMapRoomCollisionStatus select_world_map_room_collision_record(
+    uint32_t object_id,
+    const WorldMapRoomCollisionState& state,
+    WorldMapRoomCollisionSelection* out) {
+    if (out != nullptr) {
+        *out = {};
+    }
+    if (out == nullptr || object_id > 0x51u || state.phase_index > 5) {
+        return WorldMapRoomCollisionStatus::UnsupportedInput;
+    }
+    uint32_t remapped = object_id;
+    switch (object_id) {
+    case 3:
+        if (state.phase_index == 1) remapped = 0x2Du;
+        else if (state.phase_index == 2) remapped = 0x2Eu;
+        else if (state.phase_index >= 3) remapped = 0x2Fu;
+        break;
+    case 4:
+        if (state.phase_index >= 3) remapped = 0x30u;
+        break;
+    case 5:
+        if (state.phase_index >= 3) remapped = 0x31u;
+        break;
+    case 7:
+        if (state.state_299a6) remapped = 0x32u;
+        break;
+    case 10:
+        if (state.state_299a5) remapped = 0x33u;
+        break;
+    case 13:
+        if (state.state_299ae) remapped = 0x34u;
+        break;
+    case 40:
+        if (state.phase_index > 0) remapped = 0x4Cu + state.phase_index;
+        break;
+    default:
+        break;
+    }
+    out->remapped_id = remapped;
+    for (const RoomRecordIndexRow& row : kRoomRecordIndices) {
+        if (row.id == remapped) {
+            out->record_index = row.record_index;
+            return WorldMapRoomCollisionStatus::Found;
+        }
+    }
+    return WorldMapRoomCollisionStatus::NoMapping;
+}
 
 bool WorldMapCollisionArchive::parse(std::vector<uint8_t> bytes) {
     clear();
@@ -229,6 +292,28 @@ bool WorldMapCollisionRecordPools::find_mapse_matches(
         out->push_back(match);
     }
     return true;
+}
+
+WorldMapRoomCollisionStatus WorldMapCollisionRecordPools::lookup_room_object(
+    uint32_t object_id,
+    const WorldMapRoomCollisionState& state,
+    WorldMapCollisionRecordView* out) const {
+    if (out != nullptr) {
+        *out = {};
+    }
+    if (out == nullptr) {
+        return WorldMapRoomCollisionStatus::UnsupportedInput;
+    }
+    WorldMapRoomCollisionSelection selected;
+    const WorldMapRoomCollisionStatus status =
+        select_world_map_room_collision_record(object_id, state, &selected);
+    if (status != WorldMapRoomCollisionStatus::Found) {
+        return status;
+    }
+    if (!roomobj_.lookup(selected.record_index, out)) {
+        return WorldMapRoomCollisionStatus::MissingRecord;
+    }
+    return WorldMapRoomCollisionStatus::Found;
 }
 
 } // namespace awl

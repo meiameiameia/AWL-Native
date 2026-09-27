@@ -26,6 +26,34 @@ struct WorldMapMapseCollisionMatch {
     WorldMapCollisionRecordView record{};
 };
 
+// Only the three state bytes read by FUN_8002057C for room-object remapping.
+// Their gameplay meanings are not established; phase_index is the validated
+// 0..5 result of FUN_8000FEE8, supplied by the caller.
+struct WorldMapRoomCollisionState {
+    uint32_t phase_index = 0;
+    bool state_299a5 = false;
+    bool state_299a6 = false;
+    bool state_299ae = false;
+};
+
+enum class WorldMapRoomCollisionStatus {
+    Found,
+    NoMapping,
+    UnsupportedInput,
+    MissingRecord,
+};
+
+struct WorldMapRoomCollisionSelection {
+    uint32_t remapped_id = 0;
+    uint32_t record_index = 0;
+};
+
+// FUN_8002057C -> FUN_800213C4's bounded ID remap and static table lookup.
+[[nodiscard]] WorldMapRoomCollisionStatus select_world_map_room_collision_record(
+    uint32_t object_id,
+    const WorldMapRoomCollisionState& state,
+    WorldMapRoomCollisionSelection* out);
+
 // Owns one verified ARC and its embedded type-1 COL files. Views borrow the
 // archive's storage and are invalidated by clear(), parse(), or destruction.
 class WorldMapCollisionArchive {
@@ -68,6 +96,10 @@ public:
     // Output views borrow this pool's storage and follow the same lifetime.
     [[nodiscard]] bool find_mapse_matches(
         uint32_t id, std::vector<WorldMapMapseCollisionMatch>* out) const;
+    [[nodiscard]] WorldMapRoomCollisionStatus lookup_room_object(
+        uint32_t object_id,
+        const WorldMapRoomCollisionState& state,
+        WorldMapCollisionRecordView* out) const;
 
 private:
     WorldMapCollisionArchive maperase_;

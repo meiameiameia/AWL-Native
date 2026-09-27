@@ -153,6 +153,93 @@ void test_world_map_collision_archive() {
     expect(!archive.parse(invalid), "incorrect ARC signature is rejected");
 }
 
+void test_world_map_room_collision_mapping() {
+    using Status = awl::WorldMapRoomCollisionStatus;
+    awl::WorldMapRoomCollisionState state;
+    awl::WorldMapRoomCollisionSelection selected;
+    constexpr uint32_t expected_three[6] = {40, 45, 46, 47, 47, 47};
+    constexpr uint32_t expected_forty[6] = {0, 1, 2, 3, 4, 5};
+    for (uint32_t phase = 0; phase < 6; ++phase) {
+        state.phase_index = phase;
+        expect(awl::select_world_map_room_collision_record(
+                   3, state, &selected) == Status::Found &&
+                   selected.record_index == expected_three[phase],
+               "room ID 3 follows the DOL phase remap");
+        expect(awl::select_world_map_room_collision_record(
+                   40, state, &selected) == Status::Found &&
+                   selected.record_index == expected_forty[phase] &&
+                   selected.remapped_id ==
+                       (phase == 0 ? 40u : 76u + phase),
+               "room ID 40 selects its six phase records");
+        expect(awl::select_world_map_room_collision_record(
+                   5, state, &selected) == Status::Found &&
+                   selected.record_index == (phase < 3 ? 41u : 48u),
+               "room ID 5 changes record in later phases");
+    }
+    state = {};
+    expect(awl::select_world_map_room_collision_record(
+               7, state, &selected) == Status::Found &&
+               selected.remapped_id == 7 && selected.record_index == 52,
+           "room ID 7 clear-state record");
+    state.state_299a6 = true;
+    expect(awl::select_world_map_room_collision_record(
+               7, state, &selected) == Status::Found &&
+               selected.remapped_id == 50 && selected.record_index == 52,
+           "room ID 7 state byte remaps its key");
+    state = {};
+    expect(awl::select_world_map_room_collision_record(
+               10, state, &selected) == Status::Found &&
+               selected.record_index == 49,
+           "room ID 10 clear-state record");
+    state.state_299a5 = true;
+    expect(awl::select_world_map_room_collision_record(
+               10, state, &selected) == Status::Found &&
+               selected.remapped_id == 51 && selected.record_index == 50,
+           "room ID 10 state byte selects a different record");
+    state = {};
+    expect(awl::select_world_map_room_collision_record(
+               13, state, &selected) == Status::NoMapping &&
+               selected.remapped_id == 13,
+           "room ID 13 has no record with clear state");
+    state.state_299ae = true;
+    expect(awl::select_world_map_room_collision_record(
+               13, state, &selected) == Status::NoMapping &&
+               selected.remapped_id == 52,
+           "room ID 13 remains unmapped after its state remap");
+    state = {};
+    expect(awl::select_world_map_room_collision_record(
+               4, state, &selected) == Status::NoMapping &&
+               selected.remapped_id == 4,
+           "room ID 4 sentinel returns no record");
+    state.phase_index = 3;
+    expect(awl::select_world_map_room_collision_record(
+               4, state, &selected) == Status::NoMapping &&
+               selected.remapped_id == 48,
+           "room ID 4 later-phase key is also unmapped");
+    state = {};
+    expect(awl::select_world_map_room_collision_record(
+               82, state, &selected) == Status::UnsupportedInput &&
+               selected.remapped_id == 0,
+           "room IDs outside the bounded table are rejected");
+    state.phase_index = 6;
+    expect(awl::select_world_map_room_collision_record(
+               40, state, &selected) == Status::UnsupportedInput &&
+               selected.remapped_id == 0 &&
+               awl::select_world_map_room_collision_record(
+                   40, state, nullptr) == Status::UnsupportedInput,
+           "invalid phase and null result are rejected");
+    awl::WorldMapCollisionRecordPools unloaded;
+    awl::WorldMapCollisionRecordView view;
+    state = {};
+    expect(unloaded.lookup_room_object(40, state, &view) ==
+               Status::MissingRecord && view.data == nullptr &&
+               unloaded.lookup_room_object(4, state, &view) ==
+                   Status::NoMapping &&
+               unloaded.lookup_room_object(40, state, nullptr) ==
+                   Status::UnsupportedInput,
+           "room lookup distinguishes absent data, no mapping, and bad output");
+}
+
 std::vector<uint8_t> make_one_level_tree() {
     constexpr uint32_t root = 8;
     constexpr uint32_t node_size = 0x34;
@@ -2524,6 +2611,22 @@ bool inspect_local_catalog(const char* disc_root) {
                     pools.find_mapse_matches(16, &matches) && matches.empty() &&
                     !pools.find_mapse_matches(0, nullptr);
         }
+        for (uint32_t phase = 0; valid && phase < 6; ++phase) {
+            awl::WorldMapRoomCollisionState state;
+            state.phase_index = phase;
+            awl::WorldMapCollisionRecordView room;
+            valid = pools.lookup_room_object(40, state, &room) ==
+                        awl::WorldMapRoomCollisionStatus::Found &&
+                    room.data != nullptr && room.analysis != nullptr &&
+                    room.analysis->header_byte_6 == 0;
+        }
+        if (valid) {
+            awl::WorldMapRoomCollisionState state;
+            awl::WorldMapCollisionRecordView room;
+            valid = pools.lookup_room_object(4, state, &room) ==
+                        awl::WorldMapRoomCollisionStatus::NoMapping &&
+                    room.data == nullptr;
+        }
         for (const int group : {0, 1, 2}) {
             for (uint32_t index = 0;
                  valid && index < pools.record_count(group); ++index) {
@@ -2610,6 +2713,7 @@ bool inspect_local_catalog(const char* disc_root) {
 
 int main(int argc, char** argv) {
     test_world_map_collision_archive();
+    test_world_map_room_collision_mapping();
     test_world_map_archive_rejects_untranslated_tree_shape();
     test_valid_structures();
     test_rejects_unsupported_or_truncated_files();
