@@ -1338,10 +1338,20 @@ void test_world_map_movement_candidate_sequence() {
     expect(circle_registry.register_object(
                awl::WorldMapCollisionList::First, circle_entry),
            "circle entry registers in the first collision list");
+    awl::WorldMapRegisteredCollisionObject player_source = circle_entry;
+    player_source.collision.identity = 99;
+    expect(circle_registry.register_object(
+               awl::WorldMapCollisionList::Third, player_source),
+           "player source object can register in the separate third list");
     awl::WorldMapCollisionSnapshot circle_snapshot =
         circle_registry.snapshot();
+    expect(circle_snapshot.first_resolver.size() == 1 &&
+               circle_snapshot.third_objects.size() == 1 &&
+               circle_snapshot.third_objects[0].collision.identity == 99,
+           "third-list source does not enter the player's first or later passes");
     query.collision.first_objects = circle_snapshot.first_resolver.data();
     query.collision.first_object_count = circle_snapshot.first_resolver.size();
+    query.collision.source_identity = 99;
     query.collision.moving_radius = -99.0f;
     query.directional_objects = circle_snapshot.first_directional.data();
     query.directional_object_count = circle_snapshot.first_directional.size();
@@ -1618,6 +1628,25 @@ void test_world_map_scene_bucket_registry() {
            "clear removes all buckets and unknown bucket queries stay empty");
 }
 
+void test_world_map_collision_mode_flags() {
+    constexpr uint32_t expected[5] = {
+        0x67u, 0xd4u, 0x16fu, 0x16fu, 0x14fu};
+    for (int32_t mode = 0; mode < 5; ++mode) {
+        uint32_t flags = 0;
+        expect(awl::world_map_collision_flags_for_mode(mode, &flags) &&
+                   flags == expected[mode] &&
+                   ((flags & 0x8u) != 0) == (mode >= 2),
+               "verified mode flags select the third-list resolver gate");
+    }
+    uint32_t flags = 99;
+    expect(!awl::world_map_collision_flags_for_mode(-1, &flags) &&
+               flags == 0 &&
+               !awl::world_map_collision_flags_for_mode(5, &flags) &&
+               flags == 0 &&
+               !awl::world_map_collision_flags_for_mode(0, nullptr),
+           "unsupported modes and missing output are rejected");
+}
+
 void test_world_map_collision_registry() {
     std::vector<uint8_t> bytes = make_sample_leaf();
     awl::WorldMapRegisteredCollisionObject first;
@@ -1642,21 +1671,27 @@ void test_world_map_collision_registry() {
     later.collision.enabled = true;
     later.collision.category = 1;
     later.collision.collision_flags = 1u;
+    awl::WorldMapRegisteredCollisionObject third = later;
+    third.collision.identity = 44;
     awl::WorldMapCollisionRegistry registry;
     expect(registry.register_object(awl::WorldMapCollisionList::First, first) &&
                registry.register_object(awl::WorldMapCollisionList::First,
                                         second) &&
                registry.register_object(awl::WorldMapCollisionList::Later,
-                                        later),
-           "collision objects register into their distinct lists");
+                                        later) &&
+               registry.register_object(awl::WorldMapCollisionList::Third,
+                                        third),
+           "collision objects register into three distinct lists");
     awl::WorldMapCollisionSnapshot snapshot = registry.snapshot();
     expect(snapshot.first_resolver.size() == 2 &&
                snapshot.first_directional.size() == 2 &&
                snapshot.first_resolver[0].identity == 22 &&
                snapshot.first_resolver[1].identity == 11 &&
                snapshot.later_resolver.size() == 1 &&
-               snapshot.later_resolver[0].identity == 33,
-           "newest first-list entry leads traversal and later list stays separate");
+               snapshot.later_resolver[0].identity == 33 &&
+               snapshot.third_objects.size() == 1 &&
+               snapshot.third_objects[0].collision.identity == 44,
+           "first, later, and third lists retain separate traversal order");
     expect(snapshot.first_directional[1].metadata == 41u &&
                snapshot.first_directional[1].world_position ==
                    first.world_position &&
@@ -1674,8 +1709,16 @@ void test_world_map_collision_registry() {
                snapshot.first_directional[0].metadata == 42u,
            "re-registration replaces the record without duplicating it");
 
+    expect(registry.register_object(awl::WorldMapCollisionList::Third, second),
+           "one node can move from first to third list");
+    snapshot = registry.snapshot();
+    expect(snapshot.first_resolver.size() == 1 &&
+               snapshot.third_objects.size() == 2 &&
+               snapshot.third_objects[0].collision.identity == 22 &&
+               snapshot.third_objects[1].collision.identity == 44,
+           "cross-list move removes prior membership and leads the third list");
     expect(registry.register_object(awl::WorldMapCollisionList::Later, second),
-           "the same node can move from first to later list");
+           "the same node can move from third to later list");
     snapshot = registry.snapshot();
     expect(snapshot.first_resolver.size() == 1 &&
                snapshot.first_resolver[0].identity == 11 &&
@@ -1691,10 +1734,14 @@ void test_world_map_collision_registry() {
     expect(registry.size(awl::WorldMapCollisionList::Later) == 0 &&
                registry.snapshot().later_resolver.empty(),
            "clearing a list removes every member");
+    registry.clear(awl::WorldMapCollisionList::Third);
+    expect(registry.size(awl::WorldMapCollisionList::Third) == 0 &&
+               registry.snapshot().third_objects.empty(),
+           "clearing the third list does not restore moved nodes");
     first.collision.identity = 0;
     expect(!registry.register_object(awl::WorldMapCollisionList::First, first) &&
                !registry.register_object(
-                   static_cast<awl::WorldMapCollisionList>(2), second) &&
+                   static_cast<awl::WorldMapCollisionList>(3), second) &&
                registry.size(awl::WorldMapCollisionList::First) == 0,
            "null identity and unknown list are rejected without mutation");
 }
@@ -2090,6 +2137,7 @@ int main(int argc, char** argv) {
     test_world_map_movement_candidate_sequence();
     test_world_map_scene_position_bucket_decision();
     test_world_map_scene_bucket_registry();
+    test_world_map_collision_mode_flags();
     test_world_map_collision_registry();
     test_radius_vertex_adjustment();
     test_radius_edge_adjustment();

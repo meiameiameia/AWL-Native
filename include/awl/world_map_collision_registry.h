@@ -9,7 +9,12 @@
 
 namespace awl {
 
-enum class WorldMapCollisionList : uint8_t { First, Later };
+enum class WorldMapCollisionList : uint8_t { First, Later, Third };
+
+// FUN_801527A8's resolver flags for verified object modes 0..4. Other
+// modes are rejected even though the DOL returns a generic 0x40 fallback.
+[[nodiscard]] bool world_map_collision_flags_for_mode(int32_t mode,
+                                                       uint32_t* flags);
 
 // One caller-supplied collision object. The registry owns this record, but
 // not the COL bytes referenced by collision.data.
@@ -25,10 +30,12 @@ struct WorldMapCollisionSnapshot {
     std::vector<CollisionDynamicPassObject> first_resolver;
     std::vector<WorldMapContactObject> first_directional;
     std::vector<CollisionDynamicPassObject> later_resolver;
+    // The flag-0x8 third-list resolver behavior is not translated yet.
+    std::vector<WorldMapRegisteredCollisionObject> third_objects;
 };
 
-// Native supplied-data equivalent of the two ordered collision lists used by
-// FUN_8001DE44 and FUN_8001E498. Registration inserts at the front; moving
+// Native supplied-data equivalent of the three ordered collision lists used
+// by FUN_8001DE44 and FUN_8001E498. Registration inserts at the front; moving
 // an existing identity detaches its old entry first. No game objects or
 // runtime asset providers are discovered here.
 class WorldMapCollisionRegistry {
@@ -42,8 +49,7 @@ public:
     [[nodiscard]] WorldMapCollisionSnapshot snapshot() const;
 
 private:
-    std::vector<WorldMapRegisteredCollisionObject> first_;
-    std::vector<WorldMapRegisteredCollisionObject> later_;
+    std::array<std::vector<WorldMapRegisteredCollisionObject>, 3> lists_{};
 };
 
 } // namespace awl
