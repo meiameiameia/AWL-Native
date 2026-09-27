@@ -60,6 +60,23 @@ using WorldMapRoomStaticConditions = std::array<bool, 14>;
 
 [[nodiscard]] std::array<uint32_t, 14> world_map_room_static_condition_ids();
 
+// Inputs read by FUN_80024EBC for the 14 room-mask conditions. The indexed
+// values are caller-decoded nonzero results of FUN_8018972C; no native owner
+// for the original saved-state tables is established yet.
+struct WorldMapRoomConditionInputs {
+    uint32_t phase_index = 0;
+    uint8_t state_299a7 = 0;
+    uint8_t state_299af = 0;
+    std::array<int8_t, 3> counters_118bc_to_118be{};
+    bool value_120a4_135_nonzero = false;
+    bool value_120a4_170_nonzero = false;
+    std::array<bool, 16> values_14ad4_nonzero{};
+};
+
+[[nodiscard]] bool evaluate_world_map_room_static_conditions(
+    const WorldMapRoomConditionInputs& inputs,
+    WorldMapRoomStaticConditions* out);
+
 struct WorldMapRoomStaticAdjustment {
     std::array<float, 3> position{};
     uint32_t surface_mask = 0;

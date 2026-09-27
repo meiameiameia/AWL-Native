@@ -1440,6 +1440,46 @@ void test_category1_static_and_movement_candidate() {
            "invalid moving radius rejects the full candidate");
 }
 
+void test_world_map_room_condition_evaluator() {
+    awl::WorldMapRoomConditionInputs inputs;
+    awl::WorldMapRoomStaticConditions conditions;
+    expect(awl::evaluate_world_map_room_static_conditions(inputs, &conditions) &&
+               conditions == awl::WorldMapRoomStaticConditions{
+                   true, false, true, true, false, false, false,
+                   false, false, false, false, false, false, false},
+           "phase zero and clear state produce the traced room predicates");
+    inputs.phase_index = 2;
+    inputs.state_299af = 1;
+    inputs.state_299a7 = 2;
+    inputs.counters_118bc_to_118be = {-1, 0, 0};
+    inputs.value_120a4_135_nonzero = true;
+    expect(awl::evaluate_world_map_room_static_conditions(inputs, &conditions) &&
+               !conditions[0] && conditions[1] && !conditions[2] &&
+               !conditions[3] && !conditions[4] && conditions[5],
+           "later phase, nonzero state byte, and signed nonpositive counters");
+    inputs.counters_118bc_to_118be[2] = 1;
+    inputs.value_120a4_170_nonzero = true;
+    constexpr std::array<size_t, 8> value_indices{
+        0, 6, 7, 8, 9, 10, 14, 15};
+    for (size_t row = 0; row < value_indices.size(); ++row) {
+        inputs.values_14ad4_nonzero[value_indices[row]] = true;
+        expect(awl::evaluate_world_map_room_static_conditions(
+                   inputs, &conditions) &&
+                   conditions[6 + row] && conditions[2] &&
+                   conditions[3] && conditions[4],
+               "each indexed saved value enables its ordered room predicate");
+        inputs.values_14ad4_nonzero[value_indices[row]] = false;
+    }
+    inputs.phase_index = 6;
+    conditions.fill(true);
+    expect(!awl::evaluate_world_map_room_static_conditions(inputs,
+                                                           &conditions) &&
+               conditions == awl::WorldMapRoomStaticConditions{} &&
+               !awl::evaluate_world_map_room_static_conditions(inputs,
+                                                                nullptr),
+           "unsupported phase and null condition output fail cleanly");
+}
+
 void test_world_map_room_static_stage() {
     using Status = awl::WorldMapRoomCollisionStatus;
     constexpr std::array<uint32_t, 14> expected_ids{
@@ -2717,10 +2757,14 @@ bool inspect_local_catalog(const char* disc_root) {
                     room.data != nullptr && room.analysis != nullptr &&
                     room.analysis->header_byte_6 == 0;
             if (valid) {
-                awl::WorldMapRoomStaticConditions conditions{};
+                awl::WorldMapRoomConditionInputs inputs;
+                inputs.phase_index = phase;
+                awl::WorldMapRoomStaticConditions conditions;
                 awl::WorldMapRoomStaticAdjustment result;
                 const std::array<float, 3> point = room.center_local;
-                valid = awl::resolve_type1_room_static_contact(
+                valid = awl::evaluate_world_map_room_static_conditions(
+                            inputs, &conditions) &&
+                        awl::resolve_type1_room_static_contact(
                             40, awl::WorldMapRoomCollisionStatus::Found,
                             &room, conditions, 1u, 0u, 0u, point, point, 0.3f,
                             &result) &&
@@ -2824,6 +2868,7 @@ bool inspect_local_catalog(const char* disc_root) {
 int main(int argc, char** argv) {
     test_world_map_collision_archive();
     test_world_map_room_collision_mapping();
+    test_world_map_room_condition_evaluator();
     test_world_map_room_static_stage();
     test_world_map_archive_rejects_untranslated_tree_shape();
     test_valid_structures();

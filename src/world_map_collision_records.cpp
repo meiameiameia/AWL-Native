@@ -159,6 +159,35 @@ std::array<uint32_t, 14> world_map_room_static_condition_ids() {
     return ids;
 }
 
+bool evaluate_world_map_room_static_conditions(
+    const WorldMapRoomConditionInputs& inputs,
+    WorldMapRoomStaticConditions* out) {
+    if (out != nullptr) {
+        *out = {};
+    }
+    if (out == nullptr || inputs.phase_index > 5) {
+        return false;
+    }
+    // FUN_80024EBC cases 0xEB and 0xEC use the same phase/0x170 decision.
+    const bool phase_170 = inputs.phase_index == 0 ||
+                           inputs.value_120a4_170_nonzero;
+    (*out)[0] = inputs.state_299af == 0; // 0xA1
+    (*out)[1] = inputs.state_299a7 != 0; // 0x9E
+    (*out)[2] = phase_170;                 // 0xEC
+    (*out)[3] = phase_170;                 // 0xEB
+    (*out)[4] = std::any_of(
+        inputs.counters_118bc_to_118be.begin(),
+        inputs.counters_118bc_to_118be.end(),
+        [](int8_t count) { return count > 0; }); // 0x8D
+    (*out)[5] = inputs.value_120a4_135_nonzero; // 0x8A
+    constexpr std::array<size_t, 8> kIndexedValues{
+        0, 6, 7, 8, 9, 10, 14, 15};
+    for (size_t i = 0; i < kIndexedValues.size(); ++i) {
+        (*out)[6 + i] = inputs.values_14ad4_nonzero[kIndexedValues[i]];
+    }
+    return true;
+}
+
 bool resolve_type1_room_static_contact(
     uint32_t category,
     WorldMapRoomCollisionStatus lookup_status,
