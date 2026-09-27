@@ -81,6 +81,18 @@ WorldMapFirstActorCircleSpec world_map_first_actor_circle_spec(
     return {1, 0.5f};
 }
 
+WorldMapFirstActorSelection world_map_first_actor_selection(
+    std::optional<uint32_t> refresh_rng_word) {
+    // The two refresh paths use (FUN_8017D3E8() % (4 + 1)) + 0x2C.
+    // FUN_801595E0's 0x2D remap is deliberately out of numeric order.
+    constexpr std::array<int32_t, 5> constructor_ids{
+        0x3d, 0x41, 0x3e, 0x3f, 0x40};
+    const size_t index = refresh_rng_word
+                             ? static_cast<size_t>(*refresh_rng_word % 5u)
+                             : 0;
+    return {0x2c + static_cast<int32_t>(index), constructor_ids[index]};
+}
+
 bool world_map_first_actor_initial_position(
     int32_t actor_id, std::optional<float> height_query_result,
     std::array<float, 3>* position) {

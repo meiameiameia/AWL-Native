@@ -2170,6 +2170,40 @@ void test_world_map_collision_mode_flags() {
 }
 
 void test_world_map_scene_first_collision_registration() {
+    constexpr std::array<int32_t, 5> expected_ids{
+        0x2c, 0x2d, 0x2e, 0x2f, 0x30};
+    constexpr std::array<int32_t, 5> expected_constructor_ids{
+        0x3d, 0x41, 0x3e, 0x3f, 0x40};
+    constexpr std::array<std::array<float, 3>, 5> expected_selected_positions{{
+        {263.0f, 4.0f, 179.0f}, {277.0f, 4.0f, 218.0f},
+        {185.0f, 4.0f, 237.0f}, {75.0f, 4.0f, 113.5f},
+        {279.0f, 27.0f, 116.0f},
+    }};
+    constexpr std::array<float, 5> expected_radii{
+        0.3f, 0.3f, 0.3f, 0.9f, 0.3f};
+    const auto initial = awl::world_map_first_actor_selection(std::nullopt);
+    bool selections_match = initial.actor_id == expected_ids[0] &&
+                            initial.base_constructor_id ==
+                                expected_constructor_ids[0];
+    for (uint32_t draw = 0; draw < 10; ++draw) {
+        const size_t index = draw % 5u;
+        const auto selected = awl::world_map_first_actor_selection(draw);
+        std::array<float, 3> position{};
+        selections_match = selections_match &&
+            selected.actor_id == expected_ids[index] &&
+            selected.base_constructor_id == expected_constructor_ids[index] &&
+            awl::world_map_first_actor_initial_position(selected.actor_id,
+                                                        4.0f, &position) &&
+            position == expected_selected_positions[index] &&
+            awl::world_map_first_actor_circle_spec(selected.actor_id).radius ==
+                expected_radii[index];
+    }
+    const auto wrapped = awl::world_map_first_actor_selection(
+        std::numeric_limits<uint32_t>::max() - 1u);
+    expect(selections_match && wrapped.actor_id == 0x30 &&
+               wrapped.base_constructor_id == 0x40,
+           "initial and refreshed actor choices feed five verified spawn/circle paths");
+
     const auto check_spec = [](int32_t id, int32_t mode, float radius) {
         const auto actual = awl::world_map_first_actor_circle_spec(id);
         return actual.mode == mode && actual.radius == radius;
@@ -2231,7 +2265,8 @@ void test_world_map_scene_first_collision_registration() {
     scene.category1_actor.collision.category = 99;
     scene.category1_actor.collision.collision_flags = 2u;
     scene.category1_actor.world_position = {5.0f, 4.0f, 0.0f};
-    scene.category1_actor_id = 0x2f;
+    scene.category1_actor_id =
+        awl::world_map_first_actor_selection(3u).actor_id;
     scene.category1_actor_height_query_result = 4.0f;
     awl::WorldMapCollisionRegistry registry;
     awl::WorldMapRegisteredCollisionObject unrelated;
@@ -3034,7 +3069,8 @@ void test_world_map_collision_asset_provider() {
 
         awl::WorldMapSceneFirstCollisionObjects scene;
         scene.category1_actor.collision.identity = 103;
-        scene.category1_actor_id = 0x2f;
+        scene.category1_actor_id =
+            awl::world_map_first_actor_selection(3u).actor_id;
         scene.category1_actor_height_query_result = 99.0f;
         awl::WorldMapCollisionRegistry scene_registry;
         expect(assets.load(0, true) &&
@@ -3343,25 +3379,34 @@ bool inspect_local_catalog(const char* disc_root) {
                 break;
             }
             if (phase == 0) {
-                awl::WorldMapSceneFirstCollisionObjects scene;
-                scene.category1_actor.collision.identity = 1;
-                scene.category1_actor_id = 0x2f;
-                awl::WorldMapCollisionRegistry registry;
-                valid = awl::register_world_map_scene_first_collision_objects_from_assets(
-                            scene, assets, &registry) &&
-                        registry.snapshot().first_resolver.size() == 1;
-                if (valid) {
-                    const auto center =
-                        registry.snapshot().first_resolver[0].center_world;
-                    valid = center[0] == 75.0f &&
-                            std::isfinite(center[1]) &&
-                            center[2] == 113.5f;
-                    std::printf("COL terrain %d actor ID 0x2F spawn probe: y=%.3f\n",
-                                alternate, center[1]);
+                constexpr std::array<std::array<float, 2>, 5> seed_xz{{
+                    {263.0f, 179.0f}, {277.0f, 218.0f},
+                    {185.0f, 237.0f}, {75.0f, 113.5f},
+                    {279.0f, 116.0f},
+                }};
+                for (uint32_t draw = 0; valid && draw < 5; ++draw) {
+                    awl::WorldMapSceneFirstCollisionObjects scene;
+                    scene.category1_actor.collision.identity = 1;
+                    scene.category1_actor_id =
+                        awl::world_map_first_actor_selection(draw).actor_id;
+                    awl::WorldMapCollisionRegistry registry;
+                    valid = awl::register_world_map_scene_first_collision_objects_from_assets(
+                                scene, assets, &registry) &&
+                            registry.snapshot().first_resolver.size() == 1;
+                    if (valid) {
+                        const auto center =
+                            registry.snapshot().first_resolver[0].center_world;
+                        valid = center[0] == seed_xz[draw][0] &&
+                                std::isfinite(center[1]) &&
+                                center[2] == seed_xz[draw][1];
+                        std::printf("COL terrain %d actor ID 0x%02X spawn probe: y=%.3f\n",
+                                    alternate, scene.category1_actor_id,
+                                    center[1]);
+                    }
                 }
                 if (!valid) {
                     std::fprintf(stderr,
-                                 "COL actor spawn probe failed at terrain %d\n",
+                                 "COL actor spawn probes failed at terrain %d\n",
                                  alternate);
                     break;
                 }

@@ -76,10 +76,22 @@ struct WorldMapFirstActorCircleSpec {
 [[nodiscard]] WorldMapFirstActorCircleSpec
 world_map_first_actor_circle_spec(int32_t actor_id);
 
+// The world-map state starts at actor ID 0x2C. FUN_80013AE0 and
+// FUN_8001307C refresh it from an already-produced RNG word modulo five.
+// FUN_801595E0 maps that ID to the constructor's fourth argument. Neither
+// RNG generation nor the game-state owner is connected here.
+struct WorldMapFirstActorSelection {
+    int32_t actor_id = 0x2c;
+    int32_t base_constructor_id = 0x3d;
+};
+
+[[nodiscard]] WorldMapFirstActorSelection world_map_first_actor_selection(
+    std::optional<uint32_t> refresh_rng_word);
+
 // FUN_80159A28 selects an initial XYZ from the DOL table at 0x802558A8.
-// Except for ID 0x30, FUN_8001CB54 replaces its Y; the caller supplies that
-// query result until the scene's height provider is connected. Failure leaves
-// the output unchanged.
+// Except for ID 0x30, FUN_8001CB54 replaces its Y. This low-level helper
+// accepts that query result; the asset-backed registration below samples it
+// from validated terrain. Failure leaves the output unchanged.
 [[nodiscard]] bool world_map_first_actor_initial_position(
     int32_t actor_id, std::optional<float> height_query_result,
     std::array<float, 3>* position);
