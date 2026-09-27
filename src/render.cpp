@@ -1213,6 +1213,7 @@ bool RenderContext::create_development_marker(
         development_marker_vb_->Release();
     }
     development_marker_vb_ = buffer.Detach();
+    development_obstacle_visible_ = false;
     for (int i = 0; i < 3; ++i) {
         development_marker_position_[i] = position[i];
         cam_eye_[i] = eye[i];
@@ -1233,6 +1234,22 @@ bool RenderContext::set_development_marker_position(const float position[3]) {
     for (int i = 0; i < 3; ++i) {
         development_marker_position_[i] = position[i];
     }
+    return true;
+}
+
+bool RenderContext::set_development_obstacle_position(const float position[3]) {
+    if (!development_marker_vb_ || !position) {
+        return false;
+    }
+    for (int i = 0; i < 3; ++i) {
+        if (!std::isfinite(position[i])) {
+            return false;
+        }
+    }
+    for (int i = 0; i < 3; ++i) {
+        development_obstacle_position_[i] = position[i];
+    }
+    development_obstacle_visible_ = true;
     return true;
 }
 
@@ -1259,6 +1276,7 @@ void RenderContext::cleanup_debug_mesh() {
         development_marker_vb_->Release();
         development_marker_vb_ = nullptr;
     }
+    development_obstacle_visible_ = false;
 }
 
 void RenderContext::cleanup_debug_textures() {
@@ -1594,6 +1612,18 @@ bool RenderContext::render() {
             context_->IASetVertexBuffers(0, 1, &development_marker_vb_,
                                          &debug_stride, &offset);
             context_->Draw(12, 0);
+            if (development_obstacle_visible_) {
+                cb.view_projection = XMMatrixTranspose(XMMatrixMultiply(
+                    XMMatrixMultiply(
+                        XMMatrixScaling(0.55f, 0.55f, 0.55f),
+                        XMMatrixTranslation(development_obstacle_position_[0],
+                                            development_obstacle_position_[1],
+                                            development_obstacle_position_[2])),
+                    view_proj));
+                context_->UpdateSubresource(constant_buffer_, 0, nullptr,
+                                            &cb, 0, 0);
+                context_->Draw(12, 0);
+            }
         }
         
         if (draw_sanity) {

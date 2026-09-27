@@ -58,6 +58,7 @@ public:
     bool create_development_marker(const float position[3],
                                    const float eye[3], const float at[3]);
     bool set_development_marker_position(const float position[3]);
+    bool set_development_obstacle_position(const float position[3]);
 
 private:
     bool init_d3d(HWND hwnd);
@@ -116,6 +117,8 @@ private:
     ID3D11Buffer* debug_mesh_ib_;
     ID3D11Buffer* development_marker_vb_ = nullptr;
     float development_marker_position_[3]{};
+    bool development_obstacle_visible_ = false;
+    float development_obstacle_position_[3]{};
     uint32_t debug_mesh_index_count_;
     std::vector<ID3D11Texture2D*> debug_textures_;
     std::vector<ID3D11ShaderResourceView*> debug_texture_srvs_;

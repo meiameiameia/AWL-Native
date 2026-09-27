@@ -4051,6 +4051,93 @@ bool replay_local_static_wall_route(
            previous_distance < 0.6f && steering.current_speed == 0.0f;
 }
 
+bool replay_local_first_actor_route(
+    const awl::WorldMapCollisionAssets& assets) {
+    awl::WorldMapSceneFirstCollisionObjects scene;
+    scene.category1_actor.collision.identity = 103;
+    scene.category1_actor_id =
+        awl::world_map_first_actor_selection(3u).actor_id;
+    awl::WorldMapCollisionRegistry registry;
+    if (!awl::register_world_map_scene_first_collision_objects_from_assets(
+            scene, assets, &registry)) {
+        return false;
+    }
+    const awl::WorldMapCollisionSnapshot snapshot = registry.snapshot();
+    if (snapshot.first_resolver.size() != 1 ||
+        snapshot.first_directional.size() != 1 ||
+        snapshot.first_resolver[0].category != 1 ||
+        snapshot.first_resolver[0].radius != 0.9f) {
+        return false;
+    }
+    const auto center = snapshot.first_resolver[0].center_world;
+    std::array<float, 3> position{center[0] - 2.0f, 0.0f, center[2]};
+    awl::CollisionSurfaceSample spawn;
+    if (!awl::sample_type1_collision_surface(
+            assets.terrain_bytes().data(), assets.terrain_bytes().size(),
+            position[0], position[2], &spawn)) {
+        return false;
+    }
+    position[1] = spawn.height;
+    awl::NativeInputAccumulator native;
+    awl::PadAdapter adapter;
+    awl::HsdPadFilter filter;
+    awl::WorldMapSteeringState steering;
+    native.reset(true);
+    native.set_key(awl::NativeKey::D, true);
+    bool saw_contact = false;
+    float last_distance = 2.0f;
+    for (int frame = 0; frame < 38; ++frame) {
+        if (frame == 30) {
+            native.set_key(awl::NativeKey::D, false);
+        }
+        native.begin_frame();
+        adapter.begin_frame(native.frame());
+        filter.begin_frame(adapter.frame().sample);
+        awl::WorldMapMovementQuery query;
+        query.pad = filter.frame();
+        query.current_position = position;
+        query.current_axis = {0.0f, 0.0f, 1.0f};
+        query.steering = steering;
+        query.directional_objects = snapshot.first_directional.data();
+        query.directional_object_count = snapshot.first_directional.size();
+        query.collision.first_objects = snapshot.first_resolver.data();
+        query.collision.first_object_count = snapshot.first_resolver.size();
+        if (!assets.bind(&query.collision)) {
+            return false;
+        }
+        awl::WorldMapMovementCandidate candidate;
+        if (!awl::calculate_world_map_movement_candidate(query, &candidate) ||
+            !candidate.movement_enabled) {
+            return false;
+        }
+        if (candidate.collision.first_pass.contact &&
+            (candidate.collision.resolver_contact_bits & 4u) == 0) {
+            return false;
+        }
+        position = candidate.resolved_position;
+        steering = candidate.steering;
+        const float dx = position[0] - center[0];
+        const float dz = position[2] - center[2];
+        last_distance = std::sqrt(dx * dx + dz * dz);
+        if (!std::isfinite(last_distance) || last_distance < 1.199f ||
+            !std::isfinite(position[1])) {
+            return false;
+        }
+        awl::CollisionSurfaceSample surface;
+        if (!awl::sample_type1_collision_surface(
+                assets.terrain_bytes().data(), assets.terrain_bytes().size(),
+                position[0], position[2], &surface) ||
+            std::fabs(position[1] - surface.height) > 0.0002f) {
+            return false;
+        }
+        saw_contact = saw_contact || candidate.collision.first_pass.contact;
+    }
+    std::printf("Local first actor route: distance=%.3f contact=%d\n",
+                last_distance, saw_contact ? 1 : 0);
+    return saw_contact && last_distance < 1.5f &&
+           steering.current_speed == 0.0f;
+}
+
 bool inspect_local_catalog(const char* disc_root) {
     awl_memory_init();
     awl::filesystem_init();
@@ -4257,6 +4344,9 @@ bool inspect_local_catalog(const char* disc_root) {
                         std::fabs(route.normal_z - wall_geometry.normal_z) < 0.0002f &&
                         std::fabs(route.signed_distance(route.start) - 1.0f) < 0.0002f &&
                         replay_local_static_wall_route(assets, route);
+                if (valid) {
+                    valid = replay_local_first_actor_route(assets);
+                }
                 if (!valid) {
                     std::fprintf(stderr,
                                  "COL multi-frame wall route failed at terrain %d\n",

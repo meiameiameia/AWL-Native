@@ -10,10 +10,12 @@
 #include "awl/ground_material.h"
 #include "awl/world_map_collision_assets.h"
 #include "awl/development_wall_route.h"
+#include "awl/world_map_collision_registry.h"
 #include "awl/world_map_movement.h"
 #include "awl/world_map_scene_index.h"
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <limits>
 #include <vector>
 #include <string>
@@ -54,6 +56,7 @@ int main(int argc, char** argv)
     bool movement_rehearsal = false;
     bool rehearsal_smoke = false;
     bool wall_rehearsal = false;
+    bool actor_rehearsal = false;
     for (int argument_index = 1; argument_index < argc; ++argument_index) {
         if (strcmp(argv[argument_index], "--target-smoke") == 0) {
             target_smoke = true;
@@ -73,6 +76,13 @@ int main(int argc, char** argv)
             movement_rehearsal = true;
             wall_rehearsal = true;
             rehearsal_smoke = true;
+        } else if (strcmp(argv[argument_index], "--movement-actor-rehearsal") == 0) {
+            movement_rehearsal = true;
+            actor_rehearsal = true;
+        } else if (strcmp(argv[argument_index], "--movement-actor-rehearsal-smoke") == 0) {
+            movement_rehearsal = true;
+            actor_rehearsal = true;
+            rehearsal_smoke = true;
         }
     }
     const char* preview_gpl = getenv("AWL_PREVIEW_GPL");
@@ -82,7 +92,7 @@ int main(int argc, char** argv)
                                  static_cast<int>(preview_smoke) +
                                  static_cast<int>(scene_smoke) +
                                  static_cast<int>(movement_rehearsal);
-    if (smoke_mode_count > 1) {
+    if (smoke_mode_count > 1 || (wall_rehearsal && actor_rehearsal)) {
         return 2;
     }
     if (preview_smoke && !has_preview_gpl) {
@@ -94,7 +104,7 @@ int main(int argc, char** argv)
     const bool validation_smoke =
         target_smoke || preview_smoke || scene_smoke || rehearsal_smoke;
     const char* selected_ground_gpl =
-        wall_rehearsal ? kWallGroundGplA
+        (wall_rehearsal || actor_rehearsal) ? kWallGroundGplA
                     : (scene_smoke || movement_rehearsal) ? kSceneGroundGplA
                     : (has_preview_gpl && !target_smoke
                            ? preview_gpl
@@ -103,7 +113,8 @@ int main(int argc, char** argv)
     selected_ground_gpls.emplace_back(selected_ground_gpl);
     if (scene_smoke || movement_rehearsal) {
         selected_ground_gpls.emplace_back(
-            wall_rehearsal ? kSceneGroundGplA : kSceneGroundGplB);
+            (wall_rehearsal || actor_rehearsal) ? kSceneGroundGplA
+                                                  : kSceneGroundGplB);
     }
     
     bool hold_window_only = (getenv("AWL_HOLD_WINDOW_ONLY") != nullptr && strcmp(getenv("AWL_HOLD_WINDOW_ONLY"), "1") == 0);
@@ -125,6 +136,10 @@ int main(int argc, char** argv)
     awl::WorldMapCollisionAssets rehearsal_assets;
     awl::DevelopmentWallRoute rehearsal_wall;
     bool rehearsal_wall_contact_logged = false;
+    awl::WorldMapCollisionRegistry rehearsal_collision_registry;
+    awl::WorldMapCollisionSnapshot rehearsal_collision_snapshot;
+    std::array<float, 3> rehearsal_actor_center{};
+    bool rehearsal_actor_contact_logged = false;
     awl::WorldMapSceneBucketRegistry rehearsal_scene;
     awl::WorldMapSteeringState rehearsal_steering;
     std::array<float, 3> rehearsal_position{};
@@ -168,6 +183,7 @@ int main(int argc, char** argv)
     AWL_LOG_INFO("  --movement-rehearsal: %s", movement_rehearsal ? "enabled" : "disabled");
     AWL_LOG_INFO("  --movement-rehearsal-smoke: %s", rehearsal_smoke ? "enabled" : "disabled");
     AWL_LOG_INFO("  --movement-wall-rehearsal: %s", wall_rehearsal ? "enabled" : "disabled");
+    AWL_LOG_INFO("  --movement-actor-rehearsal: %s", actor_rehearsal ? "enabled" : "disabled");
     
     // 2. Memory Arena
     awl_memory_init();
@@ -710,6 +726,39 @@ int main(int argc, char** argv)
                 goto shutdown;
             }
             rehearsal_position = rehearsal_wall.start;
+        } else if (actor_rehearsal) {
+            awl::WorldMapSceneFirstCollisionObjects scene;
+            scene.category1_actor.collision.identity = 103;
+            // Supplied RNG choice 3 selects verified actor ID 0x2F.
+            scene.category1_actor_id =
+                awl::world_map_first_actor_selection(3u).actor_id;
+            if (!awl::register_world_map_scene_first_collision_objects_from_assets(
+                    scene, rehearsal_assets, &rehearsal_collision_registry)) {
+                AWL_LOG_ERROR("Actor rehearsal could not register its validated first-list circle.");
+                exit_code = 1;
+                goto shutdown;
+            }
+            rehearsal_collision_snapshot = rehearsal_collision_registry.snapshot();
+            if (rehearsal_collision_snapshot.first_resolver.size() != 1 ||
+                rehearsal_collision_snapshot.first_directional.size() != 1) {
+                AWL_LOG_ERROR("Actor rehearsal first-list snapshot is incomplete.");
+                exit_code = 1;
+                goto shutdown;
+            }
+            rehearsal_actor_center =
+                rehearsal_collision_snapshot.first_resolver[0].center_world;
+            rehearsal_position = {rehearsal_actor_center[0] - 2.0f, 0.0f,
+                                  rehearsal_actor_center[2]};
+            if (!awl::sample_type1_collision_surface(
+                    rehearsal_assets.terrain_bytes().data(),
+                    rehearsal_assets.terrain_bytes().size(),
+                    rehearsal_position[0], rehearsal_position[2],
+                    &spawn_surface)) {
+                AWL_LOG_ERROR("Actor rehearsal could not sample its spawn terrain.");
+                exit_code = 1;
+                goto shutdown;
+            }
+            rehearsal_position[1] = spawn_surface.height;
         } else if (!awl::sample_type1_collision_surface(
                 rehearsal_assets.terrain_bytes().data(),
                 rehearsal_assets.terrain_bytes().size(), spawn_x, spawn_z,
@@ -732,19 +781,31 @@ int main(int argc, char** argv)
                                    rehearsal_position[1],
                                    rehearsal_position[2]};
         const float eye[3] = {
-            wall_rehearsal ? rehearsal_wall.mid_x + 4.0f : 124.0f,
+            actor_rehearsal ? rehearsal_actor_center[0] + 4.0f
+                : wall_rehearsal ? rehearsal_wall.mid_x + 4.0f : 124.0f,
             rehearsal_position[1] + 15.0f,
-            wall_rehearsal ? rehearsal_wall.mid_z + 18.0f : 186.0f};
+            actor_rehearsal ? rehearsal_actor_center[2] + 18.0f
+                : wall_rehearsal ? rehearsal_wall.mid_z + 18.0f : 186.0f};
         const float at[3] = {
-            wall_rehearsal ? rehearsal_wall.mid_x : 124.0f,
+            actor_rehearsal ? rehearsal_actor_center[0]
+                : wall_rehearsal ? rehearsal_wall.mid_x : 124.0f,
             rehearsal_position[1],
-            wall_rehearsal ? rehearsal_wall.mid_z : 168.0f};
+            actor_rehearsal ? rehearsal_actor_center[2]
+                : wall_rehearsal ? rehearsal_wall.mid_z : 168.0f};
         if (!render_ctx.create_development_marker(position, eye, at)) {
             AWL_LOG_ERROR("Movement rehearsal could not create its marker.");
             exit_code = 1;
             goto shutdown;
         }
-        if (wall_rehearsal) {
+        if (actor_rehearsal) {
+            if (!render_ctx.set_development_obstacle_position(
+                    rehearsal_actor_center.data())) {
+                AWL_LOG_ERROR("Actor rehearsal could not create its smaller actor marker.");
+                exit_code = 1;
+                goto shutdown;
+            }
+            AWL_LOG_INFO("Development actor rehearsal: hold D to approach the smaller stationary marker. First-list circle contact will be logged.");
+        } else if (wall_rehearsal) {
             AWL_LOG_INFO("Development wall rehearsal: green marker starts one unit outside a data-derived static edge. Hold D+S to approach; contact will be logged.");
         } else {
             AWL_LOG_INFO("Development movement rehearsal: temporary green marker at (%.3f, %.3f, %.3f); D moves across the X=125 seam.",
@@ -776,6 +837,16 @@ int main(int argc, char** argv)
                 query.current_position = rehearsal_position;
                 query.current_axis = {0.0f, 0.0f, 1.0f};
                 query.steering = rehearsal_steering;
+                if (actor_rehearsal) {
+                    query.directional_objects =
+                        rehearsal_collision_snapshot.first_directional.data();
+                    query.directional_object_count =
+                        rehearsal_collision_snapshot.first_directional.size();
+                    query.collision.first_objects =
+                        rehearsal_collision_snapshot.first_resolver.data();
+                    query.collision.first_object_count =
+                        rehearsal_collision_snapshot.first_resolver.size();
+                }
                 awl::WorldMapMovementCandidate candidate;
                 awl::WorldMapScenePositionUpdate scene_update;
                 if (!rehearsal_assets.bind(&query.collision) ||
@@ -798,6 +869,17 @@ int main(int argc, char** argv)
                 }
                 rehearsal_position = candidate.resolved_position;
                 rehearsal_steering = candidate.steering;
+                if (actor_rehearsal &&
+                    candidate.collision.first_pass.contact &&
+                    !rehearsal_actor_contact_logged) {
+                    rehearsal_actor_contact_logged = true;
+                    const float dx = rehearsal_position[0] -
+                                     rehearsal_actor_center[0];
+                    const float dz = rehearsal_position[2] -
+                                     rehearsal_actor_center[2];
+                    AWL_LOG_INFO("Actor rehearsal first-list contact: center separation %.3f.",
+                                 std::sqrt(dx * dx + dz * dz));
+                }
                 if (wall_rehearsal &&
                     candidate.collision.static_contact.contact &&
                     !rehearsal_wall_contact_logged) {
@@ -807,7 +889,8 @@ int main(int argc, char** argv)
                                  rehearsal_position[0], rehearsal_position[1],
                                  rehearsal_position[2]);
                 }
-                if (!wall_rehearsal && !rehearsal_crossed_seam &&
+                if (!wall_rehearsal && !actor_rehearsal &&
+                    !rehearsal_crossed_seam &&
                     rehearsal_position[0] > 125.0f) {
                     rehearsal_crossed_seam = true;
                     AWL_LOG_INFO("Movement rehearsal crossed X=125 at (%.3f, %.3f, %.3f).",
@@ -850,8 +933,8 @@ int main(int argc, char** argv)
                         render_ctx.presented_frame_count()));
             } else if (rehearsal_smoke) {
                 AWL_LOG_INFO(
-                    "Movement %s rehearsal smoke passed: two ground chunks and the development marker rendered for %llu presented frames.",
-                    wall_rehearsal ? "wall" : "seam",
+                    "Movement %s rehearsal smoke passed: two ground chunks and development marker(s) rendered for %llu presented frames.",
+                    actor_rehearsal ? "actor" : wall_rehearsal ? "wall" : "seam",
                     static_cast<unsigned long long>(
                         render_ctx.presented_frame_count()));
             } else {
