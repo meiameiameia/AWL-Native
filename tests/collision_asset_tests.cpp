@@ -3597,6 +3597,114 @@ bool inspect_local_asset(const char* path) {
     return true;
 }
 
+// Development-only replay of the known clear route. The fixture supplies an
+// empty dynamic-object list and scene type zero; it is not a game-owned player.
+bool replay_player_route(const uint8_t* terrain, size_t terrain_size,
+                         const uint8_t* static_objects, size_t static_size,
+                         float start_x, float start_z, int held_frames,
+                         float required_end_x) {
+    awl::CollisionSurfaceSample spawn_surface;
+    if (!awl::sample_type1_collision_surface(
+            terrain, terrain_size, start_x, start_z, &spawn_surface)) {
+        return false;
+    }
+    std::array<float, 3> position{start_x, spawn_surface.height, start_z};
+    awl::WorldMapSteeringState steering;
+    awl::WorldMapSceneBucketRegistry scene;
+    awl::WorldMapScenePositionUpdate scene_update;
+    if (!scene.register_object(1, 0, position) ||
+        !scene.update_position(1, position, &scene_update) ||
+        scene_update.next_bucket != 0) {
+        return false;
+    }
+
+    awl::NativeInputAccumulator native;
+    awl::PadAdapter adapter;
+    awl::HsdPadFilter filter;
+    native.reset(true);
+    native.set_key(awl::NativeKey::D, true);
+    float previous_x = position[0];
+    bool crossed_seam = false;
+    bool changed_height = false;
+    for (int frame = 0; frame < held_frames + 8; ++frame) {
+        if (frame == held_frames) {
+            native.set_key(awl::NativeKey::D, false);
+        }
+        native.begin_frame();
+        adapter.begin_frame(native.frame());
+        filter.begin_frame(adapter.frame().sample);
+        awl::WorldMapMovementQuery query;
+        query.pad = filter.frame();
+        query.current_position = position;
+        query.current_axis = {0.0f, 0.0f, 1.0f};
+        query.steering = steering;
+        query.collision.terrain_data = terrain;
+        query.collision.terrain_size = terrain_size;
+        query.collision.static_data = static_objects;
+        query.collision.static_size = static_size;
+        awl::WorldMapMovementCandidate candidate;
+        if (!awl::calculate_world_map_movement_candidate(query, &candidate) ||
+            !candidate.movement_enabled ||
+            !scene.update_position(1, candidate.resolved_position,
+                                   &scene_update) ||
+            scene_update.next_bucket != 0) {
+            return false;
+        }
+        steering = candidate.steering;
+        position = candidate.resolved_position;
+        awl::CollisionSurfaceSample surface;
+        if (!awl::sample_type1_collision_surface(
+                terrain, terrain_size, position[0], position[2], &surface) ||
+            std::fabs(position[1] - surface.height) > 0.0002f ||
+            position[0] + 0.0002f < previous_x) {
+            return false;
+        }
+        crossed_seam = crossed_seam || position[0] > 125.0f;
+        changed_height = changed_height ||
+                         std::fabs(position[1] - spawn_surface.height) > 0.5f;
+        if (frame >= held_frames + 6 &&
+            position[0] != previous_x) {
+            return false;
+        }
+        previous_x = position[0];
+    }
+    const auto snapshot = scene.snapshot(0);
+    return position[0] >= required_end_x &&
+           (required_end_x <= 125.0f || crossed_seam) && changed_height &&
+           steering.current_speed == 0.0f && snapshot.size() == 1 &&
+           snapshot[0].position == position;
+}
+
+void test_synthetic_player_route_replay() {
+    const auto terrain = make_sample_leaf();
+    expect(replay_player_route(terrain.data(), terrain.size(), nullptr, 0,
+                               2.0f, 2.0f, 12, 3.5f),
+           "filtered keyboard movement, terrain, scene position, and neutral stop compose across frames");
+}
+
+bool replay_local_player_route(const char* disc_root) {
+    awl_memory_init();
+    awl::filesystem_init();
+    bool valid = awl::filesystem_mount("/", disc_root);
+    for (int alternate = 0; valid && alternate < 2; ++alternate) {
+        awl::WorldMapCollisionAssets assets;
+        valid = assets.load(0, alternate != 0) &&
+                replay_player_route(
+                    assets.terrain_bytes().data(),
+                    assets.terrain_bytes().size(),
+                    assets.static_bytes().data(), assets.static_bytes().size(),
+                    120.0f, 168.0f, 48, 128.0f);
+        if (valid) {
+            std::printf("Player route replay passed: terrain=%s start=120,168 "
+                        "crossed X=125 and X=128 with sampled height\n",
+                        assets.paths().terrain);
+        }
+    }
+    awl::filesystem_shutdown();
+    awl_memory_shutdown();
+    return valid;
+}
+
 void test_world_map_collision_asset_provider() {
     constexpr const char* expected_static[6] = {
         "/files/mapobj.col", "/files/mapobj2.col",
@@ -4105,6 +4213,7 @@ int main(int argc, char** argv) {
     test_category1_static_and_movement_candidate();
     test_world_map_directional_contact_search();
     test_world_map_movement_candidate_sequence();
+    test_synthetic_player_route_replay();
     test_world_map_scene_position_bucket_decision();
     test_world_map_scene_bucket_registry();
     test_world_map_collision_mode_flags();
@@ -4125,6 +4234,10 @@ int main(int argc, char** argv) {
     for (int index = 1; index < argc; ++index) {
         if (std::strcmp(argv[index], "--catalog-local") == 0) {
             if (++index >= argc || !inspect_local_catalog(argv[index])) {
+                ++failures;
+            }
+        } else if (std::strcmp(argv[index], "--replay-local") == 0) {
+            if (++index >= argc || !replay_local_player_route(argv[index])) {
                 ++failures;
             }
         } else if (!inspect_local_asset(argv[index])) {

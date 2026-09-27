@@ -53,6 +53,12 @@ public:
         const uint32_t* indices, uint32_t index_count,
         const DebugDrawBatch* batches, uint32_t batch_count);
 
+    // Explicit development-scene marker and fixed camera. This is diagnostic
+    // geometry, separate from the extracted GPL mesh and gameplay assets.
+    bool create_development_marker(const float position[3],
+                                   const float eye[3], const float at[3]);
+    bool set_development_marker_position(const float position[3]);
+
 private:
     bool init_d3d(HWND hwnd);
     bool init_pipeline();
@@ -108,6 +114,8 @@ private:
     // Debug Mesh resources
     ID3D11Buffer* debug_mesh_vb_;
     ID3D11Buffer* debug_mesh_ib_;
+    ID3D11Buffer* development_marker_vb_ = nullptr;
+    float development_marker_position_[3]{};
     uint32_t debug_mesh_index_count_;
     std::vector<ID3D11Texture2D*> debug_textures_;
     std::vector<ID3D11ShaderResourceView*> debug_texture_srvs_;

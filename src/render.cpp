@@ -1175,6 +1175,67 @@ bool RenderContext::create_debug_mesh_batches(
     return true;
 }
 
+bool RenderContext::create_development_marker(
+    const float position[3], const float eye[3], const float at[3]) {
+    if (!initialized_ || !device_ || !debug_mesh_vb_ || !debug_mesh_ib_ ||
+        !debug_input_layout_ || !debug_vertex_shader_ ||
+        !solid_pixel_shader_ || !constant_buffer_ ||
+        !position || !eye || !at) {
+        return false;
+    }
+    for (int i = 0; i < 3; ++i) {
+        if (!std::isfinite(position[i]) || !std::isfinite(eye[i]) ||
+            !std::isfinite(at[i])) {
+            return false;
+        }
+    }
+    // Four faces of an upright pyramid. The green solid shader marks this as
+    // a temporary scene fixture, not the original player model.
+    constexpr DebugTexturedVertex vertices[12] = {
+        {-0.55f, 0.08f, -0.55f}, { 0.55f, 0.08f, -0.55f}, {0.0f, 2.0f, 0.0f},
+        { 0.55f, 0.08f, -0.55f}, { 0.55f, 0.08f,  0.55f}, {0.0f, 2.0f, 0.0f},
+        { 0.55f, 0.08f,  0.55f}, {-0.55f, 0.08f,  0.55f}, {0.0f, 2.0f, 0.0f},
+        {-0.55f, 0.08f,  0.55f}, {-0.55f, 0.08f, -0.55f}, {0.0f, 2.0f, 0.0f},
+    };
+    D3D11_BUFFER_DESC desc = {};
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.ByteWidth = sizeof(vertices);
+    desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+    D3D11_SUBRESOURCE_DATA data = {};
+    data.pSysMem = vertices;
+    ComPtr<ID3D11Buffer> buffer;
+    if (!require_dx_success(
+            device_->CreateBuffer(&desc, &data, buffer.GetAddressOf()),
+            "ID3D11Device::CreateBuffer(development marker)")) {
+        return false;
+    }
+    if (development_marker_vb_) {
+        development_marker_vb_->Release();
+    }
+    development_marker_vb_ = buffer.Detach();
+    for (int i = 0; i < 3; ++i) {
+        development_marker_position_[i] = position[i];
+        cam_eye_[i] = eye[i];
+        cam_at_[i] = at[i];
+    }
+    return true;
+}
+
+bool RenderContext::set_development_marker_position(const float position[3]) {
+    if (!development_marker_vb_ || !position) {
+        return false;
+    }
+    for (int i = 0; i < 3; ++i) {
+        if (!std::isfinite(position[i])) {
+            return false;
+        }
+    }
+    for (int i = 0; i < 3; ++i) {
+        development_marker_position_[i] = position[i];
+    }
+    return true;
+}
+
 void RenderContext::set_debug_material_color_rgba8(
     uint8_t red, uint8_t green, uint8_t blue, uint8_t alpha) {
     constexpr float kByteToFloat = 1.0f / 255.0f;
@@ -1194,6 +1255,10 @@ void RenderContext::cleanup_debug_mesh() {
     if (debug_mesh_ib_) { debug_mesh_ib_->Release(); debug_mesh_ib_ = nullptr; }
     debug_mesh_index_count_ = 0;
     debug_draw_batches_.clear();
+    if (development_marker_vb_) {
+        development_marker_vb_->Release();
+        development_marker_vb_ = nullptr;
+    }
 }
 
 void RenderContext::cleanup_debug_textures() {
@@ -1508,6 +1573,19 @@ bool RenderContext::render() {
             if (log_frames && frame_count < 10) std::cout << "Calling DrawIndexed for real-UV mesh: index_count=" << debug_mesh_index_count_ << std::endl;
             context_->DrawIndexed(debug_mesh_index_count_, 0, 0);
             if (log_frames && frame_count < 10) std::cout << "DrawIndexed completed for real-UV mesh" << std::endl;
+        }
+
+        if (development_marker_vb_) {
+            cb.view_projection = XMMatrixTranspose(XMMatrixMultiply(
+                XMMatrixTranslation(development_marker_position_[0],
+                                    development_marker_position_[1],
+                                    development_marker_position_[2]),
+                view_proj));
+            context_->UpdateSubresource(constant_buffer_, 0, nullptr, &cb, 0, 0);
+            context_->PSSetShader(solid_pixel_shader_, nullptr, 0);
+            context_->IASetVertexBuffers(0, 1, &development_marker_vb_,
+                                         &debug_stride, &offset);
+            context_->Draw(12, 0);
         }
         
         if (draw_sanity) {

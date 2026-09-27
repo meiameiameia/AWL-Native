@@ -8,7 +8,11 @@
 #include "awl/gpl.h"
 #include "awl/gpl_render_mesh.h"
 #include "awl/ground_material.h"
+#include "awl/world_map_collision_assets.h"
+#include "awl/world_map_movement.h"
+#include "awl/world_map_scene_index.h"
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <vector>
 #include <string>
@@ -45,6 +49,8 @@ int main(int argc, char** argv)
     bool target_smoke = false;
     bool preview_smoke = false;
     bool scene_smoke = false;
+    bool movement_rehearsal = false;
+    bool rehearsal_smoke = false;
     for (int argument_index = 1; argument_index < argc; ++argument_index) {
         if (strcmp(argv[argument_index], "--target-smoke") == 0) {
             target_smoke = true;
@@ -52,6 +58,11 @@ int main(int argc, char** argv)
             preview_smoke = true;
         } else if (strcmp(argv[argument_index], "--scene-smoke") == 0) {
             scene_smoke = true;
+        } else if (strcmp(argv[argument_index], "--movement-rehearsal") == 0) {
+            movement_rehearsal = true;
+        } else if (strcmp(argv[argument_index], "--movement-rehearsal-smoke") == 0) {
+            movement_rehearsal = true;
+            rehearsal_smoke = true;
         }
     }
     const char* preview_gpl = getenv("AWL_PREVIEW_GPL");
@@ -59,28 +70,35 @@ int main(int argc, char** argv)
         preview_gpl != nullptr && preview_gpl[0] != '\0';
     const int smoke_mode_count = static_cast<int>(target_smoke) +
                                  static_cast<int>(preview_smoke) +
-                                 static_cast<int>(scene_smoke);
+                                 static_cast<int>(scene_smoke) +
+                                 static_cast<int>(movement_rehearsal);
     if (smoke_mode_count > 1) {
         return 2;
     }
     if (preview_smoke && !has_preview_gpl) {
         return 2;
     }
+    if (movement_rehearsal && has_preview_gpl) {
+        return 2;
+    }
     const bool validation_smoke =
-        target_smoke || preview_smoke || scene_smoke;
+        target_smoke || preview_smoke || scene_smoke || rehearsal_smoke;
     const char* selected_ground_gpl =
-        scene_smoke ? kSceneGroundGplA
+        (scene_smoke || movement_rehearsal) ? kSceneGroundGplA
                     : (has_preview_gpl && !target_smoke
                            ? preview_gpl
                            : kTargetGroundGpl);
     std::vector<std::string> selected_ground_gpls;
     selected_ground_gpls.emplace_back(selected_ground_gpl);
-    if (scene_smoke) {
+    if (scene_smoke || movement_rehearsal) {
         selected_ground_gpls.emplace_back(kSceneGroundGplB);
     }
     
     bool hold_window_only = (getenv("AWL_HOLD_WINDOW_ONLY") != nullptr && strcmp(getenv("AWL_HOLD_WINDOW_ONLY"), "1") == 0);
     bool hold_on_error = (getenv("AWL_HOLD_ON_ERROR") != nullptr && strcmp(getenv("AWL_HOLD_ON_ERROR"), "1") == 0);
+    if (movement_rehearsal && hold_window_only) {
+        return 2;
+    }
 
     
     // Subsystem init states
@@ -92,6 +110,12 @@ int main(int argc, char** argv)
     bool audio_initialized = false;
     bool game_initialized = false;
     awl::RenderContext render_ctx;
+    awl::WorldMapCollisionAssets rehearsal_assets;
+    awl::WorldMapSceneBucketRegistry rehearsal_scene;
+    awl::WorldMapSteeringState rehearsal_steering;
+    std::array<float, 3> rehearsal_position{};
+    bool rehearsal_crossed_seam = false;
+    bool rehearsal_was_focused = false;
     std::vector<SelectedGroundChunk> selected_ground_chunks;
     bool visual_gate_mesh_uploaded = false;
     bool target_texture_uploaded = false;
@@ -127,6 +151,8 @@ int main(int argc, char** argv)
     AWL_LOG_INFO("  --target-smoke: %s", target_smoke ? "enabled" : "disabled");
     AWL_LOG_INFO("  --preview-smoke: %s", preview_smoke ? "enabled" : "disabled");
     AWL_LOG_INFO("  --scene-smoke: %s", scene_smoke ? "enabled" : "disabled");
+    AWL_LOG_INFO("  --movement-rehearsal: %s", movement_rehearsal ? "enabled" : "disabled");
+    AWL_LOG_INFO("  --movement-rehearsal-smoke: %s", rehearsal_smoke ? "enabled" : "disabled");
     
     // 2. Memory Arena
     awl_memory_init();
@@ -288,7 +314,7 @@ int main(int argc, char** argv)
     // Extract target mesh for visual gate
 
     // --- GPL Parser Diagnostic Loop ---
-    if (!hold_window_only && !scene_smoke) {
+    if (!hold_window_only && !scene_smoke && !movement_rehearsal) {
         const char* test_files[] = {
             "/files/2dground.gpl",
             selected_ground_gpl,
@@ -652,6 +678,44 @@ int main(int argc, char** argv)
     awl::game_init();
     game_initialized = true;
 
+    if (movement_rehearsal) {
+        constexpr float spawn_x = 120.0f;
+        constexpr float spawn_z = 168.0f;
+        awl::CollisionSurfaceSample spawn_surface;
+        if (!rehearsal_assets.load(0, false) ||
+            !awl::sample_type1_collision_surface(
+                rehearsal_assets.terrain_bytes().data(),
+                rehearsal_assets.terrain_bytes().size(), spawn_x, spawn_z,
+                &spawn_surface)) {
+            AWL_LOG_ERROR("Movement rehearsal could not load its verified spawn terrain.");
+            exit_code = 1;
+            goto shutdown;
+        }
+        rehearsal_position = {spawn_x, spawn_surface.height, spawn_z};
+        awl::WorldMapScenePositionUpdate scene_update;
+        if (!rehearsal_scene.register_object(1, 0, rehearsal_position) ||
+            !rehearsal_scene.update_position(1, rehearsal_position,
+                                             &scene_update)) {
+            AWL_LOG_ERROR("Movement rehearsal could not register its development marker.");
+            exit_code = 1;
+            goto shutdown;
+        }
+        const float position[3] = {rehearsal_position[0],
+                                   rehearsal_position[1],
+                                   rehearsal_position[2]};
+        const float eye[3] = {124.0f, spawn_surface.height + 15.0f, 186.0f};
+        const float at[3] = {124.0f, spawn_surface.height, 168.0f};
+        if (!render_ctx.create_development_marker(position, eye, at)) {
+            AWL_LOG_ERROR("Movement rehearsal could not create its marker.");
+            exit_code = 1;
+            goto shutdown;
+        }
+        AWL_LOG_INFO("Development movement rehearsal: temporary green marker at (%.3f, %.3f, %.3f); D moves across the X=125 seam.",
+                     rehearsal_position[0], rehearsal_position[1],
+                     rehearsal_position[2]);
+        AWL_LOG_INFO("This fixture uses scene type 0, phase 0 terrain and empty dynamic collision lists; it is not accepted gameplay movement.");
+    }
+
     // 9. Main Loop
     AWL_LOG_INFO("Entering main loop...");
     int frame_count = 0;
@@ -660,6 +724,51 @@ int main(int argc, char** argv)
         awl::time_begin_frame();
         awl::input_begin_frame();
         awl::game_update(awl::time_get_delta());
+        if (movement_rehearsal) {
+            const bool focused = awl::input_frame().focused;
+            if (!focused) {
+                if (rehearsal_was_focused) {
+                    AWL_LOG_INFO("Movement rehearsal paused on focus loss.");
+                }
+                rehearsal_steering = {};
+            } else {
+                awl::WorldMapMovementQuery query;
+                query.pad = awl::hsd_pad_frame();
+                query.current_position = rehearsal_position;
+                query.current_axis = {0.0f, 0.0f, 1.0f};
+                query.steering = rehearsal_steering;
+                awl::WorldMapMovementCandidate candidate;
+                awl::WorldMapScenePositionUpdate scene_update;
+                if (!rehearsal_assets.bind(&query.collision) ||
+                    !awl::calculate_world_map_movement_candidate(
+                        query, &candidate) || !candidate.movement_enabled ||
+                    !rehearsal_scene.update_position(
+                        1, candidate.resolved_position, &scene_update)) {
+                    AWL_LOG_ERROR("Movement rehearsal rejected a frame; marker position was not advanced.");
+                    exit_code = 1;
+                    break;
+                }
+                const float next_position[3] = {
+                    candidate.resolved_position[0],
+                    candidate.resolved_position[1],
+                    candidate.resolved_position[2]};
+                if (!render_ctx.set_development_marker_position(next_position)) {
+                    AWL_LOG_ERROR("Movement rehearsal rejected marker coordinates.");
+                    exit_code = 1;
+                    break;
+                }
+                rehearsal_position = candidate.resolved_position;
+                rehearsal_steering = candidate.steering;
+                if (!rehearsal_crossed_seam &&
+                    rehearsal_position[0] > 125.0f) {
+                    rehearsal_crossed_seam = true;
+                    AWL_LOG_INFO("Movement rehearsal crossed X=125 at (%.3f, %.3f, %.3f).",
+                                 rehearsal_position[0], rehearsal_position[1],
+                                 rehearsal_position[2]);
+                }
+            }
+            rehearsal_was_focused = focused;
+        }
         if (frame_count < 10) AWL_LOG_INFO("Frame %d: before render", frame_count);
 
         const uint64_t presented_before = render_ctx.presented_frame_count();
@@ -689,6 +798,11 @@ int main(int argc, char** argv)
                 AWL_LOG_INFO(
                     "Scene smoke passed: %zu ground chunks rendered together in world coordinates for %llu presented frames.",
                     selected_ground_chunks.size(),
+                    static_cast<unsigned long long>(
+                        render_ctx.presented_frame_count()));
+            } else if (rehearsal_smoke) {
+                AWL_LOG_INFO(
+                    "Movement rehearsal smoke passed: two ground chunks and the development marker rendered for %llu presented frames.",
                     static_cast<unsigned long long>(
                         render_ctx.presented_frame_count()));
             } else {
