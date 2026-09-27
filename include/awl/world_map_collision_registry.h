@@ -11,6 +11,7 @@
 namespace awl {
 
 class WorldMapCollisionRecordPools;
+class WorldMapCollisionAssets;
 
 enum class WorldMapCollisionList : uint8_t { First, Later, Third };
 
@@ -100,6 +101,14 @@ struct WorldMapSceneFirstCollisionObjects {
 
 [[nodiscard]] bool register_world_map_scene_first_collision_objects(
     const WorldMapSceneFirstCollisionObjects& scene,
+    WorldMapCollisionRegistry* registry);
+
+// Uses the already-loaded slot-10 terrain to supply FUN_8001CB54's height
+// result for the category-1 actor. The input scene's optional height is
+// ignored. ID 0x30 still uses its fixed table Y. Failure is atomic.
+[[nodiscard]] bool register_world_map_scene_first_collision_objects_from_assets(
+    const WorldMapSceneFirstCollisionObjects& scene,
+    const WorldMapCollisionAssets& assets,
     WorldMapCollisionRegistry* registry);
 
 // FUN_80021440 reads eight records at state +0x123D0. The direct byte is at

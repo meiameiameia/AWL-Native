@@ -1,5 +1,6 @@
 #include "awl/world_map_collision_registry.h"
 
+#include "awl/world_map_collision_assets.h"
 #include "awl/world_map_collision_records.h"
 
 #include <algorithm>
@@ -164,6 +165,33 @@ bool register_world_map_scene_first_collision_objects(
     }
     *registry = std::move(staged);
     return true;
+}
+
+bool register_world_map_scene_first_collision_objects_from_assets(
+    const WorldMapSceneFirstCollisionObjects& scene,
+    const WorldMapCollisionAssets& assets,
+    WorldMapCollisionRegistry* registry) {
+    const auto& terrain = assets.terrain_bytes();
+    if (registry == nullptr || terrain.empty()) {
+        return false;
+    }
+    WorldMapSceneFirstCollisionObjects resolved = scene;
+    resolved.category1_actor_height_query_result.reset();
+    if (scene.category1_actor_id != 0x30) {
+        std::array<float, 3> seed{};
+        if (!world_map_first_actor_initial_position(scene.category1_actor_id,
+                                                    0.0f, &seed)) {
+            return false;
+        }
+        CollisionResolverHeightAdjustment sampled;
+        if (!resample_type1_collision_resolver_height(
+                terrain.data(), terrain.size(), seed, &sampled)) {
+            return false;
+        }
+        resolved.category1_actor_height_query_result = sampled.position[1];
+    }
+    return register_world_map_scene_first_collision_objects(resolved,
+                                                            registry);
 }
 
 bool WorldMapCollisionRegistry::register_object(

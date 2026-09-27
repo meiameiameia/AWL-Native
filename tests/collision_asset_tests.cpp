@@ -2989,11 +2989,20 @@ void test_world_map_collision_asset_provider() {
         return stream.good();
     };
     const fs::path terrain_path = files / "jimen-move.col";
+    const fs::path alternate_terrain_path = files / "jimen1-move.col";
     const fs::path static_path = files / "mapobj.col";
     const std::vector<uint8_t> terrain = make_sample_leaf();
+    std::vector<uint8_t> spawn_terrain = make_sample_leaf();
+    constexpr uint32_t spawn_payload = 8 + 0x34;
+    initialize_sample_payload(spawn_terrain, 8, spawn_payload, 70, 110);
+    for (uint32_t vertex = 0; vertex < 3; ++vertex) {
+        put_be_s16(spawn_terrain, spawn_payload + 8 + vertex * 8 + 2, 6);
+    }
     std::vector<uint8_t> static_asset = terrain;
     static_asset[6] = 0;
-    expect(write(terrain_path, terrain) && write(static_path, static_asset),
+    expect(write(terrain_path, terrain) &&
+               write(alternate_terrain_path, spawn_terrain) &&
+               write(static_path, static_asset),
            "collision fixtures are written");
 
     awl_memory_init();
@@ -3023,6 +3032,42 @@ void test_world_map_collision_asset_provider() {
                "bound mode-zero static data yields a clear full candidate");
         expect(!assets.bind(nullptr), "null query binding is rejected");
 
+        awl::WorldMapSceneFirstCollisionObjects scene;
+        scene.category1_actor.collision.identity = 103;
+        scene.category1_actor_id = 0x2f;
+        scene.category1_actor_height_query_result = 99.0f;
+        awl::WorldMapCollisionRegistry scene_registry;
+        expect(assets.load(0, true) &&
+                   awl::register_world_map_scene_first_collision_objects_from_assets(
+                       scene, assets, &scene_registry) &&
+                   scene_registry.snapshot().first_resolver.size() == 1 &&
+                   scene_registry.snapshot().first_resolver[0].center_world ==
+                       std::array<float, 3>{75.0f, 6.0f, 113.5f} &&
+                   scene_registry.snapshot().first_resolver[0].radius == 0.9f,
+               "validated slot-10 terrain supplies the actor's spawn height");
+        scene.category1_actor.collision.identity = 104;
+        scene.category1_actor_id = 0x30;
+        expect(awl::register_world_map_scene_first_collision_objects_from_assets(
+                   scene, assets, &scene_registry) &&
+                   scene_registry.snapshot().first_resolver.size() == 2 &&
+                   scene_registry.snapshot().first_resolver[0].center_world ==
+                       std::array<float, 3>{279.0f, 27.0f, 116.0f},
+               "fixed-height actor skips the terrain height query");
+        scene.category1_actor_id = 0x2f;
+        expect(write(alternate_terrain_path, make_single_leaf()) &&
+                   assets.load(0, true) &&
+                   !awl::register_world_map_scene_first_collision_objects_from_assets(
+                       scene, assets, &scene_registry) &&
+                   scene_registry.snapshot().first_resolver.size() == 2 &&
+                   !awl::register_world_map_scene_first_collision_objects_from_assets(
+                       scene, assets, nullptr),
+               "empty selected leaf rejects spawn without changing the list");
+        assets.clear();
+        expect(!awl::register_world_map_scene_first_collision_objects_from_assets(
+                   scene, assets, &scene_registry) &&
+                   assets.load(0, false),
+               "unloaded terrain cannot supply a spawn height");
+
         fs::remove(static_path, error);
         expect(!assets.load(0, false) && !assets.bind(&query) &&
                    assets.paths().terrain == nullptr &&
@@ -3048,6 +3093,7 @@ void test_world_map_collision_asset_provider() {
     awl::filesystem_shutdown();
     awl_memory_shutdown();
     fs::remove(terrain_path, error);
+    fs::remove(alternate_terrain_path, error);
     fs::remove(static_path, error);
     fs::remove(files, error);
     fs::remove(root, error);
@@ -3295,6 +3341,30 @@ bool inspect_local_catalog(const char* disc_root) {
                              "COL movement candidate failed at phase %u terrain %d\n",
                              phase, alternate);
                 break;
+            }
+            if (phase == 0) {
+                awl::WorldMapSceneFirstCollisionObjects scene;
+                scene.category1_actor.collision.identity = 1;
+                scene.category1_actor_id = 0x2f;
+                awl::WorldMapCollisionRegistry registry;
+                valid = awl::register_world_map_scene_first_collision_objects_from_assets(
+                            scene, assets, &registry) &&
+                        registry.snapshot().first_resolver.size() == 1;
+                if (valid) {
+                    const auto center =
+                        registry.snapshot().first_resolver[0].center_world;
+                    valid = center[0] == 75.0f &&
+                            std::isfinite(center[1]) &&
+                            center[2] == 113.5f;
+                    std::printf("COL terrain %d actor ID 0x2F spawn probe: y=%.3f\n",
+                                alternate, center[1]);
+                }
+                if (!valid) {
+                    std::fprintf(stderr,
+                                 "COL actor spawn probe failed at terrain %d\n",
+                                 alternate);
+                    break;
+                }
             }
             awl::CollisionCategory1StaticAdjustment wall;
             valid = probe_local_static_wall(assets, &wall);
