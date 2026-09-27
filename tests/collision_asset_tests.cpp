@@ -3,14 +3,20 @@
 #include "awl/world_map_collision_registry.h"
 #include "awl/world_map_movement.h"
 #include "awl/world_map_scene_index.h"
+#include "awl/world_map_collision_assets.h"
+#include "awl/filesystem.h"
+#include "awl/memory.h"
 
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <cstdio>
 #include <fstream>
+#include <filesystem>
 #include <iterator>
 #include <limits>
+#include <string>
 #include <vector>
 
 namespace {
@@ -2115,6 +2121,143 @@ bool inspect_local_asset(const char* path) {
     return true;
 }
 
+void test_world_map_collision_asset_provider() {
+    constexpr const char* expected_static[6] = {
+        "/files/mapobj.col", "/files/mapobj2.col",
+        "/files/mapobj3.col", "/files/mapobj4.col",
+        "/files/mapobj5.col", "/files/mapobj5.col"};
+    awl::WorldMapCollisionAssetPaths paths;
+    for (uint32_t phase = 0; phase < 6; ++phase) {
+        expect(awl::select_world_map_collision_asset_paths(
+                   phase, false, &paths) &&
+                   std::strcmp(paths.terrain, "/files/jimen-move.col") == 0 &&
+                   std::strcmp(paths.static_objects, expected_static[phase]) == 0,
+               "phase selects the DOL terrain and static COL paths");
+        expect(awl::select_world_map_collision_asset_paths(
+                   phase, true, &paths) &&
+                   std::strcmp(paths.terrain, "/files/jimen1-move.col") == 0,
+               "terrain switch selects the alternate movement COL");
+    }
+    expect(!awl::select_world_map_collision_asset_paths(6, false, &paths) &&
+               paths.terrain == nullptr && paths.static_objects == nullptr,
+           "unsupported phase is rejected and clears output paths");
+    expect(!awl::select_world_map_collision_asset_paths(0, false, nullptr),
+           "null selector output is rejected");
+
+    namespace fs = std::filesystem;
+    const auto nonce =
+        std::chrono::high_resolution_clock::now().time_since_epoch().count();
+    const fs::path root = fs::temp_directory_path() /
+                          ("awl-collision-provider-" + std::to_string(nonce));
+    std::error_code error;
+    const bool created = fs::create_directory(root, error);
+    expect(created && !error, "collision fixture directory is created");
+    if (!created || error) {
+        return;
+    }
+    const fs::path files = root / "files";
+    fs::create_directory(files, error);
+    expect(!error, "collision fixture files directory is created");
+    if (error) {
+        fs::remove(root, error);
+        return;
+    }
+    const auto write = [](const fs::path& path,
+                          const std::vector<uint8_t>& bytes) {
+        std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+        stream.write(reinterpret_cast<const char*>(bytes.data()),
+                     static_cast<std::streamsize>(bytes.size()));
+        return stream.good();
+    };
+    const fs::path terrain_path = files / "jimen-move.col";
+    const fs::path static_path = files / "mapobj.col";
+    const std::vector<uint8_t> terrain = make_sample_leaf();
+    std::vector<uint8_t> static_asset = terrain;
+    static_asset[6] = 0;
+    expect(write(terrain_path, terrain) && write(static_path, static_asset),
+           "collision fixtures are written");
+
+    awl_memory_init();
+    awl::filesystem_init();
+    const std::string native_root = root.string();
+    const bool mounted = awl::filesystem_mount("/", native_root.c_str());
+    expect(mounted, "collision fixture mount succeeds");
+    if (mounted) {
+        awl::WorldMapCollisionAssets assets;
+        awl::CollisionCategory1MovementQuery query;
+        query.moving_radius = 0.3f;
+        expect(assets.load(0, false) && assets.bind(&query) &&
+                   query.terrain_data == assets.terrain_bytes().data() &&
+                   query.terrain_size == terrain.size() &&
+                   query.static_data == assets.static_bytes().data() &&
+                   query.static_size == static_asset.size() &&
+                   query.moving_radius == 0.3f &&
+                   assets.terrain_analysis().header_byte_6 == 1 &&
+                   assets.static_analysis().header_byte_6 == 0,
+               "provider owns and binds both validated collision assets");
+        awl::CollisionCategory1MovementAdjustment result;
+        expect(!awl::resolve_type1_category1_movement_candidate(
+                   query, {2.0f, 7.0f, 2.0f}, {2.0f, 50.0f, 2.0f},
+                   &result),
+               "bound static mode zero remains explicitly unsupported");
+        expect(!assets.bind(nullptr), "null query binding is rejected");
+
+        fs::remove(static_path, error);
+        expect(!assets.load(0, false) && !assets.bind(&query) &&
+                   assets.paths().terrain == nullptr &&
+                   query.terrain_data == nullptr && query.terrain_size == 0 &&
+                   query.static_data == nullptr && query.static_size == 0,
+               "missing static asset fails without retaining a partial pair");
+        expect(write(static_path, {0, 1, 2}),
+               "malformed static fixture is written");
+        expect(!assets.load(0, false) && !assets.bind(&query),
+               "malformed static asset is rejected");
+        expect(write(static_path, terrain),
+               "wrong-mode static fixture is written");
+        expect(!assets.load(0, false) && !assets.bind(&query),
+               "wrong static collision mode is rejected");
+        expect(write(static_path, static_asset),
+               "valid static fixture is restored");
+        fs::remove(terrain_path, error);
+        expect(!assets.load(0, false) && !assets.bind(&query),
+               "missing terrain asset is rejected");
+        expect(!assets.load(6, false) && !assets.bind(&query),
+               "unsupported phase cannot bind stale bytes");
+    }
+    awl::filesystem_shutdown();
+    awl_memory_shutdown();
+    fs::remove(terrain_path, error);
+    fs::remove(static_path, error);
+    fs::remove(files, error);
+    fs::remove(root, error);
+    expect(!error, "collision fixture directory is cleaned up");
+}
+
+bool inspect_local_catalog(const char* disc_root) {
+    awl_memory_init();
+    awl::filesystem_init();
+    bool valid = awl::filesystem_mount("/", disc_root);
+    for (uint32_t phase = 0; valid && phase < 6; ++phase) {
+        for (int alternate = 0; alternate < 2; ++alternate) {
+            awl::WorldMapCollisionAssets assets;
+            valid = assets.load(phase, alternate != 0);
+            if (!valid) {
+                std::fprintf(stderr, "COL catalog failed at phase %u terrain %d\n",
+                             phase, alternate);
+                break;
+            }
+            std::printf("COL phase %u terrain %d: %s (%zu bytes), %s (%zu bytes)\n",
+                        phase, alternate, assets.paths().terrain,
+                        assets.terrain_bytes().size(),
+                        assets.paths().static_objects,
+                        assets.static_bytes().size());
+        }
+    }
+    awl::filesystem_shutdown();
+    awl_memory_shutdown();
+    return valid;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -2143,9 +2286,14 @@ int main(int argc, char** argv) {
     test_radius_edge_adjustment();
     test_radius_pass_sequence();
     test_terrain_radius_adjustment();
+    test_world_map_collision_asset_provider();
 
     for (int index = 1; index < argc; ++index) {
-        if (!inspect_local_asset(argv[index])) {
+        if (std::strcmp(argv[index], "--catalog-local") == 0) {
+            if (++index >= argc || !inspect_local_catalog(argv[index])) {
+                ++failures;
+            }
+        } else if (!inspect_local_asset(argv[index])) {
             ++failures;
         }
     }

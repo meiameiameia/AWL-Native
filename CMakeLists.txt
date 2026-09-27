@@ -24,6 +24,7 @@ set(SOURCES
     src/world_map_movement.cpp
     src/world_map_scene_index.cpp
     src/world_map_collision_registry.cpp
+    src/world_map_collision_assets.cpp
     src/collision_asset.cpp
     src/game.cpp
     src/filesystem.cpp
@@ -46,6 +47,7 @@ set(HEADERS
     include/awl/world_map_movement.h
     include/awl/world_map_scene_index.h
     include/awl/world_map_collision_registry.h
+    include/awl/world_map_collision_assets.h
     include/awl/collision_asset.h
 )
 
@@ -193,11 +195,20 @@ add_executable(collision_asset_tests
     src/world_map_movement.cpp
     src/world_map_scene_index.cpp
     src/world_map_collision_registry.cpp
+    src/world_map_collision_assets.cpp
+    src/filesystem.cpp
+    src/memory.cpp
+    src/platform.cpp
+    src/input.cpp
     src/player_input.cpp
 )
 target_include_directories(collision_asset_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
+if(WIN32)
+    target_compile_definitions(collision_asset_tests PRIVATE AWL_PLATFORM_WINDOWS _CRT_SECURE_NO_WARNINGS)
+    target_link_libraries(collision_asset_tests PRIVATE xinput)
+endif()
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(collision_asset_tests PRIVATE -Wall -Wextra)
 elseif(MSVC)
