@@ -4,6 +4,7 @@
 #include "awl/world_map_movement.h"
 #include "awl/world_map_scene_index.h"
 #include "awl/world_map_collision_assets.h"
+#include "awl/world_map_collision_records.h"
 #include "awl/filesystem.h"
 #include "awl/memory.h"
 
@@ -65,6 +66,77 @@ std::vector<uint8_t> make_single_leaf() {
     initialize_header(bytes);
     initialize_leaf(bytes, 8);
     return bytes;
+}
+
+std::vector<uint8_t> make_single_record_arc() {
+    std::vector<uint8_t> col = make_single_leaf();
+    col[6] = 0;
+    std::vector<uint8_t> arc(0x50 + col.size(), 0);
+    put_be32(arc, 0, 0x55AA382Du);
+    put_be32(arc, 4, 0x20);
+    put_be32(arc, 8, 0x30);
+    put_be32(arc, 12, 0x50);
+    put_be32(arc, 0x20, 0x01000000u);
+    put_be32(arc, 0x28, 2);
+    put_be32(arc, 0x2c, 1);
+    put_be32(arc, 0x30, 0x50);
+    put_be32(arc, 0x34, static_cast<uint32_t>(col.size()));
+    const char name[] = "fixture.col";
+    std::memcpy(arc.data() + 0x39, name, sizeof(name));
+    std::copy(col.begin(), col.end(), arc.begin() + 0x50);
+    return arc;
+}
+
+void test_world_map_collision_archive() {
+    const auto fixture = make_single_record_arc();
+    awl::WorldMapCollisionArchive archive;
+    awl::WorldMapCollisionRecordView view;
+    expect(archive.parse(fixture) && archive.record_count() == 1 &&
+               archive.lookup(0, &view) && view.size == 0x3c &&
+               view.analysis != nullptr && view.analysis->header_byte_6 == 0 &&
+               std::strcmp(view.name, "fixture.col") == 0,
+           "ARC entry one maps to collision record zero with owned COL bytes");
+    expect(!archive.lookup(1, &view) && view.data == nullptr &&
+               !archive.lookup(0, nullptr),
+           "out-of-range and null record lookups fail without a sentinel");
+
+    auto invalid = fixture;
+    put_be32(invalid, 0x30, static_cast<uint32_t>(invalid.size() - 2));
+    expect(!archive.parse(invalid) && archive.record_count() == 0,
+           "out-of-bounds ARC entry fails and clears prior records");
+    invalid = fixture;
+    put_be32(invalid, 0x28, UINT32_MAX);
+    expect(!archive.parse(invalid), "overflowing ARC entry count is rejected");
+    invalid = fixture;
+    put_be32(invalid, 0x2c, 0x00FFFFFFu);
+    expect(!archive.parse(invalid), "out-of-bounds ARC name is rejected");
+    invalid = fixture;
+    invalid[0x39] = 0;
+    expect(!archive.parse(invalid), "empty ARC file name is rejected");
+    invalid = fixture;
+    invalid.resize(0x50 + 8);
+    expect(!archive.parse(invalid), "truncated embedded COL is rejected");
+    invalid = fixture;
+    invalid[0x50 + 6] = 2;
+    expect(!archive.parse(invalid), "unsupported embedded COL mode is rejected");
+    invalid.assign(0x60 + 0x3c, 0);
+    put_be32(invalid, 0, 0x55AA382Du);
+    put_be32(invalid, 4, 0x20);
+    put_be32(invalid, 8, 0x40);
+    put_be32(invalid, 12, 0x60);
+    put_be32(invalid, 0x20, 0x01000000u);
+    put_be32(invalid, 0x28, 3);
+    for (const size_t node : {size_t{0x2c}, size_t{0x38}}) {
+        put_be32(invalid, node, 1);
+        put_be32(invalid, node + 4, 0x60);
+        put_be32(invalid, node + 8, 0x3c);
+    }
+    std::memcpy(invalid.data() + 0x45, "fixture.col", 12);
+    std::copy(fixture.begin() + 0x50, fixture.end(), invalid.begin() + 0x60);
+    expect(!archive.parse(invalid), "overlapping ARC payloads are rejected");
+    invalid = fixture;
+    put_be32(invalid, 0, 0);
+    expect(!archive.parse(invalid), "incorrect ARC signature is rejected");
 }
 
 std::vector<uint8_t> make_one_level_tree() {
@@ -2404,6 +2476,35 @@ bool inspect_local_catalog(const char* disc_root) {
     awl_memory_init();
     awl::filesystem_init();
     bool valid = awl::filesystem_mount("/", disc_root);
+    if (valid) {
+        awl::WorldMapCollisionRecordPools pools;
+        valid = pools.load() && pools.record_count(0) == 53 &&
+                pools.record_count(2) == 21 && pools.record_count(1) == 54;
+        for (const int group : {0, 1, 2}) {
+            for (uint32_t index = 0;
+                 valid && index < pools.record_count(group); ++index) {
+                awl::WorldMapCollisionRecordView view;
+                awl::CollisionTreeAnalysis checked;
+                valid = pools.lookup(group, index, &view) &&
+                        view.data != nullptr && view.analysis != nullptr &&
+                        awl::analyze_type1_collision_asset(
+                            view.data, view.size, &checked) &&
+                        checked.header_byte_6 == 0 &&
+                        checked.node_count == view.analysis->node_count;
+            }
+            awl::WorldMapCollisionRecordView missing;
+            valid = valid && !pools.lookup(
+                group, static_cast<uint32_t>(pools.record_count(group)),
+                &missing) && missing.data == nullptr;
+        }
+        if (!valid) {
+            std::fprintf(stderr, "COL archive catalog validation failed\n");
+        } else {
+            std::printf("COL archive records: maperase=%zu mapse=%zu roomobj=%zu\n",
+                        pools.record_count(0), pools.record_count(2),
+                        pools.record_count(1));
+        }
+    }
     for (uint32_t phase = 0; valid && phase < 6; ++phase) {
         for (int alternate = 0; alternate < 2; ++alternate) {
             awl::WorldMapCollisionAssets assets;
@@ -2458,6 +2559,7 @@ bool inspect_local_catalog(const char* disc_root) {
 } // namespace
 
 int main(int argc, char** argv) {
+    test_world_map_collision_archive();
     test_valid_structures();
     test_rejects_unsupported_or_truncated_files();
     test_rejects_invalid_offsets();
