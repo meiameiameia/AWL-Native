@@ -2170,6 +2170,27 @@ void test_world_map_collision_mode_flags() {
 }
 
 void test_world_map_fixed_collision_registration() {
+    const auto keys = awl::world_map_fixed_collision_record_keys();
+    constexpr std::array<uint32_t, 25> expected_indices{
+        18, 22, 17, 21, 16, 20, 15, 19,
+        27, 31, 26, 30, 25, 29, 24, 28,
+        35, 39, 34, 38, 33, 37, 32, 36, 23};
+    bool mapped = true;
+    for (size_t i = 0; i < keys.size(); ++i) {
+        mapped = mapped && keys[i].archive_index == expected_indices[i] &&
+                 keys[i].category == (i == 24 ? 13 : 7);
+    }
+    expect(mapped, "fixed objects use the verified roomobj indices and categories");
+    awl::WorldMapCollisionRecordPools unloaded;
+    std::array<awl::WorldMapRegisteredCollisionObject, 25> unbound{};
+    unbound[0].collision.identity = 123;
+    unbound[0].collision.category = 9;
+    expect(!awl::bind_world_map_fixed_collision_records(unloaded, &unbound) &&
+               unbound[0].collision.identity == 123 &&
+               unbound[0].collision.category == 9 &&
+               !awl::bind_world_map_fixed_collision_records(unloaded, nullptr),
+           "missing archive or output leaves fixed objects untouched");
+
     awl::WorldMapFixedCollisionState state;
     state.direct_enabled = {1, 0, 2, 0, 0, 0, 0, 0};
     state.selected_variant = {0, 1, 2, 0, 1, 2, 0, 1};
@@ -2952,6 +2973,19 @@ bool inspect_local_catalog(const char* disc_root) {
         awl::WorldMapCollisionRecordPools pools;
         valid = pools.load() && pools.record_count(0) == 53 &&
                 pools.record_count(2) == 21 && pools.record_count(1) == 54;
+        if (valid) {
+            std::array<awl::WorldMapRegisteredCollisionObject, 25> fixed{};
+            const auto keys = awl::world_map_fixed_collision_record_keys();
+            valid = awl::bind_world_map_fixed_collision_records(pools, &fixed);
+            for (size_t i = 0; valid && i < fixed.size(); ++i) {
+                awl::WorldMapCollisionRecordView record;
+                valid = pools.lookup(1, keys[i].archive_index, &record) &&
+                        fixed[i].collision.category == keys[i].category &&
+                        fixed[i].collision.data == record.data &&
+                        fixed[i].collision.size == record.size &&
+                        fixed[i].collision.center_local == record.center_local;
+            }
+        }
         if (valid) {
             std::vector<awl::WorldMapMapseCollisionMatch> matches;
             valid = pools.find_mapse_matches(2, &matches) &&

@@ -1,5 +1,7 @@
 #include "awl/world_map_collision_registry.h"
 
+#include "awl/world_map_collision_records.h"
+
 #include <algorithm>
 #include <utility>
 
@@ -139,6 +141,45 @@ std::array<bool, 25> world_map_fixed_collision_activation(
     }
     enabled[24] = state.state_299ae != 0;
     return enabled;
+}
+
+std::array<WorldMapFixedCollisionRecordKey, 25>
+world_map_fixed_collision_record_keys() {
+    // 0x8023EBC8 is {3,7,2,6,1,5,0,4}; FUN_80021440 adds 15 for
+    // direct objects, then 24 + 8*variant for the next two groups.
+    constexpr std::array<uint32_t, 8> order{3, 7, 2, 6, 1, 5, 0, 4};
+    std::array<WorldMapFixedCollisionRecordKey, 25> keys{};
+    for (size_t i = 0; i < order.size(); ++i) {
+        keys[i] = {order[i] + 15, 7};
+        keys[8 + i] = {order[i] + 24, 7};
+        keys[16 + i] = {order[i] + 32, 7};
+    }
+    keys[24] = {23, 13};
+    return keys;
+}
+
+bool bind_world_map_fixed_collision_records(
+    const WorldMapCollisionRecordPools& pools,
+    std::array<WorldMapRegisteredCollisionObject, 25>* objects) {
+    if (objects == nullptr) {
+        return false;
+    }
+    auto staged = *objects;
+    const auto keys = world_map_fixed_collision_record_keys();
+    for (size_t i = 0; i < keys.size(); ++i) {
+        WorldMapCollisionRecordView view;
+        if (!pools.lookup(1, keys[i].archive_index, &view) ||
+            view.data == nullptr || view.analysis == nullptr) {
+            return false;
+        }
+        auto& collision = staged[i].collision;
+        collision.category = keys[i].category;
+        collision.data = view.data;
+        collision.size = view.size;
+        collision.center_local = view.center_local;
+    }
+    *objects = staged;
+    return true;
 }
 
 bool register_world_map_fixed_collision_objects(

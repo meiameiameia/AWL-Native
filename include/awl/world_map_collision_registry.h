@@ -9,6 +9,8 @@
 
 namespace awl {
 
+class WorldMapCollisionRecordPools;
+
 enum class WorldMapCollisionList : uint8_t { First, Later, Third };
 
 // FUN_801527A8's resolver flags for verified object modes 0..4. Other
@@ -62,6 +64,23 @@ struct WorldMapFixedCollisionState {
     std::array<uint32_t, 8> selected_variant{};
     uint8_t state_299ae = 0;
 };
+
+struct WorldMapFixedCollisionRecordKey {
+    uint32_t archive_index = 0;
+    int32_t category = 0;
+};
+
+// FUN_80021440's 25 roomobj.col.arc indices and runtime categories in
+// construction order. These categories are 7 or 13, not the player's 1.
+[[nodiscard]] std::array<WorldMapFixedCollisionRecordKey, 25>
+world_map_fixed_collision_record_keys();
+
+// Binds validated roomobj COL bytes and local centers for supplied objects.
+// The pointers borrow the pool's storage. Identities, transforms, world
+// centers/radii, and activation remain caller-owned. Failure is atomic.
+[[nodiscard]] bool bind_world_map_fixed_collision_records(
+    const WorldMapCollisionRecordPools& pools,
+    std::array<WorldMapRegisteredCollisionObject, 25>* objects);
 
 // In construction order: eight direct objects, eight variant-0 objects,
 // eight variant-1 objects, and one final state-gated object.
