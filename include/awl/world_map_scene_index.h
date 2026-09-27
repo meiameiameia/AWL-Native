@@ -45,14 +45,49 @@ public:
     [[nodiscard]] bool update_position(uint64_t identity,
                                        const std::array<float, 3>& position,
                                        WorldMapScenePositionUpdate* update);
+    // FUN_80010830 writes both the scene type and position before deciding
+    // whether the object's bucket changes.
+    [[nodiscard]] bool update_type_and_position(
+        uint64_t identity,
+        int32_t scene_type,
+        const std::array<float, 3>& position,
+        WorldMapScenePositionUpdate* update);
     [[nodiscard]] bool unregister_object(uint64_t identity);
     void clear();
     [[nodiscard]] size_t size(int32_t bucket) const;
     [[nodiscard]] std::vector<WorldMapSceneObject> snapshot(int32_t bucket) const;
 
 private:
+    [[nodiscard]] bool update_object(uint64_t identity,
+                                     bool replace_type,
+                                     int32_t scene_type,
+                                     const std::array<float, 3>& position,
+                                     WorldMapScenePositionUpdate* update);
     // Array index zero is the constructor's key -1; indices 1..59 are 0..58.
     std::array<std::vector<WorldMapSceneObject>, 60> buckets_{};
 };
+
+struct WorldMapPlayerScenePose {
+    int32_t scene_type = 0;
+    std::array<float, 3> position{};
+    std::array<float, 3> heading{};
+};
+
+// The bounded scene-pose fields of FUN_80031758's message 0x1F payload.
+// Its camera flag and other side effects are not represented here.
+struct WorldMapPlayerSceneMessage1F {
+    int32_t scene_type = 0;
+    std::array<float, 3> position{};
+    std::array<float, 3> heading{};
+};
+
+// Applies the supplied message to an already registered player scene node.
+// This does not source messages, update game globals, or drive live gameplay.
+[[nodiscard]] bool apply_world_map_player_scene_message_1f(
+    uint64_t scene_identity,
+    const WorldMapPlayerSceneMessage1F& message,
+    WorldMapSceneBucketRegistry* registry,
+    WorldMapPlayerScenePose* pose,
+    WorldMapScenePositionUpdate* update);
 
 } // namespace awl

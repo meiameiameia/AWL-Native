@@ -91,6 +91,23 @@ bool WorldMapSceneBucketRegistry::update_position(
     uint64_t identity,
     const std::array<float, 3>& position,
     WorldMapScenePositionUpdate* update) {
+    return update_object(identity, false, 0, position, update);
+}
+
+bool WorldMapSceneBucketRegistry::update_type_and_position(
+    uint64_t identity,
+    int32_t scene_type,
+    const std::array<float, 3>& position,
+    WorldMapScenePositionUpdate* update) {
+    return update_object(identity, true, scene_type, position, update);
+}
+
+bool WorldMapSceneBucketRegistry::update_object(
+    uint64_t identity,
+    bool replace_type,
+    int32_t scene_type,
+    const std::array<float, 3>& position,
+    WorldMapScenePositionUpdate* update) {
     if (update != nullptr) {
         *update = {};
     }
@@ -106,17 +123,20 @@ bool WorldMapSceneBucketRegistry::update_position(
         if (found == bucket.end()) {
             continue;
         }
+        const int32_t next_type = replace_type ? scene_type : found->scene_type;
         WorldMapScenePositionUpdate planned;
         if (!plan_world_map_scene_position_update(
-                found->scene_type, found->bucket, position, &planned)) {
+                next_type, found->bucket, position, &planned)) {
             return false;
         }
         if (!planned.relink_required) {
+            found->scene_type = next_type;
             found->position = position;
         } else {
             auto& next = buckets_[static_cast<size_t>(planned.next_bucket) + 1];
             next.reserve(next.size() + 1);
             WorldMapSceneObject moved = *found;
+            moved.scene_type = next_type;
             moved.position = position;
             moved.bucket = planned.next_bucket;
             bucket.erase(found);
@@ -126,6 +146,29 @@ bool WorldMapSceneBucketRegistry::update_position(
         return true;
     }
     return false;
+}
+
+bool apply_world_map_player_scene_message_1f(
+    uint64_t scene_identity,
+    const WorldMapPlayerSceneMessage1F& message,
+    WorldMapSceneBucketRegistry* registry,
+    WorldMapPlayerScenePose* pose,
+    WorldMapScenePositionUpdate* update) {
+    if (update != nullptr) {
+        *update = {};
+    }
+    if (registry == nullptr || pose == nullptr || update == nullptr ||
+        !std::isfinite(message.heading[0]) ||
+        !std::isfinite(message.heading[1]) ||
+        !std::isfinite(message.heading[2])) {
+        return false;
+    }
+    if (!registry->update_type_and_position(scene_identity, message.scene_type,
+                                            message.position, update)) {
+        return false;
+    }
+    *pose = {message.scene_type, message.position, message.heading};
+    return true;
 }
 
 bool WorldMapSceneBucketRegistry::unregister_object(uint64_t identity) {

@@ -2156,6 +2156,83 @@ void test_world_map_scene_bucket_registry() {
            "clear removes all buckets and unknown bucket queries stay empty");
 }
 
+void test_world_map_player_scene_message_1f() {
+    awl::WorldMapSceneBucketRegistry registry;
+    const std::array<float, 3> start{10.0f, 3.0f, 10.0f};
+    const std::array<float, 3> next{54.0f, 4.0f, 130.0f};
+    awl::WorldMapScenePositionUpdate update;
+    awl::WorldMapPlayerScenePose pose;
+    // The constructor registers the node before applying the saved scene
+    // type/position. Another node checks ordering on same-key writes.
+    expect(registry.register_object(11, 0, start) &&
+               registry.register_object(22, 1, start) &&
+               registry.update_position(22, start, &update) &&
+               registry.update_type_and_position(11, 2, start, &update) &&
+               update.previous_bucket == -1 && update.next_bucket == 1 &&
+               registry.snapshot(1)[0].scene_type == 2,
+           "constructor's saved scene type and position place player node");
+
+    const awl::WorldMapPlayerSceneMessage1F same_key{
+        1, {20.0f, 5.0f, 20.0f}, {0.0f, 0.0f, -1.0f}};
+    expect(awl::apply_world_map_player_scene_message_1f(
+               11, same_key, &registry, &pose, &update) &&
+               !update.relink_required && update.next_bucket == 1 &&
+               pose.scene_type == 1 && pose.position == same_key.position &&
+               pose.heading == same_key.heading &&
+               registry.snapshot(1)[0].identity == 11 &&
+               registry.snapshot(1)[0].scene_type == 1 &&
+               registry.snapshot(1)[1].identity == 22,
+           "message updates type, position, and heading without needless relink");
+
+    const awl::WorldMapPlayerSceneMessage1F cross_key{
+        2, next, {1.0f, 0.0f, 0.0f}};
+    expect(awl::apply_world_map_player_scene_message_1f(
+               11, cross_key, &registry, &pose, &update) &&
+               update.relink_required && update.previous_bucket == 1 &&
+               update.next_bucket == 7 && registry.size(1) == 1 &&
+               registry.snapshot(7)[0].identity == 11 &&
+               registry.snapshot(7)[0].position == next &&
+               pose.heading == cross_key.heading,
+           "message crossing exact X/Z thresholds relinks player scene node");
+
+    const awl::WorldMapPlayerSceneMessage1F type_zero{
+        0, next, {0.0f, 0.0f, 1.0f}};
+    expect(awl::apply_world_map_player_scene_message_1f(
+               11, type_zero, &registry, &pose, &update) &&
+               update.relink_required && update.previous_bucket == 7 &&
+               update.next_bucket == 0 && registry.size(7) == 0 &&
+               registry.snapshot(0)[0].scene_type == 0,
+           "type-zero message returns player node to bucket zero");
+
+    const auto saved_pose = pose;
+    const auto saved_bucket = registry.snapshot(0);
+    const auto nan = std::numeric_limits<float>::quiet_NaN();
+    expect(!awl::apply_world_map_player_scene_message_1f(
+               11, {45, next, {1.0f, 0.0f, 0.0f}},
+               &registry, &pose, &update) &&
+               !awl::apply_world_map_player_scene_message_1f(
+                   11, {1, {nan, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}},
+                   &registry, &pose, &update) &&
+               !awl::apply_world_map_player_scene_message_1f(
+                   11, {1, next, {nan, 0.0f, 0.0f}},
+                   &registry, &pose, &update) &&
+               !awl::apply_world_map_player_scene_message_1f(
+                   99, same_key, &registry, &pose, &update) &&
+               !awl::apply_world_map_player_scene_message_1f(
+                   11, same_key, nullptr, &pose, &update) &&
+               !awl::apply_world_map_player_scene_message_1f(
+                   11, same_key, &registry, nullptr, &update) &&
+               !awl::apply_world_map_player_scene_message_1f(
+                   11, same_key, &registry, &pose, nullptr) &&
+               pose.scene_type == saved_pose.scene_type &&
+               pose.position == saved_pose.position &&
+               pose.heading == saved_pose.heading &&
+               registry.snapshot(0)[0].scene_type == saved_bucket[0].scene_type &&
+               registry.snapshot(0)[0].position == saved_bucket[0].position &&
+               update.next_bucket == 0,
+           "unsupported or incomplete messages preserve player pose and bucket");
+}
+
 void test_world_map_collision_mode_flags() {
     constexpr uint32_t expected[5] = {
         0x67u, 0xd4u, 0x16fu, 0x16fu, 0x14fu};
@@ -4565,6 +4642,7 @@ int main(int argc, char** argv) {
     test_synthetic_player_route_replay();
     test_world_map_scene_position_bucket_decision();
     test_world_map_scene_bucket_registry();
+    test_world_map_player_scene_message_1f();
     test_world_map_collision_mode_flags();
     test_world_map_scene_first_collision_registration();
     test_world_map_first_actor_step();
