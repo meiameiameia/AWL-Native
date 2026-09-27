@@ -80,6 +80,37 @@ WorldMapFirstActorCircleSpec world_map_first_actor_circle_spec(
     return {1, 0.5f};
 }
 
+bool world_map_first_actor_initial_position(
+    int32_t actor_id, std::optional<float> height_query_result,
+    std::array<float, 3>* position) {
+    if (position == nullptr) {
+        return false;
+    }
+    // FUN_80159A28 stores 0..4 for 0x2C..0x30 and 6 otherwise. Entry 5
+    // exists in the DOL table but is not selected by this constructor.
+    constexpr std::array<std::array<float, 3>, 7> seeds{{
+        {263.0f, 20.0f, 179.0f},
+        {277.0f, 20.0f, 218.0f},
+        {185.0f, 13.0f, 237.0f},
+        {75.0f, 0.0f, 113.5f},
+        {279.0f, 27.0f, 116.0f},
+        {6.0f, 3.0f, 6.0f},
+        {3.0f, 6.0f, 3.0f},
+    }};
+    const size_t index = actor_id >= 0x2c && actor_id <= 0x30
+                             ? static_cast<size_t>(actor_id - 0x2c)
+                             : 6;
+    auto initial = seeds[index];
+    if (index != 4) {
+        if (!height_query_result || !std::isfinite(*height_query_result)) {
+            return false;
+        }
+        initial[1] = *height_query_result;
+    }
+    *position = initial;
+    return true;
+}
+
 bool register_world_map_scene_first_collision_objects(
     const WorldMapSceneFirstCollisionObjects& scene,
     WorldMapCollisionRegistry* registry) {
@@ -100,10 +131,11 @@ bool register_world_map_scene_first_collision_objects(
              scene.conditional_b->collision.identity)) {
         return false;
     }
-    for (float component : scene.category1_actor.world_position) {
-        if (!std::isfinite(component)) {
-            return false;
-        }
+    std::array<float, 3> initial_position{};
+    if (!world_map_first_actor_initial_position(
+            scene.category1_actor_id,
+            scene.category1_actor_height_query_result, &initial_position)) {
+        return false;
     }
 
     WorldMapCollisionRegistry staged = *registry;
@@ -118,6 +150,7 @@ bool register_world_map_scene_first_collision_objects(
         return false;
     }
     WorldMapRegisteredCollisionObject category1 = scene.category1_actor;
+    category1.world_position = initial_position;
     category1.collision.enabled = true;
     category1.collision.category = 1;
     category1.collision.collision_flags = 1u;

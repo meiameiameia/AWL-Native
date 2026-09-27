@@ -2181,6 +2181,44 @@ void test_world_map_scene_first_collision_registration() {
                check_spec(0x31, 1, 0.5f),
            "first actor collision setup follows the DOL ID branches and radii");
 
+    const std::array<std::array<float, 3>, 6> expected_positions{{
+        {263.0f, 9.0f, 179.0f}, {277.0f, 9.0f, 218.0f},
+        {185.0f, 9.0f, 237.0f}, {75.0f, 9.0f, 113.5f},
+        {279.0f, 27.0f, 116.0f}, {3.0f, 9.0f, 3.0f},
+    }};
+    bool positions_match = true;
+    for (size_t i = 0; i < expected_positions.size(); ++i) {
+        const int32_t id = i == 5 ? 0x31 : 0x2c + static_cast<int32_t>(i);
+        std::array<float, 3> position{};
+        positions_match = positions_match &&
+            awl::world_map_first_actor_initial_position(id, 9.0f,
+                                                        &position) &&
+            position == expected_positions[i];
+    }
+    std::array<float, 3> position{99.0f, 98.0f, 97.0f};
+    const auto unchanged = position;
+    expect(positions_match &&
+               awl::world_map_first_actor_initial_position(0x2b, 9.0f,
+                                                           &position) &&
+               position == expected_positions[5] &&
+               awl::world_map_first_actor_initial_position(0x30,
+                                                           std::nullopt,
+                                                           &position) &&
+               position == expected_positions[4],
+           "actor IDs select DOL XZ seeds and the height-query exception");
+    position = unchanged;
+    expect(!awl::world_map_first_actor_initial_position(0x2f,
+                                                        std::nullopt,
+                                                        &position) &&
+               position == unchanged &&
+               !awl::world_map_first_actor_initial_position(
+                   0x2f, std::numeric_limits<float>::quiet_NaN(),
+                   &position) &&
+               position == unchanged &&
+               !awl::world_map_first_actor_initial_position(0x2f, 9.0f,
+                                                            nullptr),
+           "missing or invalid required height leaves the output unchanged");
+
     awl::WorldMapSceneFirstCollisionObjects scene;
     scene.conditional_a.emplace();
     scene.conditional_a->collision.identity = 101;
@@ -2194,6 +2232,7 @@ void test_world_map_scene_first_collision_registration() {
     scene.category1_actor.collision.collision_flags = 2u;
     scene.category1_actor.world_position = {5.0f, 4.0f, 0.0f};
     scene.category1_actor_id = 0x2f;
+    scene.category1_actor_height_query_result = 4.0f;
     awl::WorldMapCollisionRegistry registry;
     awl::WorldMapRegisteredCollisionObject unrelated;
     unrelated.collision.identity = 80;
@@ -2207,7 +2246,8 @@ void test_world_map_scene_first_collision_registration() {
                first[1].identity == 102 && first[2].identity == 101 &&
                first[0].enabled && first[0].category == 1 &&
                first[0].collision_flags == 1u && first[0].radius == 0.9f &&
-               first[0].center_world == scene.category1_actor.world_position &&
+               first[0].center_world ==
+                   std::array<float, 3>{75.0f, 4.0f, 113.5f} &&
                first[0].data == nullptr && first[0].size == 0 &&
                snapshot.first_directional.size() == 3 &&
                snapshot.later_resolver.size() == 1 &&
@@ -2215,13 +2255,13 @@ void test_world_map_scene_first_collision_registration() {
            "known category-1 circle heads the first list without altering other lists");
     if (first.size() == 3) {
         awl::CollisionDynamicPassAdjustment contact;
-        const std::array<float, 3> prior{5.0f, 7.0f, 2.0f};
-        const std::array<float, 3> proposal{5.0f, 7.0f, 1.0f};
+        const std::array<float, 3> prior{75.0f, 7.0f, 115.5f};
+        const std::array<float, 3> proposal{75.0f, 7.0f, 114.5f};
         expect(awl::resolve_type1_first_dynamic_object_pass(
                    first.data(), first.size(), 999, 1, prior, proposal,
                    0.3f, 4u, 0x67u, &contact) && contact.contact &&
                    contact.queried_objects == 1 &&
-                   std::fabs(contact.position[2] - 1.21f) < 0.0001f,
+                   std::fabs(contact.position[2] - 114.71f) < 0.0001f,
                "registered category-1 actor contributes a circle contact");
     }
 
@@ -2300,16 +2340,32 @@ void test_world_map_scene_first_collision_registration() {
                scene, &only_actor) &&
                only_actor.snapshot().first_resolver.size() == 1 &&
                only_actor.snapshot().first_resolver.front().identity == 104 &&
+               only_actor.snapshot().first_resolver.front().center_world ==
+                   std::array<float, 3>{263.0f, 4.0f, 179.0f} &&
                only_actor.snapshot().first_resolver.front().radius == 0.3f,
            "absent conditional actors leave the required category-1 actor");
-    scene.category1_actor.world_position[0] =
+    scene.category1_actor.collision.identity = 105;
+    scene.category1_actor_id = 0x30;
+    scene.category1_actor_height_query_result.reset();
+    awl::WorldMapCollisionRegistry fixed_height_actor;
+    expect(awl::register_world_map_scene_first_collision_objects(
+               scene, &fixed_height_actor) &&
+               fixed_height_actor.snapshot().first_resolver.size() == 1 &&
+               fixed_height_actor.snapshot().first_resolver.front()
+                       .center_world ==
+                   std::array<float, 3>{279.0f, 27.0f, 116.0f},
+           "ID 0x30 registers at its fixed DOL height without a query result");
+    scene.category1_actor_id = 0x2c;
+    scene.category1_actor_height_query_result =
         std::numeric_limits<float>::quiet_NaN();
     expect(!awl::register_world_map_scene_first_collision_objects(
-               scene, &only_actor) &&
-               only_actor.snapshot().first_resolver.size() == 1 &&
+               scene, &fixed_height_actor) &&
+               fixed_height_actor.snapshot().first_resolver.size() == 1 &&
+               fixed_height_actor.snapshot().first_resolver.front().identity ==
+                   105 &&
                !awl::register_world_map_scene_first_collision_objects(
                    scene, nullptr),
-           "invalid scene position and missing registry are rejected");
+           "invalid scene height and missing registry are rejected");
 }
 
 void test_world_map_fixed_collision_registration() {

@@ -75,15 +75,27 @@ struct WorldMapFirstActorCircleSpec {
 [[nodiscard]] WorldMapFirstActorCircleSpec
 world_map_first_actor_circle_spec(int32_t actor_id);
 
+// FUN_80159A28 selects an initial XYZ from the DOL table at 0x802558A8.
+// Except for ID 0x30, FUN_8001CB54 replaces its Y; the caller supplies that
+// query result until the scene's height provider is connected. Failure leaves
+// the output unchanged.
+[[nodiscard]] bool world_map_first_actor_initial_position(
+    int32_t actor_id, std::optional<float> height_query_result,
+    std::array<float, 3>* position);
+
 // FUN_80013F60 constructs two conditional first-list actors, then the
 // FUN_80159A28 actor whose scene category is 1. Objects and optional-actor
 // presence are supplied by the caller; only the final actor's verified
-// circle setup is applied here. No live scene state is discovered.
+// circle setup and initial position are applied here. The supplied actor
+// world_position is replaced by the constructor-derived position. The caller
+// supplies the height-query result and actor heading; no live scene state is
+// discovered.
 struct WorldMapSceneFirstCollisionObjects {
     std::optional<WorldMapRegisteredCollisionObject> conditional_a;
     std::optional<WorldMapRegisteredCollisionObject> conditional_b;
     WorldMapRegisteredCollisionObject category1_actor{};
     int32_t category1_actor_id = 0;
+    std::optional<float> category1_actor_height_query_result;
 };
 
 [[nodiscard]] bool register_world_map_scene_first_collision_objects(
