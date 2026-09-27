@@ -4,6 +4,8 @@
 #include "awl/platform.h"
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <utility>
@@ -14,6 +16,17 @@ namespace {
 constexpr uint32_t kArcMagic = 0x55AA382Du;
 constexpr size_t kArcHeaderSize = 0x20;
 constexpr size_t kArcNodeSize = 12;
+
+struct MapseTableRow {
+    uint32_t id;
+    uint32_t flag;
+};
+
+// 0x8023EB20: the 21 eight-byte rows read by FUN_800222B8/FUN_8001D714.
+constexpr std::array<MapseTableRow, 21> kMapseTable{{
+    {0, 3}, {1, 1}, {2, 1}, {2, 1}, {2, 1}, {2, 1}, {2, 1},
+    {2, 1}, {3, 1}, {4, 1}, {5, 1}, {6, 1}, {7, 1}, {8, 1},
+    {9, 1}, {10, 1}, {11, 2}, {12, 2}, {13, 2}, {14, 1}, {15, 1}}};
 
 uint32_t be32(const uint8_t* p) {
     return (static_cast<uint32_t>(p[0]) << 24) |
@@ -97,7 +110,8 @@ bool WorldMapCollisionArchive::parse(std::vector<uint8_t> bytes) {
         CollisionTreeAnalysis analysis;
         if (!analyze_type1_collision_asset(bytes.data() + offset, size,
                                            &analysis) ||
-            analysis.header_byte_6 != 0) {
+            analysis.header_byte_6 != 0 || analysis.node_count != 1 ||
+            analysis.leaf_count != 1) {
             return false;
         }
         Record record;
@@ -106,6 +120,18 @@ bool WorldMapCollisionArchive::parse(std::vector<uint8_t> bytes) {
         record.name.assign(reinterpret_cast<const char*>(bytes.data() + name_at),
                            static_cast<const char*>(end));
         record.analysis = analysis;
+        float radius_squared = 0.0f;
+        for (size_t axis = 0; axis < 3; ++axis) {
+            record.center_local[axis] =
+                (analysis.root_min[axis] + analysis.root_max[axis]) * 0.5f;
+            const float half_extent =
+                record.center_local[axis] - analysis.root_min[axis];
+            radius_squared += half_extent * half_extent;
+        }
+        record.radius_local = std::sqrt(radius_squared);
+        if (!std::isfinite(record.radius_local)) {
+            return false;
+        }
         records.push_back(std::move(record));
         extents.emplace_back(offset,
                              static_cast<uint64_t>(offset) + size);
@@ -139,6 +165,8 @@ bool WorldMapCollisionArchive::lookup(
     out->size = record.size;
     out->analysis = &record.analysis;
     out->name = record.name.c_str();
+    out->center_local = record.center_local;
+    out->radius_local = record.radius_local;
     return true;
 }
 
@@ -147,6 +175,12 @@ bool WorldMapCollisionRecordPools::load() {
     if (!read_archive("/files/maperase.col.arc", &maperase_) ||
         !read_archive("/files/mapse.col.arc", &mapse_) ||
         !read_archive("/files/roomobj.col.arc", &roomobj_)) {
+        clear();
+        return false;
+    }
+    if (mapse_.record_count() != kMapseTable.size()) {
+        AWL_LOG_ERROR("Mapse archive count does not match DOL table: %zu",
+                      mapse_.record_count());
         clear();
         return false;
     }
@@ -170,6 +204,31 @@ size_t WorldMapCollisionRecordPools::record_count(int32_t group) const {
     if (group == 1) return roomobj_.record_count();
     if (group == 2) return mapse_.record_count();
     return maperase_.record_count();
+}
+
+bool WorldMapCollisionRecordPools::find_mapse_matches(
+    uint32_t id, std::vector<WorldMapMapseCollisionMatch>* out) const {
+    if (out != nullptr) {
+        out->clear();
+    }
+    if (out == nullptr || mapse_.record_count() != kMapseTable.size()) {
+        return false;
+    }
+    for (size_t index = 0; index < kMapseTable.size(); ++index) {
+        const MapseTableRow& row = kMapseTable[index];
+        if (row.id != id) {
+            continue;
+        }
+        WorldMapMapseCollisionMatch match;
+        match.record_index = static_cast<uint32_t>(index);
+        match.table_flag = row.flag;
+        if (!mapse_.lookup(match.record_index, &match.record)) {
+            out->clear();
+            return false;
+        }
+        out->push_back(match);
+    }
+    return true;
 }
 
 } // namespace awl

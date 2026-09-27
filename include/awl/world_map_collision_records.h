@@ -2,6 +2,7 @@
 
 #include "awl/collision_asset.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -14,6 +15,15 @@ struct WorldMapCollisionRecordView {
     size_t size = 0;
     const CollisionTreeAnalysis* analysis = nullptr;
     const char* name = nullptr;
+    // FUN_80191D54's local bounding sphere for the origin-selected leaf.
+    std::array<float, 3> center_local{};
+    float radius_local = 0.0f;
+};
+
+struct WorldMapMapseCollisionMatch {
+    uint32_t record_index = 0;
+    uint32_t table_flag = 0;
+    WorldMapCollisionRecordView record{};
 };
 
 // Owns one verified ARC and its embedded type-1 COL files. Views borrow the
@@ -37,6 +47,8 @@ private:
         uint32_t size = 0;
         std::string name;
         CollisionTreeAnalysis analysis{};
+        std::array<float, 3> center_local{};
+        float radius_local = 0.0f;
     };
     std::vector<uint8_t> bytes_;
     std::vector<Record> records_;
@@ -51,6 +63,11 @@ public:
     [[nodiscard]] bool lookup(int32_t group, uint32_t index,
                               WorldMapCollisionRecordView* out) const;
     [[nodiscard]] size_t record_count(int32_t group) const;
+    // FUN_8001D714 visits every matching row, including repeated IDs.
+    // A loaded pool returns true with an empty result for an unknown ID.
+    // Output views borrow this pool's storage and follow the same lifetime.
+    [[nodiscard]] bool find_mapse_matches(
+        uint32_t id, std::vector<WorldMapMapseCollisionMatch>* out) const;
 
 private:
     WorldMapCollisionArchive maperase_;

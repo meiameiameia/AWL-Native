@@ -68,9 +68,7 @@ std::vector<uint8_t> make_single_leaf() {
     return bytes;
 }
 
-std::vector<uint8_t> make_single_record_arc() {
-    std::vector<uint8_t> col = make_single_leaf();
-    col[6] = 0;
+std::vector<uint8_t> make_record_arc(const std::vector<uint8_t>& col) {
     std::vector<uint8_t> arc(0x50 + col.size(), 0);
     put_be32(arc, 0, 0x55AA382Du);
     put_be32(arc, 4, 0x20);
@@ -87,6 +85,15 @@ std::vector<uint8_t> make_single_record_arc() {
     return arc;
 }
 
+std::vector<uint8_t> make_single_record_arc() {
+    std::vector<uint8_t> col = make_single_leaf();
+    col[5] = 0;
+    col[6] = 0;
+    put_be_s16(col, 8 + 6, 6);
+    put_be_s16(col, 8 + 8, 8);
+    return make_record_arc(col);
+}
+
 void test_world_map_collision_archive() {
     const auto fixture = make_single_record_arc();
     awl::WorldMapCollisionArchive archive;
@@ -94,11 +101,18 @@ void test_world_map_collision_archive() {
     expect(archive.parse(fixture) && archive.record_count() == 1 &&
                archive.lookup(0, &view) && view.size == 0x3c &&
                view.analysis != nullptr && view.analysis->header_byte_6 == 0 &&
-               std::strcmp(view.name, "fixture.col") == 0,
-           "ARC entry one maps to collision record zero with owned COL bytes");
+               std::strcmp(view.name, "fixture.col") == 0 &&
+               view.center_local == std::array<float, 3>{3.0f, 4.0f, 0.0f} &&
+               view.radius_local == 5.0f,
+           "ARC entry one maps to record zero with DOL-derived local bounds");
     expect(!archive.lookup(1, &view) && view.data == nullptr &&
                !archive.lookup(0, nullptr),
            "out-of-range and null record lookups fail without a sentinel");
+    awl::WorldMapCollisionRecordPools unloaded;
+    std::vector<awl::WorldMapMapseCollisionMatch> unavailable(1);
+    expect(!unloaded.find_mapse_matches(2, &unavailable) &&
+               unavailable.empty(),
+           "unloaded mapse lookup fails and clears stale matches");
 
     auto invalid = fixture;
     put_be32(invalid, 0x30, static_cast<uint32_t>(invalid.size() - 2));
@@ -153,6 +167,18 @@ std::vector<uint8_t> make_one_level_tree() {
     put_be32(bytes, root + 0x2c, node_size);
     put_be32(bytes, root + 0x30, 0);
     return bytes;
+}
+
+void test_world_map_archive_rejects_untranslated_tree_shape() {
+    auto tree = make_one_level_tree();
+    tree[6] = 0;
+    awl::CollisionTreeAnalysis shape;
+    expect(awl::analyze_type1_collision_asset(tree.data(), tree.size(), &shape) &&
+               shape.node_count == 5 && shape.leaf_count == 4,
+           "multi-leaf rejection fixture is independently valid type-1 COL");
+    awl::WorldMapCollisionArchive archive;
+    expect(!archive.parse(make_record_arc(tree)) && archive.record_count() == 0,
+           "multi-leaf archive record waits for translated leaf selection");
 }
 
 void initialize_sample_payload(std::vector<uint8_t>& bytes,
@@ -2480,6 +2506,24 @@ bool inspect_local_catalog(const char* disc_root) {
         awl::WorldMapCollisionRecordPools pools;
         valid = pools.load() && pools.record_count(0) == 53 &&
                 pools.record_count(2) == 21 && pools.record_count(1) == 54;
+        if (valid) {
+            std::vector<awl::WorldMapMapseCollisionMatch> matches;
+            valid = pools.find_mapse_matches(2, &matches) &&
+                    matches.size() == 6;
+            for (size_t row = 0; valid && row < matches.size(); ++row) {
+                valid = matches[row].record_index == row + 2 &&
+                        matches[row].table_flag == 1 &&
+                        matches[row].record.data != nullptr;
+            }
+            valid = valid && pools.find_mapse_matches(11, &matches) &&
+                    matches.size() == 1 && matches[0].record_index == 16 &&
+                    matches[0].table_flag == 2 &&
+                    pools.find_mapse_matches(0, &matches) &&
+                    matches.size() == 1 && matches[0].record_index == 0 &&
+                    matches[0].table_flag == 3 &&
+                    pools.find_mapse_matches(16, &matches) && matches.empty() &&
+                    !pools.find_mapse_matches(0, nullptr);
+        }
         for (const int group : {0, 1, 2}) {
             for (uint32_t index = 0;
                  valid && index < pools.record_count(group); ++index) {
@@ -2487,6 +2531,12 @@ bool inspect_local_catalog(const char* disc_root) {
                 awl::CollisionTreeAnalysis checked;
                 valid = pools.lookup(group, index, &view) &&
                         view.data != nullptr && view.analysis != nullptr &&
+                        view.analysis->node_count == 1 &&
+                        std::isfinite(view.center_local[0]) &&
+                        std::isfinite(view.center_local[1]) &&
+                        std::isfinite(view.center_local[2]) &&
+                        std::isfinite(view.radius_local) &&
+                        view.radius_local > 0.0f &&
                         awl::analyze_type1_collision_asset(
                             view.data, view.size, &checked) &&
                         checked.header_byte_6 == 0 &&
@@ -2560,6 +2610,7 @@ bool inspect_local_catalog(const char* disc_root) {
 
 int main(int argc, char** argv) {
     test_world_map_collision_archive();
+    test_world_map_archive_rejects_untranslated_tree_shape();
     test_valid_structures();
     test_rejects_unsupported_or_truncated_files();
     test_rejects_invalid_offsets();
