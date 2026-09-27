@@ -151,6 +151,41 @@ bool WorldMapCollisionRegistry::register_object(
     return true;
 }
 
+bool WorldMapCollisionRegistry::update_circle_object(
+    WorldMapCollisionList list, uint64_t identity,
+    const std::array<float, 3>& world_position,
+    const std::array<float, 3>& heading_axis, bool enabled) {
+    if (!valid_list(list) || identity == 0) {
+        return false;
+    }
+    for (float component : world_position) {
+        if (!std::isfinite(component)) {
+            return false;
+        }
+    }
+    for (float component : heading_axis) {
+        if (!std::isfinite(component)) {
+            return false;
+        }
+    }
+    auto& objects = lists_[static_cast<size_t>(list)];
+    const auto found = std::find_if(
+        objects.begin(), objects.end(),
+        [identity](const WorldMapRegisteredCollisionObject& object) {
+            return object.collision.identity == identity;
+        });
+    if (found == objects.end() ||
+        (found->collision.collision_flags & 1u) == 0 ||
+        (found->collision.collision_flags & 2u) != 0) {
+        return false;
+    }
+    found->world_position = world_position;
+    found->heading_axis = heading_axis;
+    found->collision.center_world = world_position;
+    found->collision.enabled = enabled;
+    return true;
+}
+
 bool WorldMapCollisionRegistry::unregister_object(uint64_t identity) {
     if (identity == 0) {
         return false;

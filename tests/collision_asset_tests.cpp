@@ -2233,6 +2233,64 @@ void test_world_map_scene_first_collision_registration() {
                    before.first_resolver.size() &&
                registry.snapshot().first_resolver.front().identity == 103,
            "duplicate scene identities reject without changing list order");
+    const std::array<float, 3> moved_position{8.0f, 4.0f, 0.0f};
+    const std::array<float, 3> moved_heading{1.0f, 0.0f, 0.0f};
+    expect(registry.update_circle_object(awl::WorldMapCollisionList::First,
+                                         103, moved_position, moved_heading,
+                                         true),
+           "linked category-1 circle accepts a supplied live pose");
+    snapshot = registry.snapshot();
+    expect(snapshot.first_resolver.size() == 3 &&
+               snapshot.first_resolver[0].identity == 103 &&
+               snapshot.first_resolver[1].identity == 102 &&
+               snapshot.first_resolver[2].identity == 101 &&
+               snapshot.first_resolver[0].center_world == moved_position &&
+               snapshot.first_directional[0].world_position == moved_position &&
+               snapshot.first_directional[0].heading_axis == moved_heading,
+           "pose refresh changes both views without relinking the list");
+    if (snapshot.first_resolver.size() == 3) {
+        awl::CollisionDynamicPassAdjustment moved_contact;
+        const std::array<float, 3> prior{8.0f, 7.0f, 2.0f};
+        const std::array<float, 3> proposal{8.0f, 7.0f, 1.0f};
+        expect(awl::resolve_type1_first_dynamic_object_pass(
+                   snapshot.first_resolver.data(),
+                   snapshot.first_resolver.size(), 999, 1, prior, proposal,
+                   0.3f, 4u, 0x67u, &moved_contact) &&
+                   moved_contact.contact &&
+                   std::fabs(moved_contact.position[2] - 1.21f) < 0.0001f,
+               "first-list contact follows the refreshed circle center");
+    }
+    const auto invalid_pose = std::array<float, 3>{
+        std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f};
+    expect(!registry.update_circle_object(awl::WorldMapCollisionList::First,
+                                           103, invalid_pose, moved_heading,
+                                           true) &&
+               !registry.update_circle_object(awl::WorldMapCollisionList::First,
+                                              101, moved_position,
+                                              moved_heading, true) &&
+               registry.snapshot().first_resolver[0].center_world ==
+                   moved_position,
+           "invalid pose or non-circle object leaves the first list intact");
+    expect(registry.update_circle_object(awl::WorldMapCollisionList::First,
+                                         103, moved_position, moved_heading,
+                                         false) &&
+               !registry.snapshot().first_resolver[0].enabled,
+           "inactive circle remains linked in the first list");
+    const auto inactive_snapshot = registry.snapshot();
+    awl::CollisionDynamicPassAdjustment inactive_contact;
+    const std::array<float, 3> prior{8.0f, 7.0f, 2.0f};
+    const std::array<float, 3> proposal{8.0f, 7.0f, 1.0f};
+    expect(awl::resolve_type1_first_dynamic_object_pass(
+               inactive_snapshot.first_resolver.data(),
+               inactive_snapshot.first_resolver.size(), 999, 1, prior,
+               proposal, 0.3f, 4u, 0x67u, &inactive_contact) &&
+               !inactive_contact.contact &&
+               inactive_contact.position == proposal,
+           "inactive linked circle does not produce contact");
+    expect(registry.unregister_object(103) &&
+               registry.snapshot().first_resolver.size() == 2 &&
+               registry.snapshot().first_resolver[0].identity == 102,
+           "actor destruction unlinks the inactive circle");
     scene.conditional_b.reset();
     scene.conditional_a.reset();
     scene.category1_actor.collision.identity = 104;

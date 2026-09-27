@@ -48,6 +48,14 @@ public:
     [[nodiscard]] bool register_object(
         WorldMapCollisionList list,
         const WorldMapRegisteredCollisionObject& object);
+    // Refreshes a linked circle's virtual position/heading/active views
+    // without moving its node. Callers supply the live owner fields and
+    // take a new snapshot for later queries. Type-1 objects use a different
+    // world-center transform and are rejected here.
+    [[nodiscard]] bool update_circle_object(
+        WorldMapCollisionList list, uint64_t identity,
+        const std::array<float, 3>& world_position,
+        const std::array<float, 3>& heading_axis, bool enabled);
     [[nodiscard]] bool unregister_object(uint64_t identity);
     void clear(WorldMapCollisionList list);
     [[nodiscard]] size_t size(WorldMapCollisionList list) const;
