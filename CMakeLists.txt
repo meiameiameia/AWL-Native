@@ -24,6 +24,7 @@ set(SOURCES
     src/world_map_movement.cpp
     src/world_map_scene_index.cpp
     src/world_map_collision_registry.cpp
+    src/world_map_actor_step.cpp
     src/world_map_collision_assets.cpp
     src/world_map_collision_records.cpp
     src/collision_asset.cpp
@@ -48,6 +49,7 @@ set(HEADERS
     include/awl/world_map_movement.h
     include/awl/world_map_scene_index.h
     include/awl/world_map_collision_registry.h
+    include/awl/world_map_actor_step.h
     include/awl/world_map_collision_assets.h
     include/awl/world_map_collision_records.h
     include/awl/collision_asset.h
@@ -197,6 +199,7 @@ add_executable(collision_asset_tests
     src/world_map_movement.cpp
     src/world_map_scene_index.cpp
     src/world_map_collision_registry.cpp
+    src/world_map_actor_step.cpp
     src/world_map_collision_assets.cpp
     src/world_map_collision_records.cpp
     src/filesystem.cpp

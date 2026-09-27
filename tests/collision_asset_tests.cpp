@@ -1,6 +1,7 @@
 #include "awl/collision_asset.h"
 #include "awl/world_map_contact.h"
 #include "awl/world_map_collision_registry.h"
+#include "awl/world_map_actor_step.h"
 #include "awl/world_map_movement.h"
 #include "awl/world_map_scene_index.h"
 #include "awl/world_map_collision_assets.h"
@@ -2403,6 +2404,117 @@ void test_world_map_scene_first_collision_registration() {
            "invalid scene height and missing registry are rejected");
 }
 
+void test_world_map_first_actor_step() {
+    awl::WorldMapFirstActorStepState state;
+    state.base_constructor_id = 0x3d;
+    state.moving = true;
+    state.timer = 17;
+    state.proposal = {2.0f, 7.0f, 2.0f};
+    state.target = {3.0f, 7.0f, 2.0f};
+    state.heading = {1.0f, 0.0f, 0.0f};
+
+    awl::WorldMapFirstActorStepProposal proposed;
+    bool speeds_match = true;
+    for (const int32_t id : {0x3d, 0x3e, 0x3f, 0x40, 0x41}) {
+        state.base_constructor_id = id;
+        speeds_match = speeds_match &&
+            awl::propose_world_map_first_actor_step(state, &proposed) &&
+            proposed.collision_required && !proposed.target_reached &&
+            proposed.state.moving && proposed.state.timer == 17 &&
+            std::fabs(proposed.state.proposal[0] - 2.065f) < 0.000001f &&
+            proposed.state.proposal[1] == 7.0f &&
+            proposed.state.proposal[2] == 2.0f;
+    }
+    expect(speeds_match,
+           "all five selected actor constructor IDs use the verified step speed");
+
+    state.selector_d4 = 2;
+    state.selector_d8 = 2;
+    expect(awl::propose_world_map_first_actor_step(state, &proposed) &&
+               std::fabs(proposed.state.proposal[0] - 2.0975f) < 0.000001f,
+           "the paired selector state multiplies the step by 1.5");
+    state.selector_d8 = 1;
+    state.target = {2.01f, 7.0f, 2.0f};
+    expect(awl::propose_world_map_first_actor_step(state, &proposed) &&
+               proposed.collision_required && proposed.target_reached &&
+               !proposed.state.moving && proposed.state.timer == 0 &&
+               proposed.state.proposal == state.proposal,
+           "reaching the target clears movement but still requires collision");
+    const auto reached = proposed;
+    state.target = {2.0f, 7.07f, 2.0f};
+    expect(awl::propose_world_map_first_actor_step(state, &proposed) &&
+               !proposed.target_reached && proposed.state.moving,
+           "target distance includes Y even though contact stopping compares XZ");
+
+    state.target = {3.0f, 7.0f, 2.0f};
+    expect(awl::propose_world_map_first_actor_step(state, &proposed),
+           "active proposal can be passed to the supplied collision stage");
+    auto terrain = make_sample_leaf();
+    constexpr uint32_t vertices = 8 + 0x34 + 8;
+    for (uint32_t vertex = 0; vertex < 3; ++vertex) {
+        put_be_s16(terrain, vertices + vertex * 8 + 2, 6);
+    }
+    awl::WorldMapFirstActorStepResult finished;
+    expect(awl::finalize_world_map_first_actor_step(
+               reached, reached.state.proposal, terrain.data(),
+               terrain.size(), &finished) &&
+               !finished.state.moving && finished.state.timer == 0 &&
+               finished.state.proposal[1] == 6.0f,
+           "target-reached branch still resamples the terrain height");
+    expect(awl::finalize_world_map_first_actor_step(
+               proposed, proposed.state.proposal, terrain.data(),
+               terrain.size(), &finished) &&
+               !finished.collision_altered_horizontal &&
+               finished.state.moving && finished.state.timer == 17 &&
+               finished.state.proposal[1] == 6.0f,
+           "unchanged collision XZ keeps motion and resamples terrain Y");
+    auto adjusted = proposed.state.proposal;
+    adjusted[0] += 0.1f;
+    expect(awl::finalize_world_map_first_actor_step(
+               proposed, adjusted, terrain.data(), terrain.size(),
+               &finished) &&
+               finished.collision_altered_horizontal &&
+               !finished.state.moving && finished.state.timer == 0 &&
+               finished.state.proposal[0] == adjusted[0] &&
+               finished.state.proposal[1] == 6.0f,
+           "horizontal collision change stops motion after terrain resampling");
+
+    const auto prior = finished;
+    expect(!awl::finalize_world_map_first_actor_step(
+               proposed, adjusted, nullptr, 0, &finished) &&
+               finished.state.proposal == prior.state.proposal &&
+               finished.state.timer == prior.state.timer &&
+               !awl::finalize_world_map_first_actor_step(
+                   proposed,
+                   {std::numeric_limits<float>::quiet_NaN(), 7.0f, 2.0f},
+                   terrain.data(), terrain.size(), &finished) &&
+               finished.state.proposal == prior.state.proposal &&
+               !awl::finalize_world_map_first_actor_step(
+                   proposed, adjusted, terrain.data(), terrain.size(),
+                   nullptr),
+           "missing terrain, invalid collision, or output rejects atomically");
+    state.base_constructor_id = 0x42;
+    const auto prior_proposal = proposed;
+    expect(!awl::propose_world_map_first_actor_step(state, &proposed) &&
+               proposed.state.proposal == prior_proposal.state.proposal &&
+               proposed.state.timer == prior_proposal.state.timer,
+           "unsupported constructor ID leaves the proposal unchanged");
+    state.base_constructor_id = 0x3d;
+    state.target[0] = std::numeric_limits<float>::quiet_NaN();
+    expect(!awl::propose_world_map_first_actor_step(state, &proposed) &&
+               proposed.state.proposal == prior_proposal.state.proposal &&
+               !awl::propose_world_map_first_actor_step(state, nullptr),
+           "invalid target and missing output reject atomically");
+    state.moving = false;
+    expect(awl::propose_world_map_first_actor_step(state, &proposed) &&
+               !proposed.collision_required &&
+               awl::finalize_world_map_first_actor_step(
+                   proposed, {}, nullptr, 0, &finished) &&
+               !finished.state.moving && finished.state.timer == state.timer &&
+               finished.state.proposal == state.proposal,
+           "inactive moving branch preserves actor state without terrain access");
+}
+
 void test_world_map_fixed_collision_registration() {
     const auto keys = awl::world_map_fixed_collision_record_keys();
     constexpr std::array<uint32_t, 25> expected_indices{
@@ -3399,6 +3511,27 @@ bool inspect_local_catalog(const char* disc_root) {
                         valid = center[0] == seed_xz[draw][0] &&
                                 std::isfinite(center[1]) &&
                                 center[2] == seed_xz[draw][1];
+                        awl::WorldMapFirstActorStepState actor;
+                        actor.base_constructor_id =
+                            awl::world_map_first_actor_selection(draw)
+                                .base_constructor_id;
+                        actor.moving = true;
+                        actor.timer = 1;
+                        actor.proposal = center;
+                        actor.target = {center[0] + 1.0f, center[1], center[2]};
+                        actor.heading = {1.0f, 0.0f, 0.0f};
+                        awl::WorldMapFirstActorStepProposal step;
+                        awl::WorldMapFirstActorStepResult finished;
+                        valid = valid &&
+                            awl::propose_world_map_first_actor_step(
+                                actor, &step) &&
+                            awl::finalize_world_map_first_actor_step(
+                                step, step.state.proposal,
+                                assets.terrain_bytes().data(),
+                                assets.terrain_bytes().size(), &finished) &&
+                            finished.state.moving &&
+                            finished.state.proposal[0] > center[0] &&
+                            std::isfinite(finished.state.proposal[1]);
                         std::printf("COL terrain %d actor ID 0x%02X spawn probe: y=%.3f\n",
                                     alternate, scene.category1_actor_id,
                                     center[1]);
@@ -3464,6 +3597,7 @@ int main(int argc, char** argv) {
     test_world_map_scene_bucket_registry();
     test_world_map_collision_mode_flags();
     test_world_map_scene_first_collision_registration();
+    test_world_map_first_actor_step();
     test_world_map_fixed_collision_registration();
     test_world_map_collision_registry();
     test_radius_vertex_adjustment();
