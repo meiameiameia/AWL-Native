@@ -1449,7 +1449,13 @@ bool RenderContext::render() {
         XMVECTOR eye = XMVectorSet(cam_eye_[0], cam_eye_[1], cam_eye_[2], 0.0f);
         XMVECTOR at = XMVectorSet(cam_at_[0], cam_at_[1], cam_at_[2], 0.0f);
         XMVECTOR up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
-        XMMATRIX view = XMMatrixLookAtLH(eye, at, up);
+        // The fixed movement rehearsal camera views the verified -Z route.
+        // Its screen-right axis must agree with the translated +X stick path.
+        // Keep the existing diagnostic camera unchanged for other modes.
+        const bool development_camera = development_marker_vb_ != nullptr;
+        XMMATRIX view = development_camera
+            ? XMMatrixLookAtRH(eye, at, up)
+            : XMMatrixLookAtLH(eye, at, up);
         
         RECT rect;
         GetClientRect(hwnd_, &rect);
@@ -1460,7 +1466,9 @@ bool RenderContext::render() {
         float fov = XM_PIDIV4;
         float near_plane = 0.1f;
         float far_plane = 10000.0f;
-        XMMATRIX proj = XMMatrixPerspectiveFovLH(fov, aspect, near_plane, far_plane); // High far plane for terrain bounds
+        XMMATRIX proj = development_camera
+            ? XMMatrixPerspectiveFovRH(fov, aspect, near_plane, far_plane)
+            : XMMatrixPerspectiveFovLH(fov, aspect, near_plane, far_plane); // High far plane for terrain bounds
         XMMATRIX view_proj = XMMatrixMultiply(view, proj);
         
         if (frame_count == 0) {

@@ -713,6 +713,7 @@ int main(int argc, char** argv)
         AWL_LOG_INFO("Development movement rehearsal: temporary green marker at (%.3f, %.3f, %.3f); D moves across the X=125 seam.",
                      rehearsal_position[0], rehearsal_position[1],
                      rehearsal_position[2]);
+        AWL_LOG_INFO("Development camera maps the traced +X D direction to screen right.");
         AWL_LOG_INFO("This fixture uses scene type 0, phase 0 terrain and empty dynamic collision lists; it is not accepted gameplay movement.");
     }
 
