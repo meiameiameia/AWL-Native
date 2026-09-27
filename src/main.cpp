@@ -714,7 +714,11 @@ int main(int argc, char** argv)
         constexpr float spawn_x = 120.0f;
         constexpr float spawn_z = 168.0f;
         awl::CollisionSurfaceSample spawn_surface;
-        if (!rehearsal_assets.load_from_source_state({0u, 0u})) {
+        uint32_t rehearsal_counter = 0;
+        if (!awl::compose_world_map_collision_counter(
+                {0u, 0u, {}}, &rehearsal_counter) ||
+            !rehearsal_assets.load_from_source_state(
+                {rehearsal_counter, 0u})) {
             AWL_LOG_ERROR("Movement rehearsal could not load its verified collision assets.");
             exit_code = 1;
             goto shutdown;

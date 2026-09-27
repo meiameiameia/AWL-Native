@@ -13,6 +13,7 @@
 #include "awl/filesystem.h"
 #include "awl/memory.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -3708,6 +3709,43 @@ bool replay_local_player_route(const char* disc_root) {
 
 void test_world_map_collision_asset_provider() {
     constexpr uint32_t unit = 34560000u;
+    constexpr std::array<uint32_t, 7> prefix_units{
+        0u, 1u, 3u, 6u, 8u, 9u, 10u};
+    for (uint32_t prefix = 0; prefix < prefix_units.size(); ++prefix) {
+        uint32_t counter = 0;
+        awl::WorldMapCollisionSelection from_counter;
+        expect(awl::compose_world_map_collision_counter(
+                   {prefix, 0u, {}}, &counter) &&
+                   counter == prefix_units[prefix] * unit &&
+                   awl::derive_world_map_collision_selection(
+                       {counter, 0u}, &from_counter) &&
+                   from_counter.phase_index == std::min(prefix, 5u),
+               "DOL table-prefix counter selects its bounded phase");
+    }
+    uint32_t composed = 0;
+    expect(awl::compose_world_map_collision_counter(
+               {0u, 0u, {1u, 1u, 1u, 1u, 1u}}, &composed) &&
+               composed == 9540610u,
+           "counter subunit weights match the five DOL multipliers");
+    expect(awl::compose_world_map_collision_counter(
+               {0u, 0u, {0u, 0u, 5u, 0u, 0u}}, &composed) &&
+               composed == 180000u &&
+               awl::compose_world_map_collision_counter(
+                   {0u, 1u, {}}, &composed) && composed == unit &&
+               awl::compose_world_map_collision_counter(
+                   {0u, 0u, {4u, 0u, 0u, 0u, 0u}}, &composed) &&
+               composed == unit,
+           "initial finer value and a full-unit carry retain raw word semantics");
+    expect(awl::compose_world_map_collision_counter(
+               {0u, std::numeric_limits<uint32_t>::max(), {}}, &composed) &&
+               composed == 0u - unit,
+           "counter composition keeps the target's 32-bit wrap");
+    composed = 123u;
+    expect(!awl::compose_world_map_collision_counter(
+               {7u, 0u, {}}, &composed) && composed == 0u &&
+               !awl::compose_world_map_collision_counter(
+                   {0u, 0u, {}}, nullptr),
+           "unverified table prefix and null counter output are rejected");
     struct PhaseCase {
         uint32_t counter;
         uint32_t phase;
@@ -4282,22 +4320,39 @@ bool inspect_local_catalog(const char* disc_root) {
                         pools.record_count(1));
         }
     }
-    constexpr std::array<uint32_t, 6> phase_starts{0u, 1u, 3u, 6u, 8u, 9u};
     for (uint32_t phase = 0; valid && phase < 6; ++phase) {
         for (int alternate = 0; alternate < 2; ++alternate) {
             awl::WorldMapCollisionAssets assets;
-            const awl::WorldMapCollisionSourceState source{
-                phase_starts[phase] * 34560000u,
-                static_cast<uint8_t>(alternate)};
+            uint32_t counter = 0;
             awl::WorldMapCollisionSelection selected;
-            valid = awl::derive_world_map_collision_selection(
-                        source, &selected) &&
+            valid = awl::compose_world_map_collision_counter(
+                        {phase, 0u, {}}, &counter);
+            const awl::WorldMapCollisionSourceState derived_source{
+                counter, static_cast<uint8_t>(alternate)};
+            valid = valid && awl::derive_world_map_collision_selection(
+                        derived_source, &selected) &&
                     selected.phase_index == phase &&
                     selected.alternate_terrain == (alternate != 0) &&
-                    assets.load_from_source_state(source) &&
+                    assets.load_from_source_state(derived_source) &&
                     std::strcmp(assets.paths().terrain,
                                 alternate != 0 ? "/files/jimen1-move.col"
                                                : "/files/jimen-move.col") == 0;
+            awl::WorldMapRoomCollisionState room_state;
+            room_state.phase_index = selected.phase_index;
+            awl::WorldMapRoomCollisionSelection room_selection;
+            awl::WorldMapRoomConditionInputs condition_inputs;
+            condition_inputs.phase_index = selected.phase_index;
+            awl::WorldMapRoomStaticConditions conditions;
+            valid = valid &&
+                    awl::select_world_map_room_collision_record(
+                        40u, room_state, &room_selection) ==
+                        awl::WorldMapRoomCollisionStatus::Found &&
+                    room_selection.remapped_id ==
+                        (phase == 0 ? 40u : 0x4cu + phase) &&
+                    awl::evaluate_world_map_room_static_conditions(
+                        condition_inputs, &conditions) &&
+                    conditions[2] == (phase == 0) &&
+                    conditions[3] == (phase == 0);
             if (!valid) {
                 std::fprintf(stderr, "COL catalog failed at phase %u terrain %d\n",
                              phase, alternate);

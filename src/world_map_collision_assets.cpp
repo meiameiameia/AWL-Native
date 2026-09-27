@@ -10,6 +10,9 @@ namespace awl {
 
 namespace {
 
+constexpr std::array<uint32_t, 6> kPhaseTable{1u, 2u, 3u, 2u, 1u, 1u};
+constexpr uint32_t kCounterUnit = 34560000u;
+
 bool read_supported_col(const char* path,
                         uint8_t required_header_byte_6,
                         std::vector<uint8_t>* bytes,
@@ -37,6 +40,30 @@ bool read_supported_col(const char* path,
 
 } // namespace
 
+bool compose_world_map_collision_counter(
+    const WorldMapCollisionCounterComponents& components,
+    uint32_t* counter_word) {
+    if (counter_word != nullptr) {
+        *counter_word = 0;
+    }
+    if (counter_word == nullptr ||
+        components.table_prefix_count > kPhaseTable.size()) {
+        return false;
+    }
+    uint32_t table_units = components.table_units;
+    for (uint32_t index = 0; index < components.table_prefix_count; ++index) {
+        table_units += kPhaseTable[index];
+    }
+    constexpr std::array<uint32_t, 5> kSubunitWeights{
+        8640000u, 864000u, 36000u, 600u, 10u};
+    uint32_t raw = table_units * kCounterUnit;
+    for (size_t index = 0; index < kSubunitWeights.size(); ++index) {
+        raw += components.subunits[index] * kSubunitWeights[index];
+    }
+    *counter_word = raw;
+    return true;
+}
+
 bool derive_world_map_collision_selection(
     const WorldMapCollisionSourceState& source,
     WorldMapCollisionSelection* selection) {
@@ -48,10 +75,9 @@ bool derive_world_map_collision_selection(
     }
     // FUN_8000FFB0's unsigned division, followed by FUN_8000FEE8's
     // six ordered unsigned subtract-and-compare thresholds at 0x8023DF70.
-    uint32_t remaining = source.phase_counter_word / 34560000u;
-    constexpr std::array<uint32_t, 6> thresholds{1u, 2u, 3u, 2u, 1u, 1u};
+    uint32_t remaining = source.phase_counter_word / kCounterUnit;
     uint32_t phase = 0;
-    for (const uint32_t threshold : thresholds) {
+    for (const uint32_t threshold : kPhaseTable) {
         if (remaining < threshold) {
             break;
         }

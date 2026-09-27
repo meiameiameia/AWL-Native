@@ -2,6 +2,7 @@
 
 #include "awl/collision_asset.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -19,6 +20,22 @@ struct WorldMapCollisionSourceState {
     uint32_t phase_counter_word = 0;
     uint8_t terrain_variant_byte = 0;
 };
+
+// FUN_8000FE1C's inputs before it writes the raw counter word. The first
+// field selects a prefix of the six DOL table words at 0x8023DF70; the
+// remaining fields are raw quantities, without inferred gameplay names.
+struct WorldMapCollisionCounterComponents {
+    uint32_t table_prefix_count = 0;
+    uint32_t table_units = 0;
+    std::array<uint32_t, 5> subunits{};
+};
+
+// FUN_8000FEB4 -> FUN_8000FE1C. Arithmetic wraps to the DOL's 32-bit word.
+// Prefix counts above the six verified table entries are unsupported.
+// Failure clears the output.
+[[nodiscard]] bool compose_world_map_collision_counter(
+    const WorldMapCollisionCounterComponents& components,
+    uint32_t* counter_word);
 
 struct WorldMapCollisionSelection {
     uint32_t phase_index = 0;
