@@ -241,6 +241,7 @@ struct CollisionCategory1MovementAdjustment {
     bool* may_contact);
 
 // Isolates type-1 +0x20 (FUN_80194008) after a dynamic contact's edge pass.
+// The type-1 contact path supports validated header-byte-6 values 0 and 1.
 // It filters triangles by surface mask, then tests all their vertices without
 // the terrain radius pass's incident-edge-bit restriction. It does not run the
 // containing-triangle check, edge pass, or repeated contact resolver.
@@ -253,6 +254,7 @@ struct CollisionCategory1MovementAdjustment {
     CollisionRadiusVertexAdjustment* adjustment);
 
 // Isolates type-1 +0x1C (FUN_80196D88) before the dynamic vertex pass.
+// The type-1 contact path supports validated header-byte-6 values 0 and 1.
 // Eligible triangles contribute all three edges, regardless of edge bits.
 // This does not run the containing-triangle check or repeated resolver.
 [[nodiscard]] bool adjust_type1_dynamic_contact_edge(

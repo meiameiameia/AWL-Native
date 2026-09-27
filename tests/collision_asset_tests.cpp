@@ -583,11 +583,17 @@ void test_dynamic_contact_vertex_adjustment() {
            "equal-distance vertices keep the first serialized vertex");
 
     bytes[6] = 0;
+    expect(awl::adjust_type1_dynamic_contact_vertex(
+               bytes.data(), bytes.size(), query, 1.0f, 0x40u,
+               &adjustment) && adjustment.contact &&
+               std::fabs(adjustment.position[0] - 1.01f) < 0.0001f,
+           "type-1 mode zero keeps the dynamic vertex response");
+    bytes[6] = 2;
     expect(!awl::adjust_type1_dynamic_contact_vertex(
                bytes.data(), bytes.size(), query, 1.0f, 0x40u,
                &adjustment) && !adjustment.contact &&
                adjustment.position == std::array<float, 3>{},
-           "unsupported collision mode rejects and clears dynamic vertex output");
+           "unverified dynamic vertex mode is rejected and clears output");
     bytes[6] = 1;
     expect(!awl::adjust_type1_dynamic_contact_vertex(
                bytes.data(), bytes.size(), query, -1.0f, 0x40u,
@@ -645,11 +651,17 @@ void test_dynamic_contact_edge_adjustment() {
            "dynamic edge contact is strict at the radius boundary");
 
     bytes[6] = 0;
+    expect(awl::adjust_type1_dynamic_contact_edge(
+               bytes.data(), bytes.size(), prior, proposed, 1.0f, 0x40u,
+               &adjustment) && adjustment.contact &&
+               std::fabs(adjustment.position[2] + 1.01f) < 0.0001f,
+           "type-1 mode zero keeps the dynamic edge response");
+    bytes[6] = 2;
     expect(!awl::adjust_type1_dynamic_contact_edge(
                bytes.data(), bytes.size(), prior, proposed, 1.0f, 0x40u,
                &adjustment) && !adjustment.contact &&
                adjustment.position == std::array<float, 3>{},
-           "unsupported collision mode rejects and clears dynamic edge output");
+           "unverified dynamic edge mode is rejected and clears output");
     bytes[6] = 1;
     expect(!awl::adjust_type1_dynamic_contact_edge(
                bytes.data(), bytes.size(), prior, proposed, -1.0f, 0x40u,
@@ -731,11 +743,19 @@ void test_dynamic_contact_narrow_phase() {
                std::fabs(adjustment.position[2] - 8.99f) < 0.0001f,
            "dynamic response keeps its selected leaf after crossing a boundary");
     bytes[6] = 0;
+    expect(awl::resolve_type1_dynamic_contact_narrow_phase(
+               bytes.data(), bytes.size(), {15.0f, 7.0f, 9.0f},
+               {15.0f, 7.0f, 10.5f}, 1.0f, 0x20u, 0u,
+               &adjustment) && adjustment.contact &&
+               adjustment.pass_count == 2 &&
+               std::fabs(adjustment.position[2] - 8.99f) < 0.0001f,
+           "type-1 mode zero keeps the pinned-leaf narrow-phase response");
+    bytes[6] = 2;
     expect(!awl::resolve_type1_dynamic_contact_narrow_phase(
                bytes.data(), bytes.size(), prior, proposed, 1.0f,
                0x20u, 0u, &adjustment) && !adjustment.contact &&
                adjustment.position == std::array<float, 3>{},
-           "unsupported dynamic collision mode rejects and clears output");
+           "unverified dynamic narrow-phase mode is rejected");
     bytes[6] = 1;
     expect(!awl::resolve_type1_dynamic_contact_narrow_phase(
                bytes.data(), bytes.size(), prior, proposed, -1.0f,
@@ -831,11 +851,18 @@ void test_dynamic_object_contact() {
                adjustment.position == std::array<float, 3>{},
            "nonfinite output transform is rejected and clears output");
     query.object_to_world = identity;
+    query.world_to_object = identity;
     bytes[6] = 0;
+    expect(awl::resolve_type1_dynamic_object_contact(
+               bytes.data(), bytes.size(), query, prior, proposed,
+               &adjustment) && adjustment.contact &&
+               std::fabs(adjustment.position[2] + 1.01f) < 0.0001f,
+           "type-1 mode zero supports the transformed object response");
+    bytes[6] = 2;
     expect(!awl::resolve_type1_dynamic_object_contact(
                bytes.data(), bytes.size(), query, prior, proposed,
                &adjustment),
-           "unsupported object collision mode is rejected");
+           "unverified object collision mode is rejected");
     bytes[6] = 1;
     expect(!awl::resolve_type1_dynamic_object_contact(
                bytes.data(), bytes.size(), query, prior, proposed,
@@ -1106,14 +1133,23 @@ void test_category1_static_and_movement_candidate() {
                nullptr, terrain.size(), flags, 0x67u, prior, proposed,
                0.3f, 0u, &static_result),
            "nonempty missing static asset is rejected");
-    std::vector<uint8_t> unsupported_static = terrain;
-    unsupported_static[6] = 0;
+    std::vector<uint8_t> mode_zero_static = terrain;
+    mode_zero_static[6] = 0;
+    expect(awl::resolve_type1_category1_static_contact(
+               mode_zero_static.data(), mode_zero_static.size(),
+               flags, 0x67u, prior, proposed, 0.3f, 4u,
+               &static_result) && static_result.slot_present &&
+               !static_result.contact &&
+               static_result.narrow_phase.used_containment_shortcut &&
+               static_result.position == proposed,
+           "slot-two mode zero uses the type-1 containment path");
+    mode_zero_static[6] = 2;
     expect(!awl::resolve_type1_category1_static_contact(
-               unsupported_static.data(), unsupported_static.size(),
-               flags, 0x67u, prior, proposed, 0.3f, 0u,
+               mode_zero_static.data(), mode_zero_static.size(),
+               flags, 0x67u, prior, proposed, 0.3f, 4u,
                &static_result) &&
                static_result.position == std::array<float, 3>{},
-           "unsupported slot-two collision mode is rejected");
+           "unverified slot-two mode is rejected");
 
     awl::CollisionCategory1MovementQuery query;
     query.terrain_data = terrain.data();
@@ -1179,6 +1215,19 @@ void test_category1_static_and_movement_candidate() {
                result.position[2], &final_edge) &&
                std::fabs(result.position[1] - final_edge.position[1]) < 0.0001f,
            "static response outside terrain gets edge-projected final height");
+
+    mode_zero_static[6] = 0;
+    query.static_data = mode_zero_static.data();
+    query.static_size = mode_zero_static.size();
+    expect(awl::resolve_type1_category1_movement_candidate(
+               query, static_prior, static_proposed, &result) &&
+               result.static_contact.contact &&
+               result.resolver_contact_bits == 1u &&
+               result.final_height_resampled &&
+               std::fabs(result.position[2] + 0.31f) < 0.0001f,
+           "mode-zero slot-two wall contact composes and resamples height");
+    query.static_data = terrain.data();
+    query.static_size = terrain.size();
 
     const std::array<float, 3> inside_static_prior{5.0f, 7.0f, 2.0f};
     expect(awl::resolve_type1_category1_movement_candidate(
@@ -1284,11 +1333,17 @@ void test_world_map_directional_contact_search() {
            "no qualifying heading uses the caller's code-seven fallback");
 
     bytes[6] = 0;
+    expect(awl::query_world_map_directional_contact(
+               &object, 1, 1, prior, proposed, fallback_axis, &result) &&
+               result.matched && result.direction_code == 0 &&
+               result.metadata == 42u,
+           "type-1 mode zero supports the directional contact path");
+    bytes[6] = 2;
     expect(!awl::query_world_map_directional_contact(
                &object, 1, 1, prior, proposed, fallback_axis, &result) &&
                !result.matched && result.world_position ==
                    std::array<float, 3>{},
-           "unsupported contact COL mode rejects the search");
+           "unverified directional-contact mode is rejected");
     bytes[6] = 1;
     expect(!awl::query_world_map_directional_contact(
                nullptr, 1, 1, prior, proposed, fallback_axis, &result),
@@ -2196,10 +2251,12 @@ void test_world_map_collision_asset_provider() {
                    assets.static_analysis().header_byte_6 == 0,
                "provider owns and binds both validated collision assets");
         awl::CollisionCategory1MovementAdjustment result;
-        expect(!awl::resolve_type1_category1_movement_candidate(
+        expect(awl::resolve_type1_category1_movement_candidate(
                    query, {2.0f, 7.0f, 2.0f}, {2.0f, 50.0f, 2.0f},
-                   &result),
-               "bound static mode zero remains explicitly unsupported");
+                   &result) && result.static_contact.slot_present &&
+                   !result.static_contact.contact &&
+                   result.position == std::array<float, 3>{2.0f, 6.0f, 2.0f},
+               "bound mode-zero static data yields a clear full candidate");
         expect(!assets.bind(nullptr), "null query binding is rejected");
 
         fs::remove(static_path, error);
@@ -2246,11 +2303,32 @@ bool inspect_local_catalog(const char* disc_root) {
                              phase, alternate);
                 break;
             }
-            std::printf("COL phase %u terrain %d: %s (%zu bytes), %s (%zu bytes)\n",
+            awl::CollisionSurfaceSample surface;
+            awl::CollisionCategory1MovementQuery query;
+            query.moving_radius = 0.3f;
+            awl::CollisionCategory1MovementAdjustment result;
+            const bool sampled = awl::sample_type1_collision_surface(
+                assets.terrain_bytes().data(), assets.terrain_bytes().size(),
+                120.0f, 168.0f, &surface);
+            valid = sampled && assets.bind(&query) &&
+                awl::resolve_type1_category1_movement_candidate(
+                    query, {120.0f, surface.height, 168.0f},
+                    {120.1f, surface.height, 168.0f}, &result) &&
+                std::isfinite(result.position[0]) &&
+                std::isfinite(result.position[1]) &&
+                std::isfinite(result.position[2]);
+            if (!valid) {
+                std::fprintf(stderr,
+                             "COL movement candidate failed at phase %u terrain %d\n",
+                             phase, alternate);
+                break;
+            }
+            std::printf("COL phase %u terrain %d: %s (%zu bytes), %s (%zu bytes), candidate=(%.3f, %.3f, %.3f)\n",
                         phase, alternate, assets.paths().terrain,
                         assets.terrain_bytes().size(),
                         assets.paths().static_objects,
-                        assets.static_bytes().size());
+                        assets.static_bytes().size(), result.position[0],
+                        result.position[1], result.position[2]);
         }
     }
     awl::filesystem_shutdown();

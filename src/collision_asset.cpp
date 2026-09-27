@@ -679,7 +679,7 @@ bool adjust_type1_dynamic_contact_vertex(
         !std::isfinite(proposed_position[1]) ||
         !std::isfinite(proposed_position[2]) ||
         !analyze_type1_collision_asset(data, size, &analysis) ||
-        analysis.header_byte_6 != 1) {
+        analysis.header_byte_6 > 1) {
         return false;
     }
 
@@ -846,7 +846,7 @@ bool adjust_type1_dynamic_contact_edge(
         !std::isfinite(proposed_position[1]) ||
         !std::isfinite(proposed_position[2]) ||
         !analyze_type1_collision_asset(data, size, &analysis) ||
-        analysis.header_byte_6 != 1) {
+        analysis.header_byte_6 > 1) {
         return false;
     }
 
@@ -964,7 +964,7 @@ bool resolve_type1_dynamic_contact_narrow_phase(
         !std::isfinite(proposed_position[1]) ||
         !std::isfinite(proposed_position[2]) ||
         !analyze_type1_collision_asset(data, size, &analysis) ||
-        analysis.header_byte_6 != 1) {
+        analysis.header_byte_6 > 1) {
         return false;
     }
 
@@ -1055,7 +1055,7 @@ bool resolve_type1_dynamic_object_contact(
     }
     CollisionTreeAnalysis analysis;
     if (!analyze_type1_collision_asset(data, size, &analysis) ||
-        analysis.header_byte_6 != 1) {
+        analysis.header_byte_6 > 1) {
         return false;
     }
 
