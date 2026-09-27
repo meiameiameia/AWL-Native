@@ -37,6 +37,23 @@ struct WorldMapCollisionCounterComponents {
     const WorldMapCollisionCounterComponents& components,
     uint32_t* counter_word);
 
+// Counter portion of FUN_8001307C after its surrounding cleanup calls.
+// Mode 0 advances to the next table boundary, mode 1 resets the current
+// phase to its start, and other modes leave the counter as supplied. The
+// state +0x56C byte blocks this stage. phase_initializer_required means
+// the caller would invoke FUN_80013AE0. No scene or archive work runs here.
+struct WorldMapCollisionPhaseSetup {
+    uint32_t counter_word = 0;
+    uint32_t phase_index = 0;
+    bool blocked = false;
+    bool terminal = false;
+    bool phase_initializer_required = false;
+};
+
+[[nodiscard]] bool plan_world_map_collision_phase_setup(
+    uint32_t counter_word, int32_t setup_mode, bool state_56c,
+    WorldMapCollisionPhaseSetup* setup);
+
 struct WorldMapCollisionSelection {
     uint32_t phase_index = 0;
     bool alternate_terrain = false;

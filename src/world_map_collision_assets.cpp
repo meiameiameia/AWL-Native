@@ -13,6 +13,14 @@ namespace {
 constexpr std::array<uint32_t, 6> kPhaseTable{1u, 2u, 3u, 2u, 1u, 1u};
 constexpr uint32_t kCounterUnit = 34560000u;
 
+uint32_t phase_boundary_counter(uint32_t table_prefix_count) {
+    uint32_t table_units = 0;
+    for (uint32_t index = 0; index < table_prefix_count; ++index) {
+        table_units += kPhaseTable[index];
+    }
+    return table_units * kCounterUnit;
+}
+
 bool read_supported_col(const char* path,
                         uint8_t required_header_byte_6,
                         std::vector<uint8_t>* bytes,
@@ -61,6 +69,48 @@ bool compose_world_map_collision_counter(
         raw += components.subunits[index] * kSubunitWeights[index];
     }
     *counter_word = raw;
+    return true;
+}
+
+bool plan_world_map_collision_phase_setup(
+    uint32_t counter_word, int32_t setup_mode, bool state_56c,
+    WorldMapCollisionPhaseSetup* setup) {
+    if (setup != nullptr) {
+        *setup = {};
+    }
+    if (setup == nullptr) {
+        return false;
+    }
+    WorldMapCollisionPhaseSetup result;
+    result.counter_word = counter_word;
+    WorldMapCollisionSelection selection;
+    if (!derive_world_map_collision_selection({counter_word, 0u}, &selection)) {
+        return false;
+    }
+    result.phase_index = selection.phase_index;
+    if (state_56c) {
+        result.blocked = true;
+        *setup = result;
+        return true;
+    }
+    // FUN_80010528 advances mode 0 to the boundary after the clamped
+    // current phase. FUN_8000FF4C then detects the sixth table boundary.
+    if (setup_mode == 0) {
+        result.counter_word = phase_boundary_counter(result.phase_index + 1u);
+        if (!derive_world_map_collision_selection(
+                {result.counter_word, 0u}, &selection)) {
+            return false;
+        }
+        result.phase_index = selection.phase_index;
+    }
+    result.terminal = result.counter_word / kCounterUnit >= 10u;
+    if (!result.terminal && (setup_mode == 0 || setup_mode == 1)) {
+        // FUN_80013AE0 calls FUN_8000FE1C with the selected phase and
+        // zero finer fields before the scene is constructed.
+        result.counter_word = phase_boundary_counter(result.phase_index);
+        result.phase_initializer_required = true;
+    }
+    *setup = result;
     return true;
 }
 

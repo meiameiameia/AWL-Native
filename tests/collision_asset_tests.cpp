@@ -3746,6 +3746,42 @@ void test_world_map_collision_asset_provider() {
                !awl::compose_world_map_collision_counter(
                    {0u, 0u, {}}, nullptr),
            "unverified table prefix and null counter output are rejected");
+    awl::WorldMapCollisionPhaseSetup setup;
+    expect(awl::plan_world_map_collision_phase_setup(
+               0u, 0, false, &setup) &&
+               setup.counter_word == unit && setup.phase_index == 1u &&
+               setup.phase_initializer_required && !setup.terminal,
+           "mode-zero setup advances to the next phase boundary");
+    expect(awl::plan_world_map_collision_phase_setup(
+               2u * unit + 180000u, 0, false, &setup) &&
+               setup.counter_word == 3u * unit && setup.phase_index == 2u &&
+               setup.phase_initializer_required,
+           "mode-zero setup drops finer fields at the next boundary");
+    expect(awl::plan_world_map_collision_phase_setup(
+               3u * unit + 180000u, 1, false, &setup) &&
+               setup.counter_word == 3u * unit && setup.phase_index == 2u &&
+               setup.phase_initializer_required,
+           "mode-one setup resets the current phase to its start");
+    expect(awl::plan_world_map_collision_phase_setup(
+               3u * unit + 180000u, 2, false, &setup) &&
+               setup.counter_word == 3u * unit + 180000u &&
+               setup.phase_index == 2u && !setup.phase_initializer_required,
+           "other setup modes preserve the supplied counter");
+    expect(awl::plan_world_map_collision_phase_setup(
+               9u * unit, 0, false, &setup) &&
+               setup.counter_word == 10u * unit && setup.terminal &&
+               !setup.phase_initializer_required &&
+               awl::plan_world_map_collision_phase_setup(
+                   10u * unit, 1, false, &setup) && setup.terminal &&
+               !setup.phase_initializer_required,
+           "sixth table boundary exits before scene setup");
+    expect(awl::plan_world_map_collision_phase_setup(
+               0u, 0, true, &setup) && setup.blocked &&
+               setup.counter_word == 0u && !setup.terminal &&
+               !setup.phase_initializer_required &&
+               !awl::plan_world_map_collision_phase_setup(
+                   0u, 0, false, nullptr),
+           "state guard blocks counter stage and null output is rejected");
     struct PhaseCase {
         uint32_t counter;
         uint32_t phase;
@@ -4353,6 +4389,29 @@ bool inspect_local_catalog(const char* disc_root) {
                         condition_inputs, &conditions) &&
                     conditions[2] == (phase == 0) &&
                     conditions[3] == (phase == 0);
+            awl::WorldMapCollisionPhaseSetup same_phase;
+            awl::WorldMapCollisionPhaseSetup next_phase;
+            valid = valid &&
+                    awl::plan_world_map_collision_phase_setup(
+                        counter, 1, false, &same_phase) &&
+                    same_phase.phase_initializer_required &&
+                    same_phase.phase_index == phase &&
+                    same_phase.counter_word == counter &&
+                    awl::plan_world_map_collision_phase_setup(
+                        counter, 0, false, &next_phase);
+            if (valid && phase < 5) {
+                awl::WorldMapCollisionAssets advanced_assets;
+                valid = next_phase.phase_initializer_required &&
+                        !next_phase.terminal &&
+                        next_phase.phase_index == phase + 1u &&
+                        advanced_assets.load_from_source_state(
+                            {next_phase.counter_word,
+                             static_cast<uint8_t>(alternate)}) &&
+                        advanced_assets.paths().terrain != nullptr;
+            } else if (valid) {
+                valid = next_phase.terminal &&
+                        !next_phase.phase_initializer_required;
+            }
             if (!valid) {
                 std::fprintf(stderr, "COL catalog failed at phase %u terrain %d\n",
                              phase, alternate);
