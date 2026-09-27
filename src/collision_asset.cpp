@@ -1509,19 +1509,23 @@ bool resolve_type1_category1_static_contact(
     return true;
 }
 
-bool resolve_type1_category1_movement_candidate(
+namespace {
+
+bool resolve_type1_category1_candidate_with_flags(
     const CollisionCategory1MovementQuery& query,
     const std::array<float, 3>& prior_position,
     const std::array<float, 3>& proposed_position,
+    bool mode2_actor,
     CollisionCategory1MovementAdjustment* adjustment) {
     if (adjustment != nullptr) {
         *adjustment = {};
     }
-    if (adjustment == nullptr) {
+    if (adjustment == nullptr ||
+        (mode2_actor && query.source_identity == 0)) {
         return false;
     }
 
-    constexpr uint32_t movement_resolver_flags = 0x67u;
+    const uint32_t movement_resolver_flags = mode2_actor ? 0x16fu : 0x67u;
     constexpr uint32_t initial_contact_flags = 4u;
     CollisionCategory1MovementAdjustment result;
     if (!resolve_type1_first_dynamic_object_pass(
@@ -1531,9 +1535,18 @@ bool resolve_type1_category1_movement_candidate(
             movement_resolver_flags, &result.first_pass)) {
         return false;
     }
+    result.third_pass.position = result.first_pass.position;
+    if (mode2_actor && !resolve_type1_third_dynamic_object_pass(
+            query.third_objects, query.third_object_count,
+            query.source_identity, 1u, 1, prior_position,
+            result.first_pass.position, query.moving_radius,
+            result.first_pass.contact_flags_after, movement_resolver_flags,
+            &result.third_pass)) {
+        return false;
+    }
     if (!adjust_type1_collision_terrain_with_radius(
             query.terrain_data, query.terrain_size, prior_position,
-            result.first_pass.position, query.moving_radius,
+            result.third_pass.position, query.moving_radius,
             &result.terrain)) {
         return false;
     }
@@ -1554,6 +1567,7 @@ bool resolve_type1_category1_movement_candidate(
 
     result.position = result.later_pass.position;
     result.resolver_contact_bits = result.first_pass.resolver_contact_bit |
+        result.third_pass.resolver_contact_bit |
         (result.terrain.terrain_contact || result.static_contact.contact ?
              1u : 0u) | result.later_pass.resolver_contact_bit;
     if (result.static_contact.contact || result.later_pass.contact) {
@@ -1568,6 +1582,26 @@ bool resolve_type1_category1_movement_candidate(
     }
     *adjustment = result;
     return true;
+}
+
+} // namespace
+
+bool resolve_type1_category1_movement_candidate(
+    const CollisionCategory1MovementQuery& query,
+    const std::array<float, 3>& prior_position,
+    const std::array<float, 3>& proposed_position,
+    CollisionCategory1MovementAdjustment* adjustment) {
+    return resolve_type1_category1_candidate_with_flags(
+        query, prior_position, proposed_position, false, adjustment);
+}
+
+bool resolve_type1_category1_mode2_actor_candidate(
+    const CollisionCategory1MovementQuery& query,
+    const std::array<float, 3>& prior_position,
+    const std::array<float, 3>& proposed_position,
+    CollisionCategory1MovementAdjustment* adjustment) {
+    return resolve_type1_category1_candidate_with_flags(
+        query, prior_position, proposed_position, true, adjustment);
 }
 
 } // namespace awl

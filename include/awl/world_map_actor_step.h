@@ -1,5 +1,7 @@
 #pragma once
 
+#include "awl/collision_asset.h"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -10,7 +12,7 @@ namespace awl {
 // FUN_8015C398. Values come from the caller's actor state; this is not a
 // runtime owner or target-selection implementation.
 struct WorldMapFirstActorStepState {
-    int32_t base_constructor_id = 0;
+    int32_t actor_id = 0;
     int32_t selector_d4 = 0;
     int32_t selector_d8 = 0;
     bool moving = false;
@@ -31,8 +33,15 @@ struct WorldMapFirstActorStepResult {
     bool collision_altered_horizontal = false;
 };
 
-// Isolates FUN_8015C398 through its call to FUN_80152724. For constructor
-// IDs 0x3D..0x41, the verified speed table supplies 1.95, divided by 30.
+struct WorldMapFirstActorResolvedStep {
+    WorldMapFirstActorStepProposal proposed{};
+    CollisionCategory1MovementAdjustment collision{};
+    WorldMapFirstActorStepResult finished{};
+};
+
+// Isolates FUN_8015C398 through its call to FUN_80152724. For actor
+// IDs 0x2C..0x30, the verified speed table supplies an ID-specific value,
+// divided by 30. The remapped base-constructor argument is separate.
 // No target acquisition, heading update, collision, or scene position write
 // occurs here. Failure leaves the output unchanged.
 [[nodiscard]] bool propose_world_map_first_actor_step(
@@ -48,5 +57,14 @@ struct WorldMapFirstActorStepResult {
     const std::array<float, 3>& collision_position,
     const uint8_t* terrain_data, size_t terrain_size,
     WorldMapFirstActorStepResult* result);
+
+// Composes the moving branch with the verified mode-2 category-1 resolver.
+// The caller supplies the actor state, owned assets, and collision-list views;
+// no live actor or scene object is changed. Active actor ID must match the
+// state. An inactive moving branch bypasses collision and terrain.
+[[nodiscard]] bool calculate_world_map_first_actor_step(
+    int32_t actor_id, const WorldMapFirstActorStepState& state,
+    const CollisionCategory1MovementQuery& collision_query,
+    WorldMapFirstActorResolvedStep* result);
 
 } // namespace awl

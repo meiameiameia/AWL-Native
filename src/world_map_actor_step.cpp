@@ -1,8 +1,9 @@
 #include "awl/world_map_actor_step.h"
 
-#include "awl/collision_asset.h"
+#include "awl/world_map_collision_registry.h"
 
 #include <cmath>
+#include <cstring>
 
 namespace awl {
 
@@ -27,18 +28,23 @@ bool propose_world_map_first_actor_step(
         *proposal = next;
         return true;
     }
-    if (state.base_constructor_id < 0x3d ||
-        state.base_constructor_id > 0x41 ||
+    if (state.actor_id < 0x2c || state.actor_id > 0x30 ||
         !finite_position(state.proposal) || !finite_position(state.target) ||
         !finite_position(state.heading)) {
         return false;
     }
 
-    // FUN_801466A4 indexes 0x802C41A8 by constructor ID. All five
-    // selected entries (0x3D..0x41) hold 1.95. FUN_8015C398 divides by
-    // the 30.0 constant at 0x8034B78C, then optionally multiplies by
-    // the 1.5 constant at 0x8034B790.
-    float step = 1.95f / 30.0f;
+    // FUN_801466A4 indexes 0x802C41A8 by actor ID at owner +0x128.
+    // These are the exact five DOL float words at 0x802C4258..0x802C4268.
+    constexpr std::array<uint32_t, 5> speed_bits{
+        0x3f666666u, 0x3fe66666u, 0x3f999999u, 0x3f199999u, 0x3e999999u};
+    const uint32_t bits = speed_bits[static_cast<size_t>(state.actor_id - 0x2c)];
+    float speed = 0.0f;
+    static_assert(sizeof(bits) == sizeof(speed), "DOL speed uses one float word");
+    std::memcpy(&speed, &bits, sizeof(speed));
+    // FUN_8015C398 divides by 30.0 at 0x8034B78C, then optionally
+    // multiplies by 1.5 at 0x8034B790.
+    float step = speed / 30.0f;
     if (state.selector_d4 == 2 && state.selector_d8 == 2) {
         step *= 1.5f;
     }
@@ -95,6 +101,44 @@ bool finalize_world_map_first_actor_step(
     if (next.collision_altered_horizontal) {
         next.state.moving = false;
         next.state.timer = 0;
+    }
+    *result = next;
+    return true;
+}
+
+bool calculate_world_map_first_actor_step(
+    int32_t actor_id, const WorldMapFirstActorStepState& state,
+    const CollisionCategory1MovementQuery& collision_query,
+    WorldMapFirstActorResolvedStep* result) {
+    if (result == nullptr) {
+        return false;
+    }
+    WorldMapFirstActorResolvedStep next;
+    if (!propose_world_map_first_actor_step(state, &next.proposed)) {
+        return false;
+    }
+    if (!next.proposed.collision_required) {
+        if (!finalize_world_map_first_actor_step(
+                next.proposed, {}, nullptr, 0, &next.finished)) {
+            return false;
+        }
+        *result = next;
+        return true;
+    }
+    if (actor_id < 0x2c || actor_id > 0x30 || actor_id != state.actor_id) {
+        return false;
+    }
+
+    CollisionCategory1MovementQuery actor_query = collision_query;
+    actor_query.moving_radius =
+        world_map_first_actor_circle_spec(actor_id).radius;
+    if (!resolve_type1_category1_mode2_actor_candidate(
+            actor_query, state.proposal, next.proposed.state.proposal,
+            &next.collision) ||
+        !finalize_world_map_first_actor_step(
+            next.proposed, next.collision.position, actor_query.terrain_data,
+            actor_query.terrain_size, &next.finished)) {
+        return false;
     }
     *result = next;
     return true;

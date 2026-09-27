@@ -167,6 +167,8 @@ struct CollisionCategory1MovementQuery {
     size_t static_size = 0;
     const CollisionDynamicPassObject* first_objects = nullptr;
     size_t first_object_count = 0;
+    const CollisionDynamicPassObject* third_objects = nullptr;
+    size_t third_object_count = 0;
     const CollisionDynamicPassObject* later_objects = nullptr;
     size_t later_object_count = 0;
     uint64_t source_identity = 0;
@@ -179,6 +181,7 @@ struct CollisionCategory1MovementAdjustment {
     uint32_t resolver_contact_bits = 0;
     bool final_height_resampled = false;
     CollisionDynamicPassAdjustment first_pass{};
+    CollisionDynamicPassAdjustment third_pass{};
     CollisionTerrainRadiusAdjustment terrain{};
     CollisionCategory1StaticAdjustment static_contact{};
     CollisionDynamicPassAdjustment later_pass{};
@@ -363,6 +366,16 @@ struct CollisionCategory1MovementAdjustment {
 // Inputs stand in for runtime asset/list/flag providers. It never updates a
 // player object.
 [[nodiscard]] bool resolve_type1_category1_movement_candidate(
+    const CollisionCategory1MovementQuery& query,
+    const std::array<float, 3>& prior_position,
+    const std::array<float, 3>& proposed_position,
+    CollisionCategory1MovementAdjustment* adjustment);
+
+// Same supported category-1 route for FUN_80152218's mode-2 circle object:
+// first list, third list, terrain, slot-2 static contact, later list. The
+// actor's verified source collision flag is 0x1, so the unsupported third-
+// list source-flag-0x2 branch is excluded. Runtime lists/flags stay supplied.
+[[nodiscard]] bool resolve_type1_category1_mode2_actor_candidate(
     const CollisionCategory1MovementQuery& query,
     const std::array<float, 3>& prior_position,
     const std::array<float, 3>& proposed_position,
