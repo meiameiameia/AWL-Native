@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <utility>
 
@@ -157,6 +158,66 @@ std::array<uint32_t, 14> world_map_room_static_condition_ids() {
         ids[i] = kRoomStaticConditions[i].condition_id;
     }
     return ids;
+}
+
+bool read_world_map_packed_saved_value(
+    const WorldMapPackedSavedValues& values,
+    size_t index,
+    uint32_t* out) {
+    if (out != nullptr) {
+        *out = 0;
+    }
+    if (out == nullptr || values.data == nullptr || values.width_bits == 0 ||
+        values.width_bits > 32 ||
+        index > std::numeric_limits<size_t>::max() / values.width_bits) {
+        return false;
+    }
+    const size_t first_bit = index * values.width_bits;
+    if (first_bit > std::numeric_limits<size_t>::max() -
+                        (values.width_bits - 1)) {
+        return false;
+    }
+    if ((first_bit + values.width_bits - 1) / 8 >= values.size) {
+        return false;
+    }
+    uint32_t result = 0;
+    for (uint32_t bit = 0; bit < values.width_bits; ++bit) {
+        const size_t source_bit = first_bit + bit;
+        result |= static_cast<uint32_t>(
+                      (values.data[source_bit / 8] >> (source_bit % 8)) & 1u)
+                  << bit;
+    }
+    *out = result;
+    return true;
+}
+
+bool decode_world_map_room_saved_conditions(
+    const WorldMapPackedSavedValues& values_120a4,
+    const WorldMapPackedSavedValues& values_14ad4,
+    WorldMapRoomConditionInputs* inputs) {
+    if (inputs == nullptr) {
+        return false;
+    }
+    WorldMapRoomConditionInputs decoded = *inputs;
+    uint32_t value = 0;
+    if (!read_world_map_packed_saved_value(values_120a4, 0x135, &value)) {
+        return false;
+    }
+    decoded.value_120a4_135_nonzero = value != 0;
+    if (!read_world_map_packed_saved_value(values_120a4, 0x170, &value)) {
+        return false;
+    }
+    decoded.value_120a4_170_nonzero = value != 0;
+    constexpr std::array<size_t, 8> kIndexedValues{
+        0, 6, 7, 8, 9, 10, 14, 15};
+    for (size_t index : kIndexedValues) {
+        if (!read_world_map_packed_saved_value(values_14ad4, index, &value)) {
+            return false;
+        }
+        decoded.values_14ad4_nonzero[index] = value != 0;
+    }
+    *inputs = decoded;
+    return true;
 }
 
 bool evaluate_world_map_room_static_conditions(

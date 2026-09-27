@@ -1440,6 +1440,76 @@ void test_category1_static_and_movement_candidate() {
            "invalid moving radius rejects the full candidate");
 }
 
+void test_world_map_packed_saved_conditions() {
+    const std::array<uint8_t, 2> three_bit_values{0xD1, 0x6A};
+    awl::WorldMapPackedSavedValues packed{
+        three_bit_values.data(), three_bit_values.size(), 3};
+    uint32_t value = 99;
+    expect(awl::read_world_map_packed_saved_value(packed, 0, &value) &&
+               value == 1 &&
+               awl::read_world_map_packed_saved_value(packed, 1, &value) &&
+               value == 2 &&
+               awl::read_world_map_packed_saved_value(packed, 2, &value) &&
+               value == 3 &&
+               awl::read_world_map_packed_saved_value(packed, 3, &value) &&
+               value == 5 &&
+               awl::read_world_map_packed_saved_value(packed, 4, &value) &&
+               value == 6,
+           "packed values use low-bit-first order and cross byte boundaries");
+    expect(!awl::read_world_map_packed_saved_value(packed, 5, &value) &&
+               value == 0,
+           "incomplete packed element is rejected and output cleared");
+    packed.width_bits = 33;
+    expect(!awl::read_world_map_packed_saved_value(packed, 0, &value) &&
+               !awl::read_world_map_packed_saved_value(packed, 0, nullptr),
+           "unsupported packed width and null output are rejected");
+    packed.width_bits = 3;
+    expect(!awl::read_world_map_packed_saved_value(
+               packed, std::numeric_limits<size_t>::max(), &value),
+           "packed index arithmetic cannot wrap");
+    const std::array<uint8_t, 4> full_width{0x12, 0x34, 0x56, 0x78};
+    const awl::WorldMapPackedSavedValues full{
+        full_width.data(), full_width.size(), 32};
+    expect(awl::read_world_map_packed_saved_value(full, 0, &value) &&
+               value == 0x78563412u,
+           "a 32-bit packed element preserves its low-bit-first byte order");
+    packed.width_bits = 0;
+    expect(!awl::read_world_map_packed_saved_value(packed, 0, &value),
+           "zero-width packed input is unsupported");
+
+    std::array<uint8_t, 47> later_saved{};
+    later_saved[38] = 0x20; // Index 0x135, bit 5.
+    later_saved[46] = 0x01; // Index 0x170, bit 0.
+    const std::array<uint8_t, 2> room_saved{0xC1, 0xC7};
+    const awl::WorldMapPackedSavedValues later{
+        later_saved.data(), later_saved.size(), 1};
+    const awl::WorldMapPackedSavedValues room{
+        room_saved.data(), room_saved.size(), 1};
+    awl::WorldMapRoomConditionInputs inputs;
+    inputs.phase_index = 2;
+    inputs.state_299a7 = 1;
+    expect(awl::decode_world_map_room_saved_conditions(later, room, &inputs) &&
+               inputs.phase_index == 2 && inputs.state_299a7 == 1 &&
+               inputs.value_120a4_135_nonzero &&
+               inputs.value_120a4_170_nonzero,
+           "saved-condition decoding preserves other caller-supplied state");
+    awl::WorldMapRoomStaticConditions conditions;
+    expect(awl::evaluate_world_map_room_static_conditions(inputs, &conditions) &&
+               conditions == awl::WorldMapRoomStaticConditions{
+                   true, true, true, true, false, true, true,
+                   true, true, true, true, true, true, true},
+           "packed table bits feed all ten traced room predicates");
+    const auto before = inputs;
+    const awl::WorldMapPackedSavedValues short_room{room_saved.data(), 1, 1};
+    expect(!awl::decode_world_map_room_saved_conditions(
+               later, short_room, &inputs) &&
+               inputs.values_14ad4_nonzero == before.values_14ad4_nonzero &&
+               inputs.value_120a4_135_nonzero == before.value_120a4_135_nonzero &&
+               !awl::decode_world_map_room_saved_conditions(later, room,
+                                                             nullptr),
+           "truncated tables fail without partially changing condition inputs");
+}
+
 void test_world_map_room_condition_evaluator() {
     awl::WorldMapRoomConditionInputs inputs;
     awl::WorldMapRoomStaticConditions conditions;
@@ -2868,6 +2938,7 @@ bool inspect_local_catalog(const char* disc_root) {
 int main(int argc, char** argv) {
     test_world_map_collision_archive();
     test_world_map_room_collision_mapping();
+    test_world_map_packed_saved_conditions();
     test_world_map_room_condition_evaluator();
     test_world_map_room_static_stage();
     test_world_map_archive_rejects_untranslated_tree_shape();

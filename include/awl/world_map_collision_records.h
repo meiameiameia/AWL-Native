@@ -60,9 +60,23 @@ using WorldMapRoomStaticConditions = std::array<bool, 14>;
 
 [[nodiscard]] std::array<uint32_t, 14> world_map_room_static_condition_ids();
 
-// Inputs read by FUN_80024EBC for the 14 room-mask conditions. The indexed
-// values are caller-decoded nonzero results of FUN_8018972C; no native owner
-// for the original saved-state tables is established yet.
+// A caller-owned packed-value table read by FUN_8018972C. The DOL stores the
+// element width at +4 and the byte pointer at +0x14; this view adds a length
+// so malformed or incomplete native data can be rejected.
+struct WorldMapPackedSavedValues {
+    const uint8_t* data = nullptr;
+    size_t size = 0;
+    uint32_t width_bits = 0;
+};
+
+[[nodiscard]] bool read_world_map_packed_saved_value(
+    const WorldMapPackedSavedValues& values,
+    size_t index,
+    uint32_t* out);
+
+// Inputs read by FUN_80024EBC for the 14 room-mask conditions. Saved values
+// can be decoded from caller-owned packed tables below; their live owner and
+// update path are not established yet.
 struct WorldMapRoomConditionInputs {
     uint32_t phase_index = 0;
     uint8_t state_299a7 = 0;
@@ -72,6 +86,11 @@ struct WorldMapRoomConditionInputs {
     bool value_120a4_170_nonzero = false;
     std::array<bool, 16> values_14ad4_nonzero{};
 };
+
+[[nodiscard]] bool decode_world_map_room_saved_conditions(
+    const WorldMapPackedSavedValues& values_120a4,
+    const WorldMapPackedSavedValues& values_14ad4,
+    WorldMapRoomConditionInputs* inputs);
 
 [[nodiscard]] bool evaluate_world_map_room_static_conditions(
     const WorldMapRoomConditionInputs& inputs,
