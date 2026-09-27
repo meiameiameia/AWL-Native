@@ -94,29 +94,32 @@ bool choose_world_map_first_actor_action(
         if (!selection.handler_score || selection.handler_target_index < 0) {
             return false;
         }
-        // Both score thresholds at r2-0x66D0/-0x66CF are zero in this DOL.
-        const bool positive_score = *selection.handler_score > 0;
+        // r2=0x80351E40 resolves these two DOL bytes to 60 and 99.
+        const bool above_60 = *selection.handler_score > 60;
+        const bool above_99 = *selection.handler_score > 99;
         if (selection.handler == WorldMapFirstActorHandler::FirstTarget) {
             switch (variant) {
             case 0: route_bda8(); break;
-            case 1: if (positive_score) table_address = 0x80255ddc;
+            case 1: if (above_99) table_address = 0x80255ddc;
                     else route_b460(); break;
-            case 2: if (positive_score) table_address = 0x802559bc;
+            case 2: if (above_99) table_address = 0x802559bc;
                     else route_b460(); break;
             case 3: table_address = current_action == 10 ? 0x80255b3c :
-                        (positive_score ? 0x80255c5c : 0x80255b9c); break;
+                        (above_99 ? 0x80255c5c :
+                         above_60 ? 0x80255bfc : 0x80255b9c); break;
             case 4: table_address = 0x80255efc; break;
             }
         } else if (selection.handler == WorldMapFirstActorHandler::SecondTarget) {
             switch (variant) {
-            case 0: table_address = positive_score ? 0x802561fc : 0x8025613c;
+            case 0: table_address = above_99 ? 0x802561fc :
+                        (above_60 ? 0x8025619c : 0x8025613c);
                     break;
-            case 1: if (positive_score) table_address = 0x80255e3c;
+            case 1: if (above_99) table_address = 0x80255e3c;
                     else route_bda8(); break;
-            case 2: if (positive_score) table_address = 0x802559bc;
+            case 2: if (above_99) table_address = 0x802559bc;
                     else route_bda8(); break;
             case 3: if (current_action == 10) table_address = 0x80255cbc;
-                    else if (positive_score) table_address = 0x80255c5c;
+                    else if (above_99) table_address = 0x80255c5c;
                     else route_b460(); break;
             case 4: table_address = 0x80255f5c; break;
             }

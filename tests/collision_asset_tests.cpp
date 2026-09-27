@@ -4,6 +4,7 @@
 #include "awl/world_map_actor_step.h"
 #include "awl/world_map_actor_target.h"
 #include "awl/world_map_actor_action.h"
+#include "awl/world_map_actor_heading.h"
 #include "awl/world_map_movement.h"
 #include "awl/world_map_scene_index.h"
 #include "awl/world_map_collision_assets.h"
@@ -2824,13 +2825,30 @@ void test_world_map_first_actor_action_choice() {
                selected, 0, 0, std::nullopt, std::nullopt, &chosen) &&
                chosen.route == awl::WorldMapFirstActorActionRoute::Call8015B460,
            "zero score selects the variant-one turn routine");
-    selected.handler_score = 1u;
+    selected.handler_score = 99u;
+    expect(awl::choose_world_map_first_actor_action(
+               selected, 0, 0, std::nullopt, std::nullopt, &chosen) &&
+               chosen.route == awl::WorldMapFirstActorActionRoute::Call8015B460,
+           "score 99 remains on the variant-one turn route");
+    selected.handler_score = 100u;
     expect(awl::choose_world_map_first_actor_action(
                selected, 0, 0, 99u, std::nullopt, &chosen) &&
                chosen.table_address == 0x80255ddcu &&
                chosen.action_code == 5,
-           "positive score selects the variant-one weighted table");
+           "score above 99 selects the variant-one weighted table");
     selected.state.actor_id = 0x2f;
+    selected.handler_score = 61u;
+    expect(awl::choose_world_map_first_actor_action(
+               selected, 0, 0, 99u, std::nullopt, &chosen) &&
+               chosen.table_address == 0x80255bfcu &&
+               chosen.action_code == 9,
+           "variant-three first target uses the middle threshold table");
+    selected.handler_score = 100u;
+    expect(awl::choose_world_map_first_actor_action(
+               selected, 0, 0, 99u, std::nullopt, &chosen) &&
+               chosen.table_address == 0x80255c5cu &&
+               chosen.action_code == 10,
+           "variant-three first target uses the high threshold table");
     expect(awl::choose_world_map_first_actor_action(
                selected, 10, 0, 0u, std::nullopt, &chosen) &&
                chosen.table_address == 0x80255b3cu &&
@@ -2845,12 +2863,22 @@ void test_world_map_first_actor_action_choice() {
                chosen.table_address == 0x8025613cu &&
                chosen.action_code == 8,
            "zero-score second target uses the variant-zero near table");
-    selected.handler_score = 1u;
+    selected.handler_score = 60u;
+    expect(awl::choose_world_map_first_actor_action(
+               selected, 0, 0, 99u, std::nullopt, &chosen) &&
+               chosen.table_address == 0x8025613cu,
+           "score 60 remains on the variant-zero low near table");
+    selected.handler_score = 61u;
+    expect(awl::choose_world_map_first_actor_action(
+               selected, 0, 0, 99u, std::nullopt, &chosen) &&
+               chosen.table_address == 0x8025619cu,
+           "score above 60 selects the variant-zero middle near table");
+    selected.handler_score = 100u;
     expect(awl::choose_world_map_first_actor_action(
                selected, 0, 0, 99u, std::nullopt, &chosen) &&
                chosen.table_address == 0x802561fcu &&
                chosen.action_code == 8,
-           "positive-score second target uses a different source table");
+           "score above 99 selects the variant-zero high near table");
     selected.state.actor_id = 0x2e;
     selected.handler_score = 0u;
     expect(awl::choose_world_map_first_actor_action(
@@ -2878,6 +2906,123 @@ void test_world_map_first_actor_action_choice() {
                !awl::choose_world_map_first_actor_action(
                    selected, 0, 0, 0u, std::nullopt, nullptr),
            "required RNG and output are not invented");
+}
+
+void test_world_map_first_actor_heading() {
+    const auto near = [](float actual, float expected, float tolerance) {
+        return std::fabs(actual - expected) < tolerance;
+    };
+    awl::WorldMapFirstActorHeadingState state;
+    state.actor_id = 0x2c;
+    state.action_code = 0;
+    state.position = {263.0f, 20.0f, 179.0f};
+    state.target = {1.0f, 2.0f, 3.0f};
+    state.heading = {0.0f, 0.0f, -1.0f};
+    state.facing_degrees = 180;
+    state.moving = true;
+    awl::WorldMapFirstActorHeadingResult built;
+    expect(awl::build_world_map_first_actor_heading(
+               state, std::nullopt, &built) &&
+               !built.target_rebuilt && !built.state.moving &&
+               built.previous_facing_degrees == 180 &&
+               built.state.target == state.target &&
+               built.state.heading == state.heading,
+           "nonmoving action copies prior angle and clears moving state");
+
+    state.action_code = 1;
+    expect(awl::build_world_map_first_actor_heading(state, 0u, &built) &&
+               built.target_rebuilt && built.used_random_angle &&
+               built.state.moving &&
+               near(built.state.target[0], 263.0f, 0.001f) &&
+               near(built.state.target[1], 20.0f, 0.001f) &&
+               near(built.state.target[2], 183.0f, 0.001f) &&
+               near(built.state.heading[2], 1.0f, 0.001f) &&
+               built.state.facing_degrees == 0,
+           "variant-zero action one builds a four-unit target at angle zero");
+    awl::WorldMapFirstActorTargetDecision selected;
+    selected.selector_ran = true;
+    selected.handler = awl::WorldMapFirstActorHandler::Idle;
+    selected.state.actor_id = 0x2c;
+    awl::WorldMapFirstActorActionChoice action;
+    expect(awl::choose_world_map_first_actor_action(
+               selected, 0, 0, 11u, std::nullopt, &action) &&
+               action.action_code == 1,
+           "supplied idle decision can choose movement action one");
+    if (action.action_code) {
+        state.action_code = *action.action_code;
+        expect(awl::build_world_map_first_actor_heading(state, 90u, &built) &&
+                   built.target_rebuilt &&
+                   near(built.state.target[0], 267.0f, 0.001f),
+               "selected action one feeds the bounded target and heading path");
+    }
+    state.actor_id = 0x2d;
+    state.position = {277.0f, 20.0f, 218.0f};
+    expect(awl::build_world_map_first_actor_heading(state, 90u, &built) &&
+               near(built.state.target[0], 279.0f, 0.001f) &&
+               near(built.state.target[2], 218.0f, 0.001f) &&
+               near(built.state.heading[0], 1.0f, 0.001f),
+           "variant-one uses its two-unit radius and X-facing rotation");
+    state.actor_id = 0x2e;
+    state.action_code = 2;
+    state.position = {185.0f, 13.0f, 237.0f};
+    expect(awl::build_world_map_first_actor_heading(state, 180u, &built) &&
+               near(built.state.target[2], 234.0f, 0.001f) &&
+               near(built.state.heading[2], -1.0f, 0.001f),
+           "variant-two action two also builds a target");
+    state.actor_id = 0x2f;
+    state.action_code = 1;
+    state.position = {75.0f, 0.0f, 113.5f};
+    expect(awl::build_world_map_first_actor_heading(state, 270u, &built) &&
+               near(built.state.target[0], 74.0f, 0.001f) &&
+               near(built.state.target[2], 113.5f, 0.001f),
+           "variant-three uses its one-unit radius");
+    state.actor_id = 0x30;
+    state.position = {279.0f, 27.0f, 116.0f};
+    expect(awl::build_world_map_first_actor_heading(
+               state, std::nullopt, &built) && !built.target_rebuilt,
+           "variant-four has no target-building action branch");
+
+    state.actor_id = 0x2c;
+    state.position = {263.0f, 20.0f, 159.0f};
+    expect(awl::build_world_map_first_actor_heading(
+               state, std::nullopt, &built) &&
+               built.target_rebuilt && !built.used_random_angle &&
+               near(built.state.target[2], 163.0f, 0.001f) &&
+               built.state.facing_degrees == 0,
+           "outside 15 units target direction points toward the anchor");
+    state.position = {283.0f, 20.0f, 179.0f};
+    expect(awl::build_world_map_first_actor_heading(
+               state, std::nullopt, &built) &&
+               !built.used_random_angle &&
+               near(built.state.target[0], 279.0f, 0.001f) &&
+               near(built.state.heading[0], -1.0f, 0.001f),
+           "far-anchor negative angle wraps to a westward heading");
+    state.position = {263.0f, 36.0f, 179.0f};
+    expect(awl::build_world_map_first_actor_heading(
+               state, std::nullopt, &built) &&
+               !built.used_random_angle &&
+               near(built.state.target[1], 36.0f, 0.001f),
+           "anchor distance includes vertical separation while target keeps Y");
+    state.position = {263.0f, 20.0f, 164.0f};
+    expect(awl::build_world_map_first_actor_heading(state, 180u, &built) &&
+               built.used_random_angle &&
+               near(built.state.target[2], 160.0f, 0.001f),
+           "exactly 15 units uses the random-angle path");
+    const auto prior = built;
+    expect(!awl::build_world_map_first_actor_heading(
+               state, std::nullopt, &built) &&
+               built.state.target == prior.state.target &&
+               built.used_random_angle == prior.used_random_angle,
+           "near-anchor path rejects a missing RNG word atomically");
+    state.position[0] = std::numeric_limits<float>::quiet_NaN();
+    expect(!awl::build_world_map_first_actor_heading(state, 0u, &built),
+           "nonfinite actor position is rejected");
+    state.position[0] = 263.0f;
+    state.actor_id = 0x31;
+    expect(!awl::build_world_map_first_actor_heading(state, 0u, &built) &&
+               !awl::build_world_map_first_actor_heading(
+                   state, 0u, nullptr),
+           "unsupported actor and missing result are rejected");
 }
 
 void test_world_map_fixed_collision_registration() {
@@ -3968,6 +4113,7 @@ int main(int argc, char** argv) {
     test_world_map_first_actor_resolved_step();
     test_world_map_first_actor_target_selection();
     test_world_map_first_actor_action_choice();
+    test_world_map_first_actor_heading();
     test_world_map_fixed_collision_registration();
     test_world_map_collision_registry();
     test_radius_vertex_adjustment();
