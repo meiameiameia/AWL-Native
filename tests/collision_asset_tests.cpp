@@ -8,6 +8,7 @@
 #include "awl/world_map_movement.h"
 #include "awl/world_map_scene_index.h"
 #include "awl/world_map_collision_assets.h"
+#include "awl/development_wall_route.h"
 #include "awl/world_map_collision_records.h"
 #include "awl/filesystem.h"
 #include "awl/memory.h"
@@ -3866,8 +3867,16 @@ void test_world_map_collision_asset_provider() {
     expect(!error, "collision fixture directory is cleaned up");
 }
 
+struct LocalWallProbe {
+    float mid_x = 0.0f;
+    float mid_z = 0.0f;
+    float normal_x = 0.0f;
+    float normal_z = 0.0f;
+};
+
 bool probe_local_static_wall(const awl::WorldMapCollisionAssets& assets,
-                             awl::CollisionCategory1StaticAdjustment* result) {
+                             awl::CollisionCategory1StaticAdjustment* result,
+                             LocalWallProbe* geometry) {
     const auto& bytes = assets.static_bytes();
     const auto& analysis = assets.static_analysis();
     awl::CollisionEdgeSample edge;
@@ -3962,18 +3971,84 @@ bool probe_local_static_wall(const awl::WorldMapCollisionAssets& assets,
         return false;
     }
     awl::CollisionSurfaceSample terrain_surface;
+    bool height_matches = false;
     if (awl::sample_type1_collision_surface(
             assets.terrain_bytes().data(), assets.terrain_bytes().size(),
             composed.position[0], composed.position[2], &terrain_surface)) {
-        return std::fabs(composed.position[1] - terrain_surface.height) <
-               0.0002f;
+        height_matches =
+            std::fabs(composed.position[1] - terrain_surface.height) < 0.0002f;
+    } else {
+        awl::CollisionEdgeSample terrain_edge;
+        height_matches = awl::project_type1_collision_to_edge(
+                             assets.terrain_bytes().data(),
+                             assets.terrain_bytes().size(),
+                             composed.position[0], composed.position[2],
+                             &terrain_edge) &&
+                         std::fabs(composed.position[1] -
+                                   terrain_edge.position[1]) < 0.0002f;
     }
-    awl::CollisionEdgeSample terrain_edge;
-    return awl::project_type1_collision_to_edge(
-               assets.terrain_bytes().data(), assets.terrain_bytes().size(),
-               composed.position[0], composed.position[2], &terrain_edge) &&
-           std::fabs(composed.position[1] - terrain_edge.position[1]) <
-               0.0002f;
+    if (!height_matches) {
+        return false;
+    }
+    if (geometry != nullptr) {
+        *geometry = {mid_x, mid_z, nx, nz};
+    }
+    return true;
+}
+
+bool replay_local_static_wall_route(
+    const awl::WorldMapCollisionAssets& assets,
+    const awl::DevelopmentWallRoute& wall) {
+    std::array<float, 3> position = wall.start;
+    awl::NativeInputAccumulator native;
+    awl::PadAdapter adapter;
+    awl::HsdPadFilter filter;
+    awl::WorldMapSteeringState steering;
+    native.reset(true);
+    native.set_key(awl::NativeKey::D, true);
+    native.set_key(awl::NativeKey::S, true);
+    bool saw_contact = false;
+    bool approached_wall = false;
+    float previous_distance = wall.signed_distance(position);
+    for (int frame = 0; frame < 28; ++frame) {
+        if (frame == 20) {
+            native.set_key(awl::NativeKey::D, false);
+            native.set_key(awl::NativeKey::S, false);
+        }
+        native.begin_frame();
+        adapter.begin_frame(native.frame());
+        filter.begin_frame(adapter.frame().sample);
+        awl::WorldMapMovementQuery query;
+        query.pad = filter.frame();
+        query.current_position = position;
+        query.current_axis = {0.0f, 0.0f, 1.0f};
+        query.steering = steering;
+        if (!assets.bind(&query.collision)) {
+            return false;
+        }
+        awl::WorldMapMovementCandidate candidate;
+        if (!awl::calculate_world_map_movement_candidate(query, &candidate) ||
+            !candidate.movement_enabled ||
+            !std::isfinite(candidate.resolved_position[0]) ||
+            !std::isfinite(candidate.resolved_position[1]) ||
+            !std::isfinite(candidate.resolved_position[2])) {
+            return false;
+        }
+        position = candidate.resolved_position;
+        steering = candidate.steering;
+        const float distance = wall.signed_distance(position);
+        if (!std::isfinite(distance) || distance < 0.309f) {
+            return false;
+        }
+        approached_wall = approached_wall || distance < previous_distance - 0.02f;
+        saw_contact = saw_contact || candidate.collision.static_contact.contact;
+        previous_distance = distance;
+    }
+    std::printf("Local wall route: final distance=%.3f contact=%d approach=%d\n",
+                previous_distance, saw_contact ? 1 : 0,
+                approached_wall ? 1 : 0);
+    return approached_wall && saw_contact &&
+           previous_distance < 0.6f && steering.current_speed == 0.0f;
 }
 
 bool inspect_local_catalog(const char* disc_root) {
@@ -4165,12 +4240,29 @@ bool inspect_local_catalog(const char* disc_root) {
                 }
             }
             awl::CollisionCategory1StaticAdjustment wall;
-            valid = probe_local_static_wall(assets, &wall);
+            LocalWallProbe wall_geometry;
+            valid = probe_local_static_wall(assets, &wall, &wall_geometry);
             if (!valid) {
                 std::fprintf(stderr,
                              "COL static wall probe failed at phase %u terrain %d\n",
                              phase, alternate);
                 break;
+            }
+            if (phase == 0) {
+                awl::DevelopmentWallRoute route;
+                valid = awl::derive_development_wall_route(assets, &route) &&
+                        std::fabs(route.mid_x - wall_geometry.mid_x) < 0.0002f &&
+                        std::fabs(route.mid_z - wall_geometry.mid_z) < 0.0002f &&
+                        std::fabs(route.normal_x - wall_geometry.normal_x) < 0.0002f &&
+                        std::fabs(route.normal_z - wall_geometry.normal_z) < 0.0002f &&
+                        std::fabs(route.signed_distance(route.start) - 1.0f) < 0.0002f &&
+                        replay_local_static_wall_route(assets, route);
+                if (!valid) {
+                    std::fprintf(stderr,
+                                 "COL multi-frame wall route failed at terrain %d\n",
+                                 alternate);
+                    break;
+                }
             }
             std::printf("COL phase %u terrain %d: %s (%zu bytes), %s (%zu bytes), candidate=(%.3f, %.3f, %.3f), static wall contact=%d\n",
                         phase, alternate, assets.paths().terrain,
