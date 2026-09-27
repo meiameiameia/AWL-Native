@@ -43,6 +43,19 @@ constexpr std::array<RoomRecordIndexRow, 30> kRoomRecordIndices{{
     {47, 47}, {49, 48}, {50, 52}, {51, 50},
     {77, 1}, {78, 2}, {79, 3}, {80, 4}, {81, 5}}};
 
+struct RoomStaticConditionRow {
+    uint32_t condition_id;
+    uint32_t surface_bit;
+};
+
+// The 14 ordered (FUN_80024EBC condition ID, surface bit) pairs at 0x80299698.
+constexpr std::array<RoomStaticConditionRow, 14> kRoomStaticConditions{{
+    {0xA1, 0x0001}, {0x9E, 0x0002}, {0xEC, 0x0004},
+    {0xEB, 0x2000}, {0x8D, 0x1000}, {0x8A, 0x0800},
+    {0x11, 0x0400}, {0x17, 0x0200}, {0x18, 0x0040},
+    {0x19, 0x0080}, {0x1A, 0x0010}, {0x1B, 0x0100},
+    {0x1F, 0x0008}, {0x20, 0x0020}}};
+
 uint32_t be32(const uint8_t* p) {
     return (static_cast<uint32_t>(p[0]) << 24) |
            (static_cast<uint32_t>(p[1]) << 16) |
@@ -76,17 +89,17 @@ bool read_archive(const char* path, WorldMapCollisionArchive* archive) {
 } // namespace
 
 WorldMapRoomCollisionStatus select_world_map_room_collision_record(
-    uint32_t object_id,
+    uint32_t category,
     const WorldMapRoomCollisionState& state,
     WorldMapRoomCollisionSelection* out) {
     if (out != nullptr) {
         *out = {};
     }
-    if (out == nullptr || object_id > 0x51u || state.phase_index > 5) {
+    if (out == nullptr || category > 0x51u || state.phase_index > 5) {
         return WorldMapRoomCollisionStatus::UnsupportedInput;
     }
-    uint32_t remapped = object_id;
-    switch (object_id) {
+    uint32_t remapped = category;
+    switch (category) {
     case 3:
         if (state.phase_index == 1) remapped = 0x2Du;
         else if (state.phase_index == 2) remapped = 0x2Eu;
@@ -121,6 +134,89 @@ WorldMapRoomCollisionStatus select_world_map_room_collision_record(
         }
     }
     return WorldMapRoomCollisionStatus::NoMapping;
+}
+
+uint32_t world_map_room_static_surface_mask(
+    const WorldMapRoomStaticConditions& conditions,
+    uint32_t resolver_flags) {
+    uint32_t mask = 0;
+    for (size_t i = 0; i < kRoomStaticConditions.size(); ++i) {
+        if (conditions[i]) {
+            mask |= kRoomStaticConditions[i].surface_bit;
+        }
+    }
+    if ((resolver_flags & 0x600u) != 0) {
+        mask |= 0x8000u;
+    }
+    return mask;
+}
+
+std::array<uint32_t, 14> world_map_room_static_condition_ids() {
+    std::array<uint32_t, 14> ids{};
+    for (size_t i = 0; i < kRoomStaticConditions.size(); ++i) {
+        ids[i] = kRoomStaticConditions[i].condition_id;
+    }
+    return ids;
+}
+
+bool resolve_type1_room_static_contact(
+    uint32_t category,
+    WorldMapRoomCollisionStatus lookup_status,
+    const WorldMapCollisionRecordView* record,
+    const WorldMapRoomStaticConditions& conditions,
+    uint32_t resolver_flags,
+    uint32_t carried_contact_flags,
+    uint32_t prior_resolver_contact_bits,
+    const std::array<float, 3>& prior_position,
+    const std::array<float, 3>& proposed_position,
+    float moving_radius,
+    WorldMapRoomStaticAdjustment* adjustment) {
+    if (adjustment != nullptr) {
+        *adjustment = {};
+    }
+    const auto finite = [](const std::array<float, 3>& point) {
+        return std::isfinite(point[0]) && std::isfinite(point[1]) &&
+               std::isfinite(point[2]);
+    };
+    if (adjustment == nullptr || category == 1 || category > 0x51u ||
+        !finite(prior_position) || !finite(proposed_position) ||
+        !std::isfinite(moving_radius) || moving_radius < 0.0f) {
+        return false;
+    }
+    WorldMapRoomStaticAdjustment result;
+    result.position = proposed_position;
+    if ((resolver_flags & 1u) == 0) {
+        *adjustment = result;
+        return true;
+    }
+    if (lookup_status == WorldMapRoomCollisionStatus::NoMapping &&
+        record == nullptr) {
+        *adjustment = result;
+        return true;
+    }
+    if (lookup_status != WorldMapRoomCollisionStatus::Found ||
+        record == nullptr || record->data == nullptr || record->size == 0 ||
+        record->analysis == nullptr || record->analysis->header_byte_6 != 0) {
+        return false;
+    }
+    result.record_present = true;
+    result.surface_mask = world_map_room_static_surface_mask(
+        conditions, resolver_flags);
+    if (!resolve_type1_dynamic_contact_narrow_phase(
+            record->data, record->size, prior_position, proposed_position,
+            moving_radius, result.surface_mask, carried_contact_flags & ~1u,
+            &result.narrow_phase)) {
+        return false;
+    }
+    result.contact = result.narrow_phase.contact;
+    result.position = result.narrow_phase.position;
+    if (result.contact && (prior_resolver_contact_bits & 5u) == 5u) {
+        result.position[0] = prior_position[0];
+        result.position[2] = prior_position[2];
+        result.reverted_horizontal_to_prior = true;
+    }
+    *adjustment = result;
+    return true;
 }
 
 bool WorldMapCollisionArchive::parse(std::vector<uint8_t> bytes) {
@@ -295,7 +391,7 @@ bool WorldMapCollisionRecordPools::find_mapse_matches(
 }
 
 WorldMapRoomCollisionStatus WorldMapCollisionRecordPools::lookup_room_object(
-    uint32_t object_id,
+    uint32_t category,
     const WorldMapRoomCollisionState& state,
     WorldMapCollisionRecordView* out) const {
     if (out != nullptr) {
@@ -306,7 +402,7 @@ WorldMapRoomCollisionStatus WorldMapCollisionRecordPools::lookup_room_object(
     }
     WorldMapRoomCollisionSelection selected;
     const WorldMapRoomCollisionStatus status =
-        select_world_map_room_collision_record(object_id, state, &selected);
+        select_world_map_room_collision_record(category, state, &selected);
     if (status != WorldMapRoomCollisionStatus::Found) {
         return status;
     }

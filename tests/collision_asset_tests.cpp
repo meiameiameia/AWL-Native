@@ -1440,6 +1440,103 @@ void test_category1_static_and_movement_candidate() {
            "invalid moving radius rejects the full candidate");
 }
 
+void test_world_map_room_static_stage() {
+    using Status = awl::WorldMapRoomCollisionStatus;
+    constexpr std::array<uint32_t, 14> expected_ids{
+        0xA1u, 0x9Eu, 0xECu, 0xEBu, 0x8Du, 0x8Au, 0x11u,
+        0x17u, 0x18u, 0x19u, 0x1Au, 0x1Bu, 0x1Fu, 0x20u};
+    expect(awl::world_map_room_static_condition_ids() == expected_ids,
+           "room static predicate order matches the DOL table");
+    awl::WorldMapRoomStaticConditions conditions{};
+    expect(awl::world_map_room_static_surface_mask(conditions, 0) == 0u &&
+               awl::world_map_room_static_surface_mask(conditions, 0x200u) ==
+                   0x8000u,
+           "room static mask starts empty and carries the resolver high bit");
+    conditions.fill(true);
+    expect(awl::world_map_room_static_surface_mask(conditions, 0) ==
+               0x3FFFu &&
+               awl::world_map_room_static_surface_mask(conditions, 0x400u) ==
+                   0xBFFFu,
+           "all 14 DOL condition rows and the resolver high bit compose");
+    constexpr std::array<uint32_t, 14> expected_bits{
+        0x0001u, 0x0002u, 0x0004u, 0x2000u, 0x1000u,
+        0x0800u, 0x0400u, 0x0200u, 0x0040u, 0x0080u,
+        0x0010u, 0x0100u, 0x0008u, 0x0020u};
+    for (size_t row = 0; row < expected_bits.size(); ++row) {
+        conditions = {};
+        conditions[row] = true;
+        expect(awl::world_map_room_static_surface_mask(conditions, 0) ==
+                   expected_bits[row],
+               "each room condition row selects its verified DOL bit");
+    }
+    conditions = {};
+    conditions[13] = true; // DOL row 13: condition 0x20 -> surface bit 0x20.
+    expect(awl::world_map_room_static_surface_mask(conditions, 0) == 0x20u,
+           "the final DOL condition row selects surface bit 0x20");
+
+    std::vector<uint8_t> col = make_sample_leaf();
+    col[6] = 0;
+    awl::WorldMapCollisionArchive archive;
+    awl::WorldMapCollisionRecordView record;
+    expect(archive.parse(make_record_arc(col)) && archive.lookup(0, &record),
+           "sample room COL is owned by a validated ARC record");
+    const std::array<float, 3> prior{5.0f, 7.0f, -2.0f};
+    const std::array<float, 3> proposed{5.0f, 7.0f, -0.5f};
+    awl::WorldMapRoomStaticAdjustment result;
+    expect(awl::resolve_type1_room_static_contact(
+               40, Status::Found, &record, conditions, 1u, 0u, 0u,
+               prior, proposed, 1.0f, &result) &&
+               result.record_present && result.contact &&
+               result.surface_mask == 0x20u &&
+               result.narrow_phase.first_edge_contact &&
+               std::fabs(result.position[2] + 1.01f) < 0.0001f,
+           "mapped room category applies the selected type-1 edge response");
+    expect(awl::resolve_type1_room_static_contact(
+               40, Status::Found, &record, conditions, 1u, 1u, 0u,
+               prior, proposed, 1.0f, &result) &&
+               result.contact && !result.reverted_horizontal_to_prior &&
+               std::fabs(result.position[2] + 1.01f) < 0.0001f,
+           "room static query clears carried bit one before narrow phase");
+    expect(awl::resolve_type1_room_static_contact(
+               40, Status::Found, &record, conditions, 1u, 0u, 5u,
+               prior, proposed, 1.0f, &result) &&
+               result.contact && result.reverted_horizontal_to_prior &&
+               result.position[0] == prior[0] &&
+               result.position[2] == prior[2],
+           "prior contact bits one and four restore horizontal position");
+    expect(awl::resolve_type1_room_static_contact(
+               4, Status::NoMapping, nullptr, conditions, 1u, 0u, 0u,
+               prior, proposed, 1.0f, &result) &&
+               !result.record_present && !result.contact &&
+               result.position == proposed,
+           "unmapped room category copies the proposal");
+    expect(awl::resolve_type1_room_static_contact(
+               40, Status::MissingRecord, nullptr, conditions, 0u, 0u, 0u,
+               prior, proposed, 1.0f, &result) &&
+               !result.record_present && result.position == proposed,
+           "disabled room static gate does not query the record");
+    expect(!awl::resolve_type1_room_static_contact(
+               40, Status::MissingRecord, nullptr, conditions, 1u, 0u, 0u,
+               prior, proposed, 1.0f, &result) &&
+               !awl::resolve_type1_room_static_contact(
+                   40, Status::Found, nullptr, conditions, 1u, 0u, 0u,
+                   prior, proposed, 1.0f, &result) &&
+               !awl::resolve_type1_room_static_contact(
+                   1, Status::Found, &record, conditions, 1u, 0u, 0u,
+                   prior, proposed, 1.0f, &result) &&
+               !awl::resolve_type1_room_static_contact(
+                   40, Status::Found, &record, conditions, 1u, 0u, 0u,
+                   prior, proposed, -1.0f, &result),
+           "missing records, category one, and invalid radius are rejected");
+    expect(!awl::resolve_type1_room_static_contact(
+               4, Status::NoMapping, &record, conditions, 1u, 0u, 0u,
+               prior, proposed, 1.0f, &result) &&
+               !awl::resolve_type1_room_static_contact(
+                   40, Status::Found, &record, conditions, 1u, 0u, 0u,
+                   prior, proposed, 1.0f, nullptr),
+           "an inconsistent lookup result and null output are rejected");
+}
+
 void test_world_map_directional_contact_search() {
     std::vector<uint8_t> bytes = make_sample_leaf();
     put_be16(bytes, 8 + 0x34, 1u);
@@ -2619,6 +2716,19 @@ bool inspect_local_catalog(const char* disc_root) {
                         awl::WorldMapRoomCollisionStatus::Found &&
                     room.data != nullptr && room.analysis != nullptr &&
                     room.analysis->header_byte_6 == 0;
+            if (valid) {
+                awl::WorldMapRoomStaticConditions conditions{};
+                awl::WorldMapRoomStaticAdjustment result;
+                const std::array<float, 3> point = room.center_local;
+                valid = awl::resolve_type1_room_static_contact(
+                            40, awl::WorldMapRoomCollisionStatus::Found,
+                            &room, conditions, 1u, 0u, 0u, point, point, 0.3f,
+                            &result) &&
+                        result.record_present &&
+                        std::isfinite(result.position[0]) &&
+                        std::isfinite(result.position[1]) &&
+                        std::isfinite(result.position[2]);
+            }
         }
         if (valid) {
             awl::WorldMapRoomCollisionState state;
@@ -2714,6 +2824,7 @@ bool inspect_local_catalog(const char* disc_root) {
 int main(int argc, char** argv) {
     test_world_map_collision_archive();
     test_world_map_room_collision_mapping();
+    test_world_map_room_static_stage();
     test_world_map_archive_rejects_untranslated_tree_shape();
     test_valid_structures();
     test_rejects_unsupported_or_truncated_files();

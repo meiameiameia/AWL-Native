@@ -48,11 +48,48 @@ struct WorldMapRoomCollisionSelection {
     uint32_t record_index = 0;
 };
 
-// FUN_8002057C -> FUN_800213C4's bounded ID remap and static table lookup.
+// FUN_8002057C -> FUN_800213C4's bounded collision-category remap and lookup.
 [[nodiscard]] WorldMapRoomCollisionStatus select_world_map_room_collision_record(
-    uint32_t object_id,
+    uint32_t category,
     const WorldMapRoomCollisionState& state,
     WorldMapRoomCollisionSelection* out);
+
+// Predicate results for the 14 ordered condition IDs in DOL table 0x80299698.
+// Live FUN_80024EBC condition ownership is not translated.
+using WorldMapRoomStaticConditions = std::array<bool, 14>;
+
+[[nodiscard]] std::array<uint32_t, 14> world_map_room_static_condition_ids();
+
+struct WorldMapRoomStaticAdjustment {
+    std::array<float, 3> position{};
+    uint32_t surface_mask = 0;
+    bool record_present = false;
+    bool contact = false;
+    bool reverted_horizontal_to_prior = false;
+    CollisionDynamicContactAdjustment narrow_phase{};
+};
+
+[[nodiscard]] uint32_t world_map_room_static_surface_mask(
+    const WorldMapRoomStaticConditions& conditions,
+    uint32_t resolver_flags);
+
+// Isolates FUN_8001E498's non-category-1 static stage. The caller supplies
+// the lookup outcome and a validated record view; NoMapping copies the
+// proposal, while missing/unsupported data fails. This does not own runtime
+// condition state or accept a player's position. Carried narrow-phase flags
+// and accumulated resolver-contact bits are separate DOL values.
+[[nodiscard]] bool resolve_type1_room_static_contact(
+    uint32_t category,
+    WorldMapRoomCollisionStatus lookup_status,
+    const WorldMapCollisionRecordView* record,
+    const WorldMapRoomStaticConditions& conditions,
+    uint32_t resolver_flags,
+    uint32_t carried_contact_flags,
+    uint32_t prior_resolver_contact_bits,
+    const std::array<float, 3>& prior_position,
+    const std::array<float, 3>& proposed_position,
+    float moving_radius,
+    WorldMapRoomStaticAdjustment* adjustment);
 
 // Owns one verified ARC and its embedded type-1 COL files. Views borrow the
 // archive's storage and are invalidated by clear(), parse(), or destruction.
@@ -97,7 +134,7 @@ public:
     [[nodiscard]] bool find_mapse_matches(
         uint32_t id, std::vector<WorldMapMapseCollisionMatch>* out) const;
     [[nodiscard]] WorldMapRoomCollisionStatus lookup_room_object(
-        uint32_t object_id,
+        uint32_t category,
         const WorldMapRoomCollisionState& state,
         WorldMapCollisionRecordView* out) const;
 
