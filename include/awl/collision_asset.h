@@ -139,6 +139,52 @@ struct CollisionTerrainRadiusAdjustment {
     uint8_t radius_pass_count = 0;
 };
 
+// Observed bytes read by FUN_8001D1E8. Their gameplay meanings are not yet
+// established; the offsets distinguish the two referenced runtime records.
+struct CollisionCategory1StaticFlags {
+    bool state_299a4 = false;
+    bool state_299a5 = false;
+    bool state_299a6 = false;
+    bool state_299a8 = false;
+    bool state_299a9 = false;
+    bool state_299af = false;
+    bool secondary_3f3 = false;
+    bool secondary_3f1 = false;
+};
+
+struct CollisionCategory1StaticAdjustment {
+    std::array<float, 3> position{};
+    bool contact = false;
+    bool slot_present = false;
+    uint32_t surface_mask = 0;
+    CollisionDynamicContactAdjustment narrow_phase{};
+};
+
+struct CollisionCategory1MovementQuery {
+    const uint8_t* terrain_data = nullptr;
+    size_t terrain_size = 0;
+    const uint8_t* static_data = nullptr;
+    size_t static_size = 0;
+    const CollisionDynamicPassObject* first_objects = nullptr;
+    size_t first_object_count = 0;
+    const CollisionDynamicPassObject* later_objects = nullptr;
+    size_t later_object_count = 0;
+    uint64_t source_identity = 0;
+    float moving_radius = 0.0f;
+    uint32_t initial_contact_flags = 0;
+    CollisionCategory1StaticFlags static_flags{};
+};
+
+struct CollisionCategory1MovementAdjustment {
+    std::array<float, 3> position{};
+    uint32_t resolver_contact_bits = 0;
+    bool final_height_resampled = false;
+    CollisionDynamicPassAdjustment first_pass{};
+    CollisionTerrainRadiusAdjustment terrain{};
+    CollisionCategory1StaticAdjustment static_contact{};
+    CollisionDynamicPassAdjustment later_pass{};
+};
+
 // Validates the relocatable type-1 tree structure used by the verified
 // movement collision assets, including their indexed triangle payloads.
 [[nodiscard]] bool analyze_type1_collision_asset(
@@ -273,6 +319,36 @@ struct CollisionTerrainRadiusAdjustment {
     uint32_t initial_contact_flags,
     uint32_t resolver_flags,
     CollisionDynamicPassAdjustment* adjustment);
+
+// Builds FUN_8001D1E8's category-1 surface mask from its observed runtime
+// booleans and the shared resolver's flags.
+[[nodiscard]] uint32_t category1_static_surface_mask(
+    uint32_t resolver_flags,
+    const CollisionCategory1StaticFlags& runtime_flags);
+
+// Isolates FUN_8001D1E8 -> FUN_800204CC for a supplied type-1 slot-2 COL.
+// A null pointer with zero size represents an absent slot and copies the
+// proposal. Runtime slot ownership and flag providers are outside this helper.
+[[nodiscard]] bool resolve_type1_category1_static_contact(
+    const uint8_t* data,
+    size_t size,
+    const CollisionCategory1StaticFlags& runtime_flags,
+    uint32_t resolver_flags,
+    const std::array<float, 3>& prior_position,
+    const std::array<float, 3>& proposed_position,
+    float moving_radius,
+    uint32_t initial_contact_flags,
+    CollisionCategory1StaticAdjustment* adjustment);
+
+// Composes the supported category-1 type-1 path for the movement object's
+// verified 0x67 resolver flags: first objects, terrain, slot-2 static contact,
+// later objects, and contact-triggered final height lookup. Inputs stand in
+// for runtime asset/list/flag providers. It never updates a player object.
+[[nodiscard]] bool resolve_type1_category1_movement_candidate(
+    const CollisionCategory1MovementQuery& query,
+    const std::array<float, 3>& prior_position,
+    const std::array<float, 3>& proposed_position,
+    CollisionCategory1MovementAdjustment* adjustment);
 
 // Isolates the type-1 +0x34 virtual (FUN_80194E30) used by the radius pass.
 // The preceding +0x30 edge pass and full resolver are not included.

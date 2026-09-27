@@ -1067,6 +1067,125 @@ void test_later_dynamic_object_pass() {
            "first-pass alternate bit does not block the later pass");
 }
 
+void test_category1_static_and_movement_candidate() {
+    std::vector<uint8_t> terrain = make_sample_leaf();
+    const std::array<float, 3> prior{2.0f, 7.0f, 2.0f};
+    const std::array<float, 3> proposed{2.0f, 50.0f, 2.0f};
+    awl::CollisionCategory1StaticFlags flags;
+    expect(awl::category1_static_surface_mask(0x67u, flags) == 0xC1u,
+           "movement flags and clear runtime bytes produce the traced mask");
+    flags.state_299a4 = true;
+    flags.state_299a5 = true;
+    flags.state_299a6 = true;
+    flags.state_299a8 = true;
+    flags.state_299a9 = true;
+    flags.state_299af = true;
+    flags.secondary_3f3 = true;
+    flags.secondary_3f1 = true;
+    expect(awl::category1_static_surface_mask(0x340u, flags) == 0x1FBFu,
+           "each observed runtime byte contributes its DOL surface-mask bit");
+
+    awl::CollisionCategory1StaticAdjustment static_result;
+    expect(awl::resolve_type1_category1_static_contact(
+               nullptr, 0, flags, 0x67u, prior, proposed, 0.3f, 0u,
+               &static_result) && !static_result.slot_present &&
+               !static_result.contact && static_result.position == proposed,
+           "absent slot two copies the proposal without static contact");
+    expect(!awl::resolve_type1_category1_static_contact(
+               nullptr, terrain.size(), flags, 0x67u, prior, proposed,
+               0.3f, 0u, &static_result),
+           "nonempty missing static asset is rejected");
+    std::vector<uint8_t> unsupported_static = terrain;
+    unsupported_static[6] = 0;
+    expect(!awl::resolve_type1_category1_static_contact(
+               unsupported_static.data(), unsupported_static.size(),
+               flags, 0x67u, prior, proposed, 0.3f, 0u,
+               &static_result) &&
+               static_result.position == std::array<float, 3>{},
+           "unsupported slot-two collision mode is rejected");
+
+    awl::CollisionCategory1MovementQuery query;
+    query.terrain_data = terrain.data();
+    query.terrain_size = terrain.size();
+    query.moving_radius = 0.3f;
+    awl::CollisionCategory1MovementAdjustment result;
+    expect(awl::resolve_type1_category1_movement_candidate(
+               query, prior, proposed, &result) &&
+               result.position == std::array<float, 3>{2.0f, 6.0f, 2.0f} &&
+               result.resolver_contact_bits == 0u &&
+               !result.final_height_resampled &&
+               !result.static_contact.slot_present,
+           "clear movement candidate composes terrain and absent object stages");
+
+    awl::CollisionDynamicPassObject first;
+    first.identity = 1;
+    first.enabled = true;
+    first.category = 1;
+    first.collision_flags = 1u;
+    first.center_world = {2.0f, 0.0f, 2.0f};
+    first.radius = 0.5f;
+    awl::CollisionDynamicPassObject later = first;
+    later.identity = 2;
+    later.center_world[2] = 2.8f;
+    query.first_objects = &first;
+    query.first_object_count = 1;
+    query.later_objects = &later;
+    query.later_object_count = 1;
+    expect(awl::resolve_type1_category1_movement_candidate(
+               query, prior, proposed, &result) &&
+               result.first_pass.contact && result.later_pass.contact &&
+               result.resolver_contact_bits == 6u &&
+               result.final_height_resampled &&
+               std::fabs(result.position[2] - 3.61f) < 0.0002f,
+           "two object lists run around terrain and trigger final height lookup");
+    awl::CollisionSurfaceSample final_surface;
+    expect(awl::sample_type1_collision_surface(
+               terrain.data(), terrain.size(), result.position[0],
+               result.position[2], &final_surface) &&
+               std::fabs(result.position[1] - final_surface.height) < 0.0001f,
+           "final candidate height matches an independent surface query");
+
+    query.first_objects = nullptr;
+    query.first_object_count = 0;
+    query.later_objects = nullptr;
+    query.later_object_count = 0;
+    query.static_data = terrain.data();
+    query.static_size = terrain.size();
+    query.static_flags.state_299a9 = true;
+    const std::array<float, 3> static_prior{5.0f, 7.0f, -2.0f};
+    const std::array<float, 3> static_proposed{5.0f, 50.0f, 0.5f};
+    expect(awl::resolve_type1_category1_movement_candidate(
+               query, static_prior, static_proposed, &result) &&
+               result.static_contact.slot_present &&
+               result.static_contact.contact &&
+               result.resolver_contact_bits == 1u &&
+               result.final_height_resampled &&
+               std::fabs(result.position[2] + 0.31f) < 0.0001f,
+           "slot-two static contact sets bit one and resamples final height");
+    awl::CollisionEdgeSample final_edge;
+    expect(awl::project_type1_collision_to_edge(
+               terrain.data(), terrain.size(), result.position[0],
+               result.position[2], &final_edge) &&
+               std::fabs(result.position[1] - final_edge.position[1]) < 0.0001f,
+           "static response outside terrain gets edge-projected final height");
+
+    terrain[6] = 0;
+    expect(!awl::resolve_type1_category1_movement_candidate(
+               query, prior, proposed, &result) &&
+               result.position == std::array<float, 3>{},
+           "unsupported terrain mode rejects the composed candidate");
+    terrain[6] = 1;
+    expect(!awl::resolve_type1_category1_movement_candidate(
+               query, prior, proposed, nullptr),
+           "null composed result is rejected");
+    query.terrain_data = terrain.data();
+    query.moving_radius = -0.3f;
+    expect(!awl::resolve_type1_category1_movement_candidate(
+               query, prior, proposed, &result) &&
+               result.position == std::array<float, 3>{},
+           "invalid moving radius rejects the full candidate");
+}
+
 void test_radius_edge_adjustment() {
     std::vector<uint8_t> bytes = make_sample_leaf();
     awl::CollisionRadiusEdgeAdjustment adjustment;
@@ -1397,6 +1516,22 @@ bool inspect_local_asset(const char* path) {
         std::fprintf(stderr, "Terrain radius branch failed: %s\n", path);
         return false;
     }
+    awl::CollisionCategory1MovementQuery movement_query;
+    movement_query.terrain_data = bytes.data();
+    movement_query.terrain_size = bytes.size();
+    movement_query.moving_radius = 0.3f;
+    awl::CollisionCategory1MovementAdjustment movement;
+    const std::array<float, 3> route_point{
+        sample_x, sample.height, sample_z};
+    if (!awl::resolve_type1_category1_movement_candidate(
+            movement_query, route_point, route_point, &movement) ||
+        movement.position != terrain_radius.position ||
+        movement.resolver_contact_bits !=
+            (terrain_radius.terrain_contact ? 1u : 0u)) {
+        std::fprintf(stderr, "Category-1 candidate composition failed: %s\n",
+                     path);
+        return false;
+    }
     return true;
 }
 
@@ -1417,6 +1552,7 @@ int main(int argc, char** argv) {
     test_dynamic_object_contact();
     test_first_dynamic_object_pass();
     test_later_dynamic_object_pass();
+    test_category1_static_and_movement_candidate();
     test_radius_vertex_adjustment();
     test_radius_edge_adjustment();
     test_radius_pass_sequence();

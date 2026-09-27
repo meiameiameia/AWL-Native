@@ -1399,4 +1399,146 @@ bool adjust_type1_collision_terrain_with_radius(
     return true;
 }
 
+uint32_t category1_static_surface_mask(
+    uint32_t resolver_flags,
+    const CollisionCategory1StaticFlags& runtime_flags) {
+    uint32_t mask = 1u;
+    if ((resolver_flags & 0x40u) != 0) {
+        mask |= 0x80u;
+        if (runtime_flags.state_299a4) {
+            mask |= 2u;
+        }
+    }
+    if ((resolver_flags & 0x100u) != 0) {
+        mask |= 0x400u;
+    }
+    if ((resolver_flags & 0x200u) != 0) {
+        mask |= 0x1000u;
+    }
+    if (runtime_flags.state_299a5) {
+        mask |= 4u;
+    }
+    if (runtime_flags.state_299a6) {
+        mask |= 8u;
+    } else {
+        mask |= 0x40u;
+    }
+    if (runtime_flags.state_299a8) {
+        mask |= 0x10u;
+    }
+    if (runtime_flags.state_299a9) {
+        mask |= 0x20u;
+    }
+    if (runtime_flags.secondary_3f3) {
+        mask |= 0x100u;
+    }
+    if (runtime_flags.secondary_3f1) {
+        mask |= 0x200u;
+    }
+    if (runtime_flags.state_299af) {
+        mask |= 0x800u;
+    }
+    return mask;
+}
+
+bool resolve_type1_category1_static_contact(
+    const uint8_t* data,
+    size_t size,
+    const CollisionCategory1StaticFlags& runtime_flags,
+    uint32_t resolver_flags,
+    const std::array<float, 3>& prior_position,
+    const std::array<float, 3>& proposed_position,
+    float moving_radius,
+    uint32_t initial_contact_flags,
+    CollisionCategory1StaticAdjustment* adjustment) {
+    if (adjustment != nullptr) {
+        *adjustment = {};
+    }
+    if (adjustment == nullptr || !finite_position(prior_position) ||
+        !finite_position(proposed_position) ||
+        !std::isfinite(moving_radius) || moving_radius < 0.0f ||
+        (data == nullptr && size != 0)) {
+        return false;
+    }
+    CollisionCategory1StaticAdjustment result;
+    result.position = proposed_position;
+    if (data == nullptr) {
+        *adjustment = result;
+        return true;
+    }
+    result.slot_present = true;
+    result.surface_mask = category1_static_surface_mask(
+        resolver_flags, runtime_flags);
+    if (!resolve_type1_dynamic_contact_narrow_phase(
+            data, size, prior_position, proposed_position, moving_radius,
+            result.surface_mask, initial_contact_flags,
+            &result.narrow_phase)) {
+        return false;
+    }
+    result.position = result.narrow_phase.position;
+    result.contact = result.narrow_phase.contact;
+    *adjustment = result;
+    return true;
+}
+
+bool resolve_type1_category1_movement_candidate(
+    const CollisionCategory1MovementQuery& query,
+    const std::array<float, 3>& prior_position,
+    const std::array<float, 3>& proposed_position,
+    CollisionCategory1MovementAdjustment* adjustment) {
+    if (adjustment != nullptr) {
+        *adjustment = {};
+    }
+    if (adjustment == nullptr) {
+        return false;
+    }
+
+    constexpr uint32_t movement_resolver_flags = 0x67u;
+    CollisionCategory1MovementAdjustment result;
+    if (!resolve_type1_first_dynamic_object_pass(
+            query.first_objects, query.first_object_count,
+            query.source_identity, 1, prior_position, proposed_position,
+            query.moving_radius, query.initial_contact_flags,
+            movement_resolver_flags, &result.first_pass)) {
+        return false;
+    }
+    if (!adjust_type1_collision_terrain_with_radius(
+            query.terrain_data, query.terrain_size, prior_position,
+            result.first_pass.position, query.moving_radius,
+            &result.terrain)) {
+        return false;
+    }
+    if (!resolve_type1_category1_static_contact(
+            query.static_data, query.static_size, query.static_flags,
+            movement_resolver_flags, prior_position, result.terrain.position,
+            query.moving_radius, result.first_pass.contact_flags_after & ~1u,
+            &result.static_contact)) {
+        return false;
+    }
+    if (!resolve_type1_later_dynamic_object_pass(
+            query.later_objects, query.later_object_count, 1, prior_position,
+            result.static_contact.position, query.moving_radius,
+            result.first_pass.contact_flags_after, movement_resolver_flags,
+            &result.later_pass)) {
+        return false;
+    }
+
+    result.position = result.later_pass.position;
+    result.resolver_contact_bits = result.first_pass.resolver_contact_bit |
+        (result.terrain.terrain_contact || result.static_contact.contact ?
+             1u : 0u) | result.later_pass.resolver_contact_bit;
+    if (result.static_contact.contact || result.later_pass.contact) {
+        CollisionResolverHeightAdjustment height;
+        if (!resample_type1_collision_resolver_height(
+                query.terrain_data, query.terrain_size, result.position,
+                &height)) {
+            return false;
+        }
+        result.position = height.position;
+        result.final_height_resampled = true;
+    }
+    *adjustment = result;
+    return true;
+}
+
 } // namespace awl
