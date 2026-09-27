@@ -2,6 +2,7 @@
 #include "awl/world_map_contact.h"
 #include "awl/world_map_collision_registry.h"
 #include "awl/world_map_actor_step.h"
+#include "awl/world_map_actor_target.h"
 #include "awl/world_map_movement.h"
 #include "awl/world_map_scene_index.h"
 #include "awl/world_map_collision_assets.h"
@@ -2614,6 +2615,147 @@ void test_world_map_first_actor_resolved_step() {
            "inactive actor bypasses mode-two collision and terrain access");
 }
 
+void test_world_map_first_actor_target_selection() {
+    std::array<awl::WorldMapFirstActorTargetCandidate, 37> candidates{};
+    for (size_t order = 0; order < candidates.size(); ++order) {
+        candidates[order].index = static_cast<int32_t>(order + 1);
+        candidates[order].position = {100.0f, 0.0f, 0.0f};
+    }
+    candidates[0].index = 7; // The first DOL table slot is runtime supplied.
+    candidates[0].category = 1;
+    candidates[0].position = {5.0f, 0.0f, 0.0f};
+    candidates[0].relationship_score = 10;
+    awl::WorldMapFirstActorTargetState state;
+    state.actor_id = 0x2c;
+    state.active = true;
+    state.mode = 0;
+    state.action_timer = 9;
+    state.moving = true;
+    awl::WorldMapFirstActorTargetDecision chosen;
+    expect(awl::select_world_map_first_actor_target(
+               state, candidates, 0u, &chosen) &&
+               chosen.selector_ran && chosen.position_write_allowed &&
+               chosen.first_target_index == 7 &&
+               chosen.second_target_index == -1 &&
+               chosen.first_score == 10u && !chosen.second_score &&
+               chosen.state.mode == 1 && chosen.previous_mode == 0 &&
+               chosen.handler == awl::WorldMapFirstActorHandler::FirstTarget &&
+               chosen.handler_target_index == 7 &&
+               chosen.handler_score == 10u &&
+               chosen.state.action_timer == 7 && !chosen.state.moving,
+           "six-unit scan chooses the first target and rising mode dispatches");
+
+    candidates[1].category = 1;
+    candidates[1].position = {2.0f, 0.0f, 0.0f};
+    candidates[1].relationship_score = 20;
+    expect(awl::select_world_map_first_actor_target(
+               state, candidates, 13u, &chosen) &&
+               chosen.first_target_index == 7 &&
+               chosen.second_target_index == 2 &&
+               chosen.state.mode == 2 &&
+               chosen.handler == awl::WorldMapFirstActorHandler::SecondTarget &&
+               chosen.handler_target_index == 2 &&
+               chosen.handler_score == 20u &&
+               chosen.state.action_timer == 13,
+           "three-unit target takes mode two even when six-unit score is better");
+    candidates[2].category = 1;
+    candidates[2].position = {3.0f, 0.0f, 0.0f};
+    candidates[2].relationship_score = 0;
+    candidates[3].category = 1;
+    candidates[3].position = {6.0f, 0.0f, 0.0f};
+    candidates[3].relationship_score = 0;
+    expect(awl::select_world_map_first_actor_target(
+               state, candidates, 0u, &chosen) &&
+               chosen.first_target_index == 3 &&
+               chosen.second_target_index == 2,
+           "exact three distance is excluded from the near scan");
+    candidates[2].category = 0;
+    expect(awl::select_world_map_first_actor_target(
+               state, candidates, 0u, &chosen) &&
+               chosen.first_target_index == 7 &&
+               chosen.second_target_index == 2,
+           "exact six distance is excluded from the wider scan");
+    candidates[3].category = 0;
+    candidates[1].position = {4.0f, 0.0f, 0.0f};
+    candidates[1].relationship_score = 10;
+    expect(awl::select_world_map_first_actor_target(
+               state, candidates, 0u, &chosen) &&
+               chosen.first_target_index == 7 &&
+               chosen.second_target_index == -1,
+           "equal relationship scores retain the earlier DOL table entry");
+
+    candidates[0].relationship_score = 50;
+    candidates[1].relationship_score = 50;
+    state.fallback_timer = 2;
+    state.action_timer = 0;
+    expect(awl::select_world_map_first_actor_target(
+               state, candidates, 14u, &chosen) &&
+               chosen.first_target_index == -1 &&
+               chosen.second_target_index == -1 &&
+               chosen.state.mode == 1 &&
+               chosen.handler == awl::WorldMapFirstActorHandler::FirstTarget &&
+               chosen.handler_target_index == -1 &&
+               !chosen.handler_score && chosen.state.action_timer == 7,
+           "score 50 is excluded; positive fallback timer still selects mode one");
+    state.mode = 2;
+    state.action_timer = 5;
+    state.fallback_timer = 0;
+    expect(awl::select_world_map_first_actor_target(
+               state, candidates, std::nullopt, &chosen) &&
+               chosen.previous_mode == 2 && chosen.state.mode == 0 &&
+               chosen.state.action_timer == 5 && chosen.state.moving &&
+               chosen.handler == awl::WorldMapFirstActorHandler::None,
+           "lower mode waits while the existing action timer is nonzero");
+    state.mode = 0;
+    state.action_timer = 1;
+    state.fallback_timer = 1;
+    state.update_flags = 4u;
+    expect(awl::select_world_map_first_actor_target(
+               state, candidates, 6u, &chosen) &&
+               chosen.state.fallback_timer == 0 &&
+               chosen.state.mode == 0 &&
+               chosen.handler == awl::WorldMapFirstActorHandler::Idle &&
+               chosen.state.action_timer == 13 && !chosen.state.moving,
+           "update flag four decrements positive timers before selecting idle");
+
+    state.active = false;
+    expect(awl::select_world_map_first_actor_target(
+               state, candidates, std::nullopt, &chosen) &&
+               !chosen.selector_ran && !chosen.position_write_allowed &&
+               chosen.state.action_timer == 1 &&
+               chosen.state.fallback_timer == 1,
+           "inactive actor skips timer and target work");
+    state.active = true;
+    state.update_flags = 0x804u;
+    expect(awl::select_world_map_first_actor_target(
+               state, candidates, std::nullopt, &chosen) &&
+               !chosen.selector_ran && chosen.position_write_allowed &&
+               chosen.state.action_timer == 1 &&
+               chosen.state.fallback_timer == 1,
+           "update flag 0x800 bypasses selector and timer decrement");
+
+    state.update_flags = 0;
+    state.action_timer = 0;
+    const auto prior = chosen;
+    expect(!awl::select_world_map_first_actor_target(
+               state, candidates, std::nullopt, &chosen) &&
+               chosen.state.action_timer == prior.state.action_timer &&
+               chosen.selector_ran == prior.selector_ran,
+           "required dispatch RNG is not invented");
+    candidates[1].index = 99;
+    expect(!awl::select_world_map_first_actor_target(
+               state, candidates, 0u, &chosen) &&
+               chosen.state.action_timer == prior.state.action_timer,
+           "unexpected fixed table index rejects atomically");
+    candidates[1].index = 2;
+    state.actor_id = 0x31;
+    expect(!awl::select_world_map_first_actor_target(
+               state, candidates, 0u, &chosen) &&
+               !awl::select_world_map_first_actor_target(
+                   state, candidates, 0u, nullptr),
+           "unsupported actor ID and missing output are rejected");
+}
+
 void test_world_map_fixed_collision_registration() {
     const auto keys = awl::world_map_fixed_collision_record_keys();
     constexpr std::array<uint32_t, 25> expected_indices{
@@ -3700,6 +3842,7 @@ int main(int argc, char** argv) {
     test_world_map_scene_first_collision_registration();
     test_world_map_first_actor_step();
     test_world_map_first_actor_resolved_step();
+    test_world_map_first_actor_target_selection();
     test_world_map_fixed_collision_registration();
     test_world_map_collision_registry();
     test_radius_vertex_adjustment();
