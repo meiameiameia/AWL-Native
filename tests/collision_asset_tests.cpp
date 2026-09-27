@@ -3,6 +3,7 @@
 #include "awl/world_map_collision_registry.h"
 #include "awl/world_map_actor_step.h"
 #include "awl/world_map_actor_target.h"
+#include "awl/world_map_actor_action.h"
 #include "awl/world_map_movement.h"
 #include "awl/world_map_scene_index.h"
 #include "awl/world_map_collision_assets.h"
@@ -2756,6 +2757,129 @@ void test_world_map_first_actor_target_selection() {
            "unsupported actor ID and missing output are rejected");
 }
 
+void test_world_map_first_actor_action_choice() {
+    awl::WorldMapFirstActorTargetDecision selected;
+    selected.selector_ran = true;
+    selected.handler = awl::WorldMapFirstActorHandler::Idle;
+    selected.state.actor_id = 0x2c;
+    awl::WorldMapFirstActorActionChoice chosen;
+    expect(awl::choose_world_map_first_actor_action(
+               selected, 0, 0, 0u, std::nullopt, &chosen) &&
+               chosen.route == awl::WorldMapFirstActorActionRoute::WeightedTable &&
+               chosen.table_address == 0x80255fbcu && chosen.table_row == 0 &&
+               chosen.action_code == 0 && chosen.action_parameter == 0 &&
+               chosen.animation_group == 0,
+           "variant-zero idle table uses the DOL's inclusive first row");
+    expect(awl::choose_world_map_first_actor_action(
+               selected, 0, 0, 10u, std::nullopt, &chosen) &&
+               chosen.table_row == 0 && chosen.action_code == 0,
+           "weighted draw equal to a cumulative bound keeps the earlier row");
+    expect(awl::choose_world_map_first_actor_action(
+               selected, 0, 0, 99u, std::nullopt, &chosen) &&
+               chosen.table_row == 6 && chosen.action_code == 8,
+           "last nonzero idle row covers draw 99");
+
+    selected.state.actor_id = 0x2d;
+    expect(awl::choose_world_map_first_actor_action(
+               selected, 0, 0, 40u, std::nullopt, &chosen) &&
+               chosen.table_address == 0x80255d7cu &&
+               chosen.action_code == 2 && chosen.animation_group == 0,
+           "variant-one idle action uses its own DOL table");
+    selected.state.actor_id = 0x2e;
+    expect(awl::choose_world_map_first_actor_action(
+               selected, 0, 0, 50u, std::nullopt, &chosen) &&
+               chosen.table_address == 0x8025595cu &&
+               chosen.action_code == 3,
+           "variant-two idle action uses its own DOL table");
+    selected.state.actor_id = 0x2f;
+    expect(awl::choose_world_map_first_actor_action(
+               selected, 0, 3, 99u, 49u, &chosen) &&
+               chosen.table_address == 0x80255adcu &&
+               chosen.action_code == 11 && chosen.action_parameter == 1 &&
+               chosen.animation_group == 5,
+           "variant-three prior action three can override weighted idle action");
+    expect(awl::choose_world_map_first_actor_action(
+               selected, 0, 3, 99u, 50u, &chosen) &&
+               chosen.action_code == 10 && chosen.animation_group == 4,
+           "idle override excludes RNG draw 50");
+    selected.state.actor_id = 0x30;
+    expect(awl::choose_world_map_first_actor_action(
+               selected, 0, 0, 99u, std::nullopt, &chosen) &&
+               chosen.table_address == 0x80255e9cu &&
+               chosen.action_code == 1 && chosen.action_parameter == 1 &&
+               chosen.animation_group == 4,
+           "variant-four action one maps to animation group four");
+
+    selected.handler = awl::WorldMapFirstActorHandler::FirstTarget;
+    selected.handler_target_index = 7;
+    selected.handler_score = 0u;
+    selected.state.actor_id = 0x2c;
+    expect(awl::choose_world_map_first_actor_action(
+               selected, 0, 0, std::nullopt, std::nullopt, &chosen) &&
+               chosen.route == awl::WorldMapFirstActorActionRoute::Call8015BDA8 &&
+               !chosen.action_code && chosen.table_address == 0,
+           "variant-zero first target defers to its untranslated motion routine");
+    selected.state.actor_id = 0x2d;
+    expect(awl::choose_world_map_first_actor_action(
+               selected, 0, 0, std::nullopt, std::nullopt, &chosen) &&
+               chosen.route == awl::WorldMapFirstActorActionRoute::Call8015B460,
+           "zero score selects the variant-one turn routine");
+    selected.handler_score = 1u;
+    expect(awl::choose_world_map_first_actor_action(
+               selected, 0, 0, 99u, std::nullopt, &chosen) &&
+               chosen.table_address == 0x80255ddcu &&
+               chosen.action_code == 5,
+           "positive score selects the variant-one weighted table");
+    selected.state.actor_id = 0x2f;
+    expect(awl::choose_world_map_first_actor_action(
+               selected, 10, 0, 0u, std::nullopt, &chosen) &&
+               chosen.table_address == 0x80255b3cu &&
+               chosen.table_row == 0 && chosen.action_code == 0,
+           "action ten selects the sparse table, including its zero-weight row");
+
+    selected.handler = awl::WorldMapFirstActorHandler::SecondTarget;
+    selected.state.actor_id = 0x2c;
+    selected.handler_score = 0u;
+    expect(awl::choose_world_map_first_actor_action(
+               selected, 0, 0, 99u, std::nullopt, &chosen) &&
+               chosen.table_address == 0x8025613cu &&
+               chosen.action_code == 8,
+           "zero-score second target uses the variant-zero near table");
+    selected.handler_score = 1u;
+    expect(awl::choose_world_map_first_actor_action(
+               selected, 0, 0, 99u, std::nullopt, &chosen) &&
+               chosen.table_address == 0x802561fcu &&
+               chosen.action_code == 8,
+           "positive-score second target uses a different source table");
+    selected.state.actor_id = 0x2e;
+    selected.handler_score = 0u;
+    expect(awl::choose_world_map_first_actor_action(
+               selected, 0, 0, std::nullopt, std::nullopt, &chosen) &&
+               chosen.route == awl::WorldMapFirstActorActionRoute::Call8015BDA8,
+           "variant-two zero-score near target defers to motion routine");
+    selected.state.actor_id = 0x2f;
+    expect(awl::choose_world_map_first_actor_action(
+               selected, 0, 0, std::nullopt, std::nullopt, &chosen) &&
+               chosen.route == awl::WorldMapFirstActorActionRoute::Call8015B460,
+           "variant-three zero-score near target defers to turn routine");
+
+    selected.handler = awl::WorldMapFirstActorHandler::FirstTarget;
+    selected.handler_score.reset();
+    const auto prior = chosen;
+    expect(!awl::choose_world_map_first_actor_action(
+               selected, 0, 0, 0u, std::nullopt, &chosen) &&
+               chosen.route == prior.route && chosen.table_address == prior.table_address,
+           "fallback target without a verified score is rejected atomically");
+    selected.handler = awl::WorldMapFirstActorHandler::Idle;
+    expect(!awl::choose_world_map_first_actor_action(
+               selected, 0, 3, 0u, std::nullopt, &chosen) &&
+               !awl::choose_world_map_first_actor_action(
+                   selected, 0, 0, std::nullopt, std::nullopt, &chosen) &&
+               !awl::choose_world_map_first_actor_action(
+                   selected, 0, 0, 0u, std::nullopt, nullptr),
+           "required RNG and output are not invented");
+}
+
 void test_world_map_fixed_collision_registration() {
     const auto keys = awl::world_map_fixed_collision_record_keys();
     constexpr std::array<uint32_t, 25> expected_indices{
@@ -3843,6 +3967,7 @@ int main(int argc, char** argv) {
     test_world_map_first_actor_step();
     test_world_map_first_actor_resolved_step();
     test_world_map_first_actor_target_selection();
+    test_world_map_first_actor_action_choice();
     test_world_map_fixed_collision_registration();
     test_world_map_collision_registry();
     test_radius_vertex_adjustment();
