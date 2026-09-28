@@ -128,6 +128,36 @@ struct WorldMapCameraPostUpdate {
     WorldMapCameraHeightSampler sample_height, void* sample_context,
     WorldMapCameraPostUpdate* output);
 
+struct WorldMapPlayerCameraPlacementQuery {
+    WorldMapCameraViewQuery initial_camera{};
+    std::array<float, 3> player_position{}; // player +0x4C
+    int32_t collision_category = 0; // player +0x64
+    int32_t scene_mode = 0; // state +0x60
+    float heading_x = 0.0f; // player +0x58
+    float heading_z = 0.0f; // player +0x60
+    float fallback_yaw = 0.0f; // state +0x570
+    uint8_t global_byte_3f1 = 0;
+    int8_t pad_byte_8e = 0;
+};
+
+struct WorldMapPlayerCameraPlacement {
+    WorldMapCameraFollowup first_followup{};
+    WorldMapCameraPostUpdate first_update{};
+    WorldMapCameraViewQuery final_camera{};
+    WorldMapCameraPostUpdate final_update{};
+    bool second_update_called = false;
+    bool second_yaw_written = false;
+};
+
+// Bounded camera part of player constructor FUN_8002FDF8. The first
+// FUN_80030E18 update always runs; a negative region result triggers a
+// second position/yaw write and post-update. State and height source remain
+// caller supplied. On failure, output is unchanged (sampler effects remain).
+[[nodiscard]] bool calculate_world_map_player_camera_placement(
+    const WorldMapPlayerCameraPlacementQuery& query,
+    WorldMapCameraHeightSampler sample_height, void* sample_context,
+    WorldMapPlayerCameraPlacement* output);
+
 // FUN_8001CADC loads this fixed slot-1 asset before camera updates.
 inline constexpr const char* kWorldMapCameraCollisionPath =
     "/files/jimen-camera.col";
@@ -151,6 +181,9 @@ public:
     [[nodiscard]] bool calculate_post_update(
         const WorldMapCameraViewQuery& query,
         WorldMapCameraPostUpdate* output) const;
+    [[nodiscard]] bool calculate_player_placement(
+        const WorldMapPlayerCameraPlacementQuery& query,
+        WorldMapPlayerCameraPlacement* output) const;
 
 private:
     std::vector<uint8_t> bytes_;

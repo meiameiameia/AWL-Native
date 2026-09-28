@@ -426,6 +426,67 @@ bool calculate_world_map_camera_post_update(
     return true;
 }
 
+bool calculate_world_map_player_camera_placement(
+    const WorldMapPlayerCameraPlacementQuery& query,
+    WorldMapCameraHeightSampler sample_height, void* sample_context,
+    WorldMapPlayerCameraPlacement* output) {
+    if (output == nullptr || sample_height == nullptr ||
+        !finite_vector(query.player_position)) {
+        return false;
+    }
+    WorldMapPlayerCameraPlacement next;
+    if (!plan_world_map_camera_followup(
+            query.initial_camera.target.camera, query.collision_category,
+            query.player_position, query.global_byte_3f1, query.pad_byte_8e,
+            &next.first_followup)) {
+        return false;
+    }
+    WorldMapCameraViewQuery current = query.initial_camera;
+    current.target.camera = next.first_followup.state;
+    if (!calculate_world_map_camera_post_update(
+            current, sample_height, sample_context, &next.first_update)) {
+        return false;
+    }
+    // FUN_80085998 clears camera +0x8C/+0x90 before the constructor can
+    // repeat this pair of updates.
+    current.target.pitch_offset_8c = 0.0f;
+    current.target.yaw_offset_90 = 0.0f;
+    next.final_camera = current;
+    next.final_update = next.first_update;
+    if (next.first_followup.region_index < 0) {
+        // FUN_8002FDF8 0x80030264..0x800302A0 chooses scene-mode yaw,
+        // writes it only under the current +0x98 flag, then copies the
+        // player position regardless of that flag.
+        float selected_yaw = query.fallback_yaw;
+        if (query.scene_mode == 4 || query.scene_mode == 6) {
+            if (!std::isfinite(query.heading_x) ||
+                !std::isfinite(query.heading_z)) {
+                return false;
+            }
+            selected_yaw = static_cast<float>(std::atan2(
+                static_cast<double>(query.heading_x),
+                static_cast<double>(query.heading_z)));
+        }
+        if (!std::isfinite(selected_yaw)) {
+            return false;
+        }
+        next.second_update_called = true;
+        next.second_yaw_written = current.target.camera.flag_98;
+        if (next.second_yaw_written) {
+            current.target.camera.yaw = selected_yaw;
+        }
+        current.target.camera.position = query.player_position;
+        if (!calculate_world_map_camera_post_update(
+                current, sample_height, sample_context,
+                &next.final_update)) {
+            return false;
+        }
+        next.final_camera = current;
+    }
+    *output = next;
+    return true;
+}
+
 bool calculate_world_map_camera_post_update_from_collision(
     const WorldMapCameraViewQuery& query, const uint8_t* camera_col,
     size_t camera_col_size, WorldMapCameraPostUpdate* output) {
@@ -474,6 +535,17 @@ bool WorldMapCameraCollisionAsset::calculate_post_update(
     return !bytes_.empty() &&
            calculate_world_map_camera_post_update_from_collision(
                query, bytes_.data(), bytes_.size(), output);
+}
+
+bool WorldMapCameraCollisionAsset::calculate_player_placement(
+    const WorldMapPlayerCameraPlacementQuery& query,
+    WorldMapPlayerCameraPlacement* output) const {
+    if (bytes_.empty()) {
+        return false;
+    }
+    CameraCollisionContext context{bytes_.data(), bytes_.size()};
+    return calculate_world_map_player_camera_placement(
+        query, sample_camera_collision_height, &context, output);
 }
 
 } // namespace awl
