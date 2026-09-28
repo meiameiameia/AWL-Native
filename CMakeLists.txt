@@ -23,6 +23,7 @@ set(SOURCES
     src/world_map_contact.cpp
     src/world_map_movement.cpp
     src/world_map_trigger_asset.cpp
+    src/world_map_event_conditions.cpp
     src/world_map_camera.cpp
     src/world_map_scene_index.cpp
     src/world_map_collision_registry.cpp
@@ -54,6 +55,7 @@ set(HEADERS
     include/awl/world_map_contact.h
     include/awl/world_map_movement.h
     include/awl/world_map_trigger_asset.h
+    include/awl/world_map_event_conditions.h
     include/awl/world_map_camera.h
     include/awl/world_map_scene_index.h
     include/awl/world_map_collision_registry.h
@@ -210,6 +212,7 @@ add_executable(collision_asset_tests
     src/world_map_contact.cpp
     src/world_map_movement.cpp
     src/world_map_trigger_asset.cpp
+    src/world_map_event_conditions.cpp
     src/world_map_camera.cpp
     src/world_map_scene_index.cpp
     src/world_map_collision_registry.cpp

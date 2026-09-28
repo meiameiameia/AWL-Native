@@ -7,6 +7,7 @@
 #include "awl/world_map_actor_heading.h"
 #include "awl/world_map_movement.h"
 #include "awl/world_map_trigger_asset.h"
+#include "awl/world_map_event_conditions.h"
 #include "awl/world_map_camera.h"
 #include "awl/world_map_scene_index.h"
 #include "awl/world_map_collision_assets.h"
@@ -165,6 +166,51 @@ void test_world_map_collision_archive() {
     invalid = fixture;
     put_be32(invalid, 0, 0);
     expect(!archive.parse(invalid), "incorrect ARC signature is rejected");
+}
+
+void test_world_map_event_conditions() {
+    const auto fixture = make_record_arc(std::vector<uint8_t>{1, 2, 3, 4});
+    awl::WorldMapEventConditions conditions;
+    awl::WorldMapEventConditionEntry entry;
+    expect(conditions.parse(fixture, 2) && conditions.loaded() &&
+               conditions.phase() == 2 && conditions.entry_count() == 1 &&
+               conditions.entry(0, &entry) && entry.size == 4 &&
+               entry.data[0] == 1 && entry.data[3] == 4 &&
+               std::strcmp(entry.name, "fixture.col") == 0,
+           "phase archive owns an opaque entry and exposes its bytes");
+    expect(!conditions.entry(1, &entry) && entry.data == nullptr &&
+               !conditions.entry(0, nullptr),
+           "phase archive rejects invalid entry requests without stale data");
+    auto invalid = fixture;
+    put_be32(invalid, 0x30, static_cast<uint32_t>(invalid.size() - 2));
+    expect(!conditions.parse(invalid, 2) && !conditions.loaded() &&
+               conditions.entry_count() == 0,
+           "out-of-bounds phase entry clears prior archive");
+    invalid = fixture;
+    put_be32(invalid, 0x28, UINT32_MAX);
+    expect(!conditions.parse(invalid, 2),
+           "overflowing phase entry table is rejected");
+    invalid = fixture;
+    invalid[0x39] = 0;
+    expect(!conditions.parse(invalid, 2),
+           "empty phase entry name is rejected");
+    invalid.assign(0x60 + 8, 0);
+    put_be32(invalid, 0, 0x55AA382Du);
+    put_be32(invalid, 4, 0x20);
+    put_be32(invalid, 8, 0x40);
+    put_be32(invalid, 12, 0x60);
+    put_be32(invalid, 0x20, 0x01000000u);
+    put_be32(invalid, 0x28, 3);
+    for (const size_t node : {size_t{0x2c}, size_t{0x38}}) {
+        put_be32(invalid, node, 1);
+        put_be32(invalid, node + 4, 0x60);
+        put_be32(invalid, node + 8, 4);
+    }
+    std::memcpy(invalid.data() + 0x45, "entry", 6);
+    expect(!conditions.parse(invalid, 2),
+           "overlapping phase entry payloads are rejected");
+    expect(!conditions.parse(fixture, 6),
+           "unsupported phase cannot select a request archive");
 }
 
 void test_world_map_room_collision_mapping() {
@@ -5129,6 +5175,40 @@ bool check_local_trigger_asset(const char* disc_root) {
     return valid;
 }
 
+bool check_local_event_conditions(const char* disc_root) {
+    awl_memory_init();
+    awl::filesystem_init();
+    bool valid = awl::filesystem_mount("/", disc_root);
+    awl::WorldMapEventConditions conditions;
+    for (uint32_t phase = 0; valid && phase < 6; ++phase) {
+        valid = conditions.load_phase(phase) && conditions.loaded() &&
+                conditions.phase() == static_cast<int32_t>(phase) &&
+                conditions.entry_count() == 10;
+        size_t payload_bytes = 0;
+        for (size_t entry_index = 0;
+             valid && entry_index < conditions.entry_count(); ++entry_index) {
+            awl::WorldMapEventConditionEntry entry;
+            valid = conditions.entry(entry_index, &entry) &&
+                    entry.data != nullptr && entry.size != 0 &&
+                    entry.name != nullptr && entry.name[0] != 0;
+            if (valid) {
+                payload_bytes += entry.size;
+            }
+        }
+        if (valid) {
+            std::printf("Event conditions phase %u: %zu entries, %zu payload bytes\n",
+                        phase, conditions.entry_count(), payload_bytes);
+        }
+    }
+    valid = valid && !conditions.load_phase(6) && !conditions.loaded();
+    awl::filesystem_shutdown();
+    awl_memory_shutdown();
+    if (!valid) {
+        std::fprintf(stderr, "Local event condition archive validation failed\n");
+    }
+    return valid;
+}
+
 bool check_local_camera_collision(const char* disc_root) {
     const std::filesystem::path path =
         std::filesystem::path(disc_root) /
@@ -6439,6 +6519,7 @@ bool inspect_local_catalog(const char* disc_root) {
 
 int main(int argc, char** argv) {
     test_world_map_collision_archive();
+    test_world_map_event_conditions();
     test_world_map_room_collision_mapping();
     test_world_map_packed_saved_conditions();
     test_world_map_room_condition_evaluator();
@@ -6512,6 +6593,11 @@ int main(int argc, char** argv) {
             }
         } else if (std::strcmp(argv[index], "--trigger-local") == 0) {
             if (++index >= argc || !check_local_trigger_asset(argv[index])) {
+                ++failures;
+            }
+        } else if (std::strcmp(argv[index], "--event-conditions-local") == 0) {
+            if (++index >= argc ||
+                !check_local_event_conditions(argv[index])) {
                 ++failures;
             }
         } else if (!inspect_local_asset(argv[index])) {
