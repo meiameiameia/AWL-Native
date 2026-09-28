@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 namespace awl {
 
@@ -71,5 +72,18 @@ struct WorldMapMovementContactTail {
     const std::array<float, 3>& resolved_position,
     const std::array<WorldMapMovementContactSlotOutcome, 2>& slot_outcomes,
     WorldMapMovementContactTail* output);
+
+// FUN_8019AC7C / FUN_8019AB50, reached through FUN_8001DA44. The caller
+// supplies one polygon's ordered XYZ vertices; only consecutive pairs form
+// edges, so a closing edge requires a repeated first vertex. Mode 0 tests
+// odd crossings of a +X ray; modes 1..3 test movement-edge crossings with
+// any, negative, or nonnegative orientation respectively. No runtime
+// polygon lookup or action request is performed. Output is atomic on error.
+[[nodiscard]] bool query_world_map_polygon_contact(
+    int32_t mode,
+    const std::vector<std::array<float, 3>>& vertices,
+    const std::array<float, 3>& prior_position,
+    const std::array<float, 3>& resolved_position,
+    bool* contact);
 
 } // namespace awl

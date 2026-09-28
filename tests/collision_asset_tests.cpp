@@ -2889,6 +2889,96 @@ void test_world_map_movement_contact_tail() {
            "invalid contact-tail inputs preserve the prior output");
 }
 
+void test_world_map_polygon_contact() {
+    // Explicit closing vertex: the DOL walks consecutive pairs only.
+    const std::vector<std::array<float, 3>> square{
+        {0.0f, 0.0f, 0.0f}, {2.0f, 0.0f, 0.0f},
+        {2.0f, 0.0f, 2.0f}, {0.0f, 0.0f, 2.0f},
+        {0.0f, 0.0f, 0.0f}};
+    const std::array<float, 3> inside{1.0f, 5.0f, 1.0f};
+    const std::array<float, 3> left{-1.0f, -5.0f, 1.0f};
+    const std::array<float, 3> right{3.0f, 0.0f, 1.0f};
+    bool contact = false;
+    expect(awl::query_world_map_polygon_contact(0, square, inside, right,
+                                                 &contact) && contact,
+           "mode-zero ray counts one right-edge crossing from inside");
+    expect(awl::query_world_map_polygon_contact(0, square, left, inside,
+                                                 &contact) && !contact &&
+               awl::query_world_map_polygon_contact(0, square, right, inside,
+                                                     &contact) && !contact,
+           "mode-zero parity excludes points on either outside side");
+    auto open_square = square;
+    open_square.pop_back();
+    expect(awl::query_world_map_polygon_contact(0, open_square, left, inside,
+                                                 &contact) && contact,
+           "the missing closing edge is not invented");
+
+    expect(awl::query_world_map_polygon_contact(1, square, left, inside,
+                                                 &contact) && contact &&
+               awl::query_world_map_polygon_contact(2, square, left, inside,
+                                                     &contact) && contact &&
+               awl::query_world_map_polygon_contact(3, square, left, inside,
+                                                     &contact) && !contact,
+           "entry across the left edge has negative orientation");
+    expect(awl::query_world_map_polygon_contact(2, square, inside, left,
+                                                 &contact) && !contact &&
+               awl::query_world_map_polygon_contact(3, square, inside, left,
+                                                     &contact) && contact,
+           "exit across the left edge has nonnegative orientation");
+    const std::array<float, 3> on_left{0.0f, 0.0f, 1.0f};
+    expect(awl::query_world_map_polygon_contact(1, square, left, on_left,
+                                                 &contact) && !contact &&
+               awl::query_world_map_polygon_contact(1, square, on_left, inside,
+                                                     &contact) && contact,
+           "segment ends are exclusive and starts are inclusive");
+    const std::vector<std::array<float, 3>> end_edge{
+        {10000.0f, 0.0f, 0.0f}, {10000.0f, 0.0f, 2.0f}};
+    const std::array<float, 3> origin{0.0f, 0.0f, 1.0f};
+    expect(awl::query_world_map_polygon_contact(0, end_edge, origin, inside,
+                                                 &contact) && !contact,
+           "mode-zero 10000-unit ray excludes its endpoint");
+    const std::vector<std::array<float, 3>> parallel_edge{
+        {0.0f, 0.0f, 0.0f}, {2.0f, 0.0f, 0.0f}};
+    expect(awl::query_world_map_polygon_contact(
+               1, parallel_edge, {0.0f, 0.0f, 1.0f},
+               {2.0f, 0.0f, 1.0f}, &contact) && !contact,
+           "parallel XZ segments do not contact");
+
+    std::array<awl::WorldMapMovementContactSlotOutcome, 2> slots{};
+    expect(awl::query_world_map_polygon_contact(3, square, left, inside,
+                                                 &slots[0].polygon_contact) &&
+               awl::query_world_map_polygon_contact(
+                   2, square, left, inside, &slots[1].polygon_contact),
+           "supplied slot polygons produce contact outcomes");
+    slots[0].state_request_accepted = true;
+    slots[1].state_request_accepted = true;
+    awl::WorldMapMovementContactTail tail;
+    expect(awl::plan_world_map_movement_contact_tail(
+               1, left, inside, slots, &tail) &&
+               tail.polygon_queries == 2 && tail.state_requests == 1 &&
+               tail.accepted_slot == 1,
+           "polygon result gates the ordered two-slot action decision");
+
+    contact = true;
+    auto invalid_vertices = square;
+    invalid_vertices[1][0] = std::numeric_limits<float>::infinity();
+    const float huge = std::numeric_limits<float>::max();
+    const std::vector<std::array<float, 3>> overflowing_edge{
+        {huge, 0.0f, 0.0f}, {-huge, 0.0f, 2.0f}};
+    expect(!awl::query_world_map_polygon_contact(4, square, inside, right,
+                                                  &contact) &&
+               !awl::query_world_map_polygon_contact(0, {}, inside, right,
+                                                      &contact) &&
+               !awl::query_world_map_polygon_contact(
+                   0, invalid_vertices, inside, right, &contact) &&
+               !awl::query_world_map_polygon_contact(
+                   1, overflowing_edge, left, inside, &contact) &&
+               !awl::query_world_map_polygon_contact(0, square, inside,
+                                                      right, nullptr) &&
+               contact,
+           "unsupported or invalid polygon queries preserve output");
+}
+
 void test_world_map_scene_position_bucket_decision() {
     constexpr float third_x_threshold = 152.97621f;
     uint32_t threshold_bits = 0;
@@ -6101,6 +6191,7 @@ int main(int argc, char** argv) {
     test_world_map_camera_collision_height();
     test_world_map_movement_candidate_sequence();
     test_world_map_movement_contact_tail();
+    test_world_map_polygon_contact();
     test_synthetic_player_route_replay();
     test_world_map_scene_position_bucket_decision();
     test_world_map_scene_bucket_registry();
