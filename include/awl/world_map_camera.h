@@ -1,5 +1,7 @@
 #pragma once
 
+#include "awl/world_map_scene_index.h"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -158,6 +160,30 @@ struct WorldMapPlayerCameraPlacement {
     WorldMapCameraHeightSampler sample_height, void* sample_context,
     WorldMapPlayerCameraPlacement* output);
 
+struct WorldMapPlayerCameraMessageQuery {
+    WorldMapCameraViewQuery previous_camera{};
+    WorldMapPlayerSceneMessage1F message{};
+    int32_t collision_category = 0; // player +0x64, not message scene type
+    uint8_t global_byte_3f1 = 0;
+    int8_t pad_byte_8e = 0;
+};
+
+struct WorldMapPlayerCameraMessageResult {
+    WorldMapCameraViewQuery final_camera{};
+    WorldMapCameraFollowup followup{};
+    WorldMapCameraPostUpdate update{};
+    bool update_called = false;
+};
+
+// Camera branch of FUN_80031758 message 0x1F after its scene-pose writes.
+// A clear payload +0x1C skips camera work. A set byte runs the inline
+// region follow-up and one post-update, with no constructor second pass.
+// The caller still owns the scene pose, camera, and height source.
+[[nodiscard]] bool calculate_world_map_player_message_camera_update(
+    const WorldMapPlayerCameraMessageQuery& query,
+    WorldMapCameraHeightSampler sample_height, void* sample_context,
+    WorldMapPlayerCameraMessageResult* output);
+
 // FUN_8001CADC loads this fixed slot-1 asset before camera updates.
 inline constexpr const char* kWorldMapCameraCollisionPath =
     "/files/jimen-camera.col";
@@ -184,6 +210,9 @@ public:
     [[nodiscard]] bool calculate_player_placement(
         const WorldMapPlayerCameraPlacementQuery& query,
         WorldMapPlayerCameraPlacement* output) const;
+    [[nodiscard]] bool calculate_player_message_update(
+        const WorldMapPlayerCameraMessageQuery& query,
+        WorldMapPlayerCameraMessageResult* output) const;
 
 private:
     std::vector<uint8_t> bytes_;

@@ -2266,6 +2266,77 @@ void test_world_map_player_camera_placement() {
            "missing player camera placement output is rejected");
 }
 
+void test_world_map_player_message_camera_update() {
+    awl::WorldMapCameraInitialProfile profile;
+    expect(awl::make_world_map_camera_initial_profile(&profile),
+           "message camera check starts from the verified profile");
+    awl::WorldMapPlayerCameraMessageQuery query;
+    query.previous_camera = profile.view_query;
+    query.collision_category = 1;
+    query.message = {3, {-1.0f, 0.0f, -5.2f},
+                     {0.0f, 0.0f, 1.0f}, 0};
+    PlayerCameraHeightScript script;
+    awl::WorldMapPlayerCameraMessageResult result;
+    expect(awl::calculate_world_map_player_message_camera_update(
+               query, nullptr, nullptr, &result) &&
+               !result.update_called &&
+               result.final_camera.target.camera.position ==
+                   profile.view_query.target.camera.position &&
+               result.final_camera.target.camera.yaw ==
+                   profile.view_query.target.camera.yaw,
+           "fixed message's clear camera byte skips collision and camera writes");
+
+    query.message.camera_update_requested = 1;
+    query.message.position = {175.0f, 0.0f, 115.0f};
+    expect(awl::calculate_world_map_player_message_camera_update(
+               query, player_camera_height, &script, &result) &&
+               result.update_called && script.calls == 2 &&
+               result.followup.region_index == 0 &&
+               !result.final_camera.target.camera.flag_98 &&
+               result.final_camera.target.camera.flag_99 &&
+               result.final_camera.target.camera.yaw == 0.0f &&
+               result.final_camera.target.camera.position ==
+                   query.message.position,
+           "requested region message performs exactly one two-height update");
+
+    query.message.position = {120.0f, 0.0f, 168.0f};
+    query.pad_byte_8e = 64;
+    script = {};
+    expect(awl::calculate_world_map_player_message_camera_update(
+               query, player_camera_height, &script, &result) &&
+               script.calls == 2 && result.followup.region_index == -1 &&
+               result.followup.yaw_adjustment_written &&
+               result.final_camera.target.camera.flag_98 &&
+               std::fabs(result.final_camera.target.camera.yaw -
+                         (profile.view_query.target.camera.yaw + 0.0625f)) <
+                   0.000001f,
+           "outside requested message applies prior-flag signed PAD yaw once");
+    query.collision_category = 2;
+    query.message.position = {175.0f, 0.0f, 115.0f};
+    script = {};
+    expect(awl::calculate_world_map_player_message_camera_update(
+               query, player_camera_height, &script, &result) &&
+               result.followup.region_index == -1 && script.calls == 2 &&
+               result.final_camera.target.camera.field_18 ==
+                   profile.view_query.target.camera.field_18,
+           "message scene type does not replace the player collision category");
+
+    const awl::WorldMapPlayerCameraMessageResult saved = result;
+    script = {0, 2};
+    expect(!awl::calculate_world_map_player_message_camera_update(
+               query, player_camera_height, &script, &result) &&
+               script.calls == 2 &&
+               result.final_camera.target.camera.yaw ==
+                   saved.final_camera.target.camera.yaw &&
+               result.update_called == saved.update_called,
+           "failed requested height query leaves message camera output unchanged");
+    expect(!awl::calculate_world_map_player_message_camera_update(
+               query, nullptr, nullptr, &result) &&
+               !awl::calculate_world_map_player_message_camera_update(
+                   query, player_camera_height, &script, nullptr),
+           "requested camera work requires a height source and output");
+}
+
 struct CameraHeightScript {
     std::array<float, 2> heights{};
     std::array<std::array<float, 3>, 2> positions{};
@@ -4573,6 +4644,15 @@ bool check_local_camera_collision(const char* disc_root) {
     const bool placed = profiled_update &&
                         camera_asset.calculate_player_placement(
                             placement_query, &placement);
+    awl::WorldMapPlayerCameraMessageQuery message_query;
+    message_query.previous_camera = query;
+    message_query.collision_category = 2;
+    message_query.message.position = query.target.camera.position;
+    message_query.message.camera_update_requested = 1;
+    awl::WorldMapPlayerCameraMessageResult message_result;
+    const bool message_updated = placed &&
+                                 camera_asset.calculate_player_message_update(
+                                     message_query, &message_result);
     awl::filesystem_shutdown();
     awl_memory_shutdown();
     if (!updated ||
@@ -4582,6 +4662,9 @@ bool check_local_camera_collision(const char* disc_root) {
         !profiled_update ||
         !placed || !placement.second_update_called ||
         placement.second_yaw_written ||
+        !message_updated || !message_result.update_called ||
+        std::fabs(message_result.update.final_target[0] - x) > 0.0001f ||
+        std::fabs(message_result.update.final_target[2] - z) > 0.0001f ||
         std::fabs(placement.final_update.final_target[0] - x) > 0.0001f ||
         std::fabs(placement.final_update.final_target[2] - z) > 0.0001f ||
         std::fabs(profiled_result.first_view.target.bounded[0] - x) >
@@ -4976,12 +5059,21 @@ void test_world_map_collision_asset_provider() {
         placement_query.player_position = camera_query.target.camera.position;
         placement_query.collision_category = 2;
         awl::WorldMapPlayerCameraPlacement placement_result;
+        awl::WorldMapPlayerCameraMessageQuery message_query;
+        message_query.previous_camera = camera_query;
+        message_query.collision_category = 2;
+        message_query.message.position = camera_query.target.camera.position;
+        message_query.message.camera_update_requested = 1;
+        awl::WorldMapPlayerCameraMessageResult message_result;
         expect(camera_asset.load() && camera_asset.loaded() &&
                    camera_asset.size() == static_asset.size() &&
                    camera_asset.calculate_post_update(camera_query,
                                                       &camera_result) &&
                    camera_asset.calculate_player_placement(
                        placement_query, &placement_result) &&
+                   camera_asset.calculate_player_message_update(
+                       message_query, &message_result) &&
+                   message_result.update_called &&
                    placement_result.second_update_called &&
                    camera_result.terrain_clamped &&
                    camera_result.first_view.target.bounded ==
@@ -4994,9 +5086,19 @@ void test_world_map_collision_asset_provider() {
                                                        &camera_result) &&
                    !camera_asset.calculate_player_placement(
                        placement_query, &placement_result) &&
+                   !camera_asset.calculate_player_message_update(
+                       message_query, &message_result) &&
+                   message_result.update_called &&
                    placement_result.second_update_called &&
                    camera_result.final_target == saved_camera_target,
                "missing camera file clears the owner without changing output");
+        message_query.message.camera_update_requested = 0;
+        expect(camera_asset.calculate_player_message_update(
+                   message_query, &message_result) &&
+                   !message_result.update_called &&
+                   message_result.final_camera.target.camera.position ==
+                       camera_query.target.camera.position,
+               "clear message camera byte skips unloaded collision owner");
         expect(write(camera_path, {0, 1, 2}) && !camera_asset.load() &&
                    !camera_asset.loaded(),
                "malformed camera collision file is rejected");
@@ -5789,6 +5891,7 @@ int main(int argc, char** argv) {
     test_world_map_camera_view();
     test_world_map_camera_initial_profile();
     test_world_map_player_camera_placement();
+    test_world_map_player_message_camera_update();
     test_world_map_camera_post_update();
     test_world_map_camera_collision_height();
     test_world_map_movement_candidate_sequence();

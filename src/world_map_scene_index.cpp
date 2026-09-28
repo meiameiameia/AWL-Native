@@ -177,9 +177,9 @@ bool apply_world_map_player_fixed_scene_message_1f(
     WorldMapScenePositionUpdate* update) {
     // FUN_80013DC8 copies the scene type and camera byte from its constant
     // payload, then overwrites XYZ and heading from two verified DOL tables.
-    // The camera byte is zero; camera effects are outside this helper.
+    // The camera byte is zero; the separate camera helper skips its branch.
     constexpr WorldMapPlayerSceneMessage1F message{
-        3, {-1.0f, 0.0f, -5.2f}, {0.0f, 0.0f, 1.0f}};
+        3, {-1.0f, 0.0f, -5.2f}, {0.0f, 0.0f, 1.0f}, 0};
     return apply_world_map_player_scene_message_1f(
         1, message, registry, pose, update);
 }

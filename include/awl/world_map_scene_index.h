@@ -73,12 +73,13 @@ struct WorldMapPlayerScenePose {
     std::array<float, 3> heading{};
 };
 
-// The bounded scene-pose fields of FUN_80031758's message 0x1F payload.
-// Its camera flag and other side effects are not represented here.
+// Bounded fields of FUN_80031758's message 0x1F payload. The camera byte
+// is consumed by the separate supplied-state camera helper.
 struct WorldMapPlayerSceneMessage1F {
     int32_t scene_type = 0;
     std::array<float, 3> position{};
     std::array<float, 3> heading{};
+    uint8_t camera_update_requested = 0; // payload +0x1C
 };
 
 // Applies the supplied message to an already registered player scene node.

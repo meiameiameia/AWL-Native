@@ -487,6 +487,40 @@ bool calculate_world_map_player_camera_placement(
     return true;
 }
 
+bool calculate_world_map_player_message_camera_update(
+    const WorldMapPlayerCameraMessageQuery& query,
+    WorldMapCameraHeightSampler sample_height, void* sample_context,
+    WorldMapPlayerCameraMessageResult* output) {
+    if (output == nullptr) {
+        return false;
+    }
+    WorldMapPlayerCameraMessageResult next;
+    next.final_camera = query.previous_camera;
+    if (query.message.camera_update_requested == 0) {
+        *output = next;
+        return true;
+    }
+    if (sample_height == nullptr ||
+        !plan_world_map_camera_followup(
+            query.previous_camera.target.camera, query.collision_category,
+            query.message.position, query.global_byte_3f1,
+            query.pad_byte_8e, &next.followup)) {
+        return false;
+    }
+    next.final_camera.target.camera = next.followup.state;
+    if (!calculate_world_map_camera_post_update(
+            next.final_camera, sample_height, sample_context,
+            &next.update)) {
+        return false;
+    }
+    // FUN_80085998 clears these temporary offsets after the two queries.
+    next.final_camera.target.pitch_offset_8c = 0.0f;
+    next.final_camera.target.yaw_offset_90 = 0.0f;
+    next.update_called = true;
+    *output = next;
+    return true;
+}
+
 bool calculate_world_map_camera_post_update_from_collision(
     const WorldMapCameraViewQuery& query, const uint8_t* camera_col,
     size_t camera_col_size, WorldMapCameraPostUpdate* output) {
@@ -545,6 +579,21 @@ bool WorldMapCameraCollisionAsset::calculate_player_placement(
     }
     CameraCollisionContext context{bytes_.data(), bytes_.size()};
     return calculate_world_map_player_camera_placement(
+        query, sample_camera_collision_height, &context, output);
+}
+
+bool WorldMapCameraCollisionAsset::calculate_player_message_update(
+    const WorldMapPlayerCameraMessageQuery& query,
+    WorldMapPlayerCameraMessageResult* output) const {
+    if (query.message.camera_update_requested == 0) {
+        return calculate_world_map_player_message_camera_update(
+            query, nullptr, nullptr, output);
+    }
+    if (bytes_.empty()) {
+        return false;
+    }
+    CameraCollisionContext context{bytes_.data(), bytes_.size()};
+    return calculate_world_map_player_message_camera_update(
         query, sample_camera_collision_height, &context, output);
 }
 
