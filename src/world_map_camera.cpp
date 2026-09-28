@@ -45,7 +45,8 @@ bool finite_state(const WorldMapCameraFollowupState& value) {
 bool plan_world_map_camera_followup(
     const WorldMapCameraFollowupState& previous, int32_t category,
     const std::array<float, 3>& resolved_position,
-    uint8_t global_byte_3f1, WorldMapCameraFollowup* output) {
+    uint8_t global_byte_3f1, int8_t pad_byte_8e,
+    WorldMapCameraFollowup* output) {
     if (output == nullptr || !finite_state(previous) ||
         !finite_vector(resolved_position)) {
         return false;
@@ -78,7 +79,23 @@ bool plan_world_map_camera_followup(
             *output = next;
             return true;
         }
-        next.reset_call_requested = global_byte_3f1 == 0;
+        if (global_byte_3f1 == 0) {
+            next.yaw_adjustment_called = true;
+            if (previous.flag_98) {
+                // FUN_80085FD0: signed PAD byte at 0x8034158E, scaled by
+                // r2-0x77D8 (1/256); square and restore its sign against
+                // r2-0x77FC (zero) before adding to camera +0x1C.
+                const float scaled =
+                    static_cast<float>(pad_byte_8e) * 0.00390625f;
+                const float square = scaled * scaled;
+                const float delta = scaled < 0.0f ? -square : square;
+                next.state.yaw = previous.yaw + delta;
+                if (!std::isfinite(next.state.yaw)) {
+                    return false;
+                }
+                next.yaw_adjustment_written = true;
+            }
+        }
         next.state.field_18 = -0.14835298f; // r2-0x7CA4
         next.state.flag_99 = false;
         next.state.flag_98 = true;

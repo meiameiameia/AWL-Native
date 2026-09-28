@@ -1857,7 +1857,7 @@ void test_world_map_camera_followup() {
         for (const std::array<float, 3>& corner :
              {region.lower, region.upper}) {
             expect(awl::plan_world_map_camera_followup(
-                       previous, 1, corner, 0, &result) &&
+                       previous, 1, corner, 0, 127, &result) &&
                        result.region_index == index &&
                        result.state.position == corner &&
                        camera_float_bits(result.state.field_18) ==
@@ -1866,7 +1866,8 @@ void test_world_map_camera_followup() {
                        result.state.bounds_min == region.bounds_min &&
                        result.state.bounds_max == region.bounds_max &&
                        !result.state.flag_98 && result.state.flag_99 &&
-                       !result.reset_call_requested,
+                       !result.yaw_adjustment_called &&
+                       !result.yaw_adjustment_written,
                    "inclusive camera region endpoints select the DOL profile");
         }
         const std::array<float, 3> below_x{
@@ -1875,7 +1876,7 @@ void test_world_map_camera_followup() {
             region.upper[0], 0.0f, region.upper[2] + 0.01f};
         for (const std::array<float, 3>& outside : {below_x, above_z}) {
             expect(awl::plan_world_map_camera_followup(
-                       previous, 1, outside, 1, &result) &&
+                       previous, 1, outside, 1, 127, &result) &&
                        result.region_index == -1 &&
                        camera_float_bits(result.state.field_18) ==
                            0xBE17E9D8u &&
@@ -1883,19 +1884,47 @@ void test_world_map_camera_followup() {
                        result.state.bounds_min == previous.bounds_min &&
                        result.state.bounds_max == previous.bounds_max &&
                        result.state.flag_98 && !result.state.flag_99 &&
-                       !result.reset_call_requested,
+                       !result.yaw_adjustment_called &&
+                       !result.yaw_adjustment_written,
                    "camera region exterior preserves yaw and bounds");
         }
     }
     const std::array<float, 3> outside{181.0f, 17.0f, 111.0f};
     expect(awl::plan_world_map_camera_followup(
-               previous, 1, outside, 0, &result) &&
-               result.region_index == -1 && result.reset_call_requested &&
-               result.state.position == outside,
-           "outside-region zero global byte reports the unresolved reset call");
+               previous, 1, outside, 0, 64, &result) &&
+               result.region_index == -1 && result.yaw_adjustment_called &&
+               result.yaw_adjustment_written &&
+               result.state.position == outside &&
+               result.state.yaw == 0.8125f,
+           "outside region squares positive signed PAD input and adds yaw");
     expect(awl::plan_world_map_camera_followup(
-               previous, 2, regions[0].lower, 0, &result) &&
-               result.region_index == -1 && !result.reset_call_requested &&
+               previous, 1, outside, 0, -64, &result) &&
+               result.yaw_adjustment_called &&
+               result.yaw_adjustment_written &&
+               result.state.yaw == 0.6875f,
+           "negative signed PAD input subtracts the squared yaw amount");
+    expect(awl::plan_world_map_camera_followup(
+               previous, 1, outside, 0, -128, &result) &&
+               result.state.yaw == 0.5f,
+           "minimum signed PAD byte produces a negative 0.25-radian increment");
+    awl::WorldMapCameraFollowupState disabled_yaw = previous;
+    disabled_yaw.flag_98 = false;
+    expect(awl::plan_world_map_camera_followup(
+               disabled_yaw, 1, outside, 0, 64, &result) &&
+               result.yaw_adjustment_called &&
+               !result.yaw_adjustment_written &&
+               result.state.yaw == disabled_yaw.yaw &&
+               result.state.flag_98,
+           "yaw adjustment uses the prior flag before the outside branch enables it");
+    disabled_yaw = result.state;
+    expect(awl::plan_world_map_camera_followup(
+               disabled_yaw, 1, outside, 0, 64, &result) &&
+               result.yaw_adjustment_written &&
+               result.state.yaw == 0.8125f,
+           "next outside frame applies yaw after the flag was enabled");
+    expect(awl::plan_world_map_camera_followup(
+               previous, 2, regions[0].lower, 0, 64, &result) &&
+               result.region_index == -1 && !result.yaw_adjustment_called &&
                result.state.position == regions[0].lower &&
                result.state.field_18 == previous.field_18 &&
                result.state.yaw == previous.yaw &&
@@ -1908,12 +1937,12 @@ void test_world_map_camera_followup() {
     auto bad_position = outside;
     bad_position[1] = std::numeric_limits<float>::infinity();
     expect(!awl::plan_world_map_camera_followup(
-               previous, 1, bad_position, 0, &result) &&
+               previous, 1, bad_position, 0, 64, &result) &&
                result.state.position == saved.state.position &&
                result.region_index == saved.region_index,
            "nonfinite camera position is rejected without output mutation");
     expect(!awl::plan_world_map_camera_followup(
-               previous, 1, outside, 0, nullptr),
+               previous, 1, outside, 0, 64, nullptr),
            "missing camera output is rejected");
 }
 
@@ -1951,7 +1980,7 @@ void test_world_map_movement_candidate_sequence() {
     awl::WorldMapCameraFollowup camera_followup;
     const bool outside_camera_valid =
         awl::plan_world_map_camera_followup(
-            supplied_camera, 1, camera_query.current_position, 1,
+            supplied_camera, 1, camera_query.current_position, 1, 0,
             &camera_followup);
     expect(outside_camera_valid && camera_followup.region_index == -1 &&
                camera_followup.state.flag_98 &&
@@ -1976,7 +2005,7 @@ void test_world_map_movement_candidate_sequence() {
         const bool second_followup_valid =
             awl::plan_world_map_camera_followup(
                 supplied_camera, 1, first_camera_frame.resolved_position,
-                1, &camera_followup);
+                1, 0, &camera_followup);
         expect(second_followup_valid && camera_followup.state.flag_98 &&
                    camera_followup.state.yaw == first_expected_yaw,
                "outside camera follow-up carries yaw and flag to the next frame");
