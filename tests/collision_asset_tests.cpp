@@ -6,6 +6,7 @@
 #include "awl/world_map_actor_action.h"
 #include "awl/world_map_actor_heading.h"
 #include "awl/world_map_movement.h"
+#include "awl/world_map_trigger_asset.h"
 #include "awl/world_map_camera.h"
 #include "awl/world_map_scene_index.h"
 #include "awl/world_map_collision_assets.h"
@@ -43,6 +44,12 @@ void put_be32(std::vector<uint8_t>& bytes, size_t offset, uint32_t value) {
     bytes[offset + 1] = static_cast<uint8_t>(value >> 16);
     bytes[offset + 2] = static_cast<uint8_t>(value >> 8);
     bytes[offset + 3] = static_cast<uint8_t>(value);
+}
+
+void put_be_float(std::vector<uint8_t>& bytes, size_t offset, float value) {
+    uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    put_be32(bytes, offset, bits);
 }
 
 void put_be16(std::vector<uint8_t>& bytes, size_t offset, uint16_t value) {
@@ -2979,6 +2986,128 @@ void test_world_map_polygon_contact() {
            "unsupported or invalid polygon queries preserve output");
 }
 
+std::vector<uint8_t> make_trigger_spl_fixture() {
+    constexpr size_t groups = 61;
+    std::vector<uint8_t> bytes(8 + groups * 4, 0);
+    put_be32(bytes, 0, 0xF0F0E1ECu);
+    put_be32(bytes, 4, static_cast<uint32_t>(groups));
+    size_t player_group = 0;
+    for (size_t group = 0; group < groups; ++group) {
+        const size_t offset = bytes.size();
+        put_be32(bytes, 8 + group * 4, static_cast<uint32_t>(offset));
+        const uint32_t count = group == 55 ? 2u : 0u;
+        bytes.resize(offset + 4 + count * 4, 0);
+        put_be32(bytes, offset, count);
+        if (group == 55) {
+            player_group = offset;
+        }
+    }
+    const std::array<std::array<float, 3>, 5> square{{
+        {0.0f, 0.0f, 0.0f}, {2.0f, 0.0f, 0.0f},
+        {2.0f, 0.0f, 2.0f}, {0.0f, 0.0f, 2.0f},
+        {0.0f, 0.0f, 0.0f}}};
+    const size_t first = bytes.size();
+    put_be32(bytes, player_group + 4, static_cast<uint32_t>(first));
+    bytes.resize(first + 8 + square.size() * 12, 0);
+    put_be32(bytes, first, 0);
+    put_be32(bytes, first + 4, static_cast<uint32_t>(square.size()));
+    for (size_t index = 0; index < square.size(); ++index) {
+        for (size_t axis = 0; axis < 3; ++axis) {
+            put_be_float(bytes, first + 8 + index * 12 + axis * 4,
+                         square[index][axis]);
+        }
+    }
+    const size_t second = bytes.size();
+    put_be32(bytes, player_group + 8, static_cast<uint32_t>(second));
+    bytes.resize(second + 8 + 2 * 12, 0);
+    put_be32(bytes, second, 3);
+    put_be32(bytes, second + 4, 2);
+    put_be_float(bytes, second + 8, 0.0f);
+    put_be_float(bytes, second + 16, 2.0f);
+    put_be_float(bytes, second + 20, 0.0f);
+    put_be_float(bytes, second + 28, 0.0f);
+    return bytes;
+}
+
+void test_world_map_trigger_asset() {
+    const auto bytes = make_trigger_spl_fixture();
+    awl::WorldMapTriggerAsset asset;
+    const std::array<float, 3> inside{1.0f, 0.0f, 1.0f};
+    const std::array<float, 3> outside{-1.0f, 0.0f, 1.0f};
+    bool contact = false;
+    expect(asset.load_from_bytes(bytes.data(), bytes.size()) &&
+               asset.loaded() && asset.category1_polygon(0) != nullptr &&
+               asset.category1_polygon(0)->mode == 0 &&
+               asset.category1_polygon(0)->vertices.size() == 5 &&
+               asset.category1_polygon(1) != nullptr &&
+               asset.category1_polygon(1)->mode == 3 &&
+               asset.category1_polygon(1)->vertices.size() == 2 &&
+               asset.category1_polygon(2) == nullptr,
+           "SPL resolves the DOL category-one group and both slots");
+    expect(asset.query_category1_contact(0, inside, outside, &contact) &&
+               contact &&
+               asset.query_category1_contact(0, outside, inside, &contact) &&
+               !contact,
+           "decoded mode-zero polygon separates inside and outside");
+    expect(asset.query_category1_contact(
+               1, {1.0f, 0.0f, 1.0f}, {-1.0f, 0.0f, 1.0f}, &contact) &&
+               contact &&
+               asset.query_category1_contact(
+                   1, {-1.0f, 0.0f, 1.0f}, {1.0f, 0.0f, 1.0f}, &contact) &&
+               !contact,
+           "decoded mode-three segment preserves crossing direction");
+    std::array<awl::WorldMapMovementContactSlotOutcome, 2> slots{};
+    expect(asset.query_category1_contact(
+               0, inside, outside, &slots[0].polygon_contact) &&
+               asset.query_category1_contact(
+                   1, inside, outside, &slots[1].polygon_contact),
+           "validated SPL supplies both movement-tail contact slots");
+    slots[0].state_request_accepted = true;
+    slots[1].state_request_accepted = true;
+    awl::WorldMapMovementContactTail tail;
+    expect(awl::plan_world_map_movement_contact_tail(
+               1, inside, outside, slots, &tail) &&
+               tail.polygon_queries == 1 && tail.state_requests == 1 &&
+               tail.accepted_slot == 0,
+           "accepted first SPL contact stops before the second slot");
+
+    auto broken = bytes;
+    broken[0] ^= 1;
+    expect(!asset.load_from_bytes(broken.data(), broken.size()) &&
+               !asset.loaded() && asset.category1_polygon(0) == nullptr,
+           "bad SPL marker clears a prior successful load");
+    broken = bytes;
+    put_be32(broken, 8 + 55 * 4, static_cast<uint32_t>(broken.size() + 4));
+    expect(!asset.load_from_bytes(broken.data(), broken.size()),
+           "out-of-order group offset is rejected");
+    broken = bytes;
+    const size_t player_group = 8 + 61 * 4 + 55 * 4;
+    put_be32(broken, player_group + 4, static_cast<uint32_t>(broken.size()));
+    expect(!asset.load_from_bytes(broken.data(), broken.size()),
+           "polygon pointer beyond its packed location is rejected");
+    broken = bytes;
+    const size_t first = player_group + 12 + 5 * 4;
+    put_be32(broken, first, 4);
+    expect(!asset.load_from_bytes(broken.data(), broken.size()),
+           "unsupported polygon mode is rejected");
+    broken = bytes;
+    put_be32(broken, first + 4, 0xffffffffu);
+    expect(!asset.load_from_bytes(broken.data(), broken.size()),
+           "oversized vertex count is rejected before reading vertices");
+    broken = bytes;
+    put_be32(broken, first + 8, 0x7f800000u);
+    expect(!asset.load_from_bytes(broken.data(), broken.size()),
+           "nonfinite vertex is rejected");
+    broken = bytes;
+    broken.pop_back();
+    contact = true;
+    expect(!asset.load_from_bytes(broken.data(), broken.size()) &&
+               !asset.load_from_bytes(nullptr, 0) &&
+               !asset.query_category1_contact(0, inside, outside, &contact) &&
+               contact,
+           "truncated or missing SPL leaves no usable contact source");
+}
+
 void test_world_map_scene_position_bucket_decision() {
     constexpr float third_x_threshold = 152.97621f;
     uint32_t threshold_bits = 0;
@@ -4848,6 +4977,68 @@ bool inspect_local_asset(const char* path) {
     return true;
 }
 
+bool check_local_trigger_asset(const char* disc_root) {
+    awl_memory_init();
+    awl::filesystem_init();
+    awl::WorldMapTriggerAsset asset;
+    bool valid = awl::filesystem_mount("/", disc_root) && asset.load();
+    const auto* region = asset.category1_polygon(0);
+    const auto* crossing = asset.category1_polygon(1);
+    valid = valid && region != nullptr && crossing != nullptr &&
+            region->mode == 0 && region->vertices.size() == 5 &&
+            crossing->mode == 3 && crossing->vertices.size() == 2 &&
+            region->vertices.front() == region->vertices.back();
+    if (valid) {
+        float min_x = region->vertices.front()[0];
+        float max_x = min_x;
+        float min_z = region->vertices.front()[2];
+        float max_z = min_z;
+        for (const auto& vertex : region->vertices) {
+            min_x = std::min(min_x, vertex[0]);
+            max_x = std::max(max_x, vertex[0]);
+            min_z = std::min(min_z, vertex[2]);
+            max_z = std::max(max_z, vertex[2]);
+        }
+        const std::array<float, 3> center{
+            (min_x + max_x) * 0.5f, 0.0f, (min_z + max_z) * 0.5f};
+        const std::array<float, 3> outside{min_x - 1.0f, 0.0f, center[2]};
+        bool contact = false;
+        valid = max_x > min_x && max_z > min_z &&
+                asset.query_category1_contact(0, center, center, &contact) &&
+                contact &&
+                asset.query_category1_contact(0, outside, outside, &contact) &&
+                !contact;
+        const auto& a = crossing->vertices[0];
+        const auto& b = crossing->vertices[1];
+        const float edge_x = b[0] - a[0];
+        const float edge_z = b[2] - a[2];
+        const float length = std::sqrt(edge_x * edge_x + edge_z * edge_z);
+        if (valid && length > 0.0f && std::isfinite(length)) {
+            const float move_x = edge_z / length;
+            const float move_z = -edge_x / length;
+            const std::array<float, 3> prior{
+                (a[0] + b[0]) * 0.5f - move_x * 0.5f, 0.0f,
+                (a[2] + b[2]) * 0.5f - move_z * 0.5f};
+            const std::array<float, 3> resolved{
+                prior[0] + move_x, 0.0f, prior[2] + move_z};
+            valid = asset.query_category1_contact(
+                        1, prior, resolved, &contact) && contact &&
+                    asset.query_category1_contact(
+                        1, resolved, prior, &contact) && !contact;
+        } else {
+            valid = false;
+        }
+    }
+    awl::filesystem_shutdown();
+    awl_memory_shutdown();
+    if (!valid) {
+        std::fprintf(stderr, "Local trigger.spl validation failed\n");
+    } else {
+        std::puts("Local trigger.spl: two category-1 polygons validated; parity and directional probes passed.");
+    }
+    return valid;
+}
+
 bool check_local_camera_collision(const char* disc_root) {
     const std::filesystem::path path =
         std::filesystem::path(disc_root) /
@@ -6192,6 +6383,7 @@ int main(int argc, char** argv) {
     test_world_map_movement_candidate_sequence();
     test_world_map_movement_contact_tail();
     test_world_map_polygon_contact();
+    test_world_map_trigger_asset();
     test_synthetic_player_route_replay();
     test_world_map_scene_position_bucket_decision();
     test_world_map_scene_bucket_registry();
@@ -6226,6 +6418,10 @@ int main(int argc, char** argv) {
             }
         } else if (std::strcmp(argv[index], "--camera-local") == 0) {
             if (++index >= argc || !check_local_camera_collision(argv[index])) {
+                ++failures;
+            }
+        } else if (std::strcmp(argv[index], "--trigger-local") == 0) {
+            if (++index >= argc || !check_local_trigger_asset(argv[index])) {
                 ++failures;
             }
         } else if (!inspect_local_asset(argv[index])) {
