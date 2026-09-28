@@ -6,6 +6,7 @@
 #include "awl/world_map_actor_action.h"
 #include "awl/world_map_actor_heading.h"
 #include "awl/world_map_movement.h"
+#include "awl/world_map_camera.h"
 #include "awl/world_map_scene_index.h"
 #include "awl/world_map_collision_assets.h"
 #include "awl/development_wall_route.h"
@@ -1817,6 +1818,105 @@ void test_world_map_directional_contact_search() {
            "missing nonempty object list is rejected");
 }
 
+uint32_t camera_float_bits(float value) {
+    uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+void test_world_map_camera_followup() {
+    awl::WorldMapCameraFollowupState previous;
+    previous.position = {1.0f, 2.0f, 3.0f};
+    previous.field_18 = 9.0f;
+    previous.yaw = 0.75f;
+    previous.bounds_min = {10.0f, 11.0f, 12.0f};
+    previous.bounds_max = {20.0f, 21.0f, 22.0f};
+    previous.flag_98 = true;
+    awl::WorldMapCameraFollowup result;
+
+    struct RegionCase {
+        std::array<float, 3> lower;
+        std::array<float, 3> upper;
+        float yaw;
+        std::array<float, 3> bounds_min;
+        std::array<float, 3> bounds_max;
+    };
+    // Rectangle limits and seven-float profile rows from FUN_8001D0E8
+    // and 0x8029FE10 in the verified DOL, independent of the helper table.
+    const RegionCase regions[] = {
+        {{171.0f, -7.0f, 111.0f}, {180.0f, 50.0f, 118.0f},
+         0.0f, {173.5f, 0.0f, 120.5f}, {177.6f, 100.0f, 122.3f}},
+        {{192.0f, -7.0f, 111.0f}, {199.0f, 50.0f, 120.0f},
+         0.0f, {194.5f, 0.0f, 119.6f}, {196.6f, 100.0f, 123.6f}},
+        {{216.0f, -7.0f, 112.0f}, {229.0f, 50.0f, 130.0f},
+         4.71238899f, {211.1f, 0.0f, 115.2f},
+         {219.6f, 100.0f, 125.8f}},
+    };
+    for (int32_t index = 0; index < 3; ++index) {
+        const RegionCase& region = regions[index];
+        for (const std::array<float, 3>& corner :
+             {region.lower, region.upper}) {
+            expect(awl::plan_world_map_camera_followup(
+                       previous, 1, corner, 0, &result) &&
+                       result.region_index == index &&
+                       result.state.position == corner &&
+                       camera_float_bits(result.state.field_18) ==
+                           0xBF8192C0u &&
+                       result.state.yaw == region.yaw &&
+                       result.state.bounds_min == region.bounds_min &&
+                       result.state.bounds_max == region.bounds_max &&
+                       !result.state.flag_98 && result.state.flag_99 &&
+                       !result.reset_call_requested,
+                   "inclusive camera region endpoints select the DOL profile");
+        }
+        const std::array<float, 3> below_x{
+            region.lower[0] - 0.01f, 0.0f, region.lower[2]};
+        const std::array<float, 3> above_z{
+            region.upper[0], 0.0f, region.upper[2] + 0.01f};
+        for (const std::array<float, 3>& outside : {below_x, above_z}) {
+            expect(awl::plan_world_map_camera_followup(
+                       previous, 1, outside, 1, &result) &&
+                       result.region_index == -1 &&
+                       camera_float_bits(result.state.field_18) ==
+                           0xBE17E9D8u &&
+                       result.state.yaw == previous.yaw &&
+                       result.state.bounds_min == previous.bounds_min &&
+                       result.state.bounds_max == previous.bounds_max &&
+                       result.state.flag_98 && !result.state.flag_99 &&
+                       !result.reset_call_requested,
+                   "camera region exterior preserves yaw and bounds");
+        }
+    }
+    const std::array<float, 3> outside{181.0f, 17.0f, 111.0f};
+    expect(awl::plan_world_map_camera_followup(
+               previous, 1, outside, 0, &result) &&
+               result.region_index == -1 && result.reset_call_requested &&
+               result.state.position == outside,
+           "outside-region zero global byte reports the unresolved reset call");
+    expect(awl::plan_world_map_camera_followup(
+               previous, 2, regions[0].lower, 0, &result) &&
+               result.region_index == -1 && !result.reset_call_requested &&
+               result.state.position == regions[0].lower &&
+               result.state.field_18 == previous.field_18 &&
+               result.state.yaw == previous.yaw &&
+               result.state.bounds_min == previous.bounds_min &&
+               result.state.bounds_max == previous.bounds_max &&
+               result.state.flag_98 == previous.flag_98 &&
+               result.state.flag_99 == previous.flag_99,
+           "other camera categories copy position without profile writes");
+    const awl::WorldMapCameraFollowup saved = result;
+    auto bad_position = outside;
+    bad_position[1] = std::numeric_limits<float>::infinity();
+    expect(!awl::plan_world_map_camera_followup(
+               previous, 1, bad_position, 0, &result) &&
+               result.state.position == saved.state.position &&
+               result.region_index == saved.region_index,
+           "nonfinite camera position is rejected without output mutation");
+    expect(!awl::plan_world_map_camera_followup(
+               previous, 1, outside, 0, nullptr),
+           "missing camera output is rejected");
+}
+
 void test_world_map_movement_candidate_sequence() {
     std::vector<uint8_t> terrain = make_sample_leaf();
     awl::WorldMapMovementQuery query;
@@ -1846,8 +1946,19 @@ void test_world_map_movement_candidate_sequence() {
                    0.0001f,
            "composed movement candidate height matches independent terrain sampling");
     awl::WorldMapMovementQuery camera_query = query;
-    camera_query.camera_yaw_radians = 0.25f;
-    camera_query.camera_yaw_commit_enabled = true;
+    awl::WorldMapCameraFollowupState supplied_camera;
+    supplied_camera.yaw = 0.25f;
+    awl::WorldMapCameraFollowup camera_followup;
+    const bool outside_camera_valid =
+        awl::plan_world_map_camera_followup(
+            supplied_camera, 1, camera_query.current_position, 1,
+            &camera_followup);
+    expect(outside_camera_valid && camera_followup.region_index == -1 &&
+               camera_followup.state.flag_98 &&
+               camera_followup.state.yaw == 0.25f,
+           "outside camera region supplies the movement yaw-write flag");
+    camera_query.camera_yaw_radians = camera_followup.state.yaw;
+    camera_query.camera_yaw_commit_enabled = camera_followup.state.flag_98;
     awl::WorldMapMovementCandidate first_camera_frame;
     awl::WorldMapMovementCandidate second_camera_frame;
     const float first_expected_yaw =
@@ -1860,8 +1971,17 @@ void test_world_map_movement_candidate_sequence() {
                          first_expected_yaw) < 0.00001f,
            "supplied camera flag reports the pre-collision yaw write");
     if (first_camera_valid) {
-        camera_query.camera_yaw_radians =
-            first_camera_frame.camera_yaw_after_proposal;
+        supplied_camera = camera_followup.state;
+        supplied_camera.yaw = first_camera_frame.camera_yaw_after_proposal;
+        const bool second_followup_valid =
+            awl::plan_world_map_camera_followup(
+                supplied_camera, 1, first_camera_frame.resolved_position,
+                1, &camera_followup);
+        expect(second_followup_valid && camera_followup.state.flag_98 &&
+                   camera_followup.state.yaw == first_expected_yaw,
+               "outside camera follow-up carries yaw and flag to the next frame");
+        camera_query.camera_yaw_radians = camera_followup.state.yaw;
+        camera_query.camera_yaw_commit_enabled = camera_followup.state.flag_98;
         camera_query.current_position = first_camera_frame.resolved_position;
         camera_query.steering = first_camera_frame.steering;
         const bool second_camera_valid =
@@ -5025,6 +5145,7 @@ int main(int argc, char** argv) {
     test_third_dynamic_object_pass();
     test_category1_static_and_movement_candidate();
     test_world_map_directional_contact_search();
+    test_world_map_camera_followup();
     test_world_map_movement_candidate_sequence();
     test_synthetic_player_route_replay();
     test_world_map_scene_position_bucket_decision();
