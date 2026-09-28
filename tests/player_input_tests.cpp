@@ -140,6 +140,19 @@ int main() {
            near(proposed.z, 29.997738f),
            "horizontal displacement uses the verified four-degree correction");
 
+    const auto yaw_commit = awl::propose_world_map_position_with_camera(
+        position, 1.0f, state, true);
+    const auto yaw_held = awl::propose_world_map_position_with_camera(
+        position, 1.0f, state, false);
+    const float expected_yaw = 1.0f - 4.0f * 0.18f * 0.017453292f;
+    expect(yaw_commit.camera_yaw_written &&
+               near(yaw_commit.camera_yaw_after, expected_yaw) &&
+               !yaw_held.camera_yaw_written &&
+               yaw_held.camera_yaw_after == 1.0f &&
+               near(yaw_commit.position.x, yaw_held.position.x) &&
+               near(yaw_commit.position.z, yaw_held.position.z),
+           "camera byte gates the verified second-component yaw write without changing this proposal");
+
     state = {};
     state.direction_x = 0.6f;
     state.direction_z = 0.8f;
@@ -148,6 +161,12 @@ int main() {
     expect(near(proposed.x, position.x) && near(proposed.y, position.y) &&
            near(proposed.z, position.z),
            "zero current speed produces no proposed displacement");
+    const auto neutral_yaw_commit =
+        awl::propose_world_map_position_with_camera(
+            position, half_pi, state, true);
+    expect(neutral_yaw_commit.camera_yaw_written &&
+               neutral_yaw_commit.camera_yaw_after == half_pi,
+           "enabled camera write preserves yaw when scaled input is zero");
 
     const awl::WorldMapPosition origin{};
     uint8_t contact_code = 7;

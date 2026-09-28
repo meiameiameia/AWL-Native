@@ -70,6 +70,16 @@ WorldMapPosition propose_world_map_position(
     const WorldMapPosition& current_position,
     float camera_yaw_radians,
     const WorldMapSteeringState& steering) {
+    return propose_world_map_position_with_camera(
+               current_position, camera_yaw_radians, steering, false)
+        .position;
+}
+
+WorldMapPositionProposal propose_world_map_position_with_camera(
+    const WorldMapPosition& current_position,
+    float camera_yaw_radians,
+    const WorldMapSteeringState& steering,
+    bool camera_yaw_commit_enabled) {
     const float scaled_x = steering.direction_x * steering.current_speed;
     const float scaled_z = steering.direction_z * steering.current_speed;
     const float yaw_correction =
@@ -84,7 +94,9 @@ WorldMapPosition propose_world_map_position(
     proposed.z -= std::sin(x_component_yaw) * scaled_x;
     proposed.x += std::sin(z_component_yaw) * scaled_z;
     proposed.z += std::cos(z_component_yaw) * scaled_z;
-    return proposed;
+    return {proposed,
+            camera_yaw_commit_enabled ? z_component_yaw : camera_yaw_radians,
+            camera_yaw_commit_enabled};
 }
 
 bool classify_world_map_directional_contact(

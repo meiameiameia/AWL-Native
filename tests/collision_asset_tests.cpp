@@ -1845,6 +1845,54 @@ void test_world_map_movement_candidate_sequence() {
                std::fabs(result.resolved_position[1] - surface.height) <
                    0.0001f,
            "composed movement candidate height matches independent terrain sampling");
+    awl::WorldMapMovementQuery camera_query = query;
+    camera_query.camera_yaw_radians = 0.25f;
+    camera_query.camera_yaw_commit_enabled = true;
+    awl::WorldMapMovementCandidate first_camera_frame;
+    awl::WorldMapMovementCandidate second_camera_frame;
+    const float first_expected_yaw =
+        0.25f - 4.0f * 0.03f * 0.017453292f;
+    const bool first_camera_valid =
+        awl::calculate_world_map_movement_candidate(
+            camera_query, &first_camera_frame);
+    expect(first_camera_valid && first_camera_frame.camera_yaw_written &&
+               std::fabs(first_camera_frame.camera_yaw_after_proposal -
+                         first_expected_yaw) < 0.00001f,
+           "supplied camera flag reports the pre-collision yaw write");
+    if (first_camera_valid) {
+        camera_query.camera_yaw_radians =
+            first_camera_frame.camera_yaw_after_proposal;
+        camera_query.current_position = first_camera_frame.resolved_position;
+        camera_query.steering = first_camera_frame.steering;
+        const bool second_camera_valid =
+            awl::calculate_world_map_movement_candidate(
+                camera_query, &second_camera_frame);
+        const float second_expected_yaw =
+            first_expected_yaw - 4.0f * 0.06f * 0.017453292f;
+        expect(second_camera_valid && second_camera_frame.camera_yaw_written &&
+                   std::fabs(second_camera_frame.camera_yaw_after_proposal -
+                             second_expected_yaw) < 0.00001f &&
+                   second_camera_frame.proposed_position !=
+                       first_camera_frame.proposed_position,
+               "reported yaw feeds the next supplied movement frame");
+    }
+    camera_query.state_680 = 0;
+    expect(awl::calculate_world_map_movement_candidate(
+               camera_query, &second_camera_frame) &&
+               !second_camera_frame.movement_enabled &&
+               !second_camera_frame.camera_yaw_written &&
+               second_camera_frame.camera_yaw_after_proposal ==
+                   camera_query.camera_yaw_radians,
+           "blocked movement leaves the supplied camera yaw untouched");
+    camera_query.state_680 = -1;
+    camera_query.state_58c = 1;
+    expect(awl::calculate_world_map_movement_candidate(
+               camera_query, &second_camera_frame) &&
+               !second_camera_frame.movement_enabled &&
+               !second_camera_frame.camera_yaw_written &&
+               second_camera_frame.camera_yaw_after_proposal ==
+                   camera_query.camera_yaw_radians,
+           "second movement guard also leaves camera yaw untouched");
     awl::WorldMapScenePositionUpdate scene_update;
     expect(awl::plan_world_map_scene_position_update(
                0, 0, result.resolved_position, &scene_update) &&

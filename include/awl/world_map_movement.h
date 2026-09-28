@@ -17,6 +17,7 @@ struct WorldMapMovementQuery {
     int32_t state_58c = 0;
     HsdPadFrame pad{};
     float camera_yaw_radians = 0.0f;
+    bool camera_yaw_commit_enabled = false;
     std::array<float, 3> current_position{};
     std::array<float, 3> current_axis{};
     WorldMapSteeringState steering{};
@@ -30,14 +31,16 @@ struct WorldMapMovementCandidate {
     WorldMapSteeringState steering{};
     std::array<float, 3> proposed_position{};
     std::array<float, 3> resolved_position{};
+    float camera_yaw_after_proposal = 0.0f;
+    bool camera_yaw_written = false;
     WorldMapContactResult directional_contact{};
     CollisionCategory1MovementAdjustment collision{};
 };
 
 // Composes steering, the pre-collision proposal, directional contact, and the
 // supported type-1 collision resolver in DOL call order. The result stops
-// before FUN_800107A4's scene-object position/lookup update, camera changes,
-// animation, or any actual gameplay state mutation.
+// before FUN_800107A4's scene-object position/lookup update, applying the
+// reported camera yaw, later camera work, animation, or gameplay mutation.
 [[nodiscard]] bool calculate_world_map_movement_candidate(
     const WorldMapMovementQuery& query,
     WorldMapMovementCandidate* candidate);

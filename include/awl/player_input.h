@@ -25,6 +25,12 @@ struct WorldMapPosition {
     float z = 0.0f;
 };
 
+struct WorldMapPositionProposal {
+    WorldMapPosition position{};
+    float camera_yaw_after = 0.0f;
+    bool camera_yaw_written = false;
+};
+
 void update_world_map_steering(const HsdPadFrame& pad,
                                float camera_yaw_radians,
                                WorldMapSteeringState& state);
@@ -36,6 +42,15 @@ void update_world_map_steering(const HsdPadFrame& pad,
     const WorldMapPosition& current_position,
     float camera_yaw_radians,
     const WorldMapSteeringState& steering);
+
+// FUN_8003083C writes the second component's yaw to camera +0x1C when
+// camera byte +0x98 is nonzero. This reports that pre-collision side effect
+// for supplied camera state; the later FUN_80030E18 camera update is separate.
+[[nodiscard]] WorldMapPositionProposal propose_world_map_position_with_camera(
+    const WorldMapPosition& current_position,
+    float camera_yaw_radians,
+    const WorldMapSteeringState& steering,
+    bool camera_yaw_commit_enabled);
 
 // Isolates the directional-code selection after FUN_8001DE44 receives a
 // contact mask. The caller supplies a verified mask; world_map_contact.h
