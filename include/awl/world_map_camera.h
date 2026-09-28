@@ -40,7 +40,8 @@ struct WorldMapCameraFollowup {
 
 // Inputs read by FUN_8017B908 from the camera object. The region follow-up
 // supplies position, pitch (+0x18), yaw (+0x1C), flag, and bounds; the other
-// fields remain caller supplied until the camera constructor is translated.
+// fields remain caller supplied except when using the bounded constructor
+// profile helper below.
 struct WorldMapCameraTargetQuery {
     WorldMapCameraFollowupState camera{};
     std::array<float, 3> origin_offset_0c{};
@@ -80,6 +81,23 @@ struct WorldMapCameraView {
 // helper rejects degenerate input and leaves output unchanged on failure.
 [[nodiscard]] bool calculate_world_map_camera_view(
     const WorldMapCameraViewQuery& query, WorldMapCameraView* output);
+
+struct WorldMapCameraInitialProfile {
+    WorldMapCameraViewQuery view_query{};
+    WorldMapCameraView initial_view{};
+    float field_34 = 0.0f; // aspect input to FUN_801B8930
+    float field_38 = 0.0f; // angle input to FUN_801B8930
+    float field_3c = 0.0f; // near input to FUN_801B8930
+    float field_40 = 0.0f; // far input to FUN_801B8930
+    uint32_t mode_104 = 0;
+};
+
+// Bounded FUN_8008558C constructor path: FUN_8017B5F0 defaults, then the
+// world-map profile copied by FUN_8017B6D4, initial view rebuild, and the
+// mode-zero write in FUN_80085D18. It does not configure DX11 projection or
+// own the game camera. On failure, leaves output unchanged.
+[[nodiscard]] bool make_world_map_camera_initial_profile(
+    WorldMapCameraInitialProfile* output);
 
 struct WorldMapCameraPlane {
     std::array<float, 3> normal{}; // camera +0x174..+0x17C

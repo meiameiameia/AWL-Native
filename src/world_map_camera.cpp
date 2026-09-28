@@ -320,6 +320,35 @@ bool calculate_world_map_camera_view(
     return true;
 }
 
+bool make_world_map_camera_initial_profile(
+    WorldMapCameraInitialProfile* output) {
+    if (output == nullptr) {
+        return false;
+    }
+    WorldMapCameraInitialProfile next;
+    // FUN_8017B5F0 clears the view offsets and sets +0x98=1, +0x99=0.
+    // FUN_8008558C then copies the world-map row at 0x802AB940 through
+    // FUN_8017B6D4, overwriting the base camera's first 0x44 bytes.
+    next.view_query.target.camera.flag_98 = true;
+    next.view_query.target.camera.field_18 = -0.14835298f;
+    next.view_query.target.camera.yaw = 4.71238899f;
+    next.view_query.target.origin_offset_0c = {0.0f, 1.5f, 0.0f};
+    next.view_query.target.distance_30 = 12.0f;
+    next.view_query.up_vector_24 = {0.0f, 1.0f, 0.0f};
+    next.field_34 = 1.33333337f;
+    next.field_38 = 30.2000008f;
+    next.field_3c = 0.300000012f;
+    next.field_40 = 1024.0f;
+    // FUN_80085D18 writes mode zero; the initialized mode-zero entry at
+    // 0x802AB984 dispatches to the no-op thunk at 0x80085C5C.
+    if (!calculate_world_map_camera_view(next.view_query,
+                                          &next.initial_view)) {
+        return false;
+    }
+    *output = next;
+    return true;
+}
+
 bool calculate_world_map_camera_post_update(
     const WorldMapCameraViewQuery& query,
     WorldMapCameraHeightSampler sample_height, void* sample_context,

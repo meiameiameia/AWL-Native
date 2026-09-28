@@ -2100,6 +2100,54 @@ void test_world_map_camera_view() {
            "missing camera view output is rejected");
 }
 
+void test_world_map_camera_initial_profile() {
+    awl::WorldMapCameraInitialProfile profile;
+    expect(awl::make_world_map_camera_initial_profile(&profile) &&
+               profile.view_query.target.camera.position ==
+                   std::array<float, 3>{0.0f, 0.0f, 0.0f} &&
+               profile.view_query.target.origin_offset_0c ==
+                   std::array<float, 3>{0.0f, 1.5f, 0.0f} &&
+               camera_float_bits(profile.view_query.target.camera.field_18) ==
+                   0xBE17E9D8u &&
+               camera_float_bits(profile.view_query.target.camera.yaw) ==
+                   0x4096CBE4u &&
+               profile.view_query.up_vector_24 ==
+                   std::array<float, 3>{0.0f, 1.0f, 0.0f} &&
+               profile.view_query.target.distance_30 == 12.0f &&
+               profile.view_query.target.camera.flag_98 &&
+               !profile.view_query.target.camera.flag_99 &&
+               profile.mode_104 == 0,
+           "world-map constructor profile copies the verified camera fields");
+    expect(camera_float_bits(profile.field_34) == 0x3FAAAAABu &&
+               camera_float_bits(profile.field_38) == 0x41F1999Au &&
+               camera_float_bits(profile.field_3c) == 0x3E99999Au &&
+               camera_float_bits(profile.field_40) == 0x44800000u,
+           "constructor preserves the four DOL projection inputs");
+    expect(std::fabs(profile.initial_view.target.bounded[0] +
+                     11.86819037f) < 0.00001f &&
+               std::fabs(profile.initial_view.target.bounded[1] -
+                         3.27371287f) < 0.00001f &&
+               std::fabs(profile.initial_view.target.bounded[2]) < 0.00001f &&
+               std::fabs(profile.initial_view.matrix_50[2] - 1.0f) <
+                   0.00001f &&
+               std::fabs(profile.initial_view.matrix_50[8] +
+                         0.989015864f) < 0.00001f,
+           "initial view faces the DOL profile direction before player setup");
+
+    awl::WorldMapCameraFollowup followup;
+    expect(awl::plan_world_map_camera_followup(
+               profile.view_query.target.camera, 1,
+               {120.0f, 6.0f, 168.0f}, 0, 64, &followup) &&
+               followup.yaw_adjustment_called &&
+               followup.yaw_adjustment_written &&
+               std::fabs(followup.state.yaw -
+                         (profile.view_query.target.camera.yaw + 0.0625f)) <
+                   0.00001f,
+           "constructor flag enables the first outside-region yaw write");
+    expect(!awl::make_world_map_camera_initial_profile(nullptr),
+           "missing initial profile output is rejected");
+}
+
 struct CameraHeightScript {
     std::array<float, 2> heights{};
     std::array<std::array<float, 3>, 2> positions{};
@@ -4385,12 +4433,31 @@ bool check_local_camera_collision(const char* disc_root) {
     const bool mounted = awl::filesystem_mount("/", disc_root);
     const bool updated = mounted && camera_asset.load() &&
                          camera_asset.calculate_post_update(query, &result);
+    awl::WorldMapCameraInitialProfile profile;
+    awl::WorldMapCameraPostUpdate profiled_result;
+    bool profiled_update = updated &&
+                           awl::make_world_map_camera_initial_profile(&profile);
+    if (profiled_update) {
+        for (size_t axis = 0; axis < 3; ++axis) {
+            const float desired = axis == 0 ? x :
+                                  axis == 1 ? primary.height : z;
+            profile.view_query.target.camera.position[axis] =
+                desired - profile.initial_view.target.bounded[axis];
+        }
+        profiled_update = camera_asset.calculate_post_update(
+            profile.view_query, &profiled_result);
+    }
     awl::filesystem_shutdown();
     awl_memory_shutdown();
     if (!updated ||
         std::fabs(result.final_target[1] - primary.height) > 0.0001f ||
         std::fabs(result.final_target[0] - x) > 0.0001f ||
-        std::fabs(result.final_target[2] - z) > 0.0001f) {
+        std::fabs(result.final_target[2] - z) > 0.0001f ||
+        !profiled_update ||
+        std::fabs(profiled_result.first_view.target.bounded[0] - x) >
+            0.0001f ||
+        std::fabs(profiled_result.first_view.target.bounded[2] - z) >
+            0.0001f) {
         std::fprintf(stderr, "Local camera collision post-update failed\n");
         return false;
     }
@@ -5579,6 +5646,7 @@ int main(int argc, char** argv) {
     test_world_map_camera_followup();
     test_world_map_camera_target();
     test_world_map_camera_view();
+    test_world_map_camera_initial_profile();
     test_world_map_camera_post_update();
     test_world_map_camera_collision_height();
     test_world_map_movement_candidate_sequence();
