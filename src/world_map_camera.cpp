@@ -521,6 +521,72 @@ bool calculate_world_map_player_message_camera_update(
     return true;
 }
 
+bool calculate_world_map_player_movement_camera_update(
+    const WorldMapPlayerMovementCameraQuery& query,
+    WorldMapCameraHeightSampler sample_height, void* sample_context,
+    WorldMapPlayerMovementCameraResult* output) {
+    if (output == nullptr || sample_height == nullptr ||
+        !finite_vector(query.resolved_position)) {
+        return false;
+    }
+    WorldMapPlayerMovementCameraResult next;
+    WorldMapCameraViewQuery current = query.previous_camera;
+    if ((query.global_control_word_8034157c & 0x01000000u) != 0 &&
+        query.global_byte_3f1 == 0) {
+        // FUN_8003083C 0x80030D88..0x80030DD8 reads the negated heading
+        // before FUN_80030E18, and +0x98 gates only the yaw write.
+        if (!std::isfinite(query.heading_x) ||
+            !std::isfinite(query.heading_z)) {
+            return false;
+        }
+        const float selected_yaw = static_cast<float>(std::atan2(
+            -static_cast<double>(query.heading_x),
+            -static_cast<double>(query.heading_z)));
+        if (!std::isfinite(selected_yaw)) {
+            return false;
+        }
+        next.heading_yaw_branch_taken = true;
+        next.heading_yaw_written = current.target.camera.flag_98;
+        if (next.heading_yaw_written) {
+            current.target.camera.yaw = selected_yaw;
+        }
+    }
+    if (!plan_world_map_camera_followup(
+            current.target.camera, query.collision_category,
+            query.resolved_position, query.global_byte_3f1,
+            query.pad_byte_8e, &next.followup)) {
+        return false;
+    }
+    current.target.camera = next.followup.state;
+    if (!calculate_world_map_camera_post_update(
+            current, sample_height, sample_context, &next.update)) {
+        return false;
+    }
+    current.target.pitch_offset_8c = 0.0f;
+    current.target.yaw_offset_90 = 0.0f;
+    next.final_camera = current;
+
+    // FUN_80085B98 keeps +0x184 from the post-update, writes +0x180 from
+    // the resolved player position, then compares the final target against
+    // that new plane at 0x80085BB8..0x80085C40.
+    const auto& normal = next.update.final_plane.normal;
+    const auto& target = next.update.final_target;
+    next.movement_plane_constant_180 =
+        -(normal[0] * query.resolved_position[0] +
+          normal[1] * query.resolved_position[1] +
+          normal[2] * query.resolved_position[2]);
+    const float signed_distance =
+        normal[0] * target[0] + normal[1] * target[1] +
+        normal[2] * target[2] + next.movement_plane_constant_180;
+    if (!std::isfinite(next.movement_plane_constant_180) ||
+        !std::isfinite(signed_distance)) {
+        return false;
+    }
+    next.target_on_positive_side_188 = signed_distance >= 0.0f;
+    *output = next;
+    return true;
+}
+
 bool calculate_world_map_camera_post_update_from_collision(
     const WorldMapCameraViewQuery& query, const uint8_t* camera_col,
     size_t camera_col_size, WorldMapCameraPostUpdate* output) {
@@ -594,6 +660,17 @@ bool WorldMapCameraCollisionAsset::calculate_player_message_update(
     }
     CameraCollisionContext context{bytes_.data(), bytes_.size()};
     return calculate_world_map_player_message_camera_update(
+        query, sample_camera_collision_height, &context, output);
+}
+
+bool WorldMapCameraCollisionAsset::calculate_player_movement_update(
+    const WorldMapPlayerMovementCameraQuery& query,
+    WorldMapPlayerMovementCameraResult* output) const {
+    if (bytes_.empty()) {
+        return false;
+    }
+    CameraCollisionContext context{bytes_.data(), bytes_.size()};
+    return calculate_world_map_player_movement_camera_update(
         query, sample_camera_collision_height, &context, output);
 }
 

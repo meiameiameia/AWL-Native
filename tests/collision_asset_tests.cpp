@@ -2337,6 +2337,125 @@ void test_world_map_player_message_camera_update() {
            "requested camera work requires a height source and output");
 }
 
+void test_world_map_player_movement_camera_update() {
+    awl::WorldMapPlayerMovementCameraQuery query;
+    query.previous_camera.target.camera.position = {2.0f, 0.0f, 2.0f};
+    query.previous_camera.target.distance_30 = 2.0f;
+    query.previous_camera.up_vector_24 = {0.0f, 1.0f, 0.0f};
+    query.resolved_position = {2.0f, 0.0f, 2.0f};
+    query.collision_category = 2;
+    PlayerCameraHeightScript script;
+    awl::WorldMapPlayerMovementCameraResult result;
+    expect(awl::calculate_world_map_player_movement_camera_update(
+               query, player_camera_height, &script, &result) &&
+               script.calls == 2 &&
+               result.followup.region_index == -1 &&
+               result.final_camera.target.camera.position ==
+                   query.resolved_position &&
+               !result.heading_yaw_branch_taken &&
+               !result.target_on_positive_side_188 &&
+               std::fabs(result.movement_plane_constant_180 - 2.0f) <
+                   0.000001f,
+           "movement camera follows resolved position and marks forward target negative");
+    query.previous_camera.target.origin_offset_0c = {0.0f, 0.0f, -4.0f};
+    script = {};
+    expect(awl::calculate_world_map_player_movement_camera_update(
+               query, player_camera_height, &script, &result) &&
+               script.calls == 2 && result.target_on_positive_side_188 &&
+               result.update.final_target[2] < query.resolved_position[2],
+           "movement camera marks a target behind the player plane positive");
+    query.previous_camera.target.origin_offset_0c = {0.0f, 0.0f, -2.0f};
+    script = {};
+    expect(awl::calculate_world_map_player_movement_camera_update(
+               query, player_camera_height, &script, &result) &&
+               result.update.final_target[2] == query.resolved_position[2] &&
+               result.target_on_positive_side_188,
+           "movement plane counts an exactly coplanar target as positive");
+    query.previous_camera.target.origin_offset_0c = {};
+    query.previous_camera.target.camera.flag_98 = true;
+    query.global_control_word_8034157c = 0x01000000u;
+    query.heading_x = 1.0f;
+    query.heading_z = 0.0f;
+    script = {};
+    expect(awl::calculate_world_map_player_movement_camera_update(
+               query, player_camera_height, &script, &result) &&
+               script.calls == 2 && result.heading_yaw_branch_taken &&
+               result.heading_yaw_written &&
+               std::fabs(result.final_camera.target.camera.yaw +
+                         1.57079632679f) < 0.000001f,
+           "movement heading branch writes opposite-heading yaw before follow-up");
+    query.global_control_word_8034157c = 0x00800000u;
+    script = {};
+    expect(awl::calculate_world_map_player_movement_camera_update(
+               query, player_camera_height, &script, &result) &&
+               script.calls == 2 && !result.heading_yaw_branch_taken &&
+               result.final_camera.target.camera.yaw == 0.0f,
+           "adjacent control bit does not request the movement heading yaw");
+    query.global_control_word_8034157c = 0x01000000u;
+    awl::WorldMapPlayerMovementCameraQuery outside_query = query;
+    outside_query.collision_category = 1;
+    outside_query.resolved_position = {120.0f, 0.0f, 168.0f};
+    outside_query.pad_byte_8e = 64;
+    script = {};
+    expect(awl::calculate_world_map_player_movement_camera_update(
+               outside_query, player_camera_height, &script, &result) &&
+               script.calls == 2 && result.followup.region_index == -1 &&
+               result.heading_yaw_written &&
+               result.followup.yaw_adjustment_written &&
+               std::fabs(result.final_camera.target.camera.yaw -
+                         (-1.57079632679f + 0.0625f)) < 0.000001f,
+           "outside follow-up adds signed PAD yaw after heading yaw write");
+    query.global_byte_3f1 = 1;
+    script = {};
+    expect(awl::calculate_world_map_player_movement_camera_update(
+               query, player_camera_height, &script, &result) &&
+               script.calls == 2 && !result.heading_yaw_branch_taken &&
+               result.final_camera.target.camera.yaw == 0.0f,
+           "global byte blocks the optional heading yaw branch");
+    query.global_byte_3f1 = 0;
+    query.previous_camera.target.camera.flag_98 = false;
+    script = {};
+    expect(awl::calculate_world_map_player_movement_camera_update(
+               query, player_camera_height, &script, &result) &&
+               result.heading_yaw_branch_taken &&
+               !result.heading_yaw_written &&
+               result.final_camera.target.camera.yaw == 0.0f,
+           "clear camera flag blocks yaw write without skipping the branch");
+    query.collision_category = 1;
+    query.resolved_position = {175.0f, 0.0f, 115.0f};
+    query.previous_camera.target.camera.flag_98 = true;
+    script = {};
+    expect(awl::calculate_world_map_player_movement_camera_update(
+               query, player_camera_height, &script, &result) &&
+               script.calls == 2 && result.followup.region_index == 0 &&
+               result.final_camera.target.camera.yaw == 0.0f &&
+               result.final_camera.target.camera.flag_99,
+           "region profile follows the optional heading branch in DOL order");
+
+    const awl::WorldMapPlayerMovementCameraResult saved = result;
+    script = {0, 2};
+    expect(!awl::calculate_world_map_player_movement_camera_update(
+               query, player_camera_height, &script, &result) &&
+               script.calls == 2 &&
+               result.final_camera.target.camera.yaw ==
+                   saved.final_camera.target.camera.yaw &&
+               result.target_on_positive_side_188 ==
+                   saved.target_on_positive_side_188,
+           "failed movement camera height query preserves output");
+    query.heading_x = std::numeric_limits<float>::infinity();
+    query.collision_category = 2;
+    script = {};
+    expect(!awl::calculate_world_map_player_movement_camera_update(
+               query, player_camera_height, &script, &result) &&
+               script.calls == 0,
+           "invalid requested heading fails before height sampling");
+    expect(!awl::calculate_world_map_player_movement_camera_update(
+               query, nullptr, nullptr, &result) &&
+               !awl::calculate_world_map_player_movement_camera_update(
+                   query, player_camera_height, &script, nullptr),
+           "movement camera requires a height source and output");
+}
+
 struct CameraHeightScript {
     std::array<float, 2> heights{};
     std::array<std::array<float, 3>, 2> positions{};
@@ -4653,6 +4772,14 @@ bool check_local_camera_collision(const char* disc_root) {
     const bool message_updated = placed &&
                                  camera_asset.calculate_player_message_update(
                                      message_query, &message_result);
+    awl::WorldMapPlayerMovementCameraQuery movement_query;
+    movement_query.previous_camera = query;
+    movement_query.resolved_position = query.target.camera.position;
+    movement_query.collision_category = 2;
+    awl::WorldMapPlayerMovementCameraResult movement_result;
+    const bool movement_updated = message_updated &&
+                                  camera_asset.calculate_player_movement_update(
+                                      movement_query, &movement_result);
     awl::filesystem_shutdown();
     awl_memory_shutdown();
     if (!updated ||
@@ -4665,6 +4792,9 @@ bool check_local_camera_collision(const char* disc_root) {
         !message_updated || !message_result.update_called ||
         std::fabs(message_result.update.final_target[0] - x) > 0.0001f ||
         std::fabs(message_result.update.final_target[2] - z) > 0.0001f ||
+        !movement_updated || movement_result.target_on_positive_side_188 ||
+        std::fabs(movement_result.update.final_target[0] - x) > 0.0001f ||
+        std::fabs(movement_result.update.final_target[2] - z) > 0.0001f ||
         std::fabs(placement.final_update.final_target[0] - x) > 0.0001f ||
         std::fabs(placement.final_update.final_target[2] - z) > 0.0001f ||
         std::fabs(profiled_result.first_view.target.bounded[0] - x) >
@@ -5065,6 +5195,11 @@ void test_world_map_collision_asset_provider() {
         message_query.message.position = camera_query.target.camera.position;
         message_query.message.camera_update_requested = 1;
         awl::WorldMapPlayerCameraMessageResult message_result;
+        awl::WorldMapPlayerMovementCameraQuery movement_query;
+        movement_query.previous_camera = camera_query;
+        movement_query.resolved_position = camera_query.target.camera.position;
+        movement_query.collision_category = 2;
+        awl::WorldMapPlayerMovementCameraResult movement_result;
         expect(camera_asset.load() && camera_asset.loaded() &&
                    camera_asset.size() == static_asset.size() &&
                    camera_asset.calculate_post_update(camera_query,
@@ -5073,6 +5208,8 @@ void test_world_map_collision_asset_provider() {
                        placement_query, &placement_result) &&
                    camera_asset.calculate_player_message_update(
                        message_query, &message_result) &&
+                   camera_asset.calculate_player_movement_update(
+                       movement_query, &movement_result) &&
                    message_result.update_called &&
                    placement_result.second_update_called &&
                    camera_result.terrain_clamped &&
@@ -5088,6 +5225,8 @@ void test_world_map_collision_asset_provider() {
                        placement_query, &placement_result) &&
                    !camera_asset.calculate_player_message_update(
                        message_query, &message_result) &&
+                   !camera_asset.calculate_player_movement_update(
+                       movement_query, &movement_result) &&
                    message_result.update_called &&
                    placement_result.second_update_called &&
                    camera_result.final_target == saved_camera_target,
@@ -5892,6 +6031,7 @@ int main(int argc, char** argv) {
     test_world_map_camera_initial_profile();
     test_world_map_player_camera_placement();
     test_world_map_player_message_camera_update();
+    test_world_map_player_movement_camera_update();
     test_world_map_camera_post_update();
     test_world_map_camera_collision_height();
     test_world_map_movement_candidate_sequence();

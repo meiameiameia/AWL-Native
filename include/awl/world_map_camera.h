@@ -184,6 +184,36 @@ struct WorldMapPlayerCameraMessageResult {
     WorldMapCameraHeightSampler sample_height, void* sample_context,
     WorldMapPlayerCameraMessageResult* output);
 
+struct WorldMapPlayerMovementCameraQuery {
+    WorldMapCameraViewQuery previous_camera{};
+    std::array<float, 3> resolved_position{};
+    int32_t collision_category = 0; // player +0x64
+    float heading_x = 0.0f; // player +0x58
+    float heading_z = 0.0f; // player +0x60
+    uint32_t global_control_word_8034157c = 0;
+    uint8_t global_byte_3f1 = 0;
+    int8_t pad_byte_8e = 0;
+};
+
+struct WorldMapPlayerMovementCameraResult {
+    WorldMapCameraViewQuery final_camera{};
+    WorldMapCameraFollowup followup{};
+    WorldMapCameraPostUpdate update{};
+    bool heading_yaw_branch_taken = false;
+    bool heading_yaw_written = false;
+    float movement_plane_constant_180 = 0.0f;
+    bool target_on_positive_side_188 = false;
+};
+
+// Camera tail of FUN_8003083C after the collision-adjusted scene position
+// write: optional opposite-heading yaw, FUN_80030E18's one post-update,
+// then FUN_80085B98's plane-side test. The separate FUN_80141028 call in
+// the heading branch is not translated here. Output is atomic on failure.
+[[nodiscard]] bool calculate_world_map_player_movement_camera_update(
+    const WorldMapPlayerMovementCameraQuery& query,
+    WorldMapCameraHeightSampler sample_height, void* sample_context,
+    WorldMapPlayerMovementCameraResult* output);
+
 // FUN_8001CADC loads this fixed slot-1 asset before camera updates.
 inline constexpr const char* kWorldMapCameraCollisionPath =
     "/files/jimen-camera.col";
@@ -213,6 +243,9 @@ public:
     [[nodiscard]] bool calculate_player_message_update(
         const WorldMapPlayerCameraMessageQuery& query,
         WorldMapPlayerCameraMessageResult* output) const;
+    [[nodiscard]] bool calculate_player_movement_update(
+        const WorldMapPlayerMovementCameraQuery& query,
+        WorldMapPlayerMovementCameraResult* output) const;
 
 private:
     std::vector<uint8_t> bytes_;
