@@ -4379,8 +4379,15 @@ bool check_local_camera_collision(const char* disc_root) {
     query.target.distance_30 = 2.0f;
     query.up_vector_24 = {0.0f, 1.0f, 0.0f};
     awl::WorldMapCameraPostUpdate result;
-    if (!awl::calculate_world_map_camera_post_update_from_collision(
-            query, bytes.data(), bytes.size(), &result) ||
+    awl_memory_init();
+    awl::filesystem_init();
+    awl::WorldMapCameraCollisionAsset camera_asset;
+    const bool mounted = awl::filesystem_mount("/", disc_root);
+    const bool updated = mounted && camera_asset.load() &&
+                         camera_asset.calculate_post_update(query, &result);
+    awl::filesystem_shutdown();
+    awl_memory_shutdown();
+    if (!updated ||
         std::fabs(result.final_target[1] - primary.height) > 0.0001f ||
         std::fabs(result.final_target[0] - x) > 0.0001f ||
         std::fabs(result.final_target[2] - z) > 0.0001f) {
@@ -4739,6 +4746,7 @@ void test_world_map_collision_asset_provider() {
     const fs::path terrain_path = files / "jimen-move.col";
     const fs::path alternate_terrain_path = files / "jimen1-move.col";
     const fs::path static_path = files / "mapobj.col";
+    const fs::path camera_path = files / "jimen-camera.col";
     const std::vector<uint8_t> terrain = make_sample_leaf();
     std::vector<uint8_t> spawn_terrain = make_sample_leaf();
     constexpr uint32_t spawn_payload = 8 + 0x34;
@@ -4750,7 +4758,8 @@ void test_world_map_collision_asset_provider() {
     static_asset[6] = 0;
     expect(write(terrain_path, terrain) &&
                write(alternate_terrain_path, spawn_terrain) &&
-               write(static_path, static_asset),
+               write(static_path, static_asset) &&
+               write(camera_path, static_asset),
            "collision fixtures are written");
 
     awl_memory_init();
@@ -4759,6 +4768,41 @@ void test_world_map_collision_asset_provider() {
     const bool mounted = awl::filesystem_mount("/", native_root.c_str());
     expect(mounted, "collision fixture mount succeeds");
     if (mounted) {
+        awl::WorldMapCameraCollisionAsset camera_asset;
+        awl::WorldMapCameraViewQuery camera_query;
+        camera_query.target.camera.position = {2.0f, 0.0f, 0.0f};
+        camera_query.target.distance_30 = 2.0f;
+        camera_query.up_vector_24 = {0.0f, 1.0f, 0.0f};
+        awl::WorldMapCameraPostUpdate camera_result;
+        expect(camera_asset.load() && camera_asset.loaded() &&
+                   camera_asset.size() == static_asset.size() &&
+                   camera_asset.calculate_post_update(camera_query,
+                                                      &camera_result) &&
+                   camera_result.terrain_clamped &&
+                   camera_result.first_view.target.bounded ==
+                       std::array<float, 3>{2.0f, 0.0f, 2.0f},
+               "mounted slot-1 camera asset supplies the two height queries");
+        const auto saved_camera_target = camera_result.final_target;
+        fs::remove(camera_path, error);
+        expect(!camera_asset.load() && !camera_asset.loaded() &&
+                   !camera_asset.calculate_post_update(camera_query,
+                                                       &camera_result) &&
+                   camera_result.final_target == saved_camera_target,
+               "missing camera file clears the owner without changing output");
+        expect(write(camera_path, {0, 1, 2}) && !camera_asset.load() &&
+                   !camera_asset.loaded(),
+               "malformed camera collision file is rejected");
+        expect(write(camera_path, terrain) && !camera_asset.load() &&
+                   !camera_asset.loaded(),
+               "movement-mode COL cannot replace the fixed camera asset");
+        expect(write(camera_path, static_asset) && camera_asset.load(),
+               "valid camera asset can reload after failure");
+        camera_asset.clear();
+        expect(!camera_asset.loaded() &&
+                   !camera_asset.calculate_post_update(camera_query,
+                                                       &camera_result),
+               "cleared camera owner cannot serve a camera update");
+
         awl::WorldMapCollisionAssets assets;
         awl::CollisionCategory1MovementQuery query;
         query.moving_radius = 0.3f;
@@ -4850,6 +4894,7 @@ void test_world_map_collision_asset_provider() {
     fs::remove(terrain_path, error);
     fs::remove(alternate_terrain_path, error);
     fs::remove(static_path, error);
+    fs::remove(camera_path, error);
     fs::remove(files, error);
     fs::remove(root, error);
     expect(!error, "collision fixture directory is cleaned up");

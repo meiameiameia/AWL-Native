@@ -1,9 +1,12 @@
 #include "awl/world_map_camera.h"
 
 #include "awl/collision_asset.h"
+#include "awl/filesystem.h"
+#include "awl/platform.h"
 
 #include <cmath>
 #include <cstddef>
+#include <memory>
 #include <utility>
 
 namespace awl {
@@ -407,6 +410,41 @@ bool calculate_world_map_camera_post_update_from_collision(
     CameraCollisionContext context{camera_col, camera_col_size};
     return calculate_world_map_camera_post_update(
         query, sample_camera_collision_height, &context, output);
+}
+
+bool WorldMapCameraCollisionAsset::load() {
+    clear();
+    void* raw = nullptr;
+    size_t size = 0;
+    if (!filesystem_read_entire_file(kWorldMapCameraCollisionPath, &raw,
+                                     &size)) {
+        return false;
+    }
+    std::unique_ptr<void, decltype(&filesystem_free_file_data)> owned(
+        raw, &filesystem_free_file_data);
+    const auto* first = static_cast<const uint8_t*>(raw);
+    std::vector<uint8_t> next(first, first + size);
+    CollisionTreeAnalysis analysis;
+    if (!analyze_type1_collision_asset(next.data(), next.size(), &analysis) ||
+        analysis.header_byte_6 != 0) {
+        AWL_LOG_ERROR("Unsupported camera collision asset: %s",
+                      kWorldMapCameraCollisionPath);
+        return false;
+    }
+    bytes_.swap(next);
+    return true;
+}
+
+void WorldMapCameraCollisionAsset::clear() {
+    bytes_.clear();
+}
+
+bool WorldMapCameraCollisionAsset::calculate_post_update(
+    const WorldMapCameraViewQuery& query,
+    WorldMapCameraPostUpdate* output) const {
+    return !bytes_.empty() &&
+           calculate_world_map_camera_post_update_from_collision(
+               query, bytes_.data(), bytes_.size(), output);
 }
 
 } // namespace awl

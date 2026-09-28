@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 namespace awl {
 
@@ -119,5 +120,22 @@ inline constexpr const char* kWorldMapCameraCollisionPath =
 [[nodiscard]] bool calculate_world_map_camera_post_update_from_collision(
     const WorldMapCameraViewQuery& query, const uint8_t* camera_col,
     size_t camera_col_size, WorldMapCameraPostUpdate* output);
+
+// Native owner for FUN_8001CADC's fixed slot-1 camera COL. The caller first
+// mounts its verified disc extraction and still supplies camera state. A
+// failed reload clears the previous bytes; no live camera is updated here.
+class WorldMapCameraCollisionAsset {
+public:
+    [[nodiscard]] bool load();
+    void clear();
+    [[nodiscard]] bool loaded() const { return !bytes_.empty(); }
+    [[nodiscard]] size_t size() const { return bytes_.size(); }
+    [[nodiscard]] bool calculate_post_update(
+        const WorldMapCameraViewQuery& query,
+        WorldMapCameraPostUpdate* output) const;
+
+private:
+    std::vector<uint8_t> bytes_;
+};
 
 } // namespace awl
