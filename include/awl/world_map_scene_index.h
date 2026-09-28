@@ -97,6 +97,22 @@ struct WorldMapPlayerSceneMessage1F {
     WorldMapPlayerScenePose* pose,
     WorldMapScenePositionUpdate* update);
 
+struct WorldMapSceneModeRequestState {
+    int32_t mode_58 = 0;
+    int32_t previous_mode_5c = 0;
+    int32_t state_64 = 0;
+    uint8_t scene_byte_78 = 0;
+    uint8_t global_flag_59af = 0;
+    uint8_t global_flag_59b0 = 0;
+};
+
+// The state and global-flag effects of FUN_8017767C. The step-0 and step-3
+// callers still need their surrounding scene operations and live ownership.
+[[nodiscard]] bool apply_world_map_scene_mode_request(
+    WorldMapSceneModeRequestState* state,
+    int32_t requested_mode,
+    uint8_t scene_byte);
+
 struct WorldMapPlayerFixedTransitionStepState {
     // FUN_8010ACF4 reads these two guards and its sequence step.
     int32_t state_680 = -1;

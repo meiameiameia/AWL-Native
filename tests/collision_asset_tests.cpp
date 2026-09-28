@@ -2279,6 +2279,48 @@ void test_world_map_player_fixed_scene_message_1f() {
            "missing player ID or output rejects the fixed message atomically");
 }
 
+void test_world_map_scene_mode_request() {
+    awl::WorldMapSceneModeRequestState state;
+    state.previous_mode_5c = 4;
+    state.state_64 = 8;
+    expect(awl::apply_world_map_scene_mode_request(&state, 3, 0) &&
+               state.mode_58 == 3 && state.scene_byte_78 == 0 &&
+               state.state_64 == 8 && state.global_flag_59af == 1 &&
+               state.global_flag_59b0 == 0,
+           "step-zero mode three requests the mode without classified flag");
+
+    expect(awl::apply_world_map_scene_mode_request(&state, 6, 7) &&
+               state.mode_58 == 6 && state.scene_byte_78 == 7 &&
+               state.state_64 == 8 && state.global_flag_59b0 == 1,
+           "classified request and previous mode set the second global flag");
+    state.global_flag_59b0 = 0;
+    state.previous_mode_5c = 3;
+    expect(awl::apply_world_map_scene_mode_request(&state, 14, 1) &&
+               state.global_flag_59b0 == 0,
+           "unclassified previous mode cannot set the second flag");
+
+    state.previous_mode_5c = 14;
+    state.state_64 = 0;
+    expect(awl::apply_world_map_scene_mode_request(&state, 4, 2) &&
+               state.state_64 == 1 && state.global_flag_59b0 == 1,
+           "mode four sets state 64 and matches previous mode fourteen");
+    state.state_64 = 0;
+    state.global_flag_59b0 = 0;
+    expect(awl::apply_world_map_scene_mode_request(&state, 13, 3) &&
+               state.state_64 == 1 && state.global_flag_59b0 == 0,
+           "mode thirteen sets state 64 but is not a classified flag mode");
+    state.global_flag_59b0 = 1;
+    expect(awl::apply_world_map_scene_mode_request(&state, 99, 0) &&
+               state.state_64 == 1 && state.global_flag_59b0 == 1,
+           "other modes preserve sticky scene and global state");
+    const auto saved = state;
+    expect(!awl::apply_world_map_scene_mode_request(nullptr, 4, 0) &&
+               state.mode_58 == saved.mode_58 &&
+               state.global_flag_59af == saved.global_flag_59af &&
+               state.global_flag_59b0 == saved.global_flag_59b0,
+           "absent scene-mode state rejects the request");
+}
+
 void test_world_map_player_sequence_reset() {
     awl::WorldMapPlayerFixedTransitionStepState state;
     state.scene_byte_79 = 7;
@@ -4765,6 +4807,7 @@ int main(int argc, char** argv) {
     test_world_map_scene_bucket_registry();
     test_world_map_player_scene_message_1f();
     test_world_map_player_fixed_scene_message_1f();
+    test_world_map_scene_mode_request();
     test_world_map_player_sequence_reset();
     test_world_map_player_fixed_transition_step();
     test_world_map_collision_mode_flags();

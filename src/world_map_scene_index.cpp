@@ -184,6 +184,30 @@ bool apply_world_map_player_fixed_scene_message_1f(
         1, message, registry, pose, update);
 }
 
+bool apply_world_map_scene_mode_request(
+    WorldMapSceneModeRequestState* state,
+    int32_t requested_mode,
+    uint8_t scene_byte) {
+    if (state == nullptr) {
+        return false;
+    }
+    state->scene_byte_78 = scene_byte;
+    state->mode_58 = requested_mode;
+    if (requested_mode == 4 || requested_mode == 13) {
+        state->state_64 = 1;
+    }
+    // FUN_800126E0 marks every mode request. FUN_80012740 classifies
+    // 4, 6, and 14 for the additional prior-mode flag.
+    state->global_flag_59af = 1;
+    const auto classified = [](int32_t mode) {
+        return mode == 4 || mode == 6 || mode == 14;
+    };
+    if (classified(requested_mode) && classified(state->previous_mode_5c)) {
+        state->global_flag_59b0 = 1;
+    }
+    return true;
+}
+
 bool reset_world_map_player_sequence_step(
     WorldMapPlayerFixedTransitionStepState* state) {
     if (state == nullptr ||
