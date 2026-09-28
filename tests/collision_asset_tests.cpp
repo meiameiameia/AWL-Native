@@ -4449,7 +4449,15 @@ bool replay_local_static_wall_route(
     native.set_key(awl::NativeKey::S, diagonal);
     bool saw_contact = false;
     bool approached_wall = false;
+    bool saw_neutral_fallback_reprojection = false;
     float previous_distance = wall.signed_distance(position);
+    awl::CollisionSurfaceSample start_surface;
+    const bool start_contained = awl::sample_type1_collision_surface(
+        assets.terrain_bytes().data(), assets.terrain_bytes().size(),
+        position[0], position[2], &start_surface);
+    if (start_contained != (side != awl::DevelopmentWallRouteSide::MinZ)) {
+        return false;
+    }
     for (int frame = 0; frame < 28; ++frame) {
         if (frame == 20) {
             native.set_key(awl::NativeKey::D, false);
@@ -4473,6 +4481,24 @@ bool replay_local_static_wall_route(
             !std::isfinite(candidate.resolved_position[1]) ||
             !std::isfinite(candidate.resolved_position[2])) {
             return false;
+        }
+        if (frame >= 26) {
+            if (candidate.steering.current_speed != 0.0f ||
+                candidate.proposed_position != position) {
+                return false;
+            }
+            if (side == awl::DevelopmentWallRouteSide::MinZ) {
+                saw_neutral_fallback_reprojection =
+                    saw_neutral_fallback_reprojection ||
+                    (candidate.collision.terrain.initial_edge_fallback &&
+                     candidate.collision.static_contact.contact &&
+                     candidate.collision.terrain.position != position &&
+                     candidate.collision.static_contact.position !=
+                         candidate.collision.terrain.position &&
+                     candidate.resolved_position != position);
+            } else if (candidate.resolved_position != position) {
+                return false;
+            }
         }
         position = candidate.resolved_position;
         steering = candidate.steering;
@@ -4512,6 +4538,8 @@ bool replay_local_static_wall_route(
             ? previous_distance > 0.6f && previous_distance < 0.9f
             : previous_distance < 0.6f;
     return approached_wall && saw_contact && expected_distance &&
+           (side != awl::DevelopmentWallRouteSide::MinZ ||
+            saw_neutral_fallback_reprojection) &&
            steering.current_speed == 0.0f;
 }
 
