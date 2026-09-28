@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 
 namespace awl {
@@ -27,7 +28,8 @@ struct WorldMapCameraFollowup {
 // Isolates FUN_80030E18's direct writes, region selection, and the conditional
 // FUN_80085FD0 yaw adjustment from signed PAD byte 0x8034158E. The adjustment
 // checks the *previous* +0x98 flag before the outside branch sets it to one.
-// FUN_80085884 and FUN_80085998 run afterward in the DOL and remain unknown.
+// FUN_80085884 and FUN_80085998 run afterward in the DOL; their supplied
+// camera and height path is modeled separately below.
 // On invalid input, returns false without changing output.
 [[nodiscard]] bool plan_world_map_camera_followup(
     const WorldMapCameraFollowupState& previous, int32_t category,
@@ -53,8 +55,8 @@ struct WorldMapCameraTarget {
 };
 
 // Isolates FUN_8017B834's target calculation (FUN_8017B908) and optional
-// per-axis bounds (FUN_8017B9C4). The later target offsets, up vector, view
-// matrix, and terrain adjustment remain untranslated. Failure is atomic.
+// per-axis bounds (FUN_8017B9C4). The later view and terrain stages are
+// modeled below for supplied data. Failure is atomic.
 [[nodiscard]] bool calculate_world_map_camera_target(
     const WorldMapCameraTargetQuery& query, WorldMapCameraTarget* output);
 
@@ -106,5 +108,16 @@ struct WorldMapCameraPostUpdate {
     const WorldMapCameraViewQuery& query,
     WorldMapCameraHeightSampler sample_height, void* sample_context,
     WorldMapCameraPostUpdate* output);
+
+// FUN_8001CADC loads this fixed slot-1 asset before camera updates.
+inline constexpr const char* kWorldMapCameraCollisionPath =
+    "/files/jimen-camera.col";
+
+// Applies the post-update using a caller-owned, validated type-1 camera COL
+// (header byte 6 = 0). This is still a supplied-data path, not live camera
+// or scene ownership. Failure leaves output unchanged.
+[[nodiscard]] bool calculate_world_map_camera_post_update_from_collision(
+    const WorldMapCameraViewQuery& query, const uint8_t* camera_col,
+    size_t camera_col_size, WorldMapCameraPostUpdate* output);
 
 } // namespace awl

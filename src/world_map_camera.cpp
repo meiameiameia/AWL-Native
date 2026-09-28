@@ -1,5 +1,7 @@
 #include "awl/world_map_camera.h"
 
+#include "awl/collision_asset.h"
+
 #include <cmath>
 #include <cstddef>
 #include <utility>
@@ -138,6 +140,26 @@ bool calculate_plane(float yaw, const std::array<float, 3>& target,
         return false;
     }
     *output = next;
+    return true;
+}
+
+struct CameraCollisionContext {
+    const uint8_t* data = nullptr;
+    size_t size = 0;
+};
+
+bool sample_camera_collision_height(const std::array<float, 3>& target,
+                                    float* height, void* context) {
+    if (height == nullptr || context == nullptr) {
+        return false;
+    }
+    const auto* collision = static_cast<const CameraCollisionContext*>(context);
+    CollisionHeightSample sample;
+    if (!sample_type1_collision_height(collision->data, collision->size,
+                                       target[0], target[2], &sample)) {
+        return false;
+    }
+    *height = sample.height;
     return true;
 }
 
@@ -370,6 +392,21 @@ bool calculate_world_map_camera_post_update(
     }
     *output = next;
     return true;
+}
+
+bool calculate_world_map_camera_post_update_from_collision(
+    const WorldMapCameraViewQuery& query, const uint8_t* camera_col,
+    size_t camera_col_size, WorldMapCameraPostUpdate* output) {
+    CollisionTreeAnalysis analysis;
+    if (output == nullptr ||
+        !analyze_type1_collision_asset(camera_col, camera_col_size,
+                                       &analysis) ||
+        analysis.header_byte_6 != 0) {
+        return false;
+    }
+    CameraCollisionContext context{camera_col, camera_col_size};
+    return calculate_world_map_camera_post_update(
+        query, sample_camera_collision_height, &context, output);
 }
 
 } // namespace awl

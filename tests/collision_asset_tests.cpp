@@ -2206,6 +2206,60 @@ void test_world_map_camera_post_update() {
            "missing terrain sampler or camera result is rejected");
 }
 
+void test_world_map_camera_collision_height() {
+    std::vector<uint8_t> camera_col = make_sample_leaf();
+    camera_col[6] = 0;
+    awl::CollisionHeightSample height;
+    expect(awl::sample_type1_collision_height(
+               camera_col.data(), camera_col.size(), 2.0f, 2.0f,
+               &height) &&
+               height.height == 6.0f && !height.used_edge_fallback,
+           "camera slot-1 containment interpolates its triangle height");
+    expect(awl::sample_type1_collision_height(
+               camera_col.data(), camera_col.size(), -1.0f, 2.0f,
+               &height) &&
+               height.height == 4.0f && height.used_edge_fallback,
+           "camera slot-1 miss samples the nearest edge's height");
+
+    awl::WorldMapCameraViewQuery query;
+    query.target.camera.position = {2.0f, 0.0f, 0.0f};
+    query.target.distance_30 = 2.0f;
+    query.up_vector_24 = {0.0f, 1.0f, 0.0f};
+    awl::WorldMapCameraPostUpdate result;
+    expect(awl::calculate_world_map_camera_post_update_from_collision(
+               query, camera_col.data(), camera_col.size(), &result) &&
+               result.first_view.target.bounded ==
+                   std::array<float, 3>{2.0f, 0.0f, 2.0f} &&
+               std::fabs(result.temporary_pitch_offset_8c +
+                         1.249045772f) < 0.00001f &&
+               result.terrain_clamped &&
+               std::fabs(result.final_target[1] -
+                         (2.0f + 2.0f * result.pitched_view.target.bounded[2])) <
+                   0.00001f,
+           "camera post-update uses slot-1 heights for both ordered queries");
+
+    const awl::WorldMapCameraPostUpdate saved = result;
+    camera_col[6] = 1;
+    expect(!awl::calculate_world_map_camera_post_update_from_collision(
+               query, camera_col.data(), camera_col.size(), &result) &&
+               result.final_target == saved.final_target,
+           "movement terrain is rejected as the camera collision source");
+    camera_col[6] = 2;
+    expect(!awl::sample_type1_collision_height(
+               camera_col.data(), camera_col.size(), 2.0f, 2.0f,
+               &height),
+           "unsupported collision height mode is rejected");
+    camera_col = make_single_leaf();
+    camera_col[6] = 0;
+    expect(!awl::sample_type1_collision_height(
+               camera_col.data(), camera_col.size(), 2.0f, 2.0f,
+               &height) &&
+               !awl::calculate_world_map_camera_post_update_from_collision(
+                   query, camera_col.data(), camera_col.size(), &result) &&
+               result.final_target == saved.final_target,
+           "empty camera leaf fails without a silent zero-height fallback");
+}
+
 void test_world_map_movement_candidate_sequence() {
     std::vector<uint8_t> terrain = make_sample_leaf();
     awl::WorldMapMovementQuery query;
@@ -4296,6 +4350,49 @@ bool inspect_local_asset(const char* path) {
     return true;
 }
 
+bool check_local_camera_collision(const char* disc_root) {
+    const std::filesystem::path path =
+        std::filesystem::path(disc_root) /
+        std::filesystem::path(awl::kWorldMapCameraCollisionPath + 1);
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        std::fprintf(stderr, "Unable to open local camera collision asset\n");
+        return false;
+    }
+    const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(input)),
+                                     std::istreambuf_iterator<char>());
+    awl::CollisionTreeAnalysis analysis;
+    if (!analyze(bytes, analysis) || analysis.header_byte_6 != 0) {
+        std::fprintf(stderr, "Unsupported local camera collision asset\n");
+        return false;
+    }
+    const float x = (analysis.root_min[0] + analysis.root_max[0]) * 0.5f;
+    const float z = (analysis.root_min[2] + analysis.root_max[2]) * 0.5f;
+    awl::CollisionSurfaceSample primary;
+    if (!awl::sample_type1_collision_surface(bytes.data(), bytes.size(),
+                                             x, z, &primary)) {
+        std::fprintf(stderr, "Camera collision center has no surface\n");
+        return false;
+    }
+    awl::WorldMapCameraViewQuery query;
+    query.target.camera.position = {x, primary.height, z - 2.0f};
+    query.target.distance_30 = 2.0f;
+    query.up_vector_24 = {0.0f, 1.0f, 0.0f};
+    awl::WorldMapCameraPostUpdate result;
+    if (!awl::calculate_world_map_camera_post_update_from_collision(
+            query, bytes.data(), bytes.size(), &result) ||
+        std::fabs(result.final_target[1] - primary.height) > 0.0001f ||
+        std::fabs(result.final_target[0] - x) > 0.0001f ||
+        std::fabs(result.final_target[2] - z) > 0.0001f) {
+        std::fprintf(stderr, "Local camera collision post-update failed\n");
+        return false;
+    }
+    std::printf("Local camera collision route validated: nodes=%zu leaves=%zu "
+                "triangles=%zu\n", analysis.node_count, analysis.leaf_count,
+                analysis.triangle_count);
+    return true;
+}
+
 // Development-only replay of supplied clear routes. The fixture supplies an
 // empty dynamic-object list and scene type zero; it is not a game-owned player.
 enum class LocalSlopeExpectation {
@@ -5438,6 +5535,7 @@ int main(int argc, char** argv) {
     test_world_map_camera_target();
     test_world_map_camera_view();
     test_world_map_camera_post_update();
+    test_world_map_camera_collision_height();
     test_world_map_movement_candidate_sequence();
     test_synthetic_player_route_replay();
     test_world_map_scene_position_bucket_decision();
@@ -5469,6 +5567,10 @@ int main(int argc, char** argv) {
             }
         } else if (std::strcmp(argv[index], "--replay-local") == 0) {
             if (++index >= argc || !replay_local_player_route(argv[index])) {
+                ++failures;
+            }
+        } else if (std::strcmp(argv[index], "--camera-local") == 0) {
+            if (++index >= argc || !check_local_camera_collision(argv[index])) {
                 ++failures;
             }
         } else if (!inspect_local_asset(argv[index])) {

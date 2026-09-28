@@ -204,6 +204,19 @@ struct CollisionCategory1MovementAdjustment {
     float z,
     CollisionSurfaceSample* sample);
 
+struct CollisionHeightSample {
+    float height = 0.0f;
+    bool used_edge_fallback = false;
+    uint32_t leaf_offset = 0;
+};
+
+// FUN_8001FF70's type-1 height result: first containing triangle, then
+// nearest edge in the freshly selected leaf. Supports verified header-byte-6
+// modes 0 (camera) and 1 (movement terrain); an empty leaf is rejected.
+[[nodiscard]] bool sample_type1_collision_height(
+    const uint8_t* data, size_t size, float x, float z,
+    CollisionHeightSample* sample);
+
 // Projects (x, z) onto the nearest triangle edge in the selected leaf and
 // evaluates the selected triangle's height there. This is the target's
 // FUN_801917FC type-1 fallback, not a movement collision resolver.

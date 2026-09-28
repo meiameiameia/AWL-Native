@@ -449,6 +449,36 @@ bool project_type1_collision_to_edge(const uint8_t* data,
     return project_edge_in_leaf(data, analysis, node_offset, x, z, sample);
 }
 
+bool sample_type1_collision_height(const uint8_t* data, size_t size,
+                                   float x, float z,
+                                   CollisionHeightSample* sample) {
+    if (sample != nullptr) {
+        *sample = {};
+    }
+    CollisionTreeAnalysis analysis;
+    if (sample == nullptr || !std::isfinite(x) || !std::isfinite(z) ||
+        !analyze_type1_collision_asset(data, size, &analysis) ||
+        analysis.header_byte_6 > 1) {
+        return false;
+    }
+    const uint32_t node_offset =
+        select_leaf(data, analysis.coordinate_scale, x, z);
+    CollisionSurfaceSample surface;
+    if (sample_surface_in_leaf(data, analysis, node_offset, x, z, &surface)) {
+        sample->height = surface.height;
+        sample->leaf_offset = node_offset;
+        return true;
+    }
+    CollisionEdgeSample edge;
+    if (!project_edge_in_leaf(data, analysis, node_offset, x, z, &edge)) {
+        return false;
+    }
+    sample->height = edge.position[1];
+    sample->used_edge_fallback = true;
+    sample->leaf_offset = node_offset;
+    return true;
+}
+
 bool resample_type1_collision_resolver_height(
     const uint8_t* data,
     size_t size,
