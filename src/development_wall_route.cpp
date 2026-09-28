@@ -6,17 +6,37 @@
 namespace awl {
 
 bool derive_development_wall_route(const WorldMapCollisionAssets& assets,
-                                   DevelopmentWallRoute* route) {
+                                   DevelopmentWallRoute* route,
+                                   DevelopmentWallRouteSide side) {
     if (route == nullptr) {
         return false;
     }
     const auto& bytes = assets.static_bytes();
     const auto& analysis = assets.static_analysis();
     CollisionEdgeSample edge;
+    const float center_x = (analysis.root_min[0] + analysis.root_max[0]) * 0.5f;
     const float center_z = (analysis.root_min[2] + analysis.root_max[2]) * 0.5f;
+    float seed_x = 0.0f;
+    float seed_z = 0.0f;
+    switch (side) {
+    case DevelopmentWallRouteSide::MinX:
+        seed_x = analysis.root_min[0] - 1.0f;
+        seed_z = center_z;
+        break;
+    case DevelopmentWallRouteSide::MinZ:
+        seed_x = center_x;
+        seed_z = analysis.root_min[2] - 1.0f;
+        break;
+    case DevelopmentWallRouteSide::MaxZ:
+        seed_x = center_x;
+        seed_z = analysis.root_max[2] + 1.0f;
+        break;
+    default:
+        return false;
+    }
     if (!project_type1_collision_to_edge(
-            bytes.data(), bytes.size(), analysis.root_min[0] - 1.0f,
-            center_z, &edge) || (edge.surface_flags & 0xC1u) == 0 ||
+            bytes.data(), bytes.size(), seed_x,
+            seed_z, &edge) || (edge.surface_flags & 0xC1u) == 0 ||
         edge.edge_index >= 3 || edge.leaf_offset > bytes.size() ||
         bytes.size() - edge.leaf_offset < 0x34) {
         return false;

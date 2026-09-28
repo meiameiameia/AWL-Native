@@ -4221,19 +4221,22 @@ struct LocalWallProbe {
     float mid_z = 0.0f;
     float normal_x = 0.0f;
     float normal_z = 0.0f;
+    uint32_t leaf_offset = 0;
+    uint32_t triangle_index = 0;
+    uint8_t edge_index = 0;
 };
 
 bool probe_local_static_wall(const awl::WorldMapCollisionAssets& assets,
                              awl::CollisionCategory1StaticAdjustment* result,
-                             LocalWallProbe* geometry) {
+                             LocalWallProbe* geometry,
+                             float seed_x,
+                             float seed_z) {
     const auto& bytes = assets.static_bytes();
     const auto& analysis = assets.static_analysis();
     awl::CollisionEdgeSample edge;
-    const float center_z =
-        (analysis.root_min[2] + analysis.root_max[2]) * 0.5f;
     if (!awl::project_type1_collision_to_edge(
-            bytes.data(), bytes.size(), analysis.root_min[0] - 1.0f,
-            center_z, &edge) || (edge.surface_flags & 0xC1u) == 0 ||
+            bytes.data(), bytes.size(), seed_x,
+            seed_z, &edge) || (edge.surface_flags & 0xC1u) == 0 ||
         edge.edge_index >= 3 || edge.leaf_offset > bytes.size() ||
         bytes.size() - edge.leaf_offset < 0x34) {
         return false;
@@ -4340,14 +4343,16 @@ bool probe_local_static_wall(const awl::WorldMapCollisionAssets& assets,
         return false;
     }
     if (geometry != nullptr) {
-        *geometry = {mid_x, mid_z, nx, nz};
+        *geometry = {mid_x, mid_z, nx, nz,
+                     edge.leaf_offset, edge.triangle_index, edge.edge_index};
     }
     return true;
 }
 
 bool replay_local_static_wall_route(
     const awl::WorldMapCollisionAssets& assets,
-    const awl::DevelopmentWallRoute& wall) {
+    const awl::DevelopmentWallRoute& wall,
+    awl::DevelopmentWallRouteSide side) {
     std::array<float, 3> position = wall.start;
     awl::NativeInputAccumulator native;
     awl::PadAdapter adapter;
@@ -4355,7 +4360,8 @@ bool replay_local_static_wall_route(
     awl::WorldMapSteeringState steering;
     native.reset(true);
     native.set_key(awl::NativeKey::D, true);
-    native.set_key(awl::NativeKey::S, true);
+    const bool diagonal = side != awl::DevelopmentWallRouteSide::MinZ;
+    native.set_key(awl::NativeKey::S, diagonal);
     bool saw_contact = false;
     bool approached_wall = false;
     float previous_distance = wall.signed_distance(position);
@@ -4393,8 +4399,8 @@ bool replay_local_static_wall_route(
         saw_contact = saw_contact || candidate.collision.static_contact.contact;
         previous_distance = distance;
     }
-    std::printf("Local wall route: final distance=%.3f contact=%d approach=%d\n",
-                previous_distance, saw_contact ? 1 : 0,
+    std::printf("Local wall route %u: final distance=%.3f contact=%d approach=%d\n",
+                static_cast<unsigned>(side), previous_distance, saw_contact ? 1 : 0,
                 approached_wall ? 1 : 0);
     return approached_wall && saw_contact &&
            previous_distance < 0.6f && steering.current_speed == 0.0f;
@@ -4733,33 +4739,67 @@ bool inspect_local_catalog(const char* disc_root) {
                     break;
                 }
             }
+            const auto& analysis = assets.static_analysis();
+            const float center_x =
+                (analysis.root_min[0] + analysis.root_max[0]) * 0.5f;
+            const float center_z =
+                (analysis.root_min[2] + analysis.root_max[2]) * 0.5f;
+            const std::array<std::array<float, 2>, 3> wall_seeds{{
+                {analysis.root_min[0] - 1.0f, center_z},
+                {center_x, analysis.root_min[2] - 1.0f},
+                {center_x, analysis.root_max[2] + 1.0f},
+            }};
+            const std::array<awl::DevelopmentWallRouteSide, 3> wall_sides{{
+                awl::DevelopmentWallRouteSide::MinX,
+                awl::DevelopmentWallRouteSide::MinZ,
+                awl::DevelopmentWallRouteSide::MaxZ,
+            }};
             awl::CollisionCategory1StaticAdjustment wall;
-            LocalWallProbe wall_geometry;
-            valid = probe_local_static_wall(assets, &wall, &wall_geometry);
-            if (!valid) {
-                std::fprintf(stderr,
-                             "COL static wall probe failed at phase %u terrain %d\n",
-                             phase, alternate);
-                break;
-            }
-            if (phase == 0) {
-                awl::DevelopmentWallRoute route;
-                valid = awl::derive_development_wall_route(assets, &route) &&
-                        std::fabs(route.mid_x - wall_geometry.mid_x) < 0.0002f &&
-                        std::fabs(route.mid_z - wall_geometry.mid_z) < 0.0002f &&
-                        std::fabs(route.normal_x - wall_geometry.normal_x) < 0.0002f &&
-                        std::fabs(route.normal_z - wall_geometry.normal_z) < 0.0002f &&
-                        std::fabs(route.signed_distance(route.start) - 1.0f) < 0.0002f &&
-                        replay_local_static_wall_route(assets, route);
+            std::array<LocalWallProbe, 3> sampled_walls{};
+            for (size_t side = 0; valid && side < wall_sides.size(); ++side) {
+                LocalWallProbe geometry;
+                valid = probe_local_static_wall(
+                    assets, &wall, &geometry,
+                    wall_seeds[side][0], wall_seeds[side][1]);
+                for (size_t prior = 0; valid && prior < side; ++prior) {
+                    const auto& other = sampled_walls[prior];
+                    valid = geometry.leaf_offset != other.leaf_offset ||
+                            geometry.triangle_index != other.triangle_index ||
+                            geometry.edge_index != other.edge_index;
+                }
                 if (valid) {
-                    valid = replay_local_first_actor_route(assets);
+                    sampled_walls[side] = geometry;
+                }
+                if (valid && phase == 0) {
+                    awl::DevelopmentWallRoute route;
+                    valid = awl::derive_development_wall_route(
+                                assets, &route, wall_sides[side]) &&
+                            std::fabs(route.mid_x - geometry.mid_x) < 0.0002f &&
+                            std::fabs(route.mid_z - geometry.mid_z) < 0.0002f &&
+                            std::fabs(route.normal_x - geometry.normal_x) < 0.0002f &&
+                            std::fabs(route.normal_z - geometry.normal_z) < 0.0002f &&
+                            std::fabs(route.signed_distance(route.start) - 1.0f) < 0.0002f;
+                    if (valid &&
+                        wall_sides[side] != awl::DevelopmentWallRouteSide::MaxZ) {
+                        valid = replay_local_static_wall_route(
+                            assets, route, wall_sides[side]);
+                    }
                 }
                 if (!valid) {
                     std::fprintf(stderr,
-                                 "COL multi-frame wall route failed at terrain %d\n",
-                                 alternate);
-                    break;
+                                 "COL wall route %zu failed at phase %u terrain %d\n",
+                                 side, phase, alternate);
                 }
+            }
+            if (!valid) {
+                break;
+            }
+            if (phase == 0 && !replay_local_first_actor_route(assets)) {
+                std::fprintf(stderr,
+                             "COL first actor route failed at terrain %d\n",
+                             alternate);
+                valid = false;
+                break;
             }
             std::printf("COL phase %u terrain %d: %s (%zu bytes), %s (%zu bytes), candidate=(%.3f, %.3f, %.3f), static wall contact=%d\n",
                         phase, alternate, assets.paths().terrain,

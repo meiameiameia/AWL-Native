@@ -3,6 +3,7 @@
 #include "awl/world_map_collision_assets.h"
 
 #include <array>
+#include <cstdint>
 
 namespace awl {
 
@@ -21,7 +22,15 @@ struct DevelopmentWallRoute {
     }
 };
 
+enum class DevelopmentWallRouteSide : uint8_t {
+    MinX,
+    MinZ,
+    MaxZ,
+};
+
 [[nodiscard]] bool derive_development_wall_route(
-    const WorldMapCollisionAssets& assets, DevelopmentWallRoute* route);
+    const WorldMapCollisionAssets& assets,
+    DevelopmentWallRoute* route,
+    DevelopmentWallRouteSide side = DevelopmentWallRouteSide::MinX);
 
 } // namespace awl
