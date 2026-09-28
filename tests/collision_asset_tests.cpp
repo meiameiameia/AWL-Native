@@ -3839,16 +3839,39 @@ bool inspect_local_asset(const char* path) {
     return true;
 }
 
-// Development-only replay of the known clear route. The fixture supplies an
+// Development-only replay of supplied clear routes. The fixture supplies an
 // empty dynamic-object list and scene type zero; it is not a game-owned player.
+enum class LocalSlopeExpectation {
+    None,
+    Uphill,
+    Downhill,
+};
+
 bool replay_player_route(const uint8_t* terrain, size_t terrain_size,
                          const uint8_t* static_objects, size_t static_size,
                          float start_x, float start_z, int held_frames,
-                         float required_end_x) {
+                         float required_end_x,
+                         LocalSlopeExpectation slope = LocalSlopeExpectation::None) {
+    const bool downhill = slope == LocalSlopeExpectation::Downhill;
     awl::CollisionSurfaceSample spawn_surface;
     if (!awl::sample_type1_collision_surface(
             terrain, terrain_size, start_x, start_z, &spawn_surface)) {
         return false;
+    }
+    if (slope != LocalSlopeExpectation::None) {
+        awl::CollisionSurfaceSample endpoint_surface;
+        if (!awl::sample_type1_collision_surface(
+                terrain, terrain_size, required_end_x, start_z,
+                &endpoint_surface)) {
+            return false;
+        }
+        const float sampled_rise =
+            endpoint_surface.height - spawn_surface.height;
+        if ((slope == LocalSlopeExpectation::Uphill &&
+             sampled_rise <= 1.5f) ||
+            (downhill && sampled_rise >= -1.5f)) {
+            return false;
+        }
     }
     std::array<float, 3> position{start_x, spawn_surface.height, start_z};
     awl::WorldMapSteeringState steering;
@@ -3864,13 +3887,22 @@ bool replay_player_route(const uint8_t* terrain, size_t terrain_size,
     awl::PadAdapter adapter;
     awl::HsdPadFilter filter;
     native.reset(true);
-    native.set_key(awl::NativeKey::D, true);
+    const awl::NativeKey direction_key =
+        downhill ? awl::NativeKey::A : awl::NativeKey::D;
+    native.set_key(direction_key, true);
     float previous_x = position[0];
     bool crossed_seam = false;
     bool changed_height = false;
+    float lowest_height_step = 0.0f;
+    float highest_height_step = 0.0f;
+    size_t triangle_changes = 0;
+    size_t rising_frames = 0;
+    size_t falling_frames = 0;
+    size_t static_contacts = 0;
+    auto previous_surface = spawn_surface;
     for (int frame = 0; frame < held_frames + 8; ++frame) {
         if (frame == held_frames) {
-            native.set_key(awl::NativeKey::D, false);
+            native.set_key(direction_key, false);
         }
         native.begin_frame();
         adapter.begin_frame(native.frame());
@@ -3898,12 +3930,23 @@ bool replay_player_route(const uint8_t* terrain, size_t terrain_size,
         if (!awl::sample_type1_collision_surface(
                 terrain, terrain_size, position[0], position[2], &surface) ||
             std::fabs(position[1] - surface.height) > 0.0002f ||
-            position[0] + 0.0002f < previous_x) {
+            (downhill ? position[0] > previous_x + 0.0002f
+                      : position[0] + 0.0002f < previous_x)) {
             return false;
         }
         crossed_seam = crossed_seam || position[0] > 125.0f;
         changed_height = changed_height ||
                          std::fabs(position[1] - spawn_surface.height) > 0.5f;
+        const float height_step = surface.height - previous_surface.height;
+        lowest_height_step = std::min(lowest_height_step, height_step);
+        highest_height_step = std::max(highest_height_step, height_step);
+        rising_frames += height_step > 0.002f;
+        falling_frames += height_step < -0.002f;
+        triangle_changes +=
+            surface.leaf_offset != previous_surface.leaf_offset ||
+            surface.triangle_index != previous_surface.triangle_index;
+        static_contacts += candidate.collision.static_contact.contact;
+        previous_surface = surface;
         if (frame >= held_frames + 6 &&
             position[0] != previous_x) {
             return false;
@@ -3911,8 +3954,32 @@ bool replay_player_route(const uint8_t* terrain, size_t terrain_size,
         previous_x = position[0];
     }
     const auto snapshot = scene.snapshot(0);
-    return position[0] >= required_end_x &&
-           (required_end_x <= 125.0f || crossed_seam) && changed_height &&
+    const float actual_rise = position[1] - spawn_surface.height;
+    bool slope_valid = true;
+    if (slope == LocalSlopeExpectation::Uphill) {
+        slope_valid = actual_rise > 1.5f && lowest_height_step >= -0.0002f &&
+                      rising_frames >= 60 && triangle_changes >= 5 &&
+                      static_contacts == 0;
+    } else if (downhill) {
+        slope_valid = actual_rise < -1.5f && highest_height_step <= 0.0002f &&
+                      falling_frames >= 60 && triangle_changes >= 5 &&
+                      static_contacts == 0;
+    }
+    if (slope != LocalSlopeExpectation::None) {
+        std::printf("slope replay start=(%.0f,%.0f) end=(%.3f,%.3f) "
+                    "rise=%.3f min-step=%.4f max-step=%.4f "
+                    "triangle-changes=%zu rising=%zu falling=%zu "
+                    "static-contacts=%zu\n",
+                    start_x, start_z, position[0], position[2],
+                    actual_rise, lowest_height_step,
+                    highest_height_step, triangle_changes, rising_frames,
+                    falling_frames, static_contacts);
+    }
+    const bool end_reached = downhill ? position[0] <= required_end_x
+                                      : position[0] >= required_end_x;
+    return end_reached &&
+           (downhill || required_end_x <= 125.0f || crossed_seam) &&
+           changed_height && slope_valid &&
            steering.current_speed == 0.0f && snapshot.size() == 1 &&
            snapshot[0].position == position;
 }
@@ -3935,10 +4002,22 @@ bool replay_local_player_route(const char* disc_root) {
                     assets.terrain_bytes().data(),
                     assets.terrain_bytes().size(),
                     assets.static_bytes().data(), assets.static_bytes().size(),
-                    120.0f, 168.0f, 48, 128.0f);
+                    120.0f, 168.0f, 48, 128.0f) &&
+                replay_player_route(
+                    assets.terrain_bytes().data(),
+                    assets.terrain_bytes().size(),
+                    assets.static_bytes().data(), assets.static_bytes().size(),
+                    115.0f, 160.0f, 72, 126.0f,
+                    LocalSlopeExpectation::Uphill) &&
+                replay_player_route(
+                    assets.terrain_bytes().data(),
+                    assets.terrain_bytes().size(),
+                    assets.static_bytes().data(), assets.static_bytes().size(),
+                    128.0f, 160.0f, 72, 116.0f,
+                    LocalSlopeExpectation::Downhill);
         if (valid) {
-            std::printf("Player route replay passed: terrain=%s start=120,168 "
-                        "crossed X=125 and X=128 with sampled height\n",
+            std::printf("Player routes passed: terrain=%s seam start=120,168; "
+                        "slope uphill/downhill start=115,160/128,160\n",
                         assets.paths().terrain);
         }
     }
