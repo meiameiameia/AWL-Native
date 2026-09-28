@@ -3995,30 +3995,36 @@ bool replay_local_player_route(const char* disc_root) {
     awl_memory_init();
     awl::filesystem_init();
     bool valid = awl::filesystem_mount("/", disc_root);
-    for (int alternate = 0; valid && alternate < 2; ++alternate) {
-        awl::WorldMapCollisionAssets assets;
-        valid = assets.load(0, alternate != 0) &&
-                replay_player_route(
-                    assets.terrain_bytes().data(),
-                    assets.terrain_bytes().size(),
-                    assets.static_bytes().data(), assets.static_bytes().size(),
-                    120.0f, 168.0f, 48, 128.0f) &&
-                replay_player_route(
-                    assets.terrain_bytes().data(),
-                    assets.terrain_bytes().size(),
-                    assets.static_bytes().data(), assets.static_bytes().size(),
-                    115.0f, 160.0f, 72, 126.0f,
-                    LocalSlopeExpectation::Uphill) &&
-                replay_player_route(
-                    assets.terrain_bytes().data(),
-                    assets.terrain_bytes().size(),
-                    assets.static_bytes().data(), assets.static_bytes().size(),
-                    128.0f, 160.0f, 72, 116.0f,
-                    LocalSlopeExpectation::Downhill);
-        if (valid) {
-            std::printf("Player routes passed: terrain=%s seam start=120,168; "
-                        "slope uphill/downhill start=115,160/128,160\n",
-                        assets.paths().terrain);
+    for (uint32_t phase = 0; valid && phase < 6; ++phase) {
+        for (int alternate = 0; valid && alternate < 2; ++alternate) {
+            awl::WorldMapCollisionAssets assets;
+            valid = assets.load(phase, alternate != 0) &&
+                    replay_player_route(
+                        assets.terrain_bytes().data(),
+                        assets.terrain_bytes().size(),
+                        assets.static_bytes().data(),
+                        assets.static_bytes().size(),
+                        120.0f, 168.0f, 48, 128.0f) &&
+                    replay_player_route(
+                        assets.terrain_bytes().data(),
+                        assets.terrain_bytes().size(),
+                        assets.static_bytes().data(),
+                        assets.static_bytes().size(),
+                        115.0f, 160.0f, 72, 126.0f,
+                        LocalSlopeExpectation::Uphill) &&
+                    replay_player_route(
+                        assets.terrain_bytes().data(),
+                        assets.terrain_bytes().size(),
+                        assets.static_bytes().data(),
+                        assets.static_bytes().size(),
+                        128.0f, 160.0f, 72, 116.0f,
+                        LocalSlopeExpectation::Downhill);
+            if (valid) {
+                std::printf("Player routes passed: phase=%u terrain=%s "
+                            "seam start=120,168; "
+                            "slope uphill/downhill start=115,160/128,160\n",
+                            phase, assets.paths().terrain);
+            }
         }
     }
     awl::filesystem_shutdown();
@@ -4470,6 +4476,26 @@ bool replay_local_static_wall_route(
         }
         position = candidate.resolved_position;
         steering = candidate.steering;
+        awl::CollisionSurfaceSample surface;
+        const bool sampled_surface = awl::sample_type1_collision_surface(
+            assets.terrain_bytes().data(), assets.terrain_bytes().size(),
+            position[0], position[2], &surface);
+        bool height_matches = false;
+        if (sampled_surface) {
+            height_matches =
+                std::fabs(position[1] - surface.height) <= 0.0002f;
+        } else {
+            awl::CollisionEdgeSample edge;
+            height_matches = awl::project_type1_collision_to_edge(
+                assets.terrain_bytes().data(), assets.terrain_bytes().size(),
+                position[0], position[2], &edge) &&
+                std::fabs(position[1] - edge.position[1]) <= 0.0002f;
+        }
+        if (!height_matches ||
+            (candidate.collision.static_contact.contact &&
+             (candidate.collision.resolver_contact_bits & 1u) == 0)) {
+            return false;
+        }
         const float distance = wall.signed_distance(position);
         if (!std::isfinite(distance) || distance < 0.309f) {
             return false;
@@ -4481,8 +4507,12 @@ bool replay_local_static_wall_route(
     std::printf("Local wall route %u: final distance=%.3f contact=%d approach=%d\n",
                 static_cast<unsigned>(side), previous_distance, saw_contact ? 1 : 0,
                 approached_wall ? 1 : 0);
-    return approached_wall && saw_contact &&
-           previous_distance < 0.6f && steering.current_speed == 0.0f;
+    const bool expected_distance =
+        side == awl::DevelopmentWallRouteSide::MaxZ
+            ? previous_distance > 0.6f && previous_distance < 0.9f
+            : previous_distance < 0.6f;
+    return approached_wall && saw_contact && expected_distance &&
+           steering.current_speed == 0.0f;
 }
 
 bool replay_local_first_actor_route(
@@ -4849,7 +4879,7 @@ bool inspect_local_catalog(const char* disc_root) {
                 if (valid) {
                     sampled_walls[side] = geometry;
                 }
-                if (valid && phase == 0) {
+                if (valid) {
                     awl::DevelopmentWallRoute route;
                     valid = awl::derive_development_wall_route(
                                 assets, &route, wall_sides[side]) &&
@@ -4858,8 +4888,7 @@ bool inspect_local_catalog(const char* disc_root) {
                             std::fabs(route.normal_x - geometry.normal_x) < 0.0002f &&
                             std::fabs(route.normal_z - geometry.normal_z) < 0.0002f &&
                             std::fabs(route.signed_distance(route.start) - 1.0f) < 0.0002f;
-                    if (valid &&
-                        wall_sides[side] != awl::DevelopmentWallRouteSide::MaxZ) {
+                    if (valid) {
                         valid = replay_local_static_wall_route(
                             assets, route, wall_sides[side]);
                     }
