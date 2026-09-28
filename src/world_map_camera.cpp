@@ -83,6 +83,64 @@ float negative_dot(const std::array<float, 3>& a,
     return -(a[0] * b[0] + a[1] * b[1] + a[2] * b[2]);
 }
 
+bool build_view_matrix(const std::array<float, 3>& target,
+                       const std::array<float, 3>& second_point,
+                       const std::array<float, 3>& up,
+                       std::array<float, 12>* output) {
+    if (output == nullptr || !finite_vector(target) ||
+        !finite_vector(second_point) || !finite_vector(up)) {
+        return false;
+    }
+    std::array<float, 3> forward{};
+    for (size_t axis = 0; axis < 3; ++axis) {
+        forward[axis] = target[axis] - second_point[axis];
+    }
+    if (!normalize_vector(&forward)) {
+        return false;
+    }
+    std::array<float, 3> right = cross_product(up, forward);
+    if (!normalize_vector(&right)) {
+        return false;
+    }
+    const std::array<float, 3> corrected_up =
+        cross_product(forward, right);
+    if (!finite_vector(corrected_up)) {
+        return false;
+    }
+    const std::array<std::array<float, 3>, 3> rows{
+        right, corrected_up, forward};
+    std::array<float, 12> matrix{};
+    for (size_t row = 0; row < 3; ++row) {
+        for (size_t axis = 0; axis < 3; ++axis) {
+            matrix[row * 4 + axis] = rows[row][axis];
+        }
+        matrix[row * 4 + 3] = negative_dot(target, rows[row]);
+    }
+    for (float component : matrix) {
+        if (!std::isfinite(component)) {
+            return false;
+        }
+    }
+    *output = matrix;
+    return true;
+}
+
+bool calculate_plane(float yaw, const std::array<float, 3>& target,
+                     WorldMapCameraPlane* output) {
+    if (output == nullptr || !std::isfinite(yaw) ||
+        !finite_vector(target)) {
+        return false;
+    }
+    WorldMapCameraPlane next;
+    next.normal = {-std::sin(yaw), 0.0f, -std::cos(yaw)};
+    next.constant = negative_dot(target, next.normal);
+    if (!finite_vector(next.normal) || !std::isfinite(next.constant)) {
+        return false;
+    }
+    *output = next;
+    return true;
+}
+
 } // namespace
 
 bool plan_world_map_camera_followup(
@@ -227,37 +285,88 @@ bool calculate_world_map_camera_view(
         return false;
     }
 
-    // FUN_801B8454: forward = normalize(target - second point), right =
-    // normalize(up x forward), corrected up = forward x right.
-    std::array<float, 3> forward{};
-    for (size_t axis = 0; axis < 3; ++axis) {
-        forward[axis] = next.target.bounded[axis] - next.second_point[axis];
-    }
-    if (!normalize_vector(&forward)) {
+    // FUN_801B8454 writes the 3x4 view matrix from target, second point,
+    // and rotated up vector.
+    if (!build_view_matrix(next.target.bounded, next.second_point,
+                           next.rotated_up, &next.matrix_50)) {
         return false;
     }
-    std::array<float, 3> right = cross_product(next.rotated_up, forward);
-    if (!normalize_vector(&right)) {
+    *output = next;
+    return true;
+}
+
+bool calculate_world_map_camera_post_update(
+    const WorldMapCameraViewQuery& query,
+    WorldMapCameraHeightSampler sample_height, void* sample_context,
+    WorldMapCameraPostUpdate* output) {
+    if (output == nullptr || sample_height == nullptr) {
         return false;
     }
-    const std::array<float, 3> corrected_up =
-        cross_product(forward, right);
-    if (!finite_vector(corrected_up)) {
+    WorldMapCameraPostUpdate next;
+    if (!calculate_world_map_camera_view(query, &next.first_view) ||
+        !calculate_plane(query.target.camera.yaw,
+                         next.first_view.target.bounded,
+                         &next.first_plane)) {
         return false;
     }
-    const std::array<std::array<float, 3>, 3> rows{
-        right, corrected_up, forward};
-    for (size_t row = 0; row < 3; ++row) {
+    float first_height = 0.0f;
+    if (!sample_height(next.first_view.target.bounded, &first_height,
+                       sample_context) || !std::isfinite(first_height)) {
+        return false;
+    }
+
+    // FUN_80085998: terrain height at the first target determines a
+    // temporary pitch offset. The Y offset appears on both sides of the
+    // subtraction in the DOL and is retained here in the same order.
+    const float y_offset = query.target.origin_offset_0c[1];
+    const float height_with_offset = first_height + y_offset;
+    const float camera_with_offset = query.target.camera.position[1] +
+                                     y_offset;
+    const float vertical = height_with_offset - camera_with_offset;
+    const float angle = static_cast<float>(
+        std::atan2(static_cast<double>(vertical),
+                   static_cast<double>(query.target.distance_30)));
+    next.temporary_pitch_offset_8c = -angle;
+    if (!std::isfinite(next.temporary_pitch_offset_8c)) {
+        return false;
+    }
+    WorldMapCameraViewQuery pitched_query = query;
+    pitched_query.target.pitch_offset_8c =
+        next.temporary_pitch_offset_8c;
+    pitched_query.target.yaw_offset_90 = 0.0f; // DOL vector at 0x8024F72C
+    if (!calculate_world_map_camera_view(pitched_query,
+                                          &next.pitched_view) ||
+        !calculate_plane(query.target.camera.yaw,
+                         next.pitched_view.target.bounded,
+                         &next.final_plane)) {
+        return false;
+    }
+    next.final_target = next.pitched_view.target.bounded;
+    next.final_matrix_50 = next.pitched_view.matrix_50;
+
+    // FUN_80085998 clears +0x8C/+0x90/+0x94 before the second height query.
+    float second_height = 0.0f;
+    if (!sample_height(next.pitched_view.target.bounded, &second_height,
+                       sample_context) || !std::isfinite(second_height)) {
+        return false;
+    }
+    if (next.final_target[1] < second_height) {
+        next.final_target[1] = second_height;
+        std::array<float, 3> second_point{};
         for (size_t axis = 0; axis < 3; ++axis) {
-            next.matrix_50[row * 4 + axis] = rows[row][axis];
+            second_point[axis] = query.target.camera.position[axis] +
+                                 query.target.origin_offset_0c[axis];
         }
-        next.matrix_50[row * 4 + 3] =
-            negative_dot(next.target.bounded, rows[row]);
-    }
-    for (float component : next.matrix_50) {
-        if (!std::isfinite(component)) {
+        const std::array<float, 3> reset_up = rotate_x_then_y(
+            query.up_vector_24, query.target.camera.field_18,
+            query.target.camera.yaw);
+        // FUN_8017B89C replaces the target and rebuilds the matrix using
+        // the sum of camera vectors at +0x00 and +0x0C as the second point.
+        if (!build_view_matrix(next.final_target, second_point, reset_up,
+                               &next.final_matrix_50)) {
             return false;
         }
+        next.terrain_clamped = true;
     }
     *output = next;
     return true;

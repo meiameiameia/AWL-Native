@@ -2100,6 +2100,112 @@ void test_world_map_camera_view() {
            "missing camera view output is rejected");
 }
 
+struct CameraHeightScript {
+    std::array<float, 2> heights{};
+    std::array<std::array<float, 3>, 2> positions{};
+    int calls = 0;
+    int fail_on_call = 0;
+};
+
+bool scripted_camera_height(const std::array<float, 3>& point,
+                            float* height, void* context) {
+    auto* script = static_cast<CameraHeightScript*>(context);
+    if (script == nullptr || height == nullptr || script->calls >= 2) {
+        return false;
+    }
+    script->positions[script->calls] = point;
+    ++script->calls;
+    if (script->calls == script->fail_on_call) {
+        return false;
+    }
+    *height = script->heights[script->calls - 1];
+    return true;
+}
+
+void test_world_map_camera_post_update() {
+    awl::WorldMapCameraViewQuery query;
+    query.target.distance_30 = 2.0f;
+    query.up_vector_24 = {0.0f, 1.0f, 0.0f};
+    CameraHeightScript heights;
+    heights.heights = {0.0f, -1.0f};
+    awl::WorldMapCameraPostUpdate result;
+    expect(awl::calculate_world_map_camera_post_update(
+               query, scripted_camera_height, &heights, &result) &&
+               heights.calls == 2 &&
+               heights.positions[0] ==
+                   std::array<float, 3>{0.0f, 0.0f, 2.0f} &&
+               heights.positions[1] == heights.positions[0] &&
+               result.temporary_pitch_offset_8c == 0.0f &&
+               result.final_plane.normal ==
+                   std::array<float, 3>{0.0f, 0.0f, -1.0f} &&
+               result.final_plane.constant == 2.0f &&
+               !result.terrain_clamped &&
+               result.final_target == heights.positions[1] &&
+               result.final_matrix_50 == result.pitched_view.matrix_50,
+           "two ordered height queries preserve an unobstructed camera view");
+
+    query.target.yaw_offset_90 = 1.57079632679f;
+    heights = {};
+    heights.heights = {0.0f, -1.0f};
+    expect(awl::calculate_world_map_camera_post_update(
+               query, scripted_camera_height, &heights, &result) &&
+               heights.calls == 2 &&
+               std::fabs(heights.positions[0][0] - 2.0f) < 0.00001f &&
+               std::fabs(heights.positions[1][2] - 2.0f) < 0.00001f &&
+               result.final_plane.normal ==
+                   std::array<float, 3>{0.0f, 0.0f, -1.0f},
+           "second camera rebuild clears the earlier yaw offset before sampling");
+    query.target.yaw_offset_90 = 0.0f;
+
+    heights = {};
+    heights.heights = {2.0f, 2.0f};
+    expect(awl::calculate_world_map_camera_post_update(
+               query, scripted_camera_height, &heights, &result) &&
+               heights.calls == 2 &&
+               heights.positions[0] ==
+                   std::array<float, 3>{0.0f, 0.0f, 2.0f} &&
+               std::fabs(result.temporary_pitch_offset_8c +
+                         0.78539816339f) < 0.00001f &&
+               heights.positions[1] == result.pitched_view.target.bounded &&
+               std::fabs(heights.positions[1][1] - 1.41421356f) < 0.00001f &&
+               result.terrain_clamped && result.final_target[1] == 2.0f &&
+               std::fabs(result.final_matrix_50[9] - 0.81649658f) <
+                   0.00001f &&
+               std::fabs(result.final_matrix_50[10] - 0.57735027f) <
+                   0.00001f &&
+               std::fabs(result.final_plane.constant - 1.41421356f) <
+                   0.00001f,
+           "terrain pitch changes the second query and Y clamp rebuilds view");
+
+    const awl::WorldMapCameraPostUpdate saved = result;
+    heights = {};
+    heights.fail_on_call = 1;
+    expect(!awl::calculate_world_map_camera_post_update(
+               query, scripted_camera_height, &heights, &result) &&
+               heights.calls == 1 &&
+               result.final_matrix_50 == saved.final_matrix_50,
+           "first terrain query failure leaves camera output unchanged");
+    heights = {};
+    heights.heights = {0.0f, 0.0f};
+    heights.fail_on_call = 2;
+    expect(!awl::calculate_world_map_camera_post_update(
+               query, scripted_camera_height, &heights, &result) &&
+               heights.calls == 2 &&
+               result.final_matrix_50 == saved.final_matrix_50,
+           "second terrain query failure leaves camera output unchanged");
+    heights = {};
+    heights.heights[0] = std::numeric_limits<float>::infinity();
+    expect(!awl::calculate_world_map_camera_post_update(
+               query, scripted_camera_height, &heights, &result) &&
+               result.final_matrix_50 == saved.final_matrix_50,
+           "nonfinite terrain height is rejected");
+    expect(!awl::calculate_world_map_camera_post_update(
+               query, nullptr, nullptr, &result) &&
+               !awl::calculate_world_map_camera_post_update(
+                   query, scripted_camera_height, &heights, nullptr),
+           "missing terrain sampler or camera result is rejected");
+}
+
 void test_world_map_movement_candidate_sequence() {
     std::vector<uint8_t> terrain = make_sample_leaf();
     awl::WorldMapMovementQuery query;
@@ -5331,6 +5437,7 @@ int main(int argc, char** argv) {
     test_world_map_camera_followup();
     test_world_map_camera_target();
     test_world_map_camera_view();
+    test_world_map_camera_post_update();
     test_world_map_movement_candidate_sequence();
     test_synthetic_player_route_replay();
     test_world_map_scene_position_bucket_decision();

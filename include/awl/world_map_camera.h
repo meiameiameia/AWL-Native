@@ -78,4 +78,33 @@ struct WorldMapCameraView {
 [[nodiscard]] bool calculate_world_map_camera_view(
     const WorldMapCameraViewQuery& query, WorldMapCameraView* output);
 
+struct WorldMapCameraPlane {
+    std::array<float, 3> normal{}; // camera +0x174..+0x17C
+    float constant = 0.0f; // camera +0x184
+};
+
+using WorldMapCameraHeightSampler = bool (*)(
+    const std::array<float, 3>& target, float* height, void* context);
+
+struct WorldMapCameraPostUpdate {
+    WorldMapCameraView first_view{}; // FUN_80085884
+    WorldMapCameraPlane first_plane{};
+    float temporary_pitch_offset_8c = 0.0f;
+    WorldMapCameraView pitched_view{}; // FUN_80085998, before terrain clamp
+    WorldMapCameraPlane final_plane{};
+    std::array<float, 3> final_target{};
+    std::array<float, 12> final_matrix_50{};
+    bool terrain_clamped = false;
+};
+
+// Runs the bounded FUN_80085884 -> FUN_80085998 sequence. The sampler is
+// called first at first_view.target, then at pitched_view.target. It replaces
+// the unresolved runtime FUN_8001CC20 asset owner; a failed/nonfinite sample
+// rejects the result. Camera fields +0x8C/+0x90/+0x94 end at zero in the DOL.
+// Output is unchanged on failure; the caller owns sampler side effects.
+[[nodiscard]] bool calculate_world_map_camera_post_update(
+    const WorldMapCameraViewQuery& query,
+    WorldMapCameraHeightSampler sample_height, void* sample_context,
+    WorldMapCameraPostUpdate* output);
+
 } // namespace awl
