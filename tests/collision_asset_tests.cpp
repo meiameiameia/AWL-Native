@@ -2279,6 +2279,81 @@ void test_world_map_player_fixed_scene_message_1f() {
            "missing player ID or output rejects the fixed message atomically");
 }
 
+void test_world_map_player_sequence_reset() {
+    awl::WorldMapPlayerFixedTransitionStepState state;
+    state.scene_byte_79 = 7;
+    expect(state.sequence_step_4574 == 2 &&
+               awl::reset_world_map_player_sequence_step(&state) &&
+               state.sequence_step_4574 == 0 && state.scene_byte_79 == 7,
+           "constructor step two resets to zero without touching scene byte");
+    state.sequence_step_4574 = 5;
+    expect(awl::reset_world_map_player_sequence_step(&state) &&
+               state.sequence_step_4574 == 0,
+           "sequence step five also resets to zero");
+    state.sequence_step_4574 = 1;
+    expect(!awl::reset_world_map_player_sequence_step(&state) &&
+               state.sequence_step_4574 == 1 &&
+               !awl::reset_world_map_player_sequence_step(nullptr),
+           "other steps and absent state cannot reset the sequence");
+}
+
+void test_world_map_player_fixed_transition_step() {
+    awl::WorldMapSceneBucketRegistry registry;
+    awl::WorldMapPlayerScenePose pose;
+    awl::WorldMapScenePositionUpdate update;
+    awl::WorldMapPlayerFixedTransitionStepState state;
+    state.sequence_step_4574 = 1;
+    state.scene_byte_79 = 7;
+    const std::array<float, 3> start{120.0f, 5.0f, 168.0f};
+    expect(registry.register_object(1, 0, start) &&
+               registry.update_position(1, start, &update) &&
+               awl::apply_world_map_player_fixed_transition_step(
+                   &state, &registry, &pose, &update) &&
+               state.sequence_step_4574 == 2 && state.scene_byte_79 == 0 &&
+               update.previous_bucket == 0 && update.next_bucket == 17 &&
+               registry.snapshot(17)[0].position == pose.position,
+           "sequence step one delivers fixed player pose and advances to two");
+    const auto saved_pose = pose;
+    expect(!awl::apply_world_map_player_fixed_transition_step(
+               &state, &registry, &pose, &update) &&
+               state.sequence_step_4574 == 2 && update.next_bucket == 0 &&
+               pose.position == saved_pose.position,
+           "step two cannot repeat the step-one transition");
+
+    state.sequence_step_4574 = 0;
+    expect(!awl::apply_world_map_player_fixed_transition_step(
+               &state, &registry, &pose, &update) &&
+               state.sequence_step_4574 == 0 &&
+               registry.snapshot(17)[0].position == saved_pose.position,
+           "step zero keeps its separate scene setup path");
+
+    state.sequence_step_4574 = 1;
+    state.scene_byte_79 = 9;
+    state.state_680 = 0;
+    expect(!awl::apply_world_map_player_fixed_transition_step(
+               &state, &registry, &pose, &update) &&
+               state.sequence_step_4574 == 1 && state.scene_byte_79 == 9,
+           "pending state 680 takes a different, unsupported sequence path");
+    state.state_680 = -1;
+    state.state_58c = 1;
+    expect(!awl::apply_world_map_player_fixed_transition_step(
+               &state, &registry, &pose, &update) &&
+               state.sequence_step_4574 == 1 && state.scene_byte_79 == 9,
+           "nonzero state 58c blocks the sequence update");
+    state.state_58c = 0;
+    awl::WorldMapSceneBucketRegistry missing_player;
+    expect(!awl::apply_world_map_player_fixed_transition_step(
+               &state, &missing_player, &pose, &update) &&
+               state.sequence_step_4574 == 1 && state.scene_byte_79 == 9 &&
+               pose.position == saved_pose.position &&
+               registry.snapshot(17)[0].position == saved_pose.position &&
+               !awl::apply_world_map_player_fixed_transition_step(
+                   nullptr, &registry, &pose, &update) &&
+               !awl::apply_world_map_player_fixed_transition_step(
+                   &state, &registry, &pose, nullptr),
+           "missing player or output cannot half-advance the sequence");
+}
+
 void test_world_map_collision_mode_flags() {
     constexpr uint32_t expected[5] = {
         0x67u, 0xd4u, 0x16fu, 0x16fu, 0x14fu};
@@ -4690,6 +4765,8 @@ int main(int argc, char** argv) {
     test_world_map_scene_bucket_registry();
     test_world_map_player_scene_message_1f();
     test_world_map_player_fixed_scene_message_1f();
+    test_world_map_player_sequence_reset();
+    test_world_map_player_fixed_transition_step();
     test_world_map_collision_mode_flags();
     test_world_map_scene_first_collision_registration();
     test_world_map_first_actor_step();

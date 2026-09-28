@@ -97,4 +97,26 @@ struct WorldMapPlayerSceneMessage1F {
     WorldMapPlayerScenePose* pose,
     WorldMapScenePositionUpdate* update);
 
+struct WorldMapPlayerFixedTransitionStepState {
+    // FUN_8010ACF4 reads these two guards and its sequence step.
+    int32_t state_680 = -1;
+    int32_t state_58c = 0;
+    int32_t sequence_step_4574 = 2; // FUN_80109F20's initial value.
+    // FUN_80177FDC clears this byte before sending the fixed message.
+    uint8_t scene_byte_79 = 0;
+};
+
+// FUN_8010AC5C resets sequence step 2 or 5 to 0 and leaves others alone.
+// Returns true only when it resets the step.
+[[nodiscard]] bool reset_world_map_player_sequence_step(
+    WorldMapPlayerFixedTransitionStepState* state);
+
+// Isolates the step-1 -> step-2 pose/flag effect in FUN_8010ACF4.
+// Other steps and the sender's additional scene operations are unsupported.
+[[nodiscard]] bool apply_world_map_player_fixed_transition_step(
+    WorldMapPlayerFixedTransitionStepState* state,
+    WorldMapSceneBucketRegistry* registry,
+    WorldMapPlayerScenePose* pose,
+    WorldMapScenePositionUpdate* update);
+
 } // namespace awl

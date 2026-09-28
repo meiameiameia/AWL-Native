@@ -184,6 +184,39 @@ bool apply_world_map_player_fixed_scene_message_1f(
         1, message, registry, pose, update);
 }
 
+bool reset_world_map_player_sequence_step(
+    WorldMapPlayerFixedTransitionStepState* state) {
+    if (state == nullptr ||
+        (state->sequence_step_4574 != 2 && state->sequence_step_4574 != 5)) {
+        return false;
+    }
+    state->sequence_step_4574 = 0;
+    return true;
+}
+
+bool apply_world_map_player_fixed_transition_step(
+    WorldMapPlayerFixedTransitionStepState* state,
+    WorldMapSceneBucketRegistry* registry,
+    WorldMapPlayerScenePose* pose,
+    WorldMapScenePositionUpdate* update) {
+    if (update != nullptr) {
+        *update = {};
+    }
+    if (state == nullptr || update == nullptr || state->state_680 != -1 ||
+        state->state_58c != 0 || state->sequence_step_4574 != 1) {
+        return false;
+    }
+    if (!apply_world_map_player_fixed_scene_message_1f(
+            registry, pose, update)) {
+        return false;
+    }
+    // The native subset commits these only after the supported scene-pose
+    // update succeeds, so a missing player node cannot half-advance it.
+    state->scene_byte_79 = 0;
+    state->sequence_step_4574 = 2;
+    return true;
+}
+
 bool WorldMapSceneBucketRegistry::unregister_object(uint64_t identity) {
     if (identity == 0) {
         return false;
