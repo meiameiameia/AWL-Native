@@ -2233,6 +2233,52 @@ void test_world_map_player_scene_message_1f() {
            "unsupported or incomplete messages preserve player pose and bucket");
 }
 
+void test_world_map_player_fixed_scene_message_1f() {
+    awl::WorldMapSceneBucketRegistry registry;
+    awl::WorldMapPlayerScenePose pose;
+    awl::WorldMapScenePositionUpdate update;
+    const std::array<float, 3> start{120.0f, 5.0f, 168.0f};
+    expect(registry.register_object(1, 0, start) &&
+               registry.update_position(1, start, &update) &&
+               registry.size(0) == 1,
+           "player ID one starts in the constructor's type-zero bucket");
+    expect(awl::apply_world_map_player_fixed_scene_message_1f(
+               &registry, &pose, &update) &&
+               update.previous_bucket == 0 && update.next_bucket == 17 &&
+               update.relink_required && registry.size(0) == 0 &&
+               registry.size(17) == 1 &&
+               registry.snapshot(17)[0].identity == 1 &&
+               registry.snapshot(17)[0].scene_type == 3 &&
+               pose.scene_type == 3 &&
+               pose.position == std::array<float, 3>{-1.0f, 0.0f, -5.2f} &&
+               pose.heading == std::array<float, 3>{0.0f, 0.0f, 1.0f},
+           "verified fixed message moves player ID one to scene type three");
+    uint32_t z_bits = 0;
+    std::memcpy(&z_bits, &pose.position[2], sizeof(z_bits));
+    expect(z_bits == 0xc0a66666u &&
+               awl::apply_world_map_player_fixed_scene_message_1f(
+                   &registry, &pose, &update) &&
+               !update.relink_required && registry.size(17) == 1,
+           "fixed payload keeps its DOL Z float and does not relink on repeat");
+
+    awl::WorldMapSceneBucketRegistry wrong_recipient;
+    const auto saved_pose = pose;
+    expect(wrong_recipient.register_object(2, 0, start) &&
+               !awl::apply_world_map_player_fixed_scene_message_1f(
+                   &wrong_recipient, &pose, &update) &&
+               wrong_recipient.size(-1) == 1 &&
+               wrong_recipient.snapshot(-1)[0].scene_type == 0 &&
+               pose.scene_type == saved_pose.scene_type &&
+               pose.position == saved_pose.position &&
+               !awl::apply_world_map_player_fixed_scene_message_1f(
+                   nullptr, &pose, &update) &&
+               !awl::apply_world_map_player_fixed_scene_message_1f(
+                   &registry, nullptr, &update) &&
+               !awl::apply_world_map_player_fixed_scene_message_1f(
+                   &registry, &pose, nullptr) && update.next_bucket == 0,
+           "missing player ID or output rejects the fixed message atomically");
+}
+
 void test_world_map_collision_mode_flags() {
     constexpr uint32_t expected[5] = {
         0x67u, 0xd4u, 0x16fu, 0x16fu, 0x14fu};
@@ -4643,6 +4689,7 @@ int main(int argc, char** argv) {
     test_world_map_scene_position_bucket_decision();
     test_world_map_scene_bucket_registry();
     test_world_map_player_scene_message_1f();
+    test_world_map_player_fixed_scene_message_1f();
     test_world_map_collision_mode_flags();
     test_world_map_scene_first_collision_registration();
     test_world_map_first_actor_step();

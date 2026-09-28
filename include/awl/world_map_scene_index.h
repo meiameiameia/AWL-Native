@@ -90,4 +90,11 @@ struct WorldMapPlayerSceneMessage1F {
     WorldMapPlayerScenePose* pose,
     WorldMapScenePositionUpdate* update);
 
+// FUN_80013DC8 sends one fixed 0x1F payload to player scene ID 1. This
+// applies only its scene-pose effects; the source trigger is not connected.
+[[nodiscard]] bool apply_world_map_player_fixed_scene_message_1f(
+    WorldMapSceneBucketRegistry* registry,
+    WorldMapPlayerScenePose* pose,
+    WorldMapScenePositionUpdate* update);
+
 } // namespace awl

@@ -171,6 +171,19 @@ bool apply_world_map_player_scene_message_1f(
     return true;
 }
 
+bool apply_world_map_player_fixed_scene_message_1f(
+    WorldMapSceneBucketRegistry* registry,
+    WorldMapPlayerScenePose* pose,
+    WorldMapScenePositionUpdate* update) {
+    // FUN_80013DC8 copies the scene type and camera byte from its constant
+    // payload, then overwrites XYZ and heading from two verified DOL tables.
+    // The camera byte is zero; camera effects are outside this helper.
+    constexpr WorldMapPlayerSceneMessage1F message{
+        3, {-1.0f, 0.0f, -5.2f}, {0.0f, 0.0f, 1.0f}};
+    return apply_world_map_player_scene_message_1f(
+        1, message, registry, pose, update);
+}
+
 bool WorldMapSceneBucketRegistry::unregister_object(uint64_t identity) {
     if (identity == 0) {
         return false;
