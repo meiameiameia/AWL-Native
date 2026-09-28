@@ -2837,6 +2837,58 @@ void test_world_map_movement_candidate_sequence() {
            "missing movement result is rejected");
 }
 
+void test_world_map_movement_contact_tail() {
+    const std::array<float, 3> prior{1.0f, 2.0f, 3.0f};
+    const std::array<float, 3> resolved{4.0f, 5.0f, 6.0f};
+    std::array<awl::WorldMapMovementContactSlotOutcome, 2> slots{};
+    awl::WorldMapMovementContactTail result;
+    expect(awl::plan_world_map_movement_contact_tail(
+               2, prior, resolved, slots, &result) &&
+               result.recorded_category == 2 &&
+               result.recorded_prior == prior &&
+               result.recorded_resolved == resolved &&
+               result.polygon_queries == 0 && result.state_requests == 0 &&
+               result.accepted_slot == -1 &&
+               !result.movement_reset_requested,
+           "contact state records both positions before non-player probe skip");
+    expect(awl::plan_world_map_movement_contact_tail(
+               1, prior, resolved, slots, &result) &&
+               result.polygon_queries == 2 && result.state_requests == 0 &&
+               result.accepted_slot == -1,
+           "category one checks both slots when neither polygon contacts");
+    slots[0].state_request_accepted = true;
+    slots[1] = {true, true};
+    expect(awl::plan_world_map_movement_contact_tail(
+               1, prior, resolved, slots, &result) &&
+               result.polygon_queries == 2 && result.state_requests == 1 &&
+               result.accepted_slot == 1 && result.movement_reset_requested,
+           "slot one requests state only after its polygon contact");
+    slots[0] = {true, false};
+    expect(awl::plan_world_map_movement_contact_tail(
+               1, prior, resolved, slots, &result) &&
+               result.polygon_queries == 2 && result.state_requests == 2 &&
+               result.accepted_slot == 1 && result.movement_reset_requested,
+           "rejected slot-zero request allows the slot-one request");
+    slots[0] = {true, true};
+    expect(awl::plan_world_map_movement_contact_tail(
+               1, prior, resolved, slots, &result) &&
+               result.polygon_queries == 1 && result.state_requests == 1 &&
+               result.accepted_slot == 0 && result.movement_reset_requested,
+           "accepted slot zero stops before consulting slot one");
+    const awl::WorldMapMovementContactTail saved = result;
+    const std::array<float, 3> invalid{
+        std::numeric_limits<float>::infinity(), 0.0f, 0.0f};
+    expect(!awl::plan_world_map_movement_contact_tail(
+               1, invalid, resolved, slots, &result) &&
+               !awl::plan_world_map_movement_contact_tail(
+                   1, prior, invalid, slots, &result) &&
+               !awl::plan_world_map_movement_contact_tail(
+                   1, prior, resolved, slots, nullptr) &&
+               result.recorded_prior == saved.recorded_prior &&
+               result.accepted_slot == saved.accepted_slot,
+           "invalid contact-tail inputs preserve the prior output");
+}
+
 void test_world_map_scene_position_bucket_decision() {
     constexpr float third_x_threshold = 152.97621f;
     uint32_t threshold_bits = 0;
@@ -4895,6 +4947,19 @@ bool replay_player_route(const uint8_t* terrain, size_t terrain_size,
             scene_update.next_bucket != 0) {
             return false;
         }
+        // The fixture has no polygon-trigger provider. The DOL still
+        // records prior/resolved positions and checks both category-1 slots.
+        const std::array<awl::WorldMapMovementContactSlotOutcome, 2> slots{};
+        awl::WorldMapMovementContactTail contact_tail;
+        if (!awl::plan_world_map_movement_contact_tail(
+                1, query.current_position, candidate.resolved_position,
+                slots, &contact_tail) ||
+            contact_tail.recorded_prior != query.current_position ||
+            contact_tail.recorded_resolved != candidate.resolved_position ||
+            contact_tail.polygon_queries != 2 ||
+            contact_tail.state_requests != 0) {
+            return false;
+        }
         steering = candidate.steering;
         position = candidate.resolved_position;
         awl::CollisionSurfaceSample surface;
@@ -6035,6 +6100,7 @@ int main(int argc, char** argv) {
     test_world_map_camera_post_update();
     test_world_map_camera_collision_height();
     test_world_map_movement_candidate_sequence();
+    test_world_map_movement_contact_tail();
     test_synthetic_player_route_replay();
     test_world_map_scene_position_bucket_decision();
     test_world_map_scene_bucket_registry();

@@ -118,4 +118,39 @@ bool calculate_world_map_movement_candidate(
     return true;
 }
 
+bool plan_world_map_movement_contact_tail(
+    int32_t collision_category,
+    const std::array<float, 3>& prior_position,
+    const std::array<float, 3>& resolved_position,
+    const std::array<WorldMapMovementContactSlotOutcome, 2>& slot_outcomes,
+    WorldMapMovementContactTail* output) {
+    if (output == nullptr || !finite_position(prior_position) ||
+        !finite_position(resolved_position)) {
+        return false;
+    }
+    WorldMapMovementContactTail next;
+    next.recorded_category = collision_category;
+    next.recorded_prior = prior_position;
+    next.recorded_resolved = resolved_position;
+    // FUN_8001D9F8 returns one after writing these values, so its caller
+    // reaches the slot loop exactly when the player category is one.
+    if (collision_category == 1) {
+        for (int32_t slot = 0; slot < 2; ++slot) {
+            ++next.polygon_queries;
+            const auto& outcome = slot_outcomes[static_cast<size_t>(slot)];
+            if (!outcome.polygon_contact) {
+                continue;
+            }
+            ++next.state_requests;
+            if (outcome.state_request_accepted) {
+                next.accepted_slot = slot;
+                next.movement_reset_requested = true;
+                break;
+            }
+        }
+    }
+    *output = next;
+    return true;
+}
+
 } // namespace awl

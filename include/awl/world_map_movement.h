@@ -45,4 +45,31 @@ struct WorldMapMovementCandidate {
     const WorldMapMovementQuery& query,
     WorldMapMovementCandidate* candidate);
 
+struct WorldMapMovementContactSlotOutcome {
+    bool polygon_contact = false; // FUN_8001DA44 for this slot
+    bool state_request_accepted = false; // FUN_8010A9C0(3, slot, 0)
+};
+
+struct WorldMapMovementContactTail {
+    int32_t recorded_category = 0; // r13-0x58F8
+    std::array<float, 3> recorded_prior{}; // 0x802E9278
+    std::array<float, 3> recorded_resolved{}; // 0x802E9284
+    uint32_t polygon_queries = 0;
+    uint32_t state_requests = 0;
+    int32_t accepted_slot = -1;
+    bool movement_reset_requested = false; // FUN_800310A4(player, 1)
+};
+
+// Isolates FUN_8001D9F8's unconditional shared-state copy and the ordered
+// category-1 two-slot branch at FUN_8003083C 0x80030D0C..0x80030D88.
+// Polygon contacts and state-request results are supplied because their
+// runtime owners remain unresolved. No globals, player, or actions change.
+// Output is unchanged on invalid input.
+[[nodiscard]] bool plan_world_map_movement_contact_tail(
+    int32_t collision_category,
+    const std::array<float, 3>& prior_position,
+    const std::array<float, 3>& resolved_position,
+    const std::array<WorldMapMovementContactSlotOutcome, 2>& slot_outcomes,
+    WorldMapMovementContactTail* output);
+
 } // namespace awl

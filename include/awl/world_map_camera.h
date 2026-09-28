@@ -207,8 +207,8 @@ struct WorldMapPlayerMovementCameraResult {
 
 // Camera tail of FUN_8003083C after the collision-adjusted scene position
 // write: optional opposite-heading yaw, FUN_80030E18's one post-update,
-// then FUN_80085B98's plane-side test. The separate FUN_80141028 call in
-// the heading branch is not translated here. Output is atomic on failure.
+// then FUN_80085B98's plane-side test. The intervening FUN_80141028 is a
+// verified no-op in this DOL. Output is atomic on failure.
 [[nodiscard]] bool calculate_world_map_player_movement_camera_update(
     const WorldMapPlayerMovementCameraQuery& query,
     WorldMapCameraHeightSampler sample_height, void* sample_context,
