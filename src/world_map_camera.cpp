@@ -104,4 +104,51 @@ bool plan_world_map_camera_followup(
     return true;
 }
 
+bool calculate_world_map_camera_target(
+    const WorldMapCameraTargetQuery& query, WorldMapCameraTarget* output) {
+    if (output == nullptr || !finite_state(query.camera) ||
+        !finite_vector(query.origin_offset_0c) ||
+        !std::isfinite(query.distance_30) ||
+        !std::isfinite(query.pitch_offset_8c) ||
+        !std::isfinite(query.yaw_offset_90)) {
+        return false;
+    }
+    const float pitch = query.camera.field_18 + query.pitch_offset_8c;
+    const float yaw = query.camera.yaw + query.yaw_offset_90;
+    if (!std::isfinite(pitch) || !std::isfinite(yaw)) {
+        return false;
+    }
+
+    // FUN_8017B908 rotates (0, 0, +0x30) by the X matrix at pitch and then
+    // the Y matrix at yaw, before adding camera +0x00 and +0x0C.
+    const float horizontal = query.distance_30 * std::cos(pitch);
+    const std::array<float, 3> rotated{
+        horizontal * std::sin(yaw),
+        -query.distance_30 * std::sin(pitch),
+        horizontal * std::cos(yaw)};
+    WorldMapCameraTarget next;
+    for (size_t axis = 0; axis < 3; ++axis) {
+        next.raw[axis] = query.camera.position[axis] +
+                         query.origin_offset_0c[axis] + rotated[axis];
+    }
+    if (!finite_vector(next.raw)) {
+        return false;
+    }
+    next.bounded = next.raw;
+    if (query.camera.flag_99) {
+        // FUN_8017B9C4 compares lower and then upper bound on each axis.
+        for (size_t axis = 0; axis < 3; ++axis) {
+            if (next.bounded[axis] < query.camera.bounds_min[axis]) {
+                next.bounded[axis] = query.camera.bounds_min[axis];
+            }
+            if (next.bounded[axis] > query.camera.bounds_max[axis]) {
+                next.bounded[axis] = query.camera.bounds_max[axis];
+            }
+        }
+        next.clamped = next.bounded != next.raw;
+    }
+    *output = next;
+    return true;
+}
+
 } // namespace awl

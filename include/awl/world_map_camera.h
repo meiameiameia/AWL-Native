@@ -35,4 +35,27 @@ struct WorldMapCameraFollowup {
     uint8_t global_byte_3f1, int8_t pad_byte_8e,
     WorldMapCameraFollowup* output);
 
+// Inputs read by FUN_8017B908 from the camera object. The region follow-up
+// supplies position, pitch (+0x18), yaw (+0x1C), flag, and bounds; the other
+// fields remain caller supplied until the camera constructor is translated.
+struct WorldMapCameraTargetQuery {
+    WorldMapCameraFollowupState camera{};
+    std::array<float, 3> origin_offset_0c{};
+    float distance_30 = 0.0f;
+    float pitch_offset_8c = 0.0f;
+    float yaw_offset_90 = 0.0f;
+};
+
+struct WorldMapCameraTarget {
+    std::array<float, 3> raw{};
+    std::array<float, 3> bounded{};
+    bool clamped = false;
+};
+
+// Isolates FUN_8017B834's target calculation (FUN_8017B908) and optional
+// per-axis bounds (FUN_8017B9C4). The later target offsets, up vector, view
+// matrix, and terrain adjustment remain untranslated. Failure is atomic.
+[[nodiscard]] bool calculate_world_map_camera_target(
+    const WorldMapCameraTargetQuery& query, WorldMapCameraTarget* output);
+
 } // namespace awl

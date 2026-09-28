@@ -1946,6 +1946,82 @@ void test_world_map_camera_followup() {
            "missing camera output is rejected");
 }
 
+void test_world_map_camera_target() {
+    awl::WorldMapCameraTargetQuery query;
+    query.camera.position = {2.0f, 3.0f, 4.0f};
+    query.origin_offset_0c = {1.0f, -2.0f, 3.0f};
+    query.distance_30 = 10.0f;
+    awl::WorldMapCameraTarget target;
+    expect(awl::calculate_world_map_camera_target(query, &target) &&
+               target.raw == std::array<float, 3>{3.0f, 1.0f, 17.0f} &&
+               target.bounded == target.raw && !target.clamped,
+           "zero-angle target adds camera position, offset, and forward distance");
+
+    constexpr float kRightAngle = 1.57079632679f;
+    query.camera.yaw = kRightAngle;
+    expect(awl::calculate_world_map_camera_target(query, &target) &&
+               std::fabs(target.raw[0] - 13.0f) < 0.00001f &&
+               target.raw[1] == 1.0f &&
+               std::fabs(target.raw[2] - 7.0f) < 0.00001f,
+           "positive yaw rotates forward distance toward positive X");
+    query.camera.yaw = 0.0f;
+    query.pitch_offset_8c = kRightAngle;
+    expect(awl::calculate_world_map_camera_target(query, &target) &&
+               target.raw[0] == 3.0f &&
+               std::fabs(target.raw[1] + 9.0f) < 0.00001f &&
+               std::fabs(target.raw[2] - 7.0f) < 0.00001f,
+           "positive pitch rotates forward distance toward negative Y");
+    query.camera.field_18 = -0.5f;
+    query.pitch_offset_8c = 0.5f;
+    query.camera.yaw = -0.5f;
+    query.yaw_offset_90 = 0.5f;
+    expect(awl::calculate_world_map_camera_target(query, &target) &&
+               target.raw == std::array<float, 3>{3.0f, 1.0f, 17.0f},
+           "camera base angles and supplied angle offsets combine before rotation");
+    query.camera.field_18 = 0.0f;
+    query.pitch_offset_8c = 0.0f;
+    query.camera.yaw = 0.0f;
+    query.yaw_offset_90 = 0.0f;
+    query.camera.flag_99 = true;
+    query.camera.bounds_min = {0.0f, 2.0f, 8.0f};
+    query.camera.bounds_max = {4.0f, 5.0f, 12.0f};
+    expect(awl::calculate_world_map_camera_target(query, &target) &&
+               target.raw == std::array<float, 3>{3.0f, 1.0f, 17.0f} &&
+               target.bounded ==
+                   std::array<float, 3>{3.0f, 2.0f, 12.0f} &&
+               target.clamped,
+           "camera bounds clamp lower Y and upper Z after target rotation");
+    query.camera.bounds_min[0] = 5.0f;
+    query.camera.bounds_max[0] = 4.0f;
+    expect(awl::calculate_world_map_camera_target(query, &target) &&
+               target.bounded[0] == 4.0f,
+           "ordered lower-then-upper comparison is retained for supplied bounds");
+
+    awl::WorldMapCameraFollowupState before_region;
+    awl::WorldMapCameraFollowup region;
+    const std::array<float, 3> region_position{175.0f, 0.0f, 115.0f};
+    expect(awl::plan_world_map_camera_followup(
+               before_region, 1, region_position, 1, 0, &region),
+           "camera region profile is available to the target calculation");
+    query = {};
+    query.camera = region.state;
+    query.distance_30 = 20.0f;
+    expect(awl::calculate_world_map_camera_target(query, &target) &&
+               target.raw[2] > region.state.bounds_max[2] &&
+               target.bounded[0] == 175.0f &&
+               target.bounded[2] == region.state.bounds_max[2] &&
+               target.clamped,
+           "region profile bounds constrain its rotated camera target");
+    const awl::WorldMapCameraTarget saved = target;
+    query.distance_30 = std::numeric_limits<float>::infinity();
+    expect(!awl::calculate_world_map_camera_target(query, &target) &&
+               target.raw == saved.raw && target.bounded == saved.bounded &&
+               target.clamped == saved.clamped,
+           "nonfinite camera distance fails without changing output");
+    expect(!awl::calculate_world_map_camera_target(query, nullptr),
+           "missing camera target output is rejected");
+}
+
 void test_world_map_movement_candidate_sequence() {
     std::vector<uint8_t> terrain = make_sample_leaf();
     awl::WorldMapMovementQuery query;
@@ -5175,6 +5251,7 @@ int main(int argc, char** argv) {
     test_category1_static_and_movement_candidate();
     test_world_map_directional_contact_search();
     test_world_map_camera_followup();
+    test_world_map_camera_target();
     test_world_map_movement_candidate_sequence();
     test_synthetic_player_route_replay();
     test_world_map_scene_position_bucket_decision();
