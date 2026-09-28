@@ -3029,6 +3029,27 @@ std::vector<uint8_t> make_trigger_spl_fixture() {
     return bytes;
 }
 
+struct TriggerRequestProbe {
+    std::array<bool, 2> accepted{};
+    std::array<int32_t, 2> called_slots{-1, -1};
+    int32_t calls = 0;
+    int32_t fail_slot = -1;
+};
+
+bool request_trigger_state(int32_t slot, void* context, bool* accepted) {
+    auto* probe = static_cast<TriggerRequestProbe*>(context);
+    if (probe == nullptr || accepted == nullptr || slot < 0 || slot > 1 ||
+        probe->calls >= 2) {
+        return false;
+    }
+    probe->called_slots[static_cast<size_t>(probe->calls++)] = slot;
+    if (slot == probe->fail_slot) {
+        return false;
+    }
+    *accepted = probe->accepted[static_cast<size_t>(slot)];
+    return true;
+}
+
 void test_world_map_trigger_asset() {
     const auto bytes = make_trigger_spl_fixture();
     awl::WorldMapTriggerAsset asset;
@@ -3056,25 +3077,86 @@ void test_world_map_trigger_asset() {
                    1, {-1.0f, 0.0f, 1.0f}, {1.0f, 0.0f, 1.0f}, &contact) &&
                !contact,
            "decoded mode-three segment preserves crossing direction");
-    std::array<awl::WorldMapMovementContactSlotOutcome, 2> slots{};
-    expect(asset.query_category1_contact(
-               0, inside, outside, &slots[0].polygon_contact) &&
-               asset.query_category1_contact(
-                   1, inside, outside, &slots[1].polygon_contact),
-           "validated SPL supplies both movement-tail contact slots");
-    slots[0].state_request_accepted = true;
-    slots[1].state_request_accepted = true;
+    TriggerRequestProbe requests;
+    requests.accepted = {true, true};
     awl::WorldMapMovementContactTail tail;
-    expect(awl::plan_world_map_movement_contact_tail(
-               1, inside, outside, slots, &tail) &&
+    expect(asset.evaluate_movement_contact_tail(
+               1, inside, outside, request_trigger_state, &requests,
+               &tail) &&
                tail.polygon_queries == 1 && tail.state_requests == 1 &&
-               tail.accepted_slot == 0,
-           "accepted first SPL contact stops before the second slot");
+               tail.accepted_slot == 0 && tail.recorded_prior == inside &&
+               tail.recorded_resolved == outside && requests.calls == 1 &&
+               requests.called_slots[0] == 0,
+           "accepted first SPL contact stops before querying the second slot");
+    auto overflow_second_slot = bytes;
+    constexpr size_t first_polygon = 8 + 61 * 4 + 61 * 4 + 8;
+    constexpr size_t second_polygon = first_polygon + 8 + 5 * 12;
+    const float huge_coordinate = std::numeric_limits<float>::max();
+    put_be_float(overflow_second_slot, second_polygon + 8,
+                 huge_coordinate);
+    put_be_float(overflow_second_slot, second_polygon + 20,
+                 -huge_coordinate);
+    awl::WorldMapTriggerAsset second_slot_hazard;
+    requests = {};
+    requests.accepted[0] = true;
+    expect(second_slot_hazard.load_from_bytes(
+               overflow_second_slot.data(), overflow_second_slot.size()) &&
+               second_slot_hazard.evaluate_movement_contact_tail(
+                   1, inside, outside, request_trigger_state, &requests,
+                   &tail) &&
+               tail.accepted_slot == 0 && requests.calls == 1,
+           "first acceptance never evaluates an unusable second-slot query");
+    requests = {};
+    requests.accepted = {false, true};
+    expect(asset.evaluate_movement_contact_tail(
+               1, inside, outside, request_trigger_state, &requests,
+               &tail) &&
+               tail.polygon_queries == 2 && tail.state_requests == 2 &&
+               tail.accepted_slot == 1 && requests.calls == 2 &&
+               requests.called_slots == std::array<int32_t, 2>{0, 1},
+           "rejected first request reaches the second SPL polygon and request");
+    requests = {};
+    const std::array<float, 3> right{3.0f, 0.0f, 1.0f};
+    expect(asset.evaluate_movement_contact_tail(
+               1, right, right, request_trigger_state, &requests,
+               &tail) &&
+               tail.polygon_queries == 2 && tail.state_requests == 0 &&
+               tail.accepted_slot == -1 && requests.calls == 0,
+           "noncontact skips both state requests");
+    expect(asset.evaluate_movement_contact_tail(
+               2, inside, outside, nullptr, nullptr, &tail) &&
+               tail.recorded_category == 2 && tail.polygon_queries == 0,
+           "non-player category records state without a trigger provider");
+    requests = {};
+    requests.fail_slot = 1;
+    const auto saved_tail = tail;
+    expect(!asset.evaluate_movement_contact_tail(
+               1, inside, outside, request_trigger_state, &requests,
+               &tail) &&
+               requests.called_slots == std::array<int32_t, 2>{0, 1} &&
+               tail.recorded_category == saved_tail.recorded_category &&
+               tail.recorded_resolved == saved_tail.recorded_resolved,
+           "failed second request preserves output after ordered callbacks");
+    requests = {};
+    const std::array<float, 3> invalid{
+        std::numeric_limits<float>::infinity(), 0.0f, 0.0f};
+    expect(!asset.evaluate_movement_contact_tail(
+               1, invalid, outside, request_trigger_state, &requests,
+               &tail) &&
+               !asset.evaluate_movement_contact_tail(
+                   1, inside, outside, nullptr, nullptr, &tail) &&
+               requests.calls == 0 &&
+               tail.recorded_category == saved_tail.recorded_category,
+           "invalid positions or missing state provider cannot trigger actions");
 
     auto broken = bytes;
     broken[0] ^= 1;
     expect(!asset.load_from_bytes(broken.data(), broken.size()) &&
-               !asset.loaded() && asset.category1_polygon(0) == nullptr,
+               !asset.loaded() && asset.category1_polygon(0) == nullptr &&
+               !asset.evaluate_movement_contact_tail(
+                   1, inside, outside, request_trigger_state, &requests,
+                   &tail) &&
+               tail.recorded_category == saved_tail.recorded_category,
            "bad SPL marker clears a prior successful load");
     broken = bytes;
     put_be32(broken, 8 + 55 * 4, static_cast<uint32_t>(broken.size() + 4));
@@ -5008,6 +5090,14 @@ bool check_local_trigger_asset(const char* disc_root) {
                 contact &&
                 asset.query_category1_contact(0, outside, outside, &contact) &&
                 !contact;
+        TriggerRequestProbe requests;
+        requests.accepted[0] = true;
+        awl::WorldMapMovementContactTail tail;
+        valid = valid && asset.evaluate_movement_contact_tail(
+                             1, center, outside, request_trigger_state,
+                             &requests, &tail) &&
+                tail.accepted_slot == 0 && tail.polygon_queries == 1 &&
+                requests.calls == 1 && requests.called_slots[0] == 0;
         const auto& a = crossing->vertices[0];
         const auto& b = crossing->vertices[1];
         const float edge_x = b[0] - a[0];
@@ -5034,7 +5124,7 @@ bool check_local_trigger_asset(const char* disc_root) {
     if (!valid) {
         std::fprintf(stderr, "Local trigger.spl validation failed\n");
     } else {
-        std::puts("Local trigger.spl: two category-1 polygons validated; parity and directional probes passed.");
+        std::puts("Local trigger.spl: two category-1 polygons and ordered tail probe passed.");
     }
     return valid;
 }

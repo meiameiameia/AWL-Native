@@ -152,4 +152,41 @@ bool WorldMapTriggerAsset::query_category1_contact(
                prior_position, resolved_position, contact);
 }
 
+bool WorldMapTriggerAsset::evaluate_movement_contact_tail(
+    int32_t collision_category,
+    const std::array<float, 3>& prior_position,
+    const std::array<float, 3>& resolved_position,
+    WorldMapTriggerStateRequest request_state,
+    void* request_context,
+    WorldMapMovementContactTail* output) const {
+    if (output == nullptr ||
+        (collision_category == 1 && (!loaded_ || request_state == nullptr))) {
+        return false;
+    }
+    std::array<WorldMapMovementContactSlotOutcome, 2> outcomes{};
+    if (collision_category == 1) {
+        for (int32_t slot = 0; slot < 2; ++slot) {
+            auto& outcome = outcomes[static_cast<size_t>(slot)];
+            if (!query_category1_contact(
+                    static_cast<size_t>(slot), prior_position,
+                    resolved_position, &outcome.polygon_contact)) {
+                return false;
+            }
+            if (!outcome.polygon_contact) {
+                continue;
+            }
+            if (!request_state(slot, request_context,
+                               &outcome.state_request_accepted)) {
+                return false;
+            }
+            if (outcome.state_request_accepted) {
+                break;
+            }
+        }
+    }
+    return plan_world_map_movement_contact_tail(
+        collision_category, prior_position, resolved_position,
+        outcomes, output);
+}
+
 } // namespace awl
