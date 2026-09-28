@@ -40,6 +40,49 @@ bool finite_state(const WorldMapCameraFollowupState& value) {
            finite_vector(value.bounds_max);
 }
 
+std::array<float, 3> rotate_x_then_y(const std::array<float, 3>& value,
+                                     float pitch, float yaw) {
+    const float sin_pitch = std::sin(pitch);
+    const float cos_pitch = std::cos(pitch);
+    const float sin_yaw = std::sin(yaw);
+    const float cos_yaw = std::cos(yaw);
+    const float x_after_x = value[0];
+    const float y_after_x = cos_pitch * value[1] - sin_pitch * value[2];
+    const float z_after_x = sin_pitch * value[1] + cos_pitch * value[2];
+    return {cos_yaw * x_after_x + sin_yaw * z_after_x,
+            y_after_x,
+            -sin_yaw * x_after_x + cos_yaw * z_after_x};
+}
+
+std::array<float, 3> cross_product(const std::array<float, 3>& a,
+                                   const std::array<float, 3>& b) {
+    return {a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0]};
+}
+
+bool normalize_vector(std::array<float, 3>* value) {
+    if (value == nullptr || !finite_vector(*value)) {
+        return false;
+    }
+    const double length = std::sqrt(
+        static_cast<double>((*value)[0]) * (*value)[0] +
+        static_cast<double>((*value)[1]) * (*value)[1] +
+        static_cast<double>((*value)[2]) * (*value)[2]);
+    if (!std::isfinite(length) || length == 0.0) {
+        return false;
+    }
+    for (float& component : *value) {
+        component = static_cast<float>(component / length);
+    }
+    return finite_vector(*value);
+}
+
+float negative_dot(const std::array<float, 3>& a,
+                   const std::array<float, 3>& b) {
+    return -(a[0] * b[0] + a[1] * b[1] + a[2] * b[2]);
+}
+
 } // namespace
 
 bool plan_world_map_camera_followup(
@@ -146,6 +189,75 @@ bool calculate_world_map_camera_target(
             }
         }
         next.clamped = next.bounded != next.raw;
+    }
+    *output = next;
+    return true;
+}
+
+bool calculate_world_map_camera_view(
+    const WorldMapCameraViewQuery& query, WorldMapCameraView* output) {
+    if (output == nullptr || !finite_vector(query.up_vector_24) ||
+        !std::isfinite(query.pitch_offset_44) ||
+        !std::isfinite(query.yaw_offset_48)) {
+        return false;
+    }
+    WorldMapCameraView next;
+    if (!calculate_world_map_camera_target(query.target, &next.target)) {
+        return false;
+    }
+    const float pitch = query.target.camera.field_18 +
+                        query.target.pitch_offset_8c;
+    const float yaw = query.target.camera.yaw + query.target.yaw_offset_90;
+    const float point_pitch = pitch + query.pitch_offset_44;
+    const float point_yaw = yaw + query.yaw_offset_48;
+    const float reverse_distance = -2.0f * query.target.distance_30;
+    if (!std::isfinite(point_pitch) || !std::isfinite(point_yaw) ||
+        !std::isfinite(reverse_distance)) {
+        return false;
+    }
+    // FUN_8017BA50: the second point is based on the already bounded target.
+    const std::array<float, 3> reverse = rotate_x_then_y(
+        {0.0f, 0.0f, reverse_distance}, point_pitch, point_yaw);
+    next.rotated_up = rotate_x_then_y(query.up_vector_24, pitch, yaw);
+    for (size_t axis = 0; axis < 3; ++axis) {
+        next.second_point[axis] = next.target.bounded[axis] + reverse[axis];
+    }
+    if (!finite_vector(next.second_point) ||
+        !finite_vector(next.rotated_up)) {
+        return false;
+    }
+
+    // FUN_801B8454: forward = normalize(target - second point), right =
+    // normalize(up x forward), corrected up = forward x right.
+    std::array<float, 3> forward{};
+    for (size_t axis = 0; axis < 3; ++axis) {
+        forward[axis] = next.target.bounded[axis] - next.second_point[axis];
+    }
+    if (!normalize_vector(&forward)) {
+        return false;
+    }
+    std::array<float, 3> right = cross_product(next.rotated_up, forward);
+    if (!normalize_vector(&right)) {
+        return false;
+    }
+    const std::array<float, 3> corrected_up =
+        cross_product(forward, right);
+    if (!finite_vector(corrected_up)) {
+        return false;
+    }
+    const std::array<std::array<float, 3>, 3> rows{
+        right, corrected_up, forward};
+    for (size_t row = 0; row < 3; ++row) {
+        for (size_t axis = 0; axis < 3; ++axis) {
+            next.matrix_50[row * 4 + axis] = rows[row][axis];
+        }
+        next.matrix_50[row * 4 + 3] =
+            negative_dot(next.target.bounded, rows[row]);
+    }
+    for (float component : next.matrix_50) {
+        if (!std::isfinite(component)) {
+            return false;
+        }
     }
     *output = next;
     return true;

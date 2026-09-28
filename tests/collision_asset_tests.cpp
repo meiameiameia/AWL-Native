@@ -2022,6 +2022,84 @@ void test_world_map_camera_target() {
            "missing camera target output is rejected");
 }
 
+void test_world_map_camera_view() {
+    awl::WorldMapCameraViewQuery query;
+    query.target.distance_30 = 2.0f;
+    query.up_vector_24 = {0.0f, 1.0f, 0.0f};
+    awl::WorldMapCameraView view;
+    expect(awl::calculate_world_map_camera_view(query, &view) &&
+               view.target.bounded ==
+                   std::array<float, 3>{0.0f, 0.0f, 2.0f} &&
+               view.second_point ==
+                   std::array<float, 3>{0.0f, 0.0f, -2.0f} &&
+               view.rotated_up ==
+                   std::array<float, 3>{0.0f, 1.0f, 0.0f} &&
+               view.matrix_50 == std::array<float, 12>{
+                   1.0f, 0.0f, 0.0f, 0.0f,
+                   0.0f, 1.0f, 0.0f, 0.0f,
+                   0.0f, 0.0f, 1.0f, -2.0f},
+           "zero-angle camera view produces identity axes and target translation");
+
+    constexpr float kRightAngle = 1.57079632679f;
+    query.target.camera.yaw = kRightAngle;
+    expect(awl::calculate_world_map_camera_view(query, &view) &&
+               std::fabs(view.target.bounded[0] - 2.0f) < 0.00001f &&
+               std::fabs(view.second_point[0] + 2.0f) < 0.00001f &&
+               std::fabs(view.matrix_50[2] + 1.0f) < 0.00001f &&
+               std::fabs(view.matrix_50[8] - 1.0f) < 0.00001f &&
+               std::fabs(view.matrix_50[11] + 2.0f) < 0.00001f,
+           "positive yaw turns the view forward toward positive X");
+    query.target.camera.yaw = 0.0f;
+    query.yaw_offset_48 = kRightAngle;
+    expect(awl::calculate_world_map_camera_view(query, &view) &&
+               std::fabs(view.target.bounded[2] - 2.0f) < 0.00001f &&
+               std::fabs(view.matrix_50[8] - 1.0f) < 0.00001f &&
+               std::fabs(view.matrix_50[3] - 2.0f) < 0.00001f,
+           "second-point yaw offset changes view while preserving base target");
+    query.yaw_offset_48 = 0.0f;
+    query.pitch_offset_44 = 0.78539816339f;
+    expect(awl::calculate_world_map_camera_view(query, &view) &&
+               std::fabs(view.matrix_50[9] + 0.70710678f) < 0.00001f &&
+               std::fabs(view.matrix_50[10] - 0.70710678f) < 0.00001f,
+           "second-point pitch offset tilts the view forward axis");
+    query.pitch_offset_44 = 0.0f;
+    query.target.camera.field_18 = kRightAngle;
+    expect(awl::calculate_world_map_camera_view(query, &view) &&
+               std::fabs(view.rotated_up[2] - 1.0f) < 0.00001f &&
+               std::fabs(view.matrix_50[9] + 1.0f) < 0.00001f,
+           "base pitch rotates the supplied up vector and view forward axis");
+    query.target.camera.field_18 = 0.0f;
+
+    awl::WorldMapCameraFollowup region;
+    awl::WorldMapCameraFollowupState before_region;
+    expect(awl::plan_world_map_camera_followup(
+               before_region, 1, {175.0f, 0.0f, 115.0f}, 1, 0, &region),
+           "region profile is available to camera view");
+    query.target.camera = region.state;
+    query.target.distance_30 = 20.0f;
+    expect(awl::calculate_world_map_camera_view(query, &view) &&
+               view.target.clamped &&
+               view.target.bounded[2] == region.state.bounds_max[2] &&
+               std::isfinite(view.matrix_50[11]),
+           "bounded region target feeds the completed view calculation");
+
+    query = {};
+    query.target.distance_30 = 0.0f;
+    query.up_vector_24 = {0.0f, 1.0f, 0.0f};
+    const awl::WorldMapCameraView saved = view;
+    expect(!awl::calculate_world_map_camera_view(query, &view) &&
+               view.matrix_50 == saved.matrix_50 &&
+               view.target.bounded == saved.target.bounded,
+           "zero camera distance rejects a degenerate view atomically");
+    query.target.distance_30 = 2.0f;
+    query.up_vector_24 = {0.0f, 0.0f, 1.0f};
+    expect(!awl::calculate_world_map_camera_view(query, &view) &&
+               view.matrix_50 == saved.matrix_50,
+           "up vector parallel to forward rejects a degenerate view");
+    expect(!awl::calculate_world_map_camera_view(query, nullptr),
+           "missing camera view output is rejected");
+}
+
 void test_world_map_movement_candidate_sequence() {
     std::vector<uint8_t> terrain = make_sample_leaf();
     awl::WorldMapMovementQuery query;
@@ -5252,6 +5330,7 @@ int main(int argc, char** argv) {
     test_world_map_directional_contact_search();
     test_world_map_camera_followup();
     test_world_map_camera_target();
+    test_world_map_camera_view();
     test_world_map_movement_candidate_sequence();
     test_synthetic_player_route_replay();
     test_world_map_scene_position_bucket_decision();

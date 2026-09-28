@@ -58,4 +58,24 @@ struct WorldMapCameraTarget {
 [[nodiscard]] bool calculate_world_map_camera_target(
     const WorldMapCameraTargetQuery& query, WorldMapCameraTarget* output);
 
+struct WorldMapCameraViewQuery {
+    WorldMapCameraTargetQuery target{};
+    std::array<float, 3> up_vector_24{};
+    float pitch_offset_44 = 0.0f;
+    float yaw_offset_48 = 0.0f;
+};
+
+struct WorldMapCameraView {
+    WorldMapCameraTarget target{};
+    std::array<float, 3> second_point{};
+    std::array<float, 3> rotated_up{};
+    std::array<float, 12> matrix_50{}; // three rows of four floats
+};
+
+// Completes the supplied-data FUN_8017B834 view calculation after the target
+// clamp. The DOL normalizes two vectors without zero guards; this native
+// helper rejects degenerate input and leaves output unchanged on failure.
+[[nodiscard]] bool calculate_world_map_camera_view(
+    const WorldMapCameraViewQuery& query, WorldMapCameraView* output);
+
 } // namespace awl
