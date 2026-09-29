@@ -47,11 +47,33 @@ uint32_t record_bits(const uint8_t* data, size_t first, uint32_t width) {
     return value;
 }
 
+uint32_t stage_group(int32_t stage) {
+    if (stage == 4) {
+        return 2;
+    }
+    return stage == 3 || stage == 5 ? 1u : 0u;
+}
+
+bool hour_window(uint32_t first, uint32_t length, uint32_t clock_ticks) {
+    if (first >= 24) {
+        return true;
+    }
+    const uint32_t hour = (clock_ticks / 36000u) % 24u;
+    if (length == 0) {
+        return hour == first && (clock_ticks / 600u) % 60u == 0;
+    }
+    const uint32_t end = first + length;
+    if (first <= hour && hour < end) {
+        return true;
+    }
+    return end >= 24 && hour < end - 24;
+}
+
 } // namespace
 
 WorldMapMovementRecordStatus evaluate_world_map_movement_record(
     const WorldMapMovementRequestRecord& record,
-    uint8_t state_11cec,
+    const WorldMapMovementEvaluationState& state,
     WorldMapMovementRecordDecision* out) {
     using Status = WorldMapMovementRecordStatus;
     if (out != nullptr) {
@@ -68,21 +90,47 @@ WorldMapMovementRecordStatus evaluate_world_map_movement_record(
         record_bits(record.data, 254, 1) != 1u) {
         return Status::RequiresUntranslatedPredicate;
     }
-    if (record_bits(record.data, 255, 1) == 0u && state_11cec != 0) {
+    if (record_bits(record.data, 255, 1) == 0u && state.state_11cec != 0) {
         return Status::Rejected;
     }
-    // The first value of each later descriptor is its skip sentinel. The
-    // local slot-0 record takes these branches without calling predicates.
-    constexpr std::array<std::pair<size_t, uint32_t>, 12> kSkipFields{{
-        {167, 6}, // single paired predicate at r2-0x6DE0
-        {27, 4}, {115, 10}, {126, 10}, {137, 9}, {147, 9}, {157, 9},
-        {177, 6}, {208, 6}, {231, 6},
-        {32, 4}, {54, 5},
+    // The paired predicate precedes the six-descriptor table. Its active
+    // path remains outside the local record shapes.
+    if (record_bits(record.data, 167, 6) != 0x3fu) {
+        return Status::RequiresUntranslatedPredicate;
+    }
+    const uint32_t stage_mask = record_bits(record.data, 27, 4);
+    if (stage_mask != 0xfu) {
+        if (stage_mask != 1u || record_bits(record.data, 31, 1) != 1u ||
+            !state.has_time_state) {
+            return Status::RequiresUntranslatedPredicate;
+        }
+        // FUN_80127DB4: a nonzero transition fraction must stay within the
+        // same stage group before the current stage is tested by the mask.
+        if ((state.transition_fraction != 0.0f &&
+             stage_group(state.transition_stage) !=
+                 stage_group(state.current_stage)) ||
+            (stage_mask & (1u << stage_group(state.current_stage))) == 0) {
+            return Status::Rejected;
+        }
+    }
+    constexpr std::array<std::pair<size_t, uint32_t>, 9> kSkipFields{{
+        {115, 10}, {126, 10}, {137, 9}, {147, 9}, {157, 9},
+        {177, 6}, {208, 6}, {231, 6}, {32, 4},
     }};
     for (const auto& field : kSkipFields) {
         if (record_bits(record.data, field.first, field.second) !=
             ((1u << field.second) - 1u)) {
             return Status::RequiresUntranslatedPredicate;
+        }
+    }
+    const uint32_t first_hour = record_bits(record.data, 54, 5);
+    if (first_hour != 0x1fu) {
+        if (!state.has_time_state) {
+            return Status::RequiresUntranslatedPredicate;
+        }
+        if (!hour_window(first_hour, record_bits(record.data, 59, 5),
+                         state.clock_ticks)) {
+            return Status::Rejected;
         }
     }
     // FUN_80128218 and FUN_80128488 receive only wildcard arguments, so
@@ -97,8 +145,10 @@ WorldMapMovementRecordStatus evaluate_world_map_movement_record(
             return Status::RequiresUntranslatedPredicate;
         }
     }
-    // FUN_80128788 uses its default-success path for IDs >= 0x17D.
-    if (record.saved_condition_id < 0x17du ||
+    // FUN_80128788 also takes default success for the local 0x178 slot-1
+    // ID, which misses all cases below 0x17D.
+    if ((record.saved_condition_id < 0x17du &&
+         record.saved_condition_id != 0x178u) ||
         record.saved_condition_id == 0x3ffu) {
         return Status::RequiresUntranslatedPredicate;
     }
@@ -106,6 +156,15 @@ WorldMapMovementRecordStatus evaluate_world_map_movement_record(
     out->decoder_flag = static_cast<uint8_t>(
         record_bits(record.data, 26, 1));
     return Status::EligibleForStateRequest;
+}
+
+WorldMapMovementRecordStatus evaluate_world_map_movement_record(
+    const WorldMapMovementRequestRecord& record,
+    uint8_t state_11cec,
+    WorldMapMovementRecordDecision* out) {
+    WorldMapMovementEvaluationState state;
+    state.state_11cec = state_11cec;
+    return evaluate_world_map_movement_record(record, state, out);
 }
 
 void WorldMapEventConditions::clear() {

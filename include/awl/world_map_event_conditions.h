@@ -34,8 +34,25 @@ struct WorldMapMovementRecordDecision {
     uint8_t decoder_flag = 0;
 };
 
-// Evaluates only the verified type-3 record path whose other predicates are
-// skipped by sentinel fields. Eligibility still precedes FUN_8010AAC4.
+// FUN_80015648 supplies the transition values; FUN_80015640 supplies the
+// current stage. clock_ticks is the raw word read by FUN_80010058/7C.
+struct WorldMapMovementEvaluationState {
+    uint8_t state_11cec = 0;
+    bool has_time_state = false;
+    int32_t current_stage = 0;
+    int32_t transition_stage = 0;
+    float transition_fraction = 0.0f;
+    uint32_t clock_ticks = 0;
+};
+
+// Evaluates the bounded local type-3 record shapes. Eligibility still
+// precedes FUN_8010AAC4 and never applies an action.
+[[nodiscard]] WorldMapMovementRecordStatus evaluate_world_map_movement_record(
+    const WorldMapMovementRequestRecord& record,
+    const WorldMapMovementEvaluationState& state,
+    WorldMapMovementRecordDecision* out);
+
+// Convenience for the slot-0 shape that needs only the global byte.
 [[nodiscard]] WorldMapMovementRecordStatus evaluate_world_map_movement_record(
     const WorldMapMovementRequestRecord& record,
     uint8_t state_11cec,

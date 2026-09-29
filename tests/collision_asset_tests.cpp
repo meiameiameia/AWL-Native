@@ -324,6 +324,83 @@ void test_world_map_event_conditions() {
                supported, 0, nullptr) ==
                RequestStatus::InvalidInput,
            "missing decoder output is rejected");
+
+    // Synthetic active stage and clock descriptors use the DOL's local
+    // slot-1 shape without embedding archive bytes.
+    wildcard_record[8] |= 0x01u;
+    auto timed_record = wildcard_record;
+    auto set_bits = [&timed_record](size_t first, uint32_t width,
+                                    uint32_t value) {
+        for (uint32_t bit = 0; bit < width; ++bit) {
+            const size_t at = first + bit;
+            const uint8_t mask = static_cast<uint8_t>(1u << (at % 8));
+            if ((value & (1u << bit)) != 0) {
+                timed_record[at / 8] |= mask;
+            } else {
+                timed_record[at / 8] &= static_cast<uint8_t>(~mask);
+            }
+        }
+    };
+    set_bits(0, 10, 0x178);
+    set_bits(27, 4, 1);
+    set_bits(31, 1, 1);
+    set_bits(54, 5, 19);
+    set_bits(59, 5, 5);
+    awl::WorldMapMovementRequestRecord timed{
+        timed_record.data(), timed_record.size(), 1, 0x178};
+    awl::WorldMapMovementEvaluationState time;
+    expect(awl::evaluate_world_map_movement_record(timed, time, &decision) ==
+               RequestStatus::RequiresUntranslatedPredicate,
+           "active time predicates require a supplied state snapshot");
+    time.has_time_state = true;
+    time.clock_ticks = 19u * 36000u;
+    expect(awl::evaluate_world_map_movement_record(timed, time, &decision) ==
+               RequestStatus::EligibleForStateRequest &&
+               decision.action_index == 0x178,
+           "stage zero and the inclusive 19:00 boundary qualify");
+    time.clock_ticks = 18u * 36000u + 59u * 600u;
+    expect(awl::evaluate_world_map_movement_record(timed, time, &decision) ==
+               RequestStatus::Rejected,
+           "the minute before the time window is rejected");
+    time.clock_ticks = 24u * 36000u;
+    expect(awl::evaluate_world_map_movement_record(timed, time, &decision) ==
+               RequestStatus::Rejected,
+           "the midnight end boundary is exclusive");
+    time.clock_ticks = 20u * 36000u;
+    time.current_stage = 4;
+    expect(awl::evaluate_world_map_movement_record(timed, time, &decision) ==
+               RequestStatus::Rejected,
+           "stage four is outside the first stage mask");
+    time.current_stage = 0;
+    time.transition_stage = 3;
+    time.transition_fraction = 0.5f;
+    expect(awl::evaluate_world_map_movement_record(timed, time, &decision) ==
+               RequestStatus::Rejected,
+           "an active transition across stage groups rejects first");
+    time.transition_fraction = 0.0f;
+    expect(awl::evaluate_world_map_movement_record(timed, time, &decision) ==
+               RequestStatus::EligibleForStateRequest,
+           "zero transition fraction uses only the current stage group");
+    set_bits(54, 5, 22);
+    set_bits(59, 5, 4);
+    time.clock_ticks = 1u * 36000u;
+    expect(awl::evaluate_world_map_movement_record(timed, time, &decision) ==
+               RequestStatus::EligibleForStateRequest,
+           "a wrapping clock window qualifies after midnight");
+    time.clock_ticks = 2u * 36000u;
+    expect(awl::evaluate_world_map_movement_record(timed, time, &decision) ==
+               RequestStatus::Rejected,
+           "the wrapping clock window has an exclusive end");
+    set_bits(54, 5, 7);
+    set_bits(59, 5, 0);
+    time.clock_ticks = 7u * 36000u + 599u;
+    expect(awl::evaluate_world_map_movement_record(timed, time, &decision) ==
+               RequestStatus::EligibleForStateRequest,
+           "zero-length window requires its exact hour and zero minute");
+    time.clock_ticks = 7u * 36000u + 600u;
+    expect(awl::evaluate_world_map_movement_record(timed, time, &decision) ==
+               RequestStatus::Rejected,
+           "zero-length window rejects the next minute");
 }
 
 void test_world_map_room_collision_mapping() {
@@ -5332,10 +5409,39 @@ bool check_local_event_conditions(const char* disc_root) {
             }
             if (valid && slot == 1 && !selected.empty()) {
                 awl::WorldMapMovementRecordDecision decision;
+                awl::WorldMapMovementEvaluationState time;
+                time.has_time_state = true;
                 valid = awl::evaluate_world_map_movement_record(
                             selected[0], 0, &decision) ==
                         awl::WorldMapMovementRecordStatus::
                             RequiresUntranslatedPredicate;
+                time.clock_ticks = 19u * 36000u;
+                valid = valid &&
+                    awl::evaluate_world_map_movement_record(
+                        selected[0], time, &decision) ==
+                        awl::WorldMapMovementRecordStatus::
+                            EligibleForStateRequest &&
+                    decision.action_index == 0x178u &&
+                    awl::evaluate_world_map_movement_record(
+                        selected[1], time, &decision) ==
+                        awl::WorldMapMovementRecordStatus::Rejected;
+                time.clock_ticks = 2u * 36000u;
+                valid = valid &&
+                    awl::evaluate_world_map_movement_record(
+                        selected[0], time, &decision) ==
+                        awl::WorldMapMovementRecordStatus::Rejected &&
+                    awl::evaluate_world_map_movement_record(
+                        selected[1], time, &decision) ==
+                        awl::WorldMapMovementRecordStatus::
+                            EligibleForStateRequest;
+                time.clock_ticks = 12u * 36000u;
+                valid = valid &&
+                    awl::evaluate_world_map_movement_record(
+                        selected[0], time, &decision) ==
+                        awl::WorldMapMovementRecordStatus::Rejected &&
+                    awl::evaluate_world_map_movement_record(
+                        selected[1], time, &decision) ==
+                        awl::WorldMapMovementRecordStatus::Rejected;
             }
         }
         if (valid) {
