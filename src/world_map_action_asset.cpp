@@ -84,6 +84,113 @@ void WorldMapGlobalActionArchive::clear() {
     bytes_.clear();
 }
 
+void WorldMapActionScript::clear() {
+    bytes_.clear();
+    code_offset_ = 0;
+    code_count_ = 0;
+    string_count_ = 0;
+    options_ = 0;
+}
+
+bool WorldMapActionScript::parse(std::vector<uint8_t> bytes) {
+    clear();
+    if (bytes.size() < 12 || std::memcmp(bytes.data(), "RIFF", 4) != 0 ||
+        std::memcmp(bytes.data() + 8, "SCR ", 4) != 0 ||
+        be32(bytes.data() + 4) != bytes.size()) {
+        return false;
+    }
+    bool saw_code = false;
+    bool saw_strings = false;
+    bool saw_options = false;
+    size_t code_offset = 0;
+    uint32_t code_count = 0;
+    uint32_t string_count = 0;
+    uint32_t options = 0;
+    size_t cursor = 12;
+    // This target format uses big-endian lengths and no RIFF padding.
+    // The DOL's inclusive end test can read past the declared end; native
+    // parsing instead requires complete chunks ending exactly at that bound.
+    while (cursor < bytes.size()) {
+        if (!in_range(bytes.size(), cursor, 8)) {
+            return false;
+        }
+        const uint8_t* tag = bytes.data() + cursor;
+        const uint32_t length = be32(tag + 4);
+        cursor += 8;
+        if (length < 4 || !in_range(bytes.size(), cursor, length)) {
+            return false;
+        }
+        const uint32_t value = be32(bytes.data() + cursor);
+        if (std::memcmp(tag, "CODE", 4) == 0) {
+            if (saw_code || value == 0 ||
+                4ull + static_cast<uint64_t>(value) * 8 != length) {
+                return false;
+            }
+            saw_code = true;
+            code_offset = cursor + 4;
+            code_count = value;
+        } else if (std::memcmp(tag, "STR ", 4) == 0) {
+            if (saw_strings ||
+                4ull + static_cast<uint64_t>(value) * 4 > length) {
+                return false;
+            }
+            saw_strings = true;
+            string_count = value;
+            // The table/blob are owned but not dereferenced. Their offset
+            // interpretation and runtime string use remain untranslated.
+        } else if (std::memcmp(tag, "OPT ", 4) == 0) {
+            if (saw_options || length != 4) {
+                return false;
+            }
+            saw_options = true;
+            options = value;
+        } else {
+            return false;
+        }
+        cursor += length;
+    }
+    if (!saw_code || !saw_options) {
+        return false;
+    }
+    bytes_.swap(bytes);
+    code_offset_ = code_offset;
+    code_count_ = code_count;
+    string_count_ = string_count;
+    options_ = options;
+    return true;
+}
+
+bool WorldMapActionScript::instruction(
+    size_t index, WorldMapActionInstruction* out) const {
+    if (out != nullptr) {
+        *out = {};
+    }
+    if (!loaded() || out == nullptr || index >= code_count_) {
+        return false;
+    }
+    const uint8_t* record = bytes_.data() + code_offset_ + index * 8;
+    out->opcode = record[0];
+    out->flags = record[1];
+    out->reserved = static_cast<uint16_t>(
+        (static_cast<uint16_t>(record[2]) << 8) | record[3]);
+    out->operand = be32(record + 4);
+    return true;
+}
+
+bool WorldMapActionScript::initialize_state(
+    uint32_t mode_flags, WorldMapActionScriptState* out) const {
+    if (!loaded() || out == nullptr) {
+        return false;
+    }
+    *out = {};
+    out->state_4 = 1;
+    out->instruction_count_10 = code_count_;
+    out->string_count_14 = string_count_;
+    out->options_1b4 = options_;
+    out->mode_flags_528 = mode_flags;
+    return true;
+}
+
 bool WorldMapGlobalActionArchive::parse(std::vector<uint8_t> bytes) {
     clear();
     if (bytes.size() < 0x20 || be32(bytes.data()) != 0x55aa382du) {

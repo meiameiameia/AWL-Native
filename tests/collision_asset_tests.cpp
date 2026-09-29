@@ -28,6 +28,7 @@
 #include <iterator>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -562,6 +563,123 @@ void test_world_map_action_asset() {
         expect(!archive.parse(invalid_arc) && !archive.loaded(),
                "invalid ARC count, node type/name, or payload clears the owner");
     }
+}
+
+void test_world_map_action_script() {
+    // Invented instructions and an odd-sized string chunk exercise the DOL's
+    // big-endian lengths and unpadded cursor; no game script is embedded.
+    std::vector<uint8_t> bytes(77, 0);
+    std::memcpy(bytes.data(), "RIFF", 4);
+    put_be32(bytes, 4, 77);
+    std::memcpy(bytes.data() + 8, "SCR CODE", 8);
+    put_be32(bytes, 16, 20);
+    put_be32(bytes, 20, 2);
+    bytes[24] = 0x12;
+    bytes[25] = 1;
+    bytes[26] = 0x34;
+    bytes[27] = 0x56;
+    put_be32(bytes, 28, 0x789abcde);
+    bytes[32] = 0x21;
+    put_be32(bytes, 36, 0xfedcba98);
+    std::memcpy(bytes.data() + 40, "STR ", 4);
+    put_be32(bytes, 44, 17);
+    put_be32(bytes, 48, 2);
+    put_be32(bytes, 52, 0);
+    put_be32(bytes, 56, 2);
+    std::memcpy(bytes.data() + 60, "a\0bc", 5);
+    std::memcpy(bytes.data() + 65, "OPT ", 4);
+    put_be32(bytes, 69, 4);
+    put_be32(bytes, 73, 9);
+    awl::WorldMapActionScript script;
+    awl::WorldMapActionInstruction instruction;
+    expect(script.parse(bytes) && script.loaded() &&
+               script.instruction_count() == 2 && script.string_count() == 2 &&
+               script.options() == 9 && script.instruction(0, &instruction) &&
+               instruction.opcode == 0x12 && instruction.flags == 1 &&
+               instruction.reserved == 0x3456 && instruction.operand == 0x789abcde,
+           "SCR parses bounded big-endian code and unpadded string/options chunks");
+    expect(script.instruction(1, &instruction) &&
+               instruction.opcode == 0x21 && instruction.flags == 0 &&
+               instruction.reserved == 0 && instruction.operand == 0xfedcba98 &&
+               !script.instruction(2, &instruction) && instruction.operand == 0 &&
+               !script.instruction(SIZE_MAX, &instruction) &&
+               !script.instruction(0, nullptr),
+           "SCR instruction view reads the last record and rejects invalid indices");
+    awl::WorldMapActionScriptState state;
+    state.state_4 = 42;
+    state.instruction_index_0c = 13;
+    state.stack_20.fill(UINT32_MAX);
+    state.stack_depth_1b0 = 100;
+    state.variables_1b8.fill(UINT32_MAX);
+    state.operand_base_4d8 = 19;
+    state.mode_flags_528 = 7;
+    expect(script.initialize_state(0x80000001, &state) &&
+               state.state_4 == 1 && state.instruction_index_0c == 0 &&
+               state.instruction_count_10 == 2 && state.string_count_14 == 2 &&
+               state.stack_depth_1b0 == 0 && state.options_1b4 == 9 &&
+               state.operand_base_4d8 == 0 && state.mode_flags_528 == 0x80000001 &&
+               std::all_of(state.stack_20.begin(), state.stack_20.end(),
+                           [](uint32_t value) { return value == 0; }) &&
+               std::all_of(state.variables_1b8.begin(), state.variables_1b8.end(),
+                           [](uint32_t value) { return value == 0; }) &&
+               !script.initialize_state(0, nullptr),
+           "SCR initialization resets all represented DOL stack/variable fields");
+    auto without_strings = bytes;
+    without_strings.erase(without_strings.begin() + 40,
+                          without_strings.begin() + 65);
+    put_be32(without_strings, 4, 52);
+    expect(script.parse(without_strings) && script.string_count() == 0 &&
+               script.initialize_state(0, &state) && state.string_count_14 == 0,
+           "SCR load without strings clears prior optional metadata");
+    auto rejects = [&script](std::vector<uint8_t> invalid) {
+        return !script.parse(std::move(invalid)) && !script.loaded() &&
+               script.instruction_count() == 0 && script.string_count() == 0 &&
+               script.options() == 0;
+    };
+    for (const size_t offset : {size_t{0}, size_t{8}, size_t{12}}) {
+        auto invalid = bytes;
+        invalid[offset] = '?';
+        expect(rejects(invalid), "SCR rejects unsupported signatures or chunk tags");
+    }
+    for (const size_t field : {size_t{4}, size_t{16}, size_t{20},
+                              size_t{44}, size_t{48}, size_t{69}}) {
+        auto invalid = bytes;
+        put_be32(invalid, field, UINT32_MAX);
+        expect(rejects(invalid), "SCR rejects oversized bounds, counts, and chunks");
+    }
+    auto invalid = bytes;
+    put_be32(invalid, 20, 0);
+    expect(rejects(invalid), "SCR rejects an empty CODE instruction list");
+    invalid = bytes;
+    invalid.resize(73);
+    put_be32(invalid, 4, 73);
+    expect(rejects(invalid), "SCR rejects a truncated chunk payload");
+    invalid = bytes;
+    invalid.push_back(0);
+    put_be32(invalid, 4, 78);
+    expect(rejects(invalid), "SCR stops at the exact bound and rejects partial next headers");
+    invalid.assign(bytes.begin(), bytes.begin() + 40);
+    put_be32(invalid, 4, 40);
+    expect(rejects(invalid), "SCR requires explicit options instead of stale owner data");
+    invalid.assign(bytes.begin(), bytes.begin() + 12);
+    invalid.insert(invalid.end(), bytes.begin() + 65, bytes.end());
+    put_be32(invalid, 4, 24);
+    expect(rejects(invalid), "SCR requires code before initialization");
+    for (const auto range : {std::pair<size_t, size_t>{12, 40},
+                             {40, 65}, {65, 77}}) {
+        invalid = bytes;
+        invalid.insert(invalid.end(), bytes.begin() + range.first,
+                       bytes.begin() + range.second);
+        put_be32(invalid, 4, static_cast<uint32_t>(invalid.size()));
+        expect(rejects(invalid), "SCR rejects duplicate known chunks");
+    }
+    state.state_4 = 99;
+    state.stack_20[99] = 31;
+    state.variables_1b8[199] = 37;
+    expect(!script.initialize_state(3, &state) && state.state_4 == 99 &&
+               state.stack_20[99] == 31 && state.variables_1b8[199] == 37 &&
+               !script.instruction(0, &instruction),
+           "failed SCR load cannot initialize state or expose stale code");
 }
 
 void test_world_map_room_collision_mapping() {
@@ -5612,6 +5730,22 @@ bool check_local_event_conditions(const char* disc_root) {
             state.has_time_state = true;
             awl::WorldMapMovementRequestPreparation prepared;
             std::vector<uint8_t> action_bytes;
+            auto check_script = [](const std::vector<uint8_t>& bytes,
+                                   uint32_t code_count, uint32_t string_count) {
+                awl::WorldMapActionScript script;
+                awl::WorldMapActionScriptState reset;
+                awl::WorldMapActionInstruction instruction;
+                return script.parse(bytes) &&
+                       script.instruction_count() == code_count &&
+                       script.string_count() == string_count && script.options() == 7 &&
+                       script.instruction(0, &instruction) &&
+                       script.instruction(code_count - 1, &instruction) &&
+                       !script.instruction(code_count, &instruction) &&
+                       script.initialize_state(0, &reset) && reset.state_4 == 1 &&
+                       reset.instruction_index_0c == 0 &&
+                       reset.instruction_count_10 == code_count &&
+                       reset.string_count_14 == string_count && reset.options_1b4 == 7;
+            };
             using Request = awl::WorldMapMovementRequestStatus;
             valid = conditions.prepare_movement_request(
                         0, unset_saved, state, -1, 0, &prepared) ==
@@ -5622,13 +5756,14 @@ bool check_local_event_conditions(const char* disc_root) {
                     prepared.action_list_index == 95 &&
                     actions.decode_prepared_request(
                         prepared, 65536, &action_bytes) &&
-                    action_bytes.size() == 8876;
+                    action_bytes.size() == 8876 &&
+                    check_script(action_bytes, 1105, 0);
             if (valid && phase == 0) {
                 uint64_t digest = 14695981039346656037ull;
                 for (const uint8_t byte : action_bytes) {
                     digest = (digest ^ byte) * 1099511628211ull;
                 }
-                std::printf("Global action node 95: %zu decoded bytes, FNV64 %016llx\n",
+                std::printf("Global action node 95: %zu decoded bytes, 1105 instructions, no strings, options 7; FNV64 %016llx\n",
                             action_bytes.size(), static_cast<unsigned long long>(digest));
             }
             valid = valid && conditions.prepare_movement_request(
@@ -5651,13 +5786,14 @@ bool check_local_event_conditions(const char* disc_root) {
                         prepared.action_list_index == 76 &&
                         actions.decode_prepared_request(
                             prepared, 65536, &action_bytes) &&
-                        action_bytes.size() == 7069;
+                        action_bytes.size() == 7069 &&
+                        check_script(action_bytes, 871, 3);
                 if (valid && phase == 1) {
                     uint64_t digest = 14695981039346656037ull;
                     for (const uint8_t byte : action_bytes) {
                         digest = (digest ^ byte) * 1099511628211ull;
                     }
-                    std::printf("Global action node 76: %zu decoded bytes, FNV64 %016llx\n",
+                    std::printf("Global action node 76: %zu decoded bytes, 871 instructions, 3 strings, options 7; FNV64 %016llx\n",
                                 action_bytes.size(), static_cast<unsigned long long>(digest));
                 }
                 state.clock_ticks = 2u * 36000u;
@@ -5668,7 +5804,8 @@ bool check_local_event_conditions(const char* disc_root) {
                         prepared.action_list_index == 76 &&
                         actions.decode_prepared_request(
                             prepared, 65536, &action_bytes) &&
-                        action_bytes.size() == 7069;
+                        action_bytes.size() == 7069 &&
+                        check_script(action_bytes, 871, 3);
                 state.clock_ticks = 12u * 36000u;
                 valid = valid && conditions.prepare_movement_request(
                             1, unset_saved, state, -1, 0, &prepared) ==
@@ -5680,7 +5817,7 @@ bool check_local_event_conditions(const char* disc_root) {
             }
         }
         if (valid) {
-            std::printf("Event conditions phase %u: %zu entries, %zu payload bytes; type-3 request to global CLZ bytes verified\n",
+            std::printf("Event conditions phase %u: %zu entries, %zu payload bytes; type-3 preflight to global script/reset verified\n",
                         phase, conditions.entry_count(), payload_bytes);
         }
     }
@@ -7005,6 +7142,7 @@ int main(int argc, char** argv) {
     test_world_map_collision_archive();
     test_world_map_event_conditions();
     test_world_map_action_asset();
+    test_world_map_action_script();
     test_world_map_room_collision_mapping();
     test_world_map_packed_saved_conditions();
     test_world_map_room_condition_evaluator();
