@@ -8,6 +8,7 @@
 #include "awl/world_map_movement.h"
 #include "awl/world_map_trigger_asset.h"
 #include "awl/world_map_event_conditions.h"
+#include "awl/world_map_action_asset.h"
 #include "awl/world_map_camera.h"
 #include "awl/world_map_scene_index.h"
 #include "awl/world_map_collision_assets.h"
@@ -468,6 +469,99 @@ void test_world_map_event_conditions() {
                    0, ordered_saved, ordered_state, -1, 0, nullptr) ==
                    PreparationStatus::InvalidInput,
            "preparation rejects invalid slot and missing output");
+}
+
+void test_world_map_action_asset() {
+    // Two literals then a six-byte overlapping distance-two match: ABABABAB.
+    std::vector<uint8_t> clz(21, 0);
+    std::memcpy(clz.data(), "CLZ\0", 4);
+    put_be32(clz, 4, 8);
+    put_be32(clz, 12, 8);
+    clz[16] = 4;
+    clz[17] = 'A';
+    clz[18] = 'B';
+    clz[19] = 0xfe;
+    clz[20] = 0xf3;
+    const std::vector<uint8_t> expected{'A','B','A','B','A','B','A','B'};
+    std::vector<uint8_t> decoded{42};
+    expect(awl::decode_world_map_action_clz(
+               clz.data(), clz.size(), 8, &decoded) && decoded == expected,
+           "CLZ low-bit flags and overlapping match produce known bytes");
+    const auto preserved = decoded;
+    expect(!awl::decode_world_map_action_clz(
+               clz.data(), clz.size(), 7, &decoded) && decoded == preserved,
+           "CLZ output budget failure preserves prior bytes");
+    auto broken = clz;
+    broken.pop_back();
+    expect(!awl::decode_world_map_action_clz(
+               broken.data(), broken.size(), 8, &decoded),
+           "CLZ rejects truncated match tokens");
+    broken = clz;
+    broken[16] = 1; // match before any history
+    expect(!awl::decode_world_map_action_clz(
+               broken.data(), broken.size(), 8, &decoded),
+           "CLZ rejects a reference before decoded history");
+    broken = clz;
+    broken[20] = 0xf4; // seven-byte match overshoots output by one
+    expect(!awl::decode_world_map_action_clz(
+               broken.data(), broken.size(), 8, &decoded),
+           "CLZ rejects a match exceeding the block output count");
+    broken = clz;
+    broken.push_back(0);
+    expect(!awl::decode_world_map_action_clz(
+               broken.data(), broken.size(), 8, &decoded),
+           "bounded single-block CLZ rejects trailing bytes");
+    for (const size_t field : {size_t{3}, size_t{8}, size_t{12}}) {
+        broken = clz;
+        broken[field] = 1;
+        expect(!awl::decode_world_map_action_clz(
+                   broken.data(), broken.size(), 8, &decoded),
+               "CLZ rejects unsupported version, stride, and block count");
+    }
+    expect(!awl::decode_world_map_action_clz(nullptr, 0, 8, &decoded) &&
+               !awl::decode_world_map_action_clz(
+                   clz.data(), clz.size(), 8, nullptr) && decoded == preserved,
+           "CLZ rejects missing input/output without publishing partial bytes");
+    std::vector<uint8_t> literals(27, 0);
+    std::memcpy(literals.data(), "CLZ\0", 4);
+    put_be32(literals, 4, 9);
+    put_be32(literals, 12, 9);
+    for (size_t i = 0; i < 8; ++i) {
+        literals[17 + i] = static_cast<uint8_t>(i + 1);
+    }
+    literals[26] = 9;
+    expect(awl::decode_world_map_action_clz(
+               literals.data(), literals.size(), 9, &decoded) &&
+               decoded == std::vector<uint8_t>({1,2,3,4,5,6,7,8,9}),
+           "CLZ reloads flags after eight literal tokens");
+
+    awl::WorldMapGlobalActionArchive archive;
+    const auto arc = make_record_arc(clz);
+    awl::WorldMapMovementRequestPreparation request;
+    request.action_index = 301;
+    request.use_global_action_list = true;
+    request.action_list_index = 1;
+    expect(archive.parse(arc) && archive.node_count() == 2 &&
+               archive.decode_prepared_request(request, 8, &decoded) &&
+               decoded == expected,
+           "global action ARC keeps DOL node numbering and decodes its file");
+    request.action_list_index = 0;
+    expect(!archive.decode_prepared_request(request, 8, &decoded),
+           "action archive rejects inconsistent routing");
+    request.action_index = 300;
+    expect(!archive.decode_prepared_request(request, 8, &decoded),
+           "global action zero index cannot decode the ARC directory root");
+    request.action_index = 301;
+    request.action_list_index = 1;
+    request.use_global_action_list = false;
+    expect(!archive.decode_prepared_request(request, 8, &decoded),
+           "global archive cannot satisfy a phase-list request");
+    for (const size_t field : {size_t{0x28}, size_t{0x2c}, size_t{0x30}}) {
+        auto invalid_arc = arc;
+        put_be32(invalid_arc, field, UINT32_MAX);
+        expect(!archive.parse(invalid_arc) && !archive.loaded(),
+               "invalid ARC count, node type/name, or payload clears the owner");
+    }
 }
 
 void test_world_map_room_collision_mapping() {
@@ -5437,6 +5531,8 @@ bool check_local_event_conditions(const char* disc_root) {
     awl::filesystem_init();
     bool valid = awl::filesystem_mount("/", disc_root);
     awl::WorldMapEventConditions conditions;
+    awl::WorldMapGlobalActionArchive actions;
+    valid = valid && actions.load() && actions.node_count() == 106;
     std::array<uint8_t, 128> unset_saved_bytes{};
     const awl::WorldMapPackedSavedValues unset_saved{
         unset_saved_bytes.data(), unset_saved_bytes.size(), 1};
@@ -5515,6 +5611,7 @@ bool check_local_event_conditions(const char* disc_root) {
             awl::WorldMapMovementEvaluationState state;
             state.has_time_state = true;
             awl::WorldMapMovementRequestPreparation prepared;
+            std::vector<uint8_t> action_bytes;
             using Request = awl::WorldMapMovementRequestStatus;
             valid = conditions.prepare_movement_request(
                         0, unset_saved, state, -1, 0, &prepared) ==
@@ -5523,7 +5620,18 @@ bool check_local_event_conditions(const char* disc_root) {
                     prepared.record_index == 0 && prepared.decoder_flag == 1 &&
                     prepared.use_global_action_list &&
                     prepared.action_list_index == 95 &&
-                    conditions.prepare_movement_request(
+                    actions.decode_prepared_request(
+                        prepared, 65536, &action_bytes) &&
+                    action_bytes.size() == 8876;
+            if (valid && phase == 0) {
+                uint64_t digest = 14695981039346656037ull;
+                for (const uint8_t byte : action_bytes) {
+                    digest = (digest ^ byte) * 1099511628211ull;
+                }
+                std::printf("Global action node 95: %zu decoded bytes, FNV64 %016llx\n",
+                            action_bytes.size(), static_cast<unsigned long long>(digest));
+            }
+            valid = valid && conditions.prepare_movement_request(
                         0, unset_saved, state, 0, 0, &prepared) ==
                         Request::BlockedByOwnerState;
             state.state_11cec = 1;
@@ -5540,13 +5648,27 @@ bool check_local_event_conditions(const char* disc_root) {
                 valid = prepared.action_index == 0x178u &&
                         prepared.record_index == 1 &&
                         prepared.use_global_action_list &&
-                        prepared.action_list_index == 76;
+                        prepared.action_list_index == 76 &&
+                        actions.decode_prepared_request(
+                            prepared, 65536, &action_bytes) &&
+                        action_bytes.size() == 7069;
+                if (valid && phase == 1) {
+                    uint64_t digest = 14695981039346656037ull;
+                    for (const uint8_t byte : action_bytes) {
+                        digest = (digest ^ byte) * 1099511628211ull;
+                    }
+                    std::printf("Global action node 76: %zu decoded bytes, FNV64 %016llx\n",
+                                action_bytes.size(), static_cast<unsigned long long>(digest));
+                }
                 state.clock_ticks = 2u * 36000u;
                 valid = valid && conditions.prepare_movement_request(
                             1, unset_saved, state, -1, 0, &prepared) ==
                             Request::ReadyForActionPath &&
                         prepared.record_index == 2 &&
-                        prepared.action_list_index == 76;
+                        prepared.action_list_index == 76 &&
+                        actions.decode_prepared_request(
+                            prepared, 65536, &action_bytes) &&
+                        action_bytes.size() == 7069;
                 state.clock_ticks = 12u * 36000u;
                 valid = valid && conditions.prepare_movement_request(
                             1, unset_saved, state, -1, 0, &prepared) ==
@@ -5558,7 +5680,7 @@ bool check_local_event_conditions(const char* disc_root) {
             }
         }
         if (valid) {
-            std::printf("Event conditions phase %u: %zu entries, %zu payload bytes; type-3 request preflight verified\n",
+            std::printf("Event conditions phase %u: %zu entries, %zu payload bytes; type-3 request to global CLZ bytes verified\n",
                         phase, conditions.entry_count(), payload_bytes);
         }
     }
@@ -6882,6 +7004,7 @@ bool inspect_local_catalog(const char* disc_root) {
 int main(int argc, char** argv) {
     test_world_map_collision_archive();
     test_world_map_event_conditions();
+    test_world_map_action_asset();
     test_world_map_room_collision_mapping();
     test_world_map_packed_saved_conditions();
     test_world_map_room_condition_evaluator();
