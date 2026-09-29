@@ -58,9 +58,25 @@ struct WorldMapMovementEvaluationState {
     uint8_t state_11cec,
     WorldMapMovementRecordDecision* out);
 
+enum class WorldMapMovementRequestStatus {
+    ReadyForActionPath,
+    NoEligibleRecord,
+    BlockedByOwnerState,
+    RequiresUntranslatedPredicate,
+    InvalidInput,
+};
+
+struct WorldMapMovementRequestPreparation {
+    size_t record_index = 0;
+    uint32_t action_index = 0;
+    uint8_t decoder_flag = 0;
+    bool use_global_action_list = false; // true: +0x44E4; false: +0x450C
+    int32_t action_list_index = 0;
+};
+
 // Owns the ARC selected for owner +0x4538 by FUN_8010A6D8. The type-3
-// request header and one bounded record shape are decoded; other predicate
-// paths remain untranslated.
+// request header and local slot-0/slot-1 record shapes are decoded; other
+// predicate paths remain untranslated.
 // Entry views are invalidated by load_phase(), parse(), clear(), or destruction.
 class WorldMapEventConditions {
 public:
@@ -78,6 +94,14 @@ public:
     [[nodiscard]] bool select_movement_request_records(
         int32_t slot, const WorldMapPackedSavedValues& saved_values,
         std::vector<WorldMapMovementRequestRecord>* out) const;
+
+    // FUN_8010A9C0 -> FUN_80126B40 -> FUN_8010AAC4 through its entry
+    // gate and action-list routing. Does not load an action or mutate state.
+    [[nodiscard]] WorldMapMovementRequestStatus prepare_movement_request(
+        int32_t slot, const WorldMapPackedSavedValues& saved_values,
+        const WorldMapMovementEvaluationState& state,
+        int32_t owner_action_680, int32_t owner_mode_58c,
+        WorldMapMovementRequestPreparation* out) const;
 
 private:
     struct Entry {

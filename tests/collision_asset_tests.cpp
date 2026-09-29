@@ -401,6 +401,73 @@ void test_world_map_event_conditions() {
     expect(awl::evaluate_world_map_movement_record(timed, time, &decision) ==
                RequestStatus::Rejected,
            "zero-length window rejects the next minute");
+
+    // First-match composition must stop at an unknown earlier predicate.
+    auto ordered = requests;
+    std::array<uint8_t, 0x20> later{};
+    later.fill(0xff);
+    const uint32_t later_head = (0x1fu << 27) | (0xffu << 18) | 401u;
+    for (size_t byte = 0; byte < 4; ++byte) {
+        later[byte] = static_cast<uint8_t>(later_head >> (byte * 8));
+    }
+    later[31] = 0x7f;
+    auto earlier = later;
+    const uint32_t earlier_head = (later_head & ~0x3ffu) | 400u;
+    for (size_t byte = 0; byte < 4; ++byte) {
+        earlier[byte] = static_cast<uint8_t>(earlier_head >> (byte * 8));
+    }
+    earlier[3] &= static_cast<uint8_t>(~0x08u); // unknown active predicate
+    std::copy(earlier.begin(), earlier.end(), ordered.begin() + 0xa0);
+    std::copy(later.begin(), later.end(), ordered.begin() + 0xc0);
+    std::array<uint8_t, 128> ordered_saved_bytes{};
+    const awl::WorldMapPackedSavedValues ordered_saved{
+        ordered_saved_bytes.data(), ordered_saved_bytes.size(), 1};
+    awl::WorldMapMovementEvaluationState ordered_state;
+    awl::WorldMapMovementRequestPreparation prepared;
+    using PreparationStatus = awl::WorldMapMovementRequestStatus;
+    expect(conditions.parse(ordered, 0) &&
+               conditions.prepare_movement_request(
+                   0, ordered_saved, ordered_state, -1, 0, &prepared) ==
+                   PreparationStatus::RequiresUntranslatedPredicate &&
+               prepared.action_index == 0 &&
+               conditions.prepare_movement_request(
+                   0, ordered_saved, ordered_state, 3, 0, &prepared) ==
+                   PreparationStatus::RequiresUntranslatedPredicate,
+           "unknown earlier predicate stops ordered request preparation");
+    ordered_saved_bytes[400 / 8] |= static_cast<uint8_t>(1u << (400 % 8));
+    expect(conditions.prepare_movement_request(
+               0, ordered_saved, ordered_state, -1, 0, &prepared) ==
+               PreparationStatus::ReadyForActionPath &&
+               prepared.record_index == 1 && prepared.action_index == 401u &&
+               prepared.decoder_flag == 0 &&
+               prepared.use_global_action_list &&
+               prepared.action_list_index == 101,
+           "saved earlier record exposes the next eligible action route");
+    expect(conditions.prepare_movement_request(
+               0, ordered_saved, ordered_state, 3, 0, &prepared) ==
+               PreparationStatus::BlockedByOwnerState &&
+               prepared.action_index == 0 &&
+               conditions.prepare_movement_request(
+                   0, ordered_saved, ordered_state, -1, 1, &prepared) ==
+                   PreparationStatus::BlockedByOwnerState,
+           "either FUN_8010AAC4 owner gate blocks after decoding");
+    ordered[0xa0 + 3] |= 0x08u;
+    ordered_saved_bytes[400 / 8] &=
+        static_cast<uint8_t>(~(1u << (400 % 8)));
+    expect(conditions.parse(ordered, 0) &&
+               conditions.prepare_movement_request(
+                   0, ordered_saved, ordered_state, -1, 0, &prepared) ==
+                   PreparationStatus::ReadyForActionPath &&
+               prepared.record_index == 0 && prepared.action_index == 400u &&
+               prepared.action_list_index == 100,
+           "first eligible record wins over a later eligible record");
+    expect(conditions.prepare_movement_request(
+               2, ordered_saved, ordered_state, -1, 0, &prepared) ==
+               PreparationStatus::InvalidInput &&
+               conditions.prepare_movement_request(
+                   0, ordered_saved, ordered_state, -1, 0, nullptr) ==
+                   PreparationStatus::InvalidInput,
+           "preparation rejects invalid slot and missing output");
 }
 
 void test_world_map_room_collision_mapping() {
@@ -5445,7 +5512,53 @@ bool check_local_event_conditions(const char* disc_root) {
             }
         }
         if (valid) {
-            std::printf("Event conditions phase %u: %zu entries, %zu payload bytes; type-3 slot counts verified\n",
+            awl::WorldMapMovementEvaluationState state;
+            state.has_time_state = true;
+            awl::WorldMapMovementRequestPreparation prepared;
+            using Request = awl::WorldMapMovementRequestStatus;
+            valid = conditions.prepare_movement_request(
+                        0, unset_saved, state, -1, 0, &prepared) ==
+                        Request::ReadyForActionPath &&
+                    prepared.action_index == 0x18bu &&
+                    prepared.record_index == 0 && prepared.decoder_flag == 1 &&
+                    prepared.use_global_action_list &&
+                    prepared.action_list_index == 95 &&
+                    conditions.prepare_movement_request(
+                        0, unset_saved, state, 0, 0, &prepared) ==
+                        Request::BlockedByOwnerState;
+            state.state_11cec = 1;
+            valid = valid && conditions.prepare_movement_request(
+                        0, unset_saved, state, -1, 0, &prepared) ==
+                        Request::NoEligibleRecord;
+            state.state_11cec = 0;
+            state.clock_ticks = 19u * 36000u;
+            valid = valid && conditions.prepare_movement_request(
+                        1, unset_saved, state, -1, 0, &prepared) ==
+                        (phase == 0 ? Request::NoEligibleRecord
+                                    : Request::ReadyForActionPath);
+            if (valid && phase != 0) {
+                valid = prepared.action_index == 0x178u &&
+                        prepared.record_index == 1 &&
+                        prepared.use_global_action_list &&
+                        prepared.action_list_index == 76;
+                state.clock_ticks = 2u * 36000u;
+                valid = valid && conditions.prepare_movement_request(
+                            1, unset_saved, state, -1, 0, &prepared) ==
+                            Request::ReadyForActionPath &&
+                        prepared.record_index == 2 &&
+                        prepared.action_list_index == 76;
+                state.clock_ticks = 12u * 36000u;
+                valid = valid && conditions.prepare_movement_request(
+                            1, unset_saved, state, -1, 0, &prepared) ==
+                            Request::NoEligibleRecord;
+                state.has_time_state = false;
+                valid = valid && conditions.prepare_movement_request(
+                            1, unset_saved, state, -1, 0, &prepared) ==
+                            Request::RequiresUntranslatedPredicate;
+            }
+        }
+        if (valid) {
+            std::printf("Event conditions phase %u: %zu entries, %zu payload bytes; type-3 request preflight verified\n",
                         phase, conditions.entry_count(), payload_bytes);
         }
     }

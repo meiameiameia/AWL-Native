@@ -333,4 +333,52 @@ bool WorldMapEventConditions::select_movement_request_records(
     return true;
 }
 
+WorldMapMovementRequestStatus WorldMapEventConditions::prepare_movement_request(
+    int32_t slot, const WorldMapPackedSavedValues& saved_values,
+    const WorldMapMovementEvaluationState& state,
+    int32_t owner_action_680, int32_t owner_mode_58c,
+    WorldMapMovementRequestPreparation* out) const {
+    using Status = WorldMapMovementRequestStatus;
+    if (out == nullptr) {
+        return Status::InvalidInput;
+    }
+    *out = {};
+    std::vector<WorldMapMovementRequestRecord> records;
+    if (!select_movement_request_records(slot, saved_values, &records)) {
+        return Status::InvalidInput;
+    }
+    // FUN_80126B40 scans the selected records in archive order and returns
+    // the first whose predicates pass. An unknown predicate cannot safely be
+    // skipped because it may be the first accepted record.
+    for (const auto& record : records) {
+        WorldMapMovementRecordDecision decoded;
+        const auto result = evaluate_world_map_movement_record(
+            record, state, &decoded);
+        if (result == WorldMapMovementRecordStatus::Rejected) {
+            continue;
+        }
+        if (result == WorldMapMovementRecordStatus::InvalidInput) {
+            return Status::InvalidInput;
+        }
+        if (result ==
+            WorldMapMovementRecordStatus::RequiresUntranslatedPredicate) {
+            return Status::RequiresUntranslatedPredicate;
+        }
+        // FUN_8010AAC4 checks these fields only after the decoder has
+        // selected an index. A blocked request performs no action lookup.
+        if (owner_action_680 != -1 || owner_mode_58c != 0) {
+            return Status::BlockedByOwnerState;
+        }
+        out->record_index = record.record_index;
+        out->action_index = decoded.action_index;
+        out->decoder_flag = decoded.decoder_flag;
+        out->use_global_action_list = decoded.action_index >= 300u;
+        out->action_list_index = out->use_global_action_list
+            ? static_cast<int32_t>(decoded.action_index - 300u)
+            : static_cast<int32_t>(decoded.action_index) - phase_ * 50;
+        return Status::ReadyForActionPath;
+    }
+    return Status::NoEligibleRecord;
+}
+
 } // namespace awl
