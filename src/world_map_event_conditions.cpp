@@ -2,6 +2,7 @@
 
 #include "awl/filesystem.h"
 #include "awl/platform.h"
+#include "awl/world_map_collision_records.h"
 
 #include <algorithm>
 #include <array>
@@ -23,6 +24,13 @@ uint32_t be32(const uint8_t* p) {
     return (static_cast<uint32_t>(p[0]) << 24) |
            (static_cast<uint32_t>(p[1]) << 16) |
            (static_cast<uint32_t>(p[2]) << 8) | p[3];
+}
+
+uint32_t le32(const uint8_t* p) {
+    return static_cast<uint32_t>(p[0]) |
+           (static_cast<uint32_t>(p[1]) << 8) |
+           (static_cast<uint32_t>(p[2]) << 16) |
+           (static_cast<uint32_t>(p[3]) << 24);
 }
 
 bool in_range(size_t size, uint64_t offset, uint64_t length) {
@@ -142,6 +150,58 @@ bool WorldMapEventConditions::entry(
     out->data = bytes_.data() + selected.offset;
     out->size = selected.size;
     out->name = selected.name.c_str();
+    return true;
+}
+
+bool WorldMapEventConditions::select_movement_request_records(
+    int32_t slot, const WorldMapPackedSavedValues& saved_values,
+    std::vector<WorldMapMovementRequestRecord>* out) const {
+    if (out == nullptr) {
+        return false;
+    }
+    out->clear();
+    if ((slot != 0 && slot != 1) || !loaded()) {
+        return false;
+    }
+    // FUN_80126B40 requests ARC entry (type + 1); the public index is
+    // zero-based after the ARC root, so type 3 is entry index 3.
+    WorldMapEventConditionEntry source;
+    constexpr size_t record_size = 0x20;
+    if (!entry(3, &source) || source.size < record_size ||
+        source.size % record_size != 0) {
+        return false;
+    }
+    std::vector<WorldMapMovementRequestRecord> selected;
+    bool saw_sentinel = false;
+    for (size_t offset = 0; offset < source.size; offset += record_size) {
+        const uint32_t head = le32(source.data + offset);
+        const uint32_t condition_id = head & 0x3ffu;
+        if (condition_id == 0x3ffu) {
+            saw_sentinel = offset + record_size == source.size;
+            break;
+        }
+        uint32_t saved = 0;
+        if (!read_world_map_packed_saved_value(
+                saved_values, condition_id, &saved)) {
+            return false;
+        }
+        if (saved != 0) {
+            continue;
+        }
+        const uint32_t slot_filter = (head >> 10) & 0xffu;
+        const uint32_t value_filter = (head >> 18) & 0xffu;
+        if ((slot_filter != 0xffu &&
+             slot_filter != static_cast<uint32_t>(slot)) ||
+            (value_filter != 0xffu && value_filter != 0u)) {
+            continue;
+        }
+        selected.push_back({source.data + offset, record_size,
+                            offset / record_size, condition_id});
+    }
+    if (!saw_sentinel) {
+        return false;
+    }
+    out->swap(selected);
     return true;
 }
 

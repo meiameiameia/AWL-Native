@@ -100,6 +100,44 @@ std::vector<uint8_t> make_record_arc(const std::vector<uint8_t>& col) {
     return arc;
 }
 
+std::vector<uint8_t> make_movement_request_arc() {
+    constexpr size_t data = 0xa0;
+    constexpr size_t record_size = 0x20;
+    std::vector<uint8_t> arc(data + 6 * record_size, 0);
+    put_be32(arc, 0, 0x55AA382Du);
+    put_be32(arc, 4, 0x20);
+    put_be32(arc, 8, 0x50);
+    put_be32(arc, 12, 0x80);
+    put_be32(arc, 0x20, 0x01000000u);
+    put_be32(arc, 0x28, 5);
+    for (size_t index = 0; index < 4; ++index) {
+        const size_t node = 0x2c + index * 12;
+        put_be32(arc, node, static_cast<uint32_t>(1 + index * 2));
+        put_be32(arc, node + 4,
+                 static_cast<uint32_t>(index == 3 ? data : 0x80 + index));
+        put_be32(arc, node + 8,
+                 static_cast<uint32_t>(index == 3 ? 6 * record_size : 1));
+        arc[0x5d + index * 2] = static_cast<uint8_t>('a' + index);
+    }
+    const std::array<uint32_t, 6> heads{{
+        19u, // slot 0, value 0
+        20u | (1u << 10) | (0xffu << 18), // slot 1, any value
+        21u | (0xffu << 10), // either slot, value 0
+        22u | (1u << 10) | (1u << 18), // wrong value
+        23u, // saved flag set
+        0xffffffffu, // 10-bit sentinel
+    }};
+    for (size_t index = 0; index < heads.size(); ++index) {
+        const uint32_t head = heads[index];
+        const size_t offset = data + index * record_size;
+        arc[offset] = static_cast<uint8_t>(head);
+        arc[offset + 1] = static_cast<uint8_t>(head >> 8);
+        arc[offset + 2] = static_cast<uint8_t>(head >> 16);
+        arc[offset + 3] = static_cast<uint8_t>(head >> 24);
+    }
+    return arc;
+}
+
 std::vector<uint8_t> make_single_record_arc() {
     std::vector<uint8_t> col = make_single_leaf();
     col[5] = 0;
@@ -211,6 +249,37 @@ void test_world_map_event_conditions() {
            "overlapping phase entry payloads are rejected");
     expect(!conditions.parse(fixture, 6),
            "unsupported phase cannot select a request archive");
+
+    const auto requests = make_movement_request_arc();
+    uint8_t saved_bytes[3]{};
+    saved_bytes[2] = 0x80; // condition ID 23 is already set
+    const awl::WorldMapPackedSavedValues saved{saved_bytes, 3, 1};
+    std::vector<awl::WorldMapMovementRequestRecord> matches;
+    expect(conditions.parse(requests, 0) &&
+               conditions.select_movement_request_records(0, saved, &matches) &&
+               matches.size() == 2 &&
+               matches[0].saved_condition_id == 19 &&
+               matches[0].record_index == 0 &&
+               matches[1].saved_condition_id == 21 &&
+               matches[1].record_index == 2 &&
+               matches[0].size == 0x20,
+           "type-3 request slot 0 keeps ordered unset and wildcard records");
+    expect(conditions.select_movement_request_records(1, saved, &matches) &&
+               matches.size() == 2 &&
+               matches[0].saved_condition_id == 20 &&
+               matches[1].saved_condition_id == 21,
+           "type-3 request slot 1 accepts wildcard auxiliary value");
+    expect(!conditions.select_movement_request_records(2, saved, &matches) &&
+               matches.empty(), "unsupported trigger slot is rejected");
+    const awl::WorldMapPackedSavedValues truncated{saved_bytes, 1, 1};
+    expect(!conditions.select_movement_request_records(0, truncated, &matches) &&
+               matches.empty(), "incomplete saved flags cannot select a request");
+    invalid = requests;
+    std::fill(invalid.begin() + 0xa0 + 5 * 0x20,
+              invalid.begin() + 0xa0 + 5 * 0x20 + 4, uint8_t{0});
+    expect(conditions.parse(invalid, 0) &&
+               !conditions.select_movement_request_records(0, saved, &matches),
+           "missing request sentinel is rejected");
 }
 
 void test_world_map_room_collision_mapping() {
@@ -5180,6 +5249,9 @@ bool check_local_event_conditions(const char* disc_root) {
     awl::filesystem_init();
     bool valid = awl::filesystem_mount("/", disc_root);
     awl::WorldMapEventConditions conditions;
+    std::array<uint8_t, 128> unset_saved_bytes{};
+    const awl::WorldMapPackedSavedValues unset_saved{
+        unset_saved_bytes.data(), unset_saved_bytes.size(), 1};
     for (uint32_t phase = 0; valid && phase < 6; ++phase) {
         valid = conditions.load_phase(phase) && conditions.loaded() &&
                 conditions.phase() == static_cast<int32_t>(phase) &&
@@ -5195,8 +5267,15 @@ bool check_local_event_conditions(const char* disc_root) {
                 payload_bytes += entry.size;
             }
         }
+        for (int32_t slot = 0; valid && slot < 2; ++slot) {
+            std::vector<awl::WorldMapMovementRequestRecord> selected;
+            valid = conditions.select_movement_request_records(
+                        slot, unset_saved, &selected) &&
+                    selected.size() ==
+                        (slot == 0 ? 1u : (phase == 0 ? 0u : 2u));
+        }
         if (valid) {
-            std::printf("Event conditions phase %u: %zu entries, %zu payload bytes\n",
+            std::printf("Event conditions phase %u: %zu entries, %zu payload bytes; type-3 slot counts verified\n",
                         phase, conditions.entry_count(), payload_bytes);
         }
     }

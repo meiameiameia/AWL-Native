@@ -7,14 +7,23 @@
 
 namespace awl {
 
+struct WorldMapPackedSavedValues;
+
 struct WorldMapEventConditionEntry {
     const uint8_t* data = nullptr;
     size_t size = 0;
     const char* name = nullptr;
 };
 
-// Owns the ARC selected for owner +0x4538 by FUN_8010A6D8. Its entries
-// remain opaque until FUN_80126B40's condition decoder is translated.
+struct WorldMapMovementRequestRecord {
+    const uint8_t* data = nullptr;
+    size_t size = 0;
+    size_t record_index = 0;
+    uint32_t saved_condition_id = 0;
+};
+
+// Owns the ARC selected for owner +0x4538 by FUN_8010A6D8. The type-3
+// request header is partially decoded; later record conditions remain opaque.
 // Entry views are invalidated by load_phase(), parse(), clear(), or destruction.
 class WorldMapEventConditions {
 public:
@@ -27,6 +36,11 @@ public:
     [[nodiscard]] size_t entry_count() const { return entries_.size(); }
     [[nodiscard]] bool entry(size_t index,
                              WorldMapEventConditionEntry* out) const;
+    // FUN_80126B40's type-3 entry and initial saved-value/slot/value-zero
+    // filters only. Matching records still require later condition checks.
+    [[nodiscard]] bool select_movement_request_records(
+        int32_t slot, const WorldMapPackedSavedValues& saved_values,
+        std::vector<WorldMapMovementRequestRecord>* out) const;
 
 private:
     struct Entry {
