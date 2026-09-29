@@ -395,6 +395,43 @@ WorldMapActionStepStatus WorldMapActionScript::step(
     return Status::Advanced;
 }
 
+WorldMapActionStepStatus WorldMapActionScript::step_world_map(
+    WorldMapActionScriptState* state, WorldMapActionStep* out) const {
+    using Status = WorldMapActionStepStatus;
+    const Status status = step(state, out);
+    if (status != Status::RequiresCallback ||
+        (out->effective_operand != 0 && out->effective_operand != 66)) {
+        return status;
+    }
+    auto next = *state;
+    ++next.instruction_index_0c;
+    if (out->effective_operand == 66) {
+        // FUN_8010C474 reads the command's eight descriptor slots in reverse.
+        // Command 66 has integer slot zero and seven zero slots. sraw scales
+        // the signed word by options; its low six shift bits are significant.
+        const uint32_t value = next.stack_20[next.stack_depth_1b0];
+        const uint32_t shift = next.options_1b4 & 63u;
+        const bool negative = (value & 0x80000000u) != 0;
+        uint32_t argument = value;
+        if (shift >= 32) {
+            argument = negative ? UINT32_MAX : 0u;
+        } else if (shift != 0) {
+            argument = value >> shift;
+            if (negative) {
+                argument |= UINT32_MAX << (32u - shift);
+            }
+        }
+        out->callback_arguments[0] = argument;
+        if (next.stack_depth_1b0 != 0) {
+            --next.stack_depth_1b0;
+        }
+    }
+    *state = next;
+    // Command 0 returns one from FUN_8010C604; FUN_801861B8 ends its pass.
+    // Command 66 reaches the verified default return-zero branch.
+    return out->effective_operand == 0 ? Status::Yielded : Status::Advanced;
+}
+
 bool WorldMapGlobalActionArchive::parse(std::vector<uint8_t> bytes) {
     clear();
     if (bytes.size() < 0x20 || be32(bytes.data()) != 0x55aa382du) {

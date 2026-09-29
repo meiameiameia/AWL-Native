@@ -24,7 +24,7 @@ struct WorldMapActionInstruction {
 };
 
 // Only fields reset/written by FUN_80185DBC -> FUN_80185FA4. Native
-// ownership replaces code/string pointers; execution and callbacks are absent.
+// ownership replaces code/string pointers; game-owned runtime state is absent.
 struct WorldMapActionScriptState {
     uint32_t state_4 = 0;
     uint32_t instruction_index_0c = 0;
@@ -40,6 +40,7 @@ struct WorldMapActionScriptState {
 
 enum class WorldMapActionStepStatus {
     Advanced,
+    Yielded,
     Halted,
     NotRunning,
     RequiresCallback,
@@ -52,10 +53,11 @@ struct WorldMapActionStep {
     uint32_t instruction_index = 0;
     uint32_t effective_operand = 0;
     uint8_t opcode = 0;
+    std::array<uint32_t, 8> callback_arguments{};
 };
 
 // Bounded RIFF/SCR container from FUN_80185FA4. CODE and OPT are required;
-// STR is optional, with raw offsets kept opaque. No game callback is executed.
+// STR is optional, with raw offsets kept opaque.
 class WorldMapActionScript {
 public:
     [[nodiscard]] bool parse(std::vector<uint8_t> bytes);
@@ -74,6 +76,12 @@ public:
     // commits supplied state; errors and callback boundaries preserve it.
     // Multiply/divide/remainder and comparison constants remain unsupported.
     [[nodiscard]] WorldMapActionStepStatus step(
+        WorldMapActionScriptState* state, WorldMapActionStep* out) const;
+    // Composes the common step with only the verified world-map command 0
+    // (yield) and 66 (integer argument consumption, no further effects).
+    // Yield keeps script state running; the caller must end its current pass.
+    // Other commands preserve state and report RequiresCallback.
+    [[nodiscard]] WorldMapActionStepStatus step_world_map(
         WorldMapActionScriptState* state, WorldMapActionStep* out) const;
 
 private:

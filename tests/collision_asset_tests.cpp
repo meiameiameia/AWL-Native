@@ -892,6 +892,108 @@ void test_world_map_action_execution() {
            "unloaded script cannot execute stale state");
 }
 
+void test_world_map_action_callbacks() {
+    using Status = awl::WorldMapActionStepStatus;
+    using Instruction = awl::WorldMapActionInstruction;
+    awl::WorldMapActionScript script;
+    awl::WorldMapActionScriptState state;
+    awl::WorldMapActionStep result;
+    auto prepare = [&](uint32_t command, uint32_t options = 7, uint8_t flags = 0) {
+        return script.parse(make_action_script(
+                   {Instruction{0x25, flags, 0, command}, Instruction{0x24, 0, 0, 0}}, options)) &&
+               script.initialize_state(0x2011, &state);
+    };
+    expect(prepare(0), "world-map yield command initializes");
+    state.stack_depth_1b0 = 2;
+    state.stack_20[1] = 111;
+    state.stack_20[2] = 222;
+    state.variables_1b8[199] = 333;
+    auto expected = state;
+    ++expected.instruction_index_0c;
+    expect(script.step_world_map(&state, &result) == Status::Yielded &&
+               same_action_state(state, expected) && result.effective_operand == 0 &&
+               std::all_of(result.callback_arguments.begin(), result.callback_arguments.end(),
+                           [](uint32_t value) { return value == 0; }),
+           "command zero yields after advancing PC without clearing active state or popping");
+    expect(script.step_world_map(&state, &result) == Status::Halted &&
+               state.state_4 == 0 && state.instruction_index_0c == 2,
+           "a later supplied pass resumes after yield and can halt");
+    const auto stopped = state;
+    expect(script.step_world_map(&state, &result) == Status::NotRunning &&
+               same_action_state(state, stopped), "halted world-map script stays stopped");
+    struct ArgumentCase { uint32_t options; uint32_t word; uint32_t decoded; };
+    for (const auto& test : std::vector<ArgumentCase>{
+             {7, 384, 3}, {7, 0xffffff7f, 0xfffffffe}, {7, UINT32_MAX, UINT32_MAX},
+             {7, 127, 0}, {0, 123, 123}, {32, 123, 0},
+             {32, 0xffffff7f, UINT32_MAX}, {64, 123, 123}}) {
+        expect(prepare(66, test.options), "integer callback argument initializes");
+        state.stack_depth_1b0 = 1;
+        state.stack_20[1] = test.word;
+        state.stack_20[0] = 999;
+        auto after = state;
+        ++after.instruction_index_0c;
+        after.stack_depth_1b0 = 0;
+        expect(script.step_world_map(&state, &result) == Status::Advanced &&
+                   same_action_state(state, after) && result.callback_arguments[0] == test.decoded &&
+                   std::all_of(result.callback_arguments.begin() + 1,
+                               result.callback_arguments.end(),
+                               [](uint32_t value) { return value == 0; }),
+               "command 66 decodes signed fixed-point integer and pops exactly once");
+    }
+    expect(prepare(66), "integer callback at sentinel initializes");
+    state.stack_20[0] = 256;
+    auto after_sentinel = state;
+    ++after_sentinel.instruction_index_0c;
+    expect(script.step_world_map(&state, &result) == Status::Advanced &&
+               same_action_state(state, after_sentinel) && result.callback_arguments[0] == 2,
+           "integer callback reads the empty-stack sentinel with saturating pop");
+    expect(prepare(64, 7, 1), "base-relative command initializes");
+    state.operand_base_4d8 = 2;
+    state.stack_20[0] = 128;
+    expect(script.step_world_map(&state, &result) == Status::Advanced &&
+               result.effective_operand == 66 && result.callback_arguments[0] == 1,
+           "world-map command selection uses the common effective operand");
+    for (const uint32_t command : {1u, 4u, 65u, 67u, 221u, 222u, UINT32_MAX}) {
+        expect(prepare(command), "untranslated world-map command initializes");
+        state.stack_depth_1b0 = 1;
+        state.stack_20[1] = 128;
+        const auto original = state;
+        expect(script.step_world_map(&state, &result) == Status::RequiresCallback &&
+                   same_action_state(state, original) && result.effective_operand == command &&
+                   script.step_world_map(&state, &result) == Status::RequiresCallback &&
+                   same_action_state(state, original),
+               "untranslated commands remain unconsumed despite the original default branch");
+    }
+    // Invented progression: one ordinary push, one consumed command, a yield,
+    // and then an untranslated command in the following supplied pass.
+    const std::vector<Instruction> program{
+        {0x17, 0, 0, 384}, {0x25, 0, 0, 66}, {0x25, 0, 0, 0},
+        {0x17, 0, 0, 128}, {0x25, 0, 0, 65}};
+    expect(script.parse(make_action_script(program)) && script.initialize_state(0, &state),
+           "mixed world-map script initializes");
+    size_t consumed = 0;
+    Status status = Status::Advanced;
+    while (consumed < 16 && status == Status::Advanced) {
+        status = script.step_world_map(&state, &result);
+        ++consumed;
+    }
+    expect(consumed == 3 && status == Status::Yielded && state.state_4 == 1 &&
+               state.instruction_index_0c == 3 && state.stack_depth_1b0 == 0,
+           "supplied pass stops on yield before processing later instructions");
+    expect(script.step_world_map(&state, &result) == Status::Advanced &&
+               script.step_world_map(&state, &result) == Status::RequiresCallback &&
+               state.instruction_index_0c == 4 && state.stack_depth_1b0 == 1,
+           "following supplied pass advances to a stable untranslated callback boundary");
+    const auto original = state;
+    expect(script.step_world_map(&state, nullptr) == Status::InvalidState &&
+               same_action_state(state, original) &&
+               script.step_world_map(nullptr, &result) == Status::InvalidState,
+           "world-map step preserves state on missing output/state");
+    script.clear();
+    expect(script.step_world_map(&state, &result) == Status::InvalidState &&
+               same_action_state(state, original), "unloaded world-map script cannot resume");
+}
+
 void test_world_map_room_collision_mapping() {
     using Status = awl::WorldMapRoomCollisionStatus;
     awl::WorldMapRoomCollisionState state;
@@ -5987,6 +6089,40 @@ bool check_local_event_conditions(const char* disc_root) {
                     reset.stack_depth_1b0 == expected_depth && digest == expected_digest &&
                     script.step(&reset, &boundary) == Step::RequiresCallback &&
                     same_action_state(reset, before_callback);
+                auto after_callback = before_callback;
+                ++after_callback.instruction_index_0c;
+                after_callback.stack_depth_1b0 = 0;
+                valid_script = valid_script &&
+                    script.step_world_map(&reset, &boundary) ==
+                        (code_count == 1105 ? Step::Yielded : Step::Advanced) &&
+                    boundary.effective_operand == (code_count == 1105 ? 0u : 66u) &&
+                    boundary.callback_arguments[0] == 0 &&
+                    same_action_state(reset, after_callback);
+                // Command zero ended its pass. This is an explicit later
+                // supplied pass, without claiming the live scheduler is wired.
+                steps = 0;
+                while (valid_script && steps < 256) {
+                    status = script.step_world_map(&reset, &boundary);
+                    if (status != Step::Advanced) {
+                        break;
+                    }
+                    ++steps;
+                }
+                const uint32_t next_pc = code_count == 1105 ? 18u : 5u;
+                const uint32_t next_command = code_count == 1105 ? 4u : 65u;
+                const uint8_t next_depth = code_count == 1105 ? 4u : 3u;
+                const uint64_t next_digest = code_count == 1105
+                    ? 0xed879127a00137d9ull : 0x17d004121cb12425ull;
+                digest = 14695981039346656037ull;
+                for (const uint32_t value : reset.stack_20) hash_word(value);
+                for (const uint32_t value : reset.variables_1b8) hash_word(value);
+                const auto next_boundary = reset;
+                valid_script = valid_script && status == Step::RequiresCallback &&
+                    reset.state_4 == 1 && reset.instruction_index_0c == next_pc &&
+                    boundary.effective_operand == next_command &&
+                    reset.stack_depth_1b0 == next_depth && digest == next_digest &&
+                    script.step_world_map(&reset, &boundary) == Step::RequiresCallback &&
+                    same_action_state(reset, next_boundary);
                 return valid_script;
             };
             using Request = awl::WorldMapMovementRequestStatus;
@@ -6006,7 +6142,7 @@ bool check_local_event_conditions(const char* disc_root) {
                 for (const uint8_t byte : action_bytes) {
                     digest = (digest ^ byte) * 1099511628211ull;
                 }
-                std::printf("Global action node 95: %zu decoded bytes, 1105 instructions, no strings, options 7; 12 steps to callback; FNV64 %016llx\n",
+                std::printf("Global action node 95: %zu decoded bytes, 1105 instructions; command 0 yields at PC 12, later pass stops at command 4/PC 18; FNV64 %016llx\n",
                             action_bytes.size(), static_cast<unsigned long long>(digest));
             }
             valid = valid && conditions.prepare_movement_request(
@@ -6036,7 +6172,7 @@ bool check_local_event_conditions(const char* disc_root) {
                     for (const uint8_t byte : action_bytes) {
                         digest = (digest ^ byte) * 1099511628211ull;
                     }
-                    std::printf("Global action node 76: %zu decoded bytes, 871 instructions, 3 strings, options 7; 1 step to callback; FNV64 %016llx\n",
+                    std::printf("Global action node 76: %zu decoded bytes, 871 instructions; command 66 consumes its argument at PC 1, stops at command 65/PC 5; FNV64 %016llx\n",
                                 action_bytes.size(), static_cast<unsigned long long>(digest));
                 }
                 state.clock_ticks = 2u * 36000u;
@@ -6060,7 +6196,7 @@ bool check_local_event_conditions(const char* disc_root) {
             }
         }
         if (valid) {
-            std::printf("Event conditions phase %u: %zu entries, %zu payload bytes; type-3 preflight to first script callback verified\n",
+            std::printf("Event conditions phase %u: %zu entries, %zu payload bytes; first world-map callback and next stop verified\n",
                         phase, conditions.entry_count(), payload_bytes);
         }
     }
@@ -7387,6 +7523,7 @@ int main(int argc, char** argv) {
     test_world_map_action_asset();
     test_world_map_action_script();
     test_world_map_action_execution();
+    test_world_map_action_callbacks();
     test_world_map_room_collision_mapping();
     test_world_map_packed_saved_conditions();
     test_world_map_room_condition_evaluator();
