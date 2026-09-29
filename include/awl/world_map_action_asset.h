@@ -56,6 +56,46 @@ struct WorldMapActionStep {
     std::array<uint32_t, 8> callback_arguments{};
 };
 
+enum class WorldMapCommandPreparationStatus {
+    Prepared,
+    RequiresManagerSnapshot,
+    UnsupportedCommand,
+    InvalidState,
+    InvalidOperand,
+};
+
+enum class WorldMapCommandEffect {
+    BeginRequest4,
+    PollRequest4,
+    CompleteRequest4,
+    LevelTransition65,
+    IndexedLevel65,
+};
+
+// Supplied fields read by command 4. This does not own the request manager.
+struct WorldMapCommand4Snapshot {
+    uint32_t key_530 = UINT32_MAX;
+    uint32_t key_534 = UINT32_MAX;
+    bool has_manager_state = false;
+    uint32_t manager_state_48 = 0;
+    uint32_t manager_result_1c0 = UINT32_MAX;
+};
+
+struct WorldMapCommandPreparation {
+    WorldMapActionStep instruction{};
+    WorldMapActionScriptState after_arguments{};
+    WorldMapCommandEffect effect = WorldMapCommandEffect::BeginRequest4;
+    uint32_t next_key_530 = UINT32_MAX;
+    uint32_t next_key_534 = UINT32_MAX;
+    bool has_stack_result = false;
+    uint32_t stack_result = 0;
+    float normalized_level = 0;
+    float transition_seconds = 0;
+    uint8_t indexed_target = 0;
+    uint8_t indexed_level = 0;
+    uint32_t transition_milliseconds = 0;
+};
+
 // Bounded RIFF/SCR container from FUN_80185FA4. CODE and OPT are required;
 // STR is optional, with raw offsets kept opaque.
 class WorldMapActionScript {
@@ -83,6 +123,13 @@ public:
     // Other commands preserve state and report RequiresCallback.
     [[nodiscard]] WorldMapActionStepStatus step_world_map(
         WorldMapActionScriptState* state, WorldMapActionStep* out) const;
+    // Prepares command 4/65 arguments and effect routing without consuming the
+    // caller's state or accepting a backend effect. after_arguments is only a
+    // supplied snapshot; it is not a completed command or gameplay acceptance.
+    [[nodiscard]] WorldMapCommandPreparationStatus prepare_world_map_command(
+        const WorldMapActionScriptState& state,
+        const WorldMapCommand4Snapshot* command4,
+        WorldMapCommandPreparation* out) const;
 
 private:
     std::vector<uint8_t> bytes_;

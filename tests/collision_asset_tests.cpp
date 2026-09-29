@@ -994,6 +994,120 @@ void test_world_map_action_callbacks() {
                same_action_state(state, original), "unloaded world-map script cannot resume");
 }
 
+void test_world_map_command_preparation() {
+    using Status = awl::WorldMapCommandPreparationStatus;
+    using Effect = awl::WorldMapCommandEffect;
+    using Instruction = awl::WorldMapActionInstruction;
+    awl::WorldMapActionScript script;
+    awl::WorldMapActionScriptState state;
+    awl::WorldMapCommand4Snapshot manager;
+    awl::WorldMapCommandPreparation prepared;
+    auto near = [](float actual, float expected) {
+        return std::fabs(actual - expected) < 0.00001f;
+    };
+    auto initialize = [&](uint32_t command, uint32_t options = 7) {
+        return script.parse(make_action_script({Instruction{0x25, 0, 0, command}}, options)) &&
+               script.initialize_state(0x2011, &state);
+    };
+    expect(initialize(4), "request command preparation initializes");
+    state.stack_depth_1b0 = 3;
+    state.stack_20[1] = 1280;
+    state.stack_20[2] = 2560;
+    state.stack_20[3] = 0xffffff7f; // -129 rounds down to -2 under sraw 7
+    const auto original = state;
+    expect(script.prepare_world_map_command(state, &manager, &prepared) == Status::Prepared &&
+               same_action_state(state, original) && prepared.effect == Effect::BeginRequest4 &&
+               prepared.instruction.callback_arguments[0] == 10 &&
+               prepared.instruction.callback_arguments[1] == 20 &&
+               prepared.instruction.callback_arguments[2] == 0xfffffffe &&
+               prepared.after_arguments.stack_depth_1b0 == 0 &&
+               prepared.after_arguments.instruction_index_0c == 1 &&
+               prepared.next_key_530 == 10 && prepared.next_key_534 == 20 &&
+               !prepared.has_stack_result && manager.key_530 == UINT32_MAX,
+           "request preparation decodes reverse slots and plans new keys without acceptance");
+    manager.key_530 = 10;
+    manager.key_534 = 20;
+    expect(script.prepare_world_map_command(state, &manager, &prepared) ==
+               Status::RequiresManagerSnapshot && prepared.after_arguments.state_4 == 0,
+           "same request keys require supplied manager state and clear a stale plan");
+    manager.has_manager_state = true;
+    manager.manager_state_48 = 3;
+    expect(script.prepare_world_map_command(state, &manager, &prepared) == Status::Prepared &&
+               prepared.effect == Effect::PollRequest4 && prepared.has_stack_result &&
+               prepared.stack_result == 0 && prepared.next_key_530 == 10 &&
+               same_action_state(state, original), "busy request plans zero without clearing keys");
+    manager.manager_state_48 = 0;
+    manager.manager_result_1c0 = 2;
+    expect(script.prepare_world_map_command(state, &manager, &prepared) == Status::Prepared &&
+               prepared.effect == Effect::CompleteRequest4 && prepared.stack_result == 3 &&
+               prepared.next_key_530 == UINT32_MAX && prepared.next_key_534 == UINT32_MAX,
+           "completed request plans result plus one and resets both keys");
+    manager.manager_result_1c0 = UINT32_MAX;
+    expect(script.prepare_world_map_command(state, &manager, &prepared) == Status::Prepared &&
+               prepared.stack_result == UINT32_MAX, "request completion preserves the minus-one sentinel");
+    manager.manager_result_1c0 = 0x7fffffff;
+    expect(script.prepare_world_map_command(state, &manager, &prepared) == Status::Prepared &&
+               prepared.stack_result == 0x80000000, "request result increment preserves word wrap");
+    state.stack_20[3] = 512;
+    expect(script.prepare_world_map_command(state, &manager, &prepared) == Status::Prepared &&
+               prepared.effect == Effect::CompleteRequest4,
+           "third argument changes do not restart a request with the same two keys");
+    manager.key_534 = 21;
+    expect(script.prepare_world_map_command(state, &manager, &prepared) == Status::Prepared &&
+               prepared.effect == Effect::BeginRequest4, "either changed key selects a new request");
+    expect(initialize(65), "timed level preparation initializes");
+    state.stack_depth_1b0 = 3;
+    state.stack_20[1] = 128; // target 1
+    state.stack_20[2] = 64 * 128;
+    state.stack_20[3] = 192; // 1.5 seconds
+    const auto level_original = state;
+    expect(script.prepare_world_map_command(state, nullptr, &prepared) == Status::Prepared &&
+               same_action_state(state, level_original) && prepared.effect == Effect::LevelTransition65 &&
+               near(prepared.normalized_level, 64.0f / 127.0f) &&
+               near(prepared.transition_seconds, 1.5f) && prepared.after_arguments.stack_depth_1b0 == 0,
+           "level preparation decodes integer/integer/float without performing backend work");
+    state.stack_20[2] = 200 * 128;
+    state.stack_20[3] = 100 * 128;
+    expect(script.prepare_world_map_command(state, nullptr, &prepared) == Status::Prepared &&
+               near(prepared.normalized_level, 1.0f) && near(prepared.transition_seconds, 65.535f),
+           "level and duration preserve the verified upper clamps");
+    state.stack_20[2] = static_cast<uint32_t>(-128);
+    state.stack_20[3] = static_cast<uint32_t>(-128);
+    expect(script.prepare_world_map_command(state, nullptr, &prepared) == Status::Prepared &&
+               near(prepared.normalized_level, -1.0f / 127.0f) && prepared.transition_seconds == 0,
+           "negative level is retained while negative duration clamps to zero");
+    state.stack_20[1] = 258 * 128;
+    state.stack_20[3] = 191; // 1492.1875 ms, truncated by fctiwz
+    expect(script.prepare_world_map_command(state, nullptr, &prepared) == Status::Prepared &&
+               prepared.effect == Effect::IndexedLevel65 && prepared.indexed_target == 2 &&
+               prepared.indexed_level == 255 && prepared.transition_milliseconds == 1492,
+           "indexed path narrows target/level bytes and truncates bounded milliseconds");
+    state.stack_20[1] = static_cast<uint32_t>(-128);
+    expect(script.prepare_world_map_command(state, nullptr, &prepared) == Status::Prepared &&
+               prepared.effect == Effect::IndexedLevel65 && prepared.indexed_target == 255,
+           "negative target chooses the indexed path");
+    expect(initialize(65, 32) &&
+               script.prepare_world_map_command(state, nullptr, &prepared) == Status::InvalidOperand &&
+               state.instruction_index_0c == 0, "zero float scale fails without consuming arguments");
+    expect(initialize(4), "sentinel request preparation initializes");
+    state.stack_20[0] = 256;
+    manager = {};
+    expect(script.prepare_world_map_command(state, &manager, &prepared) == Status::Prepared &&
+               prepared.instruction.callback_arguments[0] == 2 &&
+               prepared.instruction.callback_arguments[1] == 2 &&
+               prepared.instruction.callback_arguments[2] == 2 &&
+               prepared.after_arguments.stack_depth_1b0 == 0,
+           "typed arguments saturate at the empty-stack sentinel in DOL order");
+    expect(script.prepare_world_map_command(state, nullptr, &prepared) == Status::InvalidState &&
+               script.prepare_world_map_command(state, &manager, nullptr) == Status::InvalidState,
+           "request preparation requires its supplied key snapshot and output");
+    expect(initialize(67) && script.prepare_world_map_command(state, nullptr, &prepared) ==
+               Status::UnsupportedCommand, "preparation rejects unknown command profiles");
+    state.stack_depth_1b0 = 100;
+    expect(script.prepare_world_map_command(state, nullptr, &prepared) == Status::InvalidState,
+           "preparation retains common stack bounds validation");
+}
+
 void test_world_map_room_collision_mapping() {
     using Status = awl::WorldMapRoomCollisionStatus;
     awl::WorldMapRoomCollisionState state;
@@ -6123,6 +6237,23 @@ bool check_local_event_conditions(const char* disc_root) {
                     reset.stack_depth_1b0 == next_depth && digest == next_digest &&
                     script.step_world_map(&reset, &boundary) == Step::RequiresCallback &&
                     same_action_state(reset, next_boundary);
+                awl::WorldMapCommand4Snapshot manager;
+                awl::WorldMapCommandPreparation command;
+                valid_script = valid_script && script.prepare_world_map_command(
+                    reset, &manager, &command) ==
+                        awl::WorldMapCommandPreparationStatus::Prepared &&
+                    same_action_state(reset, next_boundary) &&
+                    command.after_arguments.instruction_index_0c == next_pc + 1 &&
+                    command.after_arguments.stack_depth_1b0 == (code_count == 1105 ? 1u : 0u);
+                digest = 14695981039346656037ull;
+                for (const uint32_t value : command.instruction.callback_arguments) hash_word(value);
+                const uint64_t expected_argument_digest = code_count == 1105
+                    ? 0xb46eaf0a6bd16bebull : 0x49deeaf2e16b477aull;
+                valid_script = valid_script && digest == expected_argument_digest &&
+                    command.effect == (code_count == 1105
+                        ? awl::WorldMapCommandEffect::BeginRequest4
+                        : awl::WorldMapCommandEffect::LevelTransition65) &&
+                    !command.has_stack_result;
                 return valid_script;
             };
             using Request = awl::WorldMapMovementRequestStatus;
@@ -6196,7 +6327,7 @@ bool check_local_event_conditions(const char* disc_root) {
             }
         }
         if (valid) {
-            std::printf("Event conditions phase %u: %zu entries, %zu payload bytes; first world-map callback and next stop verified\n",
+            std::printf("Event conditions phase %u: %zu entries, %zu payload bytes; callbacks, next stop, and command preparation verified\n",
                         phase, conditions.entry_count(), payload_bytes);
         }
     }
@@ -7524,6 +7655,7 @@ int main(int argc, char** argv) {
     test_world_map_action_script();
     test_world_map_action_execution();
     test_world_map_action_callbacks();
+    test_world_map_command_preparation();
     test_world_map_room_collision_mapping();
     test_world_map_packed_saved_conditions();
     test_world_map_room_condition_evaluator();

@@ -432,6 +432,113 @@ WorldMapActionStepStatus WorldMapActionScript::step_world_map(
     return out->effective_operand == 0 ? Status::Yielded : Status::Advanced;
 }
 
+WorldMapCommandPreparationStatus WorldMapActionScript::prepare_world_map_command(
+    const WorldMapActionScriptState& state,
+    const WorldMapCommand4Snapshot* command4,
+    WorldMapCommandPreparation* out) const {
+    using Status = WorldMapCommandPreparationStatus;
+    if (out == nullptr) {
+        return Status::InvalidState;
+    }
+    *out = {};
+    WorldMapCommandPreparation prepared;
+    prepared.after_arguments = state;
+    if (step(&prepared.after_arguments, &prepared.instruction) !=
+        WorldMapActionStepStatus::RequiresCallback) {
+        return Status::InvalidState;
+    }
+    const uint32_t command = prepared.instruction.effective_operand;
+    if (command != 4 && command != 65) {
+        return Status::UnsupportedCommand;
+    }
+    if (command == 4 && command4 == nullptr) {
+        return Status::InvalidState;
+    }
+    auto signed_word = [](uint32_t value) -> int64_t {
+        return (value & 0x80000000u) != 0
+            ? static_cast<int64_t>(value) - 0x100000000ll : value;
+    };
+    const uint32_t shift = state.options_1b4 & 63u;
+    float float_argument = 0;
+    // Both profiles have three active slots. FUN_8010C474 visits them
+    // backwards, including sentinel reads when depth has reached zero.
+    for (size_t slot = 3; slot-- > 0;) {
+        auto& next = prepared.after_arguments;
+        const uint32_t value = next.stack_20[next.stack_depth_1b0];
+        uint32_t argument = value;
+        if (command == 65 && slot == 2) {
+            // DOL conversion rounds numerator and denominator to float before
+            // fdivs. A zero slw denominator is rejected by the native boundary.
+            if (shift >= 32) {
+                return Status::InvalidOperand;
+            }
+            const float numerator = static_cast<float>(signed_word(value));
+            const float denominator = static_cast<float>(signed_word(1u << shift));
+            float_argument = numerator / denominator;
+            std::memcpy(&argument, &float_argument, sizeof(argument));
+        } else if (shift >= 32) {
+            argument = (value & 0x80000000u) != 0 ? UINT32_MAX : 0u;
+        } else if (shift != 0) {
+            argument = value >> shift;
+            if ((value & 0x80000000u) != 0) {
+                argument |= UINT32_MAX << (32u - shift);
+            }
+        }
+        prepared.instruction.callback_arguments[slot] = argument;
+        if (next.stack_depth_1b0 != 0) {
+            --next.stack_depth_1b0;
+        }
+    }
+    ++prepared.after_arguments.instruction_index_0c;
+    const auto& arguments = prepared.instruction.callback_arguments;
+    if (command == 4) {
+        prepared.next_key_530 = command4->key_530;
+        prepared.next_key_534 = command4->key_534;
+        if (command4->key_530 != arguments[0] || command4->key_534 != arguments[1]) {
+            prepared.effect = WorldMapCommandEffect::BeginRequest4;
+            prepared.next_key_530 = arguments[0];
+            prepared.next_key_534 = arguments[1];
+            // The result depends on FUN_80113864 -> FUN_801020E4 acceptance.
+        } else {
+            if (!command4->has_manager_state) {
+                return Status::RequiresManagerSnapshot;
+            }
+            prepared.has_stack_result = true;
+            if (command4->manager_state_48 != 0) {
+                prepared.effect = WorldMapCommandEffect::PollRequest4;
+                prepared.stack_result = 0;
+            } else {
+                prepared.effect = WorldMapCommandEffect::CompleteRequest4;
+                prepared.next_key_530 = UINT32_MAX;
+                prepared.next_key_534 = UINT32_MAX;
+                prepared.stack_result = command4->manager_result_1c0 == UINT32_MAX
+                    ? UINT32_MAX : command4->manager_result_1c0 + 1u;
+            }
+        }
+    } else {
+        int64_t level = signed_word(arguments[1]);
+        if (level > 127) level = 127;
+        // Match the original's upper level clamp only; negative values are
+        // retained, including their later byte conversion on the indexed path.
+        float milliseconds = 1000.0f * float_argument;
+        if (milliseconds > 65535.0f) milliseconds = 65535.0f;
+        if (milliseconds < 0.0f) milliseconds = 0.0f;
+        const int64_t target = signed_word(arguments[0]);
+        if (target >= 0 && target < 2) {
+            prepared.effect = WorldMapCommandEffect::LevelTransition65;
+            prepared.normalized_level = static_cast<float>(level) / 127.0f;
+            prepared.transition_seconds = milliseconds / 1000.0f;
+        } else {
+            prepared.effect = WorldMapCommandEffect::IndexedLevel65;
+            prepared.indexed_target = static_cast<uint8_t>(arguments[0]);
+            prepared.indexed_level = static_cast<uint8_t>(level);
+            prepared.transition_milliseconds = static_cast<uint32_t>(milliseconds);
+        }
+    }
+    *out = prepared;
+    return Status::Prepared;
+}
+
 bool WorldMapGlobalActionArchive::parse(std::vector<uint8_t> bytes) {
     clear();
     if (bytes.size() < 0x20 || be32(bytes.data()) != 0x55aa382du) {
