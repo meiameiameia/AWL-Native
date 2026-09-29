@@ -682,6 +682,216 @@ void test_world_map_action_script() {
            "failed SCR load cannot initialize state or expose stale code");
 }
 
+std::vector<uint8_t> make_action_script(
+    const std::vector<awl::WorldMapActionInstruction>& instructions,
+    uint32_t options = 7) {
+    const size_t code_length = 4 + instructions.size() * 8;
+    const size_t opt_offset = 20 + code_length;
+    std::vector<uint8_t> bytes(opt_offset + 12, 0);
+    std::memcpy(bytes.data(), "RIFF", 4);
+    put_be32(bytes, 4, static_cast<uint32_t>(bytes.size()));
+    std::memcpy(bytes.data() + 8, "SCR CODE", 8);
+    put_be32(bytes, 16, static_cast<uint32_t>(code_length));
+    put_be32(bytes, 20, static_cast<uint32_t>(instructions.size()));
+    for (size_t i = 0; i < instructions.size(); ++i) {
+        const size_t offset = 24 + i * 8;
+        bytes[offset] = instructions[i].opcode;
+        bytes[offset + 1] = instructions[i].flags;
+        put_be32(bytes, offset + 4, instructions[i].operand);
+    }
+    std::memcpy(bytes.data() + opt_offset, "OPT ", 4);
+    put_be32(bytes, opt_offset + 4, 4);
+    put_be32(bytes, opt_offset + 8, options);
+    return bytes;
+}
+
+bool same_action_state(const awl::WorldMapActionScriptState& a,
+                       const awl::WorldMapActionScriptState& b) {
+    return a.state_4 == b.state_4 &&
+           a.instruction_index_0c == b.instruction_index_0c &&
+           a.instruction_count_10 == b.instruction_count_10 &&
+           a.string_count_14 == b.string_count_14 && a.stack_20 == b.stack_20 &&
+           a.stack_depth_1b0 == b.stack_depth_1b0 && a.options_1b4 == b.options_1b4 &&
+           a.variables_1b8 == b.variables_1b8 &&
+           a.operand_base_4d8 == b.operand_base_4d8 &&
+           a.mode_flags_528 == b.mode_flags_528;
+}
+
+void test_world_map_action_execution() {
+    using Status = awl::WorldMapActionStepStatus;
+    using Instruction = awl::WorldMapActionInstruction;
+    auto ins = [](uint8_t opcode, uint32_t operand = 0, uint8_t flags = 0) {
+        return Instruction{opcode, flags, 0, operand};
+    };
+    awl::WorldMapActionScript script;
+    awl::WorldMapActionScriptState state;
+    awl::WorldMapActionStep result;
+    // An invented program assigns 10, adds 7, subtracts 2, and calls a
+    // subroutine that adds 1. The expected variable values are 17 and 16.
+    const std::vector<Instruction> program{
+        ins(0x17, 3), ins(0x17, 10), ins(1), ins(0x16),
+        ins(0x17, 3), ins(0x17, 7), ins(2), ins(0x16),
+        ins(0x13, 3), ins(0x17, 2), ins(8), ins(0x14, 4),
+        ins(0x1f, 15), ins(0x24), ins(0), ins(0x13, 4),
+        ins(0x17, 1), ins(7), ins(0x14, 4), ins(0x20)};
+    expect(script.parse(make_action_script(program)) && script.initialize_state(9, &state),
+           "supplied-state action program initializes");
+    bool valid = true;
+    Status status = Status::Advanced;
+    size_t steps = 0;
+    for (; steps < 32 && status == Status::Advanced; ++steps) {
+        status = script.step(&state, &result);
+        if (result.instruction_index == 12) {
+            valid = valid && status == Status::Advanced &&
+                    state.instruction_index_0c == 15 && state.stack_depth_1b0 == 1 &&
+                    state.stack_20[1] == 13;
+        }
+    }
+    expect(valid && status == Status::Halted && steps == 19 && state.state_4 == 0 &&
+               state.instruction_index_0c == 14 && state.variables_1b8[3] == 17 &&
+               state.variables_1b8[4] == 16 && state.stack_depth_1b0 == 0 &&
+               state.mode_flags_528 == 9 && script.step(&state, &result) == Status::NotRunning,
+           "action program preserves call/return order and halts with expected variables");
+    auto prepare = [&](uint8_t opcode, uint32_t operand = 0, uint8_t flags = 0,
+                       uint32_t options = 7) {
+        return script.parse(make_action_script({ins(opcode, operand, flags), ins(0x24)}, options)) &&
+               script.initialize_state(0, &state);
+    };
+    struct BinaryCase { uint8_t opcode; uint32_t left; uint32_t right; uint32_t expected; };
+    for (const auto& test : std::vector<BinaryCase>{
+             {7, 0xfffffffe, 4, 2}, {8, 0, 1, UINT32_MAX},
+             {0x0c, 2, 3, 1}, {0x0c, 0, 3, 0},
+             {0x0d, 0, 7, 1}, {0x0d, 0, 0, 0}}) {
+        expect(prepare(test.opcode), "binary action test initializes");
+        state.stack_depth_1b0 = 2;
+        state.stack_20[1] = test.left;
+        state.stack_20[2] = test.right;
+        expect(script.step(&state, &result) == Status::Advanced &&
+                   state.stack_depth_1b0 == 1 && state.stack_20[1] == test.expected,
+               "integer action arithmetic wraps and logical results normalize");
+    }
+    for (const auto& test : std::vector<BinaryCase>{
+             {0x10, 0x80000000, 7, 0x80000000}, {0x11, 0, 7, 1},
+             {0x11, UINT32_MAX, 7, 0}, {0x0e, 1, 7, 129},
+             {0x0f, 0, 7, 0xffffff80}, {0x0e, 1, 32, 1},
+             {0x0e, 1, 64, 2}}) {
+        expect(prepare(test.opcode, 0, 0, test.right), "unary action test initializes");
+        state.stack_20[0] = test.left;
+        expect(script.step(&state, &result) == Status::Advanced &&
+                   state.stack_20[0] == test.expected && state.stack_depth_1b0 == 0,
+               "unary actions preserve sentinel and PowerPC shift/wrap behavior");
+    }
+    expect(prepare(3), "indexed subtract initializes");
+    state.stack_depth_1b0 = 2;
+    state.stack_20[1] = 199;
+    state.stack_20[2] = 3;
+    state.variables_1b8[199] = 1;
+    expect(script.step(&state, &result) == Status::Advanced &&
+               state.variables_1b8[199] == 0xfffffffe && state.stack_20[1] == 0xfffffffe,
+           "indexed variable subtraction stores and leaves its wrapped result");
+    expect(prepare(0x15), "duplicate action initializes");
+    state.stack_20[0] = 11;
+    expect(script.step(&state, &result) == Status::Advanced && state.stack_depth_1b0 == 1 &&
+               state.stack_20[0] == 11 && state.stack_20[1] == 11,
+           "duplicate pushes a copy of the current sentinel/top");
+    expect(prepare(0x16) && script.step(&state, &result) == Status::Advanced &&
+               state.stack_depth_1b0 == 0, "drop saturates at depth zero");
+    for (const uint8_t opcode : {uint8_t{0x19}, uint8_t{0x1a}, uint8_t{0x1b},
+                                uint8_t{0x1c}, uint8_t{0x1d}, uint8_t{0x1e}}) {
+        for (const int value : {-1, 0, 1}) {
+            const bool taken = (opcode == 0x19 && value < 0) ||
+                (opcode == 0x1a && value <= 0) || (opcode == 0x1b && value == 0) ||
+                (opcode == 0x1c && value != 0) || (opcode == 0x1d && value >= 0) ||
+                (opcode == 0x1e && value > 0);
+            expect(prepare(opcode), "signed branch initializes");
+            state.stack_depth_1b0 = 1;
+            state.stack_20[1] = static_cast<uint32_t>(value);
+            expect(script.step(&state, &result) == Status::Advanced &&
+                       state.instruction_index_0c == (taken ? 0u : 1u) &&
+                       state.stack_depth_1b0 == 0,
+                   "six signed conditional branches consume their condition");
+        }
+    }
+    expect(prepare(0x1b, UINT32_MAX), "untaken out-of-range branch initializes");
+    state.stack_20[0] = 1;
+    expect(script.step(&state, &result) == Status::Advanced && state.instruction_index_0c == 1,
+           "untaken conditional branch does not validate an unused destination");
+    for (const uint8_t opcode : {uint8_t{0x21}, uint8_t{0x22}, uint8_t{0x23}}) {
+        expect(prepare(opcode, 3), "operand base action initializes");
+        state.operand_base_4d8 = 8;
+        const uint32_t expected = opcode == 0x21 ? 3u : (opcode == 0x22 ? 11u : 5u);
+        expect(script.step(&state, &result) == Status::Advanced &&
+                   state.operand_base_4d8 == expected, "operand base set/add/subtract follow order");
+    }
+    expect(prepare(0x13, 2, 3), "base-relative read initializes");
+    state.operand_base_4d8 = 4;
+    state.variables_1b8[6] = 33;
+    expect(script.step(&state, &result) == Status::Advanced && result.effective_operand == 6 &&
+               state.stack_20[1] == 33, "only flag bit zero adds the operand base");
+    expect(prepare(0x17, UINT32_MAX, 1), "relative operand wrap initializes");
+    state.operand_base_4d8 = 2;
+    expect(script.step(&state, &result) == Status::Advanced && state.stack_20[1] == 1,
+           "effective operand addition wraps at 32 bits");
+    for (const uint8_t opcode : {uint8_t{4}, uint8_t{5}, uint8_t{6}, uint8_t{9},
+                                uint8_t{10}, uint8_t{11}, uint8_t{0x12}, uint8_t{0xff},
+                                uint8_t{0x25}}) {
+        expect(prepare(opcode, 42, 1), "untranslated action initializes");
+        state.operand_base_4d8 = 3;
+        const auto before = state;
+        expect(script.step(&state, &result) == (opcode == 0x25
+                   ? Status::RequiresCallback : Status::UnsupportedOpcode) &&
+                   same_action_state(state, before) && result.instruction_index == 0 &&
+                   result.opcode == opcode && result.effective_operand == 45,
+               "unsupported instructions and callback boundary preserve supplied state");
+    }
+    for (const uint8_t opcode : {uint8_t{0x13}, uint8_t{0x14}, uint8_t{0x18},
+                                uint8_t{0x1f}, uint8_t{0x21}, uint8_t{0x22},
+                                uint8_t{0x23}, uint8_t{0x1b}}) {
+        expect(prepare(opcode, 200), "invalid operand action initializes");
+        const auto before = state;
+        expect(script.step(&state, &result) == Status::InvalidOperand &&
+                   same_action_state(state, before), "invalid operands reject atomically");
+    }
+    for (const uint8_t opcode : {uint8_t{0x17}, uint8_t{0x15}, uint8_t{0x1f}}) {
+        expect(prepare(opcode), "stack capacity action initializes");
+        state.stack_depth_1b0 = 99;
+        const auto before = state;
+        expect(script.step(&state, &result) == Status::InvalidOperand &&
+                   same_action_state(state, before), "stack push rejects the DOL's overlapping slot 100");
+    }
+    expect(prepare(1), "invalid indexed store initializes");
+    state.stack_depth_1b0 = 1;
+    state.stack_20[0] = 200;
+    state.stack_20[1] = 3;
+    const auto before = state;
+    expect(script.step(&state, &result) == Status::InvalidOperand &&
+               same_action_state(state, before), "invalid indexed store rolls back its pop");
+    expect(prepare(0x20), "invalid return initializes");
+    state.stack_20[0] = 2;
+    const auto before_return = state;
+    expect(script.step(&state, &result) == Status::InvalidOperand &&
+               same_action_state(state, before_return), "return cannot leave the code extent");
+    expect(prepare(0), "invalid state test initializes");
+    for (int field = 0; field < 6; ++field) {
+        auto invalid = state;
+        if (field == 0) invalid.state_4 = 2;
+        if (field == 1) invalid.instruction_index_0c = 2;
+        if (field == 2) invalid.stack_depth_1b0 = 100;
+        if (field == 3) invalid.instruction_count_10 = 3;
+        if (field == 4) invalid.string_count_14 = 1;
+        if (field == 5) invalid.options_1b4 = 8;
+        const auto original = invalid;
+        expect(script.step(&invalid, &result) == Status::InvalidState &&
+                   same_action_state(invalid, original), "inconsistent action state rejects atomically");
+    }
+    expect(script.step(nullptr, &result) == Status::InvalidState &&
+               script.step(&state, nullptr) == Status::InvalidState,
+           "action step requires supplied state and output");
+    script.clear();
+    expect(script.step(&state, &result) == Status::InvalidState,
+           "unloaded script cannot execute stale state");
+}
+
 void test_world_map_room_collision_mapping() {
     using Status = awl::WorldMapRoomCollisionStatus;
     awl::WorldMapRoomCollisionState state;
@@ -5735,7 +5945,7 @@ bool check_local_event_conditions(const char* disc_root) {
                 awl::WorldMapActionScript script;
                 awl::WorldMapActionScriptState reset;
                 awl::WorldMapActionInstruction instruction;
-                return script.parse(bytes) &&
+                bool valid_script = script.parse(bytes) &&
                        script.instruction_count() == code_count &&
                        script.string_count() == string_count && script.options() == 7 &&
                        script.instruction(0, &instruction) &&
@@ -5745,6 +5955,39 @@ bool check_local_event_conditions(const char* disc_root) {
                        reset.instruction_index_0c == 0 &&
                        reset.instruction_count_10 == code_count &&
                        reset.string_count_14 == string_count && reset.options_1b4 == 7;
+                using Step = awl::WorldMapActionStepStatus;
+                awl::WorldMapActionStep boundary;
+                Step status = Step::Advanced;
+                size_t steps = 0;
+                while (valid_script && steps < 256) {
+                    status = script.step(&reset, &boundary);
+                    if (status != Step::Advanced) {
+                        break;
+                    }
+                    ++steps;
+                }
+                // Independently walked DOL-derived prefix expectations. Only
+                // counts/digests are public; actual instructions stay local.
+                const size_t expected_steps = code_count == 1105 ? 12u : 1u;
+                const uint8_t expected_depth = code_count == 1105 ? 0u : 1u;
+                const uint64_t expected_digest = code_count == 1105
+                    ? 0x54b882e344b5dce9ull : 0x74b4429a2fdd70e5ull;
+                uint64_t digest = 14695981039346656037ull;
+                auto hash_word = [&digest](uint32_t value) {
+                    for (const uint32_t shift : {24u, 16u, 8u, 0u}) {
+                        digest = (digest ^ ((value >> shift) & 255u)) * 1099511628211ull;
+                    }
+                };
+                for (const uint32_t value : reset.stack_20) hash_word(value);
+                for (const uint32_t value : reset.variables_1b8) hash_word(value);
+                const auto before_callback = reset;
+                valid_script = valid_script && status == Step::RequiresCallback &&
+                    steps == expected_steps && reset.instruction_index_0c == expected_steps &&
+                    boundary.instruction_index == expected_steps && boundary.opcode == 0x25 &&
+                    reset.stack_depth_1b0 == expected_depth && digest == expected_digest &&
+                    script.step(&reset, &boundary) == Step::RequiresCallback &&
+                    same_action_state(reset, before_callback);
+                return valid_script;
             };
             using Request = awl::WorldMapMovementRequestStatus;
             valid = conditions.prepare_movement_request(
@@ -5763,7 +6006,7 @@ bool check_local_event_conditions(const char* disc_root) {
                 for (const uint8_t byte : action_bytes) {
                     digest = (digest ^ byte) * 1099511628211ull;
                 }
-                std::printf("Global action node 95: %zu decoded bytes, 1105 instructions, no strings, options 7; FNV64 %016llx\n",
+                std::printf("Global action node 95: %zu decoded bytes, 1105 instructions, no strings, options 7; 12 steps to callback; FNV64 %016llx\n",
                             action_bytes.size(), static_cast<unsigned long long>(digest));
             }
             valid = valid && conditions.prepare_movement_request(
@@ -5793,7 +6036,7 @@ bool check_local_event_conditions(const char* disc_root) {
                     for (const uint8_t byte : action_bytes) {
                         digest = (digest ^ byte) * 1099511628211ull;
                     }
-                    std::printf("Global action node 76: %zu decoded bytes, 871 instructions, 3 strings, options 7; FNV64 %016llx\n",
+                    std::printf("Global action node 76: %zu decoded bytes, 871 instructions, 3 strings, options 7; 1 step to callback; FNV64 %016llx\n",
                                 action_bytes.size(), static_cast<unsigned long long>(digest));
                 }
                 state.clock_ticks = 2u * 36000u;
@@ -5817,7 +6060,7 @@ bool check_local_event_conditions(const char* disc_root) {
             }
         }
         if (valid) {
-            std::printf("Event conditions phase %u: %zu entries, %zu payload bytes; type-3 preflight to global script/reset verified\n",
+            std::printf("Event conditions phase %u: %zu entries, %zu payload bytes; type-3 preflight to first script callback verified\n",
                         phase, conditions.entry_count(), payload_bytes);
         }
     }
@@ -7143,6 +7386,7 @@ int main(int argc, char** argv) {
     test_world_map_event_conditions();
     test_world_map_action_asset();
     test_world_map_action_script();
+    test_world_map_action_execution();
     test_world_map_room_collision_mapping();
     test_world_map_packed_saved_conditions();
     test_world_map_room_condition_evaluator();

@@ -191,6 +191,210 @@ bool WorldMapActionScript::initialize_state(
     return true;
 }
 
+WorldMapActionStepStatus WorldMapActionScript::step(
+    WorldMapActionScriptState* state, WorldMapActionStep* out) const {
+    using Status = WorldMapActionStepStatus;
+    if (out != nullptr) {
+        *out = {};
+    }
+    if (!loaded() || state == nullptr || out == nullptr ||
+        state->instruction_count_10 != code_count_ ||
+        state->string_count_14 != string_count_ || state->options_1b4 != options_ ||
+        state->stack_depth_1b0 >= state->stack_20.size()) {
+        return Status::InvalidState;
+    }
+    if (state->state_4 == 0) {
+        return Status::NotRunning;
+    }
+    WorldMapActionInstruction record;
+    if (state->state_4 != 1 ||
+        !instruction(state->instruction_index_0c, &record)) {
+        return Status::InvalidState;
+    }
+    const uint32_t operand = record.operand +
+        ((record.flags & 1u) != 0 ? state->operand_base_4d8 : 0u);
+    out->instruction_index = state->instruction_index_0c;
+    out->effective_operand = operand;
+    out->opcode = record.opcode;
+    if (record.opcode == 0x25) {
+        // The DOL calls virtual +0x0C after advancing PC. Native pauses before
+        // consumption so a future game-owned callback can perform it once.
+        return Status::RequiresCallback;
+    }
+    auto next = *state;
+    ++next.instruction_index_0c;
+    auto top = [&next]() -> uint32_t& {
+        return next.stack_20[next.stack_depth_1b0];
+    };
+    auto pop = [&next, &top]() {
+        const uint32_t value = top();
+        if (next.stack_depth_1b0 != 0) {
+            --next.stack_depth_1b0;
+        }
+        return value;
+    };
+    auto push = [&next](uint32_t value) {
+        // Slot zero is the DOL's empty-stack sentinel. Its guard permits
+        // depth 100, overlapping +0x1B0; native rejects that write.
+        if (static_cast<size_t>(next.stack_depth_1b0) + 1 >= next.stack_20.size()) {
+            return false;
+        }
+        next.stack_20[++next.stack_depth_1b0] = value;
+        return true;
+    };
+    auto jump = [&next, this](uint32_t target) {
+        if (target >= code_count_) {
+            return false;
+        }
+        next.instruction_index_0c = target;
+        return true;
+    };
+    auto signed_value = [](uint32_t value) -> int64_t {
+        return (value & 0x80000000u) != 0
+            ? static_cast<int64_t>(value) - 0x100000000ll : value;
+    };
+    switch (record.opcode) {
+    case 0x00: // no-op
+        break;
+    case 0x01: // store through an index on the stack, retaining the value
+    case 0x02: // add to that variable
+    case 0x03: { // subtract from that variable
+        const uint32_t value = pop();
+        const uint32_t index = top();
+        if (index >= next.variables_1b8.size()) {
+            return Status::InvalidOperand;
+        }
+        uint32_t result = value;
+        if (record.opcode == 0x02) {
+            result = next.variables_1b8[index] + value;
+        } else if (record.opcode == 0x03) {
+            result = next.variables_1b8[index] - value;
+        }
+        next.variables_1b8[index] = result;
+        top() = result;
+        break;
+    }
+    case 0x07: {
+        const uint32_t value = pop();
+        top() += value;
+        break;
+    }
+    case 0x08: {
+        const uint32_t value = pop();
+        top() -= value;
+        break;
+    }
+    case 0x0c: {
+        const uint32_t value = pop();
+        top() = top() != 0 && value != 0 ? 1u : 0u;
+        break;
+    }
+    case 0x0d: {
+        const uint32_t value = pop();
+        top() = top() != 0 || value != 0 ? 1u : 0u;
+        break;
+    }
+    case 0x0e:
+    case 0x0f: {
+        // PowerPC slw uses the low six shift bits; bit five yields zero.
+        const uint32_t shift = next.options_1b4 & 63u;
+        const uint32_t unit = shift < 32 ? 1u << shift : 0u;
+        top() = record.opcode == 0x0e ? top() + unit : top() - unit;
+        break;
+    }
+    case 0x10:
+        top() = 0u - top();
+        break;
+    case 0x11:
+        top() = top() == 0 ? 1u : 0u;
+        break;
+    case 0x13:
+        if (operand >= next.variables_1b8.size() ||
+            !push(next.variables_1b8[operand])) {
+            return Status::InvalidOperand;
+        }
+        break;
+    case 0x14:
+        if (operand >= next.variables_1b8.size()) {
+            return Status::InvalidOperand;
+        }
+        next.variables_1b8[operand] = pop();
+        break;
+    case 0x15: {
+        const uint32_t value = top();
+        if (!push(value)) {
+            return Status::InvalidOperand;
+        }
+        break;
+    }
+    case 0x16:
+        (void)pop();
+        break;
+    case 0x17:
+        if (!push(operand)) {
+            return Status::InvalidOperand;
+        }
+        break;
+    case 0x18:
+        if (!jump(operand)) {
+            return Status::InvalidOperand;
+        }
+        break;
+    case 0x19:
+    case 0x1a:
+    case 0x1b:
+    case 0x1c:
+    case 0x1d:
+    case 0x1e: {
+        const int64_t value = signed_value(pop());
+        const bool taken =
+            (record.opcode == 0x19 && value < 0) ||
+            (record.opcode == 0x1a && value <= 0) ||
+            (record.opcode == 0x1b && value == 0) ||
+            (record.opcode == 0x1c && value != 0) ||
+            (record.opcode == 0x1d && value >= 0) ||
+            (record.opcode == 0x1e && value > 0);
+        if (taken && !jump(operand)) {
+            return Status::InvalidOperand;
+        }
+        break;
+    }
+    case 0x1f:
+        if (!push(next.instruction_index_0c) || !jump(operand)) {
+            return Status::InvalidOperand;
+        }
+        break;
+    case 0x20:
+        if (!jump(pop())) {
+            return Status::InvalidOperand;
+        }
+        break;
+    case 0x21:
+    case 0x22:
+    case 0x23: {
+        uint32_t base = operand;
+        if (record.opcode == 0x22) {
+            base = next.operand_base_4d8 + operand;
+        } else if (record.opcode == 0x23) {
+            base = next.operand_base_4d8 - operand;
+        }
+        if (base >= next.variables_1b8.size()) {
+            return Status::InvalidOperand;
+        }
+        next.operand_base_4d8 = base;
+        break;
+    }
+    case 0x24:
+        next.state_4 = 0;
+        *state = next;
+        return Status::Halted;
+    default:
+        return Status::UnsupportedOpcode;
+    }
+    *state = next;
+    return Status::Advanced;
+}
+
 bool WorldMapGlobalActionArchive::parse(std::vector<uint8_t> bytes) {
     clear();
     if (bytes.size() < 0x20 || be32(bytes.data()) != 0x55aa382du) {

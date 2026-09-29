@@ -38,8 +38,24 @@ struct WorldMapActionScriptState {
     uint32_t mode_flags_528 = 0;
 };
 
+enum class WorldMapActionStepStatus {
+    Advanced,
+    Halted,
+    NotRunning,
+    RequiresCallback,
+    UnsupportedOpcode,
+    InvalidState,
+    InvalidOperand,
+};
+
+struct WorldMapActionStep {
+    uint32_t instruction_index = 0;
+    uint32_t effective_operand = 0;
+    uint8_t opcode = 0;
+};
+
 // Bounded RIFF/SCR container from FUN_80185FA4. CODE and OPT are required;
-// STR is optional, with raw offsets kept opaque. No instruction is executed.
+// STR is optional, with raw offsets kept opaque. No game callback is executed.
 class WorldMapActionScript {
 public:
     [[nodiscard]] bool parse(std::vector<uint8_t> bytes);
@@ -54,6 +70,11 @@ public:
     // preserves state. The supplied mode flags correspond to r5 at entry.
     [[nodiscard]] bool initialize_state(uint32_t mode_flags,
                                          WorldMapActionScriptState* out) const;
+    // Bounded FUN_80186208 stack/integer/control subset. Each successful step
+    // commits supplied state; errors and callback boundaries preserve it.
+    // Multiply/divide/remainder and comparison constants remain unsupported.
+    [[nodiscard]] WorldMapActionStepStatus step(
+        WorldMapActionScriptState* state, WorldMapActionStep* out) const;
 
 private:
     std::vector<uint8_t> bytes_;
