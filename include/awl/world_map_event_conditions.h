@@ -22,8 +22,28 @@ struct WorldMapMovementRequestRecord {
     uint32_t saved_condition_id = 0;
 };
 
+enum class WorldMapMovementRecordStatus {
+    EligibleForStateRequest,
+    Rejected,
+    RequiresUntranslatedPredicate,
+    InvalidInput,
+};
+
+struct WorldMapMovementRecordDecision {
+    uint32_t action_index = 0;
+    uint8_t decoder_flag = 0;
+};
+
+// Evaluates only the verified type-3 record path whose other predicates are
+// skipped by sentinel fields. Eligibility still precedes FUN_8010AAC4.
+[[nodiscard]] WorldMapMovementRecordStatus evaluate_world_map_movement_record(
+    const WorldMapMovementRequestRecord& record,
+    uint8_t state_11cec,
+    WorldMapMovementRecordDecision* out);
+
 // Owns the ARC selected for owner +0x4538 by FUN_8010A6D8. The type-3
-// request header is partially decoded; later record conditions remain opaque.
+// request header and one bounded record shape are decoded; other predicate
+// paths remain untranslated.
 // Entry views are invalidated by load_phase(), parse(), clear(), or destruction.
 class WorldMapEventConditions {
 public:

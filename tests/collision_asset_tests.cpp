@@ -280,6 +280,50 @@ void test_world_map_event_conditions() {
     expect(conditions.parse(invalid, 0) &&
                !conditions.select_movement_request_records(0, saved, &matches),
            "missing request sentinel is rejected");
+
+    std::array<uint8_t, 0x20> wildcard_record{};
+    wildcard_record.fill(0xff);
+    // A synthetic ID on the DOL's default-success branch, slot 0, wildcard
+    // request value, and a clear decoder flag. No game record is embedded.
+    const uint32_t head = (0x1fu << 27) | (0xffu << 18) | 400u;
+    for (size_t byte = 0; byte < 4; ++byte) {
+        wildcard_record[byte] = static_cast<uint8_t>(head >> (byte * 8));
+    }
+    wildcard_record[31] = 0x7f; // bit 255 calls FUN_801281F0(0)
+    awl::WorldMapMovementRequestRecord supported{
+        wildcard_record.data(), wildcard_record.size(), 0, 400};
+    awl::WorldMapMovementRecordDecision decision;
+    using RequestStatus = awl::WorldMapMovementRecordStatus;
+    expect(awl::evaluate_world_map_movement_record(
+               supported, 0, &decision) ==
+               RequestStatus::EligibleForStateRequest &&
+               decision.action_index == 400 && decision.decoder_flag == 0,
+           "wildcard record reaches the decoder's default-success branch");
+    expect(awl::evaluate_world_map_movement_record(
+               supported, 1, &decision) == RequestStatus::Rejected &&
+               decision.action_index == 0,
+           "nonzero supplied global byte rejects the record in DOL order");
+    wildcard_record[31] |= 0x80u;
+    expect(awl::evaluate_world_map_movement_record(
+               supported, 1, &decision) ==
+               RequestStatus::EligibleForStateRequest,
+           "set predicate bit skips the supplied global-byte gate");
+    wildcard_record[31] &= 0x7fu;
+    wildcard_record[3] &= static_cast<uint8_t>(~0x08u);
+    expect(awl::evaluate_world_map_movement_record(
+               supported, 0, &decision) ==
+               RequestStatus::RequiresUntranslatedPredicate,
+           "active later predicate is reported as unsupported");
+    wildcard_record[3] |= 0x08u;
+    wildcard_record[8] &= static_cast<uint8_t>(~0x01u);
+    expect(awl::evaluate_world_map_movement_record(
+               supported, 0, &decision) ==
+               RequestStatus::RequiresUntranslatedPredicate,
+           "active item/state condition is reported as unsupported");
+    expect(awl::evaluate_world_map_movement_record(
+               supported, 0, nullptr) ==
+               RequestStatus::InvalidInput,
+           "missing decoder output is rejected");
 }
 
 void test_world_map_room_collision_mapping() {
@@ -5273,6 +5317,26 @@ bool check_local_event_conditions(const char* disc_root) {
                         slot, unset_saved, &selected) &&
                     selected.size() ==
                         (slot == 0 ? 1u : (phase == 0 ? 0u : 2u));
+            if (valid && slot == 0) {
+                awl::WorldMapMovementRecordDecision decision;
+                valid = awl::evaluate_world_map_movement_record(
+                            selected[0], 0, &decision) ==
+                            awl::WorldMapMovementRecordStatus::
+                                EligibleForStateRequest &&
+                        decision.action_index ==
+                            selected[0].saved_condition_id &&
+                        decision.decoder_flag == 1 &&
+                        awl::evaluate_world_map_movement_record(
+                            selected[0], 1, &decision) ==
+                            awl::WorldMapMovementRecordStatus::Rejected;
+            }
+            if (valid && slot == 1 && !selected.empty()) {
+                awl::WorldMapMovementRecordDecision decision;
+                valid = awl::evaluate_world_map_movement_record(
+                            selected[0], 0, &decision) ==
+                        awl::WorldMapMovementRecordStatus::
+                            RequiresUntranslatedPredicate;
+            }
         }
         if (valid) {
             std::printf("Event conditions phase %u: %zu entries, %zu payload bytes; type-3 slot counts verified\n",

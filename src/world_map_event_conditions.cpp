@@ -37,7 +37,76 @@ bool in_range(size_t size, uint64_t offset, uint64_t length) {
     return offset <= size && length <= static_cast<uint64_t>(size) - offset;
 }
 
+uint32_t record_bits(const uint8_t* data, size_t first, uint32_t width) {
+    uint32_t value = 0;
+    for (uint32_t bit = 0; bit < width; ++bit) {
+        const size_t source = first + bit;
+        value |= static_cast<uint32_t>(
+                     (data[source / 8] >> (source % 8)) & 1u) << bit;
+    }
+    return value;
+}
+
 } // namespace
+
+WorldMapMovementRecordStatus evaluate_world_map_movement_record(
+    const WorldMapMovementRequestRecord& record,
+    uint8_t state_11cec,
+    WorldMapMovementRecordDecision* out) {
+    using Status = WorldMapMovementRecordStatus;
+    if (out != nullptr) {
+        *out = {};
+    }
+    if (out == nullptr || record.data == nullptr || record.size != 0x20 ||
+        record_bits(record.data, 0, 10) != record.saved_condition_id) {
+        return Status::InvalidInput;
+    }
+    // Four ordered descriptors at 0x802541F4. The first three sentinel
+    // fields skip their predicates. FUN_801281F0(0) tests state +0x11CEC.
+    if (record_bits(record.data, 40, 4) != 0xfu ||
+        record_bits(record.data, 44, 10) != 0x3ffu ||
+        record_bits(record.data, 254, 1) != 1u) {
+        return Status::RequiresUntranslatedPredicate;
+    }
+    if (record_bits(record.data, 255, 1) == 0u && state_11cec != 0) {
+        return Status::Rejected;
+    }
+    // The first value of each later descriptor is its skip sentinel. The
+    // local slot-0 record takes these branches without calling predicates.
+    constexpr std::array<std::pair<size_t, uint32_t>, 12> kSkipFields{{
+        {167, 6}, // single paired predicate at r2-0x6DE0
+        {27, 4}, {115, 10}, {126, 10}, {137, 9}, {147, 9}, {157, 9},
+        {177, 6}, {208, 6}, {231, 6},
+        {32, 4}, {54, 5},
+    }};
+    for (const auto& field : kSkipFields) {
+        if (record_bits(record.data, field.first, field.second) !=
+            ((1u << field.second) - 1u)) {
+            return Status::RequiresUntranslatedPredicate;
+        }
+    }
+    // FUN_80128218 and FUN_80128488 receive only wildcard arguments, so
+    // neither asks the runtime item/state tables for a value.
+    constexpr std::array<std::pair<size_t, uint32_t>, 8> kWildcardFields{{
+        {64, 7}, {71, 7}, {78, 6}, {84, 6}, {90, 6},
+        {96, 6}, {102, 6}, {108, 6},
+    }};
+    for (const auto& field : kWildcardFields) {
+        if (record_bits(record.data, field.first, field.second) !=
+            ((1u << field.second) - 1u)) {
+            return Status::RequiresUntranslatedPredicate;
+        }
+    }
+    // FUN_80128788 uses its default-success path for IDs >= 0x17D.
+    if (record.saved_condition_id < 0x17du ||
+        record.saved_condition_id == 0x3ffu) {
+        return Status::RequiresUntranslatedPredicate;
+    }
+    out->action_index = record.saved_condition_id;
+    out->decoder_flag = static_cast<uint8_t>(
+        record_bits(record.data, 26, 1));
+    return Status::EligibleForStateRequest;
+}
 
 void WorldMapEventConditions::clear() {
     bytes_.clear();
