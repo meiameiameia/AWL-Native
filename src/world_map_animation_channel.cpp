@@ -129,7 +129,7 @@ WorldMapAnimationChannelStatus prepare_world_map_animation_channel(
                 unsafe_copy = true;
                 return std::nullopt;
             }
-            *to = *from; to->word_14 = 0; to->value_18 = 0.0f;
+            *to = *from; to->link_14 = 0; to->value_18 = 0.0f;
             return std::nullopt;
         };
         std::optional<uint64_t> missing;

@@ -59,7 +59,7 @@ Playback playback(uint32_t seed, bool active = true) {
     p.position_0 = static_cast<float>(seed); p.rate_4 = static_cast<float>(seed + 1);
     p.word_8 = seed + 2; p.limit_c = static_cast<float>(seed + 3);
     if (active) p.clip_10 = awl::WorldMapAnimationClipReference{77, seed + 4};
-    p.word_14 = seed + 5; p.value_18 = static_cast<float>(seed + 6);
+    p.link_14 = seed + 5; p.value_18 = static_cast<float>(seed + 6);
     return p;
 }
 std::vector<Record> records(bool active = true) {
@@ -69,7 +69,7 @@ bool same(const Playback& a, const Playback& b) {
     return bits(a.position_0) == bits(b.position_0) && bits(a.rate_4) == bits(b.rate_4) && a.word_8 == b.word_8 &&
         bits(a.limit_c) == bits(b.limit_c) && bool(a.clip_10) == bool(b.clip_10) &&
         (!a.clip_10 || (a.clip_10->bank_identity == b.clip_10->bank_identity && a.clip_10->offset == b.clip_10->offset)) &&
-        a.word_14 == b.word_14 && bits(a.value_18) == bits(b.value_18);
+        a.link_14 == b.link_14 && bits(a.value_18) == bits(b.value_18);
 }
 void test_bank() {
     Bank bank; awl::WorldMapAnimationClip clip;
@@ -115,10 +115,10 @@ void test_channel() {
         step.branch == Branch::Interrupted && step.after.mode_18 == 2 && step.after.blend_14 == 0.5f &&
         step.after.elapsed_0 == 0 && step.after.duration_4 == 10 &&
         step.records_after[3].state.position_0 == 30 && step.records_after[2].state.position_0 == 20 &&
-        step.records_after[2].state.word_14 == 0 && bits(step.records_after[2].state.value_18) == 0 &&
+        step.records_after[2].state.link_14 == 0 && bits(step.records_after[2].state.value_18) == 0 &&
         bits(step.records_after[1].state.position_0) == 0x80000000 && step.records_after[1].state.rate_4 == 21 &&
         step.records_after[1].state.word_8 == 0 && step.records_after[1].state.limit_c == -2 &&
-        step.records_after[1].state.word_14 == 25 && step.records_after[1].state.value_18 == 26 &&
+        step.records_after[1].state.link_14 == 25 && step.records_after[1].state.value_18 == 26 &&
         same(pool[1].state, playback(20)), "interrupted blend copies previous to older before target to previous, then initializes only four target fields");
     expect(awl::advance_world_map_animation_channel(&channel, &pool, setup, model, &bank, &step) == Status::Advanced &&
         channel.mode_18 == 2 && pool[1].state.clip_10->bank_identity == 200, "complete helper advances supplied snapshots");
@@ -176,9 +176,9 @@ void test_channel() {
     unsafe = records(false); unsafe[0].state.rate_4 = std::numeric_limits<float>::quiet_NaN();
     expect(awl::prepare_world_map_animation_channel(channel, unsafe, setup, model, &bank, &step) == Status::Prepared,
         "unused model scalar is not read by the no-clip gate");
-    pool = records(); pool[2].state.word_14 = UINT32_MAX; pool[2].state.value_18 = std::numeric_limits<float>::quiet_NaN();
+    pool = records(); pool[2].state.link_14 = UINT32_MAX; pool[2].state.value_18 = std::numeric_limits<float>::quiet_NaN();
     expect(awl::prepare_world_map_animation_channel(channel, pool, setup, model, &bank, &step) == Status::Prepared &&
-        step.records_after[3].state.word_14 == 0 && bits(step.records_after[3].state.value_18) == 0,
+        step.records_after[3].state.link_14 == 0 && bits(step.records_after[3].state.value_18) == 0,
         "copy reset fields do not validate unused source values");
     Bank high_bank; expect(high_bank.parse(0x1000000c8ull, raw()), "high-width bank identity loads");
     auto high_setup = setup; high_setup.model_identity = 0x100000064ull; high_setup.bank_identity = high_bank.identity();
@@ -191,7 +191,7 @@ void hash_playback(uint64_t& digest, const Record& record) {
     const auto& p = record.state;
     for (uint32_t word : {static_cast<uint32_t>(record.identity), bits(p.position_0), bits(p.rate_4), p.word_8,
         bits(p.limit_c), p.clip_10 ? static_cast<uint32_t>(p.clip_10->bank_identity) : 0u,
-        p.clip_10 ? p.clip_10->offset : 0u, p.word_14, bits(p.value_18)}) hash(digest, word);
+        p.clip_10 ? p.clip_10->offset : 0u, static_cast<uint32_t>(p.link_14), bits(p.value_18)}) hash(digest, word);
 }
 void test_matrix() {
     Bank bank; expect(bank.parse(200, raw()), "matrix bank loads");

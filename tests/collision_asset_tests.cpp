@@ -18,6 +18,7 @@
 #include "awl/world_map_presentation_actor.h"
 #include "awl/world_map_actor_animation.h"
 #include "awl/world_map_animation_channel.h"
+#include "awl/world_map_animation_initializer.h"
 #include "awl/world_map_camera.h"
 #include "awl/world_map_scene_index.h"
 #include "awl/world_map_collision_assets.h"
@@ -6667,7 +6668,7 @@ bool check_local_event_conditions(const char* disc_root) {
                     // effects still prevent descriptor/presentation acceptance.
                     awl::WorldMapAnimationChannelState channel{7, 9, 2, 0, 0, 3, 2};
                     awl::WorldMapAnimationPlayback target;
-                    target.rate_4 = 5; target.word_14 = 6; target.value_18 = 7;
+                    target.rate_4 = 5; target.link_14 = 6; target.value_18 = 7;
                     const std::vector<awl::WorldMapAnimationPlaybackRecord> playback{{1, {}}, {2, target}};
                     awl::WorldMapAnimationChannelStep channel_step;
                     awl::WorldMapAnimationClip selected_clip;
@@ -6686,9 +6687,28 @@ bool check_local_event_conditions(const char* disc_root) {
                         channel_step.records_after[1].state.clip_10->offset == selected_clip.reference.offset &&
                         channel_step.records_after[1].state.limit_c == selected_clip.parameter_zero &&
                         channel_step.records_after[1].state.rate_4 == 5 &&
-                        channel_step.records_after[1].state.word_14 == 6 && channel_step.records_after[1].state.value_18 == 7 &&
+                        channel_step.records_after[1].state.link_14 == 6 && channel_step.records_after[1].state.value_18 == 7 &&
                         channel.elapsed_0 == 7 && channel.mode_18 == 2 && !playback[1].state.clip_10 &&
                         actor_animation.base_descriptor_4 == 1 && actor_toggle.flag_158 == 1 &&
+                        actor_presentation.phase == awl::WorldMapPresentationPhase::Reading;
+                    // A separately supplied descriptor with absent optional
+                    // features/secondary model reaches hierarchy update. Its
+                    // initializer prefix is never accepted as a live action.
+                    awl::WorldMapAnimationInitializerState initializer;
+                    initializer.animation = actor_animation; initializer.primary = channel;
+                    initializer.records = playback; initializer.has_optional_bindings = true;
+                    awl::WorldMapAnimationInitializerStep initializer_step;
+                    const uint32_t absent_features = 63u | (127u << 11) | (255u << 19);
+                    valid_script = valid_script && awl::prepare_world_map_animation_initializer(initializer, 2,
+                        awl::WorldMapActorAnimationDescriptor{2, 0, absent_features, 0},
+                        awl::WorldMapActorAnimationGroup{0, 200}, awl::WorldMapAnimationModelBinding{100, 1},
+                        &animation_bank, {}, &initializer_step) == awl::WorldMapAnimationInitializerStatus::RequiresModelHierarchy &&
+                        initializer_step.hierarchy_model == 100 && initializer_step.after.animation.flag_21 == 0 &&
+                        initializer_step.after.records[0].state.clip_10 &&
+                        initializer_step.after.records[0].state.clip_10->offset == selected_clip.reference.offset &&
+                        initializer_step.after.records[0].state.link_14 == 0 &&
+                        initializer.animation.base_descriptor_4 == 1 && initializer.primary.elapsed_0 == 7 &&
+                        !initializer.records[0].state.clip_10 && actor_toggle.flag_158 == 1 &&
                         actor_presentation.phase == awl::WorldMapPresentationPhase::Reading;
                     valid_script = valid_script && awl::advance_world_map_presentation(staged_message.bytes.data(),
                         staged_message.bytes.size(), &presentation, 1, 0, 0, &presentation_step) ==

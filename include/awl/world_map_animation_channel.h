@@ -52,7 +52,7 @@ struct WorldMapAnimationPlayback {
     uint32_t word_8 = 0;
     float limit_c = 0;
     std::optional<WorldMapAnimationClipReference> clip_10;
-    uint32_t word_14 = 0;
+    uint64_t link_14 = 0; // Stable identity for the blend-record pointer.
     float value_18 = 0;
 };
 struct WorldMapAnimationPlaybackRecord {
