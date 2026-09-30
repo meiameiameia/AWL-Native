@@ -15,6 +15,8 @@ struct WorldMapMessageSpan {
 struct WorldMapMessageStagingContext {
     // Supplied words corresponding to the staging owner's +0x44 array.
     std::array<uint32_t, 8> argument_words{};
+    // Supplied signed-value bit patterns from the owner's +0x24 array.
+    std::array<uint32_t, 8> numeric_words{};
     // Bounded native views corresponding to its +4 indexed message pointers.
     // Missing views stop expansion; original cache/global ownership is absent.
     std::array<WorldMapMessageSpan, 8> indexed_messages{};
@@ -24,6 +26,7 @@ struct WorldMapStagedMessage {
     std::vector<uint8_t> bytes;
     size_t consumed_bytes = 0; // Root input through its zero tag, not padding.
     uint64_t context_expansions = 0;
+    uint64_t numeric_expansions = 0;
 };
 
 enum class WorldMapMessageStagingStatus {
@@ -35,6 +38,7 @@ enum class WorldMapMessageStagingStatus {
     InvalidContextIndex,
     CyclicSubstitution,
     OutputLimitExceeded,
+    UnsupportedNumericValue,
 };
 
 // Bounded FUN_800FBCC0/FUN_800FC438 visitor composition: ordinary tokens
@@ -43,7 +47,12 @@ enum class WorldMapMessageStagingStatus {
 // High-bit tag-0x29 arguments use the supplied eight-word argument array;
 // out-of-range argument references yield zero as in FUN_80188BBC. Resolved
 // message indices outside 0..7, cycles, malformed streams, and output beyond
-// byte_limit are native rejections. Other overridden staging token families
+// byte_limit are native rejections. Tag 0x2A inserts a supplied numeric word
+// with minimum-width padding; tag 0x37 inserts its resolved word with the
+// verified formatting wrapper. Supported magnitudes are below 1,000,000,000;
+// larger values stop before the original size-helper's wrapped recursion.
+// Width counts include a negative sign. Encoded digits retain game token IDs,
+// not native text/font interpretation. Other overridden staging token families
 // require untranslated sources and cannot be copied as ordinary tokens.
 // Failure preserves output. No original allocation, presentation, selection
 // activation, source lookup, feedback, or manager result is accepted here.

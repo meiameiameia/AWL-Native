@@ -180,7 +180,97 @@ bool same_rows(const awl::WorldMapSelectionRows& a, const awl::WorldMapSelection
 
 bool same_staged(const awl::WorldMapStagedMessage& a, const awl::WorldMapStagedMessage& b) {
     return a.bytes == b.bytes && a.consumed_bytes == b.consumed_bytes &&
-        a.context_expansions == b.context_expansions;
+        a.context_expansions == b.context_expansions && a.numeric_expansions == b.numeric_expansions;
+}
+
+void test_numeric_staging() {
+    using Status = awl::WorldMapMessageStagingStatus;
+    awl::WorldMapMessageStagingContext context;
+    context.numeric_words[3] = 0xffffffefu; // Supplied signed word -17.
+    context.argument_words[1] = 3;
+    context.argument_words[2] = 5;
+    context.argument_words[4] = 0x80000000u;
+    const uint8_t padded[] = {0x2a, 0x81, 0x82, 0};
+    awl::WorldMapStagedMessage staged;
+    expect(awl::stage_world_map_message(padded, sizeof(padded), context, 9, &staged) == Status::Prepared &&
+               staged.bytes == std::vector<uint8_t>({2, 2, 0x80, 0x0a, 0x80, 1, 0x80, 7, 0}) &&
+               staged.numeric_expansions == 1 && staged.context_expansions == 0 && staged.consumed_bytes == 4,
+           "numeric slot and minimum width resolve argument references; width includes sign");
+    awl::WorldMapSelectionRows rows;
+    expect(awl::prepare_world_map_selection_rows(staged.bytes.data(), staged.bytes.size(), 1, &rows) ==
+               awl::WorldMapSelectionRowsStatus::Prepared && rows.max_width_units == 5 && rows.width == 168,
+           "staged numeric padding/sign compose with row counting without native text interpretation");
+    const auto prior = staged;
+    expect(awl::stage_world_map_message(padded, sizeof(padded), context, 8, &staged) == Status::OutputLimitExceeded &&
+               same_staged(staged, prior), "numeric exact output budget includes the outer zero and fails atomically");
+    context.argument_words[2] = UINT32_MAX;
+    expect(awl::stage_world_map_message(padded, sizeof(padded), context, 100, &staged) == Status::OutputLimitExceeded &&
+               same_staged(staged, prior), "huge resolved padding rejects before allocation or count wrap");
+    context.argument_words[1] = 8;
+    expect(awl::stage_world_map_message(padded, sizeof(padded), context, 100, &staged) == Status::InvalidContextIndex &&
+               same_staged(staged, prior), "numeric slot beyond eight rejects unchecked original indexing");
+    const uint8_t wrapped_minimum[] = {0x37, 0x80, 0, 0, 4, 0};
+    expect(awl::stage_world_map_message(wrapped_minimum, sizeof(wrapped_minimum), context, 100, &staged) ==
+               Status::UnsupportedNumericValue && same_staged(staged, prior),
+           "minimum signed word stops before original count/copy disagreement without signed overflow");
+    const uint8_t out_of_range[] = {0x37, 0xff, 0xff, 0xff, 0xff, 0};
+    expect(awl::stage_world_map_message(out_of_range, sizeof(out_of_range), context, 8, &staged) == Status::Prepared &&
+               staged.bytes == std::vector<uint8_t>({0x18, 2, 2, 0x80, 0, 2, 0x19, 0}),
+           "top-bit word selects a reference and out-of-range reference resolves zero, not literal minus one");
+    const auto before_partial = staged;
+    for (size_t size = 1; size < 5; ++size) {
+        expect(awl::stage_world_map_message(wrapped_minimum, size, context, 100, &staged) == Status::TruncatedToken &&
+                   same_staged(staged, before_partial), "every incomplete numeric word prefix preserves output");
+    }
+    const uint8_t nested_numeric[] = {0x2a, 0, 0, 0};
+    const uint8_t outer[] = {0x29, 0, 0x37, 0, 0, 0, 9, 0};
+    context.indexed_messages[0] = {nested_numeric, sizeof(nested_numeric)};
+    expect(awl::stage_world_map_message(outer, sizeof(outer), context, 10, &staged) == Status::Prepared &&
+               staged.bytes == std::vector<uint8_t>({0x80, 0, 0x18, 2, 2, 0x80, 9, 2, 0x19, 0}) &&
+               staged.context_expansions == 1 && staged.numeric_expansions == 2,
+           "numeric substitutions compose inside and after an indexed nested message");
+    std::vector<uint32_t> values = {0, 1, 9, 10, 0x7fffffffu, 0x80000000u, UINT32_MAX};
+    for (uint32_t power = 10; power <= 1000000000u; power *= 10) {
+        for (uint32_t value : {power - 1, power, power + 1}) {
+            values.push_back(value); values.push_back(0u - value);
+        }
+    }
+    uint64_t digest = 14695981039346656037ull;
+    uint32_t cases = 0, prepared_cases = 0, unsupported_cases = 0;
+    auto hash_word = [&](uint32_t word) {
+        for (unsigned shift : {24u, 16u, 8u, 0u}) {
+            digest = (digest ^ static_cast<uint8_t>(word >> shift)) * 1099511628211ull;
+        }
+    };
+    for (uint32_t value : values) {
+        context.numeric_words[0] = value;
+        context.argument_words[0] = value;
+        for (uint32_t width : {0u, 1u, 2u, 10u, 11u, 12u, 127u, UINT32_MAX}) {
+            const bool wrapped = width == UINT32_MAX;
+            const uint8_t bytes[] = {0x2a, 0, static_cast<uint8_t>(width), 0};
+            const uint8_t inline_bytes[] = {0x37, 0x80, 0, 0, 0, 0};
+            const auto before = staged;
+            const auto status = awl::stage_world_map_message(wrapped ? inline_bytes : bytes,
+                wrapped ? sizeof(inline_bytes) : sizeof(bytes), context, 256, &staged);
+            hash_word(value); hash_word(width); hash_word(wrapped ? 0x37 : 0x2a);
+            hash_word(static_cast<uint32_t>(status));
+            if (status == Status::Prepared) {
+                expect(staged.context_expansions == 0 && staged.numeric_expansions == 1,
+                       "supported numeric thresholds prepare under a bounded output budget");
+                hash_word(static_cast<uint32_t>(staged.consumed_bytes));
+                hash_word(static_cast<uint32_t>(staged.bytes.size())); hash_word(static_cast<uint32_t>(staged.numeric_expansions));
+                for (uint8_t byte : staged.bytes) digest = (digest ^ byte) * 1099511628211ull;
+                ++prepared_cases;
+            } else {
+                expect(status == Status::UnsupportedNumericValue && same_staged(staged, before),
+                       "large numeric magnitudes reject without invented count/copy behavior");
+                ++unsupported_cases;
+            }
+            ++cases;
+        }
+    }
+    expect(cases == 488 && prepared_cases == 440 && unsupported_cases == 48 && digest == 0x7e151a60ae264f17ull,
+           "numeric substitutions match independently derived decimal/table/wrapper digest");
 }
 
 void test_message_staging() {
@@ -279,11 +369,13 @@ void test_message_staging() {
         }
         if (status == Status::Prepared) {
             const std::vector<uint8_t> expected = tag == 0x29 ? std::vector<uint8_t>({0x81, 101, 0}) :
+                tag == 0x2a ? std::vector<uint8_t>({0x80, 0, 0}) :
+                tag == 0x37 ? std::vector<uint8_t>({0x18, 2, 2, 0x80, 0, 2, 0x19, 0}) :
                 std::vector<uint8_t>(token_bytes, token_bytes + (tag == 0 ? 1 : token.byte_count + 1));
-            expect(staged.bytes == expected, "ordinary staging tokens preserve every argument byte");
+            expect(staged.bytes == expected, "supported staging families preserve or substitute the verified bytes");
         }
     }
-    expect(digest == 0x29757ddc8439521eull, "all staging families match original visitor classification");
+    expect(digest == 0x42277d6291a0b976ull, "all supported staging families match original visitor classification");
     awl::WorldMapMessageBank bank;
     auto bytes = fixture();
     bytes[24] = 0x29; bytes[25] = 0; bytes[26] = 0;
@@ -460,7 +552,7 @@ bool check_local(const char* root) {
     uint64_t row_digest = 14695981039346656037ull;
     uint64_t row_cases = 0;
     uint64_t staging_digest = 14695981039346656037ull;
-    uint64_t staged_entries = 0, blocked_entries = 0, staged_bytes = 0;
+    uint64_t staged_entries = 0, blocked_entries = 0, staged_bytes = 0, staged_numbers = 0;
     uint64_t entries = 0;
     uint64_t token_count = 0;
     uint64_t consumed_bytes = 0;
@@ -532,8 +624,8 @@ bool check_local(const char* root) {
                 if (!valid) break;
             }
             if (!valid) break;
-            // No replacement sources supplied: supported messages stage fully;
-            // all others must remain blocked, never silently pass through.
+            // Diagnostic zero numeric/argument words, no message sources.
+            // These supplied values are not evidence of live game state.
             awl::WorldMapStagedMessage staged;
             staged.bytes = {99};
             const auto prior_staged = staged;
@@ -541,13 +633,17 @@ bool check_local(const char* root) {
             hash_staging_word(id); hash_staging_word(i);
             hash_staging_word(static_cast<uint32_t>(staging_status));
             if (staging_status == awl::WorldMapMessageStagingStatus::Prepared) {
+                awl::WorldMapMessageStream staged_stream;
                 valid = staged.context_expansions == 0 && staged.consumed_bytes == stream.consumed_bytes &&
-                    staged.bytes.size() == stream.consumed_bytes &&
+                    awl::scan_world_map_message_stream(staged.bytes.data(), staged.bytes.size(), &staged_stream) ==
+                        awl::WorldMapMessageStreamStatus::Decoded && staged_stream.consumed_bytes == staged.bytes.size();
+                if (staged.numeric_expansions == 0) valid = valid && staged.bytes.size() == stream.consumed_bytes &&
                     std::memcmp(staged.bytes.data(), bytes.data(), staged.bytes.size()) == 0;
                 hash_staging_word(static_cast<uint32_t>(staged.consumed_bytes));
                 hash_staging_word(static_cast<uint32_t>(staged.bytes.size())); hash_staging_word(0);
+                hash_staging_word(static_cast<uint32_t>(staged.numeric_expansions));
                 for (uint8_t byte : staged.bytes) staging_digest = (staging_digest ^ byte) * 1099511628211ull;
-                ++staged_entries; staged_bytes += staged.bytes.size();
+                ++staged_entries; staged_bytes += staged.bytes.size(); staged_numbers += staged.numeric_expansions;
             } else {
                 valid = staging_status == awl::WorldMapMessageStagingStatus::RequiresSubstitution &&
                     same_staged(staged, prior_staged);
@@ -569,11 +665,12 @@ bool check_local(const char* root) {
     std::printf("Supplied selection rows: cases=%llu, digest=%016llx\n",
                 static_cast<unsigned long long>(row_cases), static_cast<unsigned long long>(row_digest));
     valid = valid && row_cases == 29966 && row_digest == 0x92417279568c8fddull;
-    std::printf("Message staging without sources: prepared=%llu, blocked=%llu, bytes=%llu, digest=%016llx\n",
+    std::printf("Message staging with supplied zero words: prepared=%llu, blocked=%llu, bytes=%llu, numbers=%llu, digest=%016llx\n",
                 static_cast<unsigned long long>(staged_entries), static_cast<unsigned long long>(blocked_entries),
-                static_cast<unsigned long long>(staged_bytes), static_cast<unsigned long long>(staging_digest));
-    valid = valid && staged_entries == 11463 && blocked_entries == 3520 && staged_bytes == 1290755 &&
-        staging_digest == 0x66b45cf1ffd00907ull;
+                static_cast<unsigned long long>(staged_bytes), static_cast<unsigned long long>(staged_numbers),
+                static_cast<unsigned long long>(staging_digest));
+    valid = valid && staged_entries == 11533 && blocked_entries == 3450 && staged_bytes == 1295763 && staged_numbers == 118 &&
+        staging_digest == 0xce50a504bb0b5c42ull;
     awl::filesystem_shutdown();
     awl_memory_shutdown();
     return valid;
@@ -587,6 +684,7 @@ int main(int argc, char** argv) {
     test_native_load();
     test_message_stream();
     test_message_staging();
+    test_numeric_staging();
     test_selection_rows();
     if (argc == 3 && std::strcmp(argv[1], "--messages-local") == 0) {
         expect(check_local(argv[2]), "local complete catalog matches independent metadata/byte digest");
