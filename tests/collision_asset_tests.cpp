@@ -10,6 +10,7 @@
 #include "awl/world_map_event_conditions.h"
 #include "awl/world_map_action_asset.h"
 #include "awl/world_map_request_transition.h"
+#include "awl/world_map_selection.h"
 #include "awl/world_map_camera.h"
 #include "awl/world_map_scene_index.h"
 #include "awl/world_map_collision_assets.h"
@@ -6570,9 +6571,27 @@ bool check_local_event_conditions(const char* disc_root) {
                         for (const uint32_t value : supplied.variables_1b8) hash_word(value);
                         valid_script = valid_script && digest == expected_request_digests[scenario];
                     }
+                    // Supplied selection rows/input, not decoded presentation
+                    // resources or accepted feedback. The proposal's result
+                    // is used only as a supplied manager snapshot below.
+                    awl::WorldMapSelectionState selection;
+                    selection.phase = awl::WorldMapSelectionPhase::Choosing;
+                    selection.choice_count_2c = 3;
+                    selection.choice_index_28 = 1;
+                    selection.has_active_transition = true;
+                    selection.active_state_20 = 2;
+                    selection.clock_duration_34 = 4;
+                    awl::WorldMapSelectionStep selection_plan;
+                    valid_script = valid_script && awl::advance_world_map_selection(
+                        &selection, 0x100, 0x20000, 100, &selection_plan) ==
+                            awl::WorldMapSelectionStatus::RequiresFeedback &&
+                        selection.phase == awl::WorldMapSelectionPhase::Choosing &&
+                        selection.choice_index_28 == 1 && selection.result_4 == UINT32_MAX &&
+                        selection_plan.after.result_4 == 2 && selection_plan.feedback_count == 2 &&
+                        selection_plan.feedback_ids[0] == 1 && selection_plan.feedback_ids[1] == 3;
                     awl::WorldMapRequestTransitionState closing;
                     closing.manager_state_48 = 3;
-                    closing.manager_result_1c0 = 2;
+                    closing.manager_result_1c0 = selection_plan.after.result_4;
                     closing.has_active_transition = true;
                     closing.clock_duration_34 = 4;
                     valid_script = valid_script && awl::close_world_map_request_transition(

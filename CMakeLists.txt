@@ -26,6 +26,7 @@ set(SOURCES
     src/world_map_event_conditions.cpp
     src/world_map_action_asset.cpp
     src/world_map_request_transition.cpp
+    src/world_map_selection.cpp
     src/world_map_camera.cpp
     src/world_map_scene_index.cpp
     src/world_map_collision_registry.cpp
@@ -60,6 +61,8 @@ set(HEADERS
     include/awl/world_map_event_conditions.h
     include/awl/world_map_action_asset.h
     include/awl/world_map_request_transition.h
+    include/awl/world_map_selection.h
+    src/world_map_transition_clock.h
     include/awl/world_map_camera.h
     include/awl/world_map_scene_index.h
     include/awl/world_map_collision_registry.h
@@ -219,6 +222,7 @@ add_executable(collision_asset_tests
     src/world_map_event_conditions.cpp
     src/world_map_action_asset.cpp
     src/world_map_request_transition.cpp
+    src/world_map_selection.cpp
     src/world_map_camera.cpp
     src/world_map_scene_index.cpp
     src/world_map_collision_registry.cpp
@@ -248,3 +252,16 @@ elseif(MSVC)
     target_compile_options(collision_asset_tests PRIVATE /W4)
 endif()
 add_test(NAME collision_asset_tests COMMAND collision_asset_tests)
+
+add_executable(world_map_selection_tests
+    tests/world_map_selection_tests.cpp
+    src/world_map_selection.cpp
+    src/world_map_request_transition.cpp
+)
+target_include_directories(world_map_selection_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(world_map_selection_tests PRIVATE -Wall -Wextra)
+elseif(MSVC)
+    target_compile_options(world_map_selection_tests PRIVATE /W4)
+endif()
+add_test(NAME world_map_selection_tests COMMAND world_map_selection_tests)
