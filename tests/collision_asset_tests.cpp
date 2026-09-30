@@ -11,6 +11,7 @@
 #include "awl/world_map_action_asset.h"
 #include "awl/world_map_request_transition.h"
 #include "awl/world_map_selection.h"
+#include "awl/world_map_message_asset.h"
 #include "awl/world_map_camera.h"
 #include "awl/world_map_scene_index.h"
 #include "awl/world_map_collision_assets.h"
@@ -6545,6 +6546,20 @@ bool check_local_event_conditions(const char* disc_root) {
                     same_action_state(unresolved_request, next_boundary) &&
                     manager.key_530 == UINT32_MAX && manager.key_534 == UINT32_MAX;
                 if (valid_script && code_count == 1105) {
+                    // The verified command-4 prefix selects a real MES entry.
+                    // Only opaque bytes are owned; presentation remains blocked.
+                    awl::WorldMapMessageKey message_key;
+                    awl::WorldMapMessageBank message_bank;
+                    awl::WorldMapMessageBounds message_bounds;
+                    std::vector<uint8_t> message_bytes;
+                    valid_script = awl::resolve_world_map_message_key(
+                        command.instruction.callback_arguments[0],
+                        command.instruction.callback_arguments[1], &message_key) &&
+                        message_key.bank == 5 && message_key.index == 71 &&
+                        message_bank.load(message_key.bank) && message_bank.entry_count() == 107 &&
+                        message_bank.entry_bounds(message_key.index, &message_bounds) &&
+                        message_bounds.offset == 5428 && message_bounds.size == 76 &&
+                        message_bank.copy_entry(message_key.index, &message_bytes) && message_bytes.size() == 76;
                     constexpr uint64_t expected_request_digests[] = {
                         0xa491d22d6bd9d926ull, 0xcd23c6ae945521afull, 0x936962df319cd5b6ull};
                     for (unsigned scenario = 0; scenario < 3; ++scenario) {
