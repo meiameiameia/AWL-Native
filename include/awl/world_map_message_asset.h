@@ -1,5 +1,7 @@
 #pragma once
 
+#include "awl/world_map_message_stream.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -44,6 +46,10 @@ public:
     // alignment padding; they are not decoded text or validated token streams.
     [[nodiscard]] bool entry_bounds(uint32_t index, WorldMapMessageBounds* out) const;
     [[nodiscard]] bool copy_entry(uint32_t index, std::vector<uint8_t>* out) const;
+    // Scans token boundaries within the indexed safety extent. No visitor
+    // effects are executed; invalid indices and scan failure preserve output.
+    [[nodiscard]] WorldMapMessageStreamStatus scan_entry(
+        uint32_t index, WorldMapMessageStream* out) const;
 
 private:
     std::vector<uint8_t> bytes_;

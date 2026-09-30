@@ -160,15 +160,111 @@ void test_native_load() {
     std::filesystem::remove(root);
 }
 
+bool same_token(const awl::WorldMapMessageToken& a, const awl::WorldMapMessageToken& b) {
+    return a.offset == b.offset && a.tag == b.tag && a.byte_count == b.byte_count &&
+        a.visitor_slot == b.visitor_slot && a.terminator == b.terminator;
+}
+
+bool same_stream(const awl::WorldMapMessageStream& a, const awl::WorldMapMessageStream& b) {
+    if (a.consumed_bytes != b.consumed_bytes || a.tokens.size() != b.tokens.size()) return false;
+    for (size_t i = 0; i < a.tokens.size(); ++i) if (!same_token(a.tokens[i], b.tokens[i])) return false;
+    return true;
+}
+
+void test_message_stream() {
+    using Status = awl::WorldMapMessageStreamStatus;
+    uint64_t digest = 14695981039346656037ull;
+    for (unsigned tag = 0; tag < 256; ++tag) {
+        const uint8_t bytes[] = {99, 99, static_cast<uint8_t>(tag), 0, 0, 0, 0, 99};
+        awl::WorldMapMessageToken token;
+        expect(awl::read_world_map_message_token(bytes, sizeof(bytes), 2, &token) == Status::Decoded &&
+                   token.offset == 2 && token.tag == tag,
+               "each byte dispatches at a nonzero bounded offset");
+        for (uint8_t byte : {token.tag, token.visitor_slot, token.byte_count,
+                             static_cast<uint8_t>(token.terminator)}) {
+            digest = (digest ^ byte) * 1099511628211ull;
+        }
+        // The independently pinned dispatch digest below validates sizes. Each
+        // incomplete prefix must then fail without replacing an earlier output.
+        const auto prior = token;
+        for (size_t available = 1; available < token.byte_count; ++available) {
+            expect(awl::read_world_map_message_token(bytes, 2 + available, 2, &token) == Status::TruncatedToken &&
+                       same_token(token, prior), "every partial multi-byte token preserves output");
+        }
+    }
+    // Mapped DOL jump/member/length tables and literal length instructions,
+    // independently walked by Python for all 256 input bytes.
+    expect(digest == 0xffca4d95c51515d9ull, "all byte dispatch identities/sizes match independent DOL digest");
+    const uint8_t bytes[] = {0x16, 0, 0, 0, 0, 0x50, 0, 0, 0, 0x81, 0, 0x41, 0, 0, 0, 0x7f};
+    awl::WorldMapMessageStream stream;
+    expect(awl::scan_world_map_message_stream(bytes, sizeof(bytes), &stream) == Status::Decoded &&
+               stream.consumed_bytes == 15 && stream.tokens.size() == 5 &&
+               stream.tokens[0].visitor_slot == 0x30 && stream.tokens[0].byte_count == 5 &&
+               stream.tokens[1].offset == 5 && stream.tokens[1].byte_count == 4 &&
+               stream.tokens[2].offset == 9 && stream.tokens[2].visitor_slot == 0xbc &&
+               stream.tokens[2].byte_count == 2 && stream.tokens[3].offset == 11 &&
+               stream.tokens[3].visitor_slot == 0xa0 && stream.tokens[3].byte_count == 3 &&
+               stream.tokens.back().offset == 14 && stream.tokens.back().terminator,
+           "zero arguments are not terminators and trailing bytes remain outside the stream");
+    const auto prior_stream = stream;
+    const uint8_t missing[] = {0x81, 0};
+    const uint8_t truncated[] = {0x16, 0, 0, 0};
+    expect(awl::scan_world_map_message_stream(missing, sizeof(missing), &stream) == Status::MissingTerminator &&
+               same_stream(stream, prior_stream), "argument zero cannot satisfy stream termination");
+    expect(awl::scan_world_map_message_stream(truncated, sizeof(truncated), &stream) == Status::TruncatedToken &&
+               same_stream(stream, prior_stream), "truncated stream preserves previous full result");
+    expect(awl::scan_world_map_message_stream(bytes, 0, &stream) == Status::MissingTerminator &&
+               same_stream(stream, prior_stream), "empty supplied span cannot yield a terminated stream");
+    expect(awl::scan_world_map_message_stream(nullptr, 0, &stream) == Status::InvalidInput &&
+               same_stream(stream, prior_stream) &&
+               awl::scan_world_map_message_stream(bytes, sizeof(bytes), nullptr) == Status::InvalidInput,
+           "invalid scan input/output rejected atomically");
+    awl::WorldMapMessageToken token{71, 23, 17, 45, true};
+    const auto prior_token = token;
+    expect(awl::read_world_map_message_token(nullptr, 0, 0, &token) == Status::InvalidInput &&
+               awl::read_world_map_message_token(bytes, sizeof(bytes), sizeof(bytes), &token) == Status::InvalidInput &&
+               awl::read_world_map_message_token(bytes, sizeof(bytes), SIZE_MAX, &token) == Status::InvalidInput &&
+               same_token(token, prior_token) &&
+               awl::read_world_map_message_token(bytes, sizeof(bytes), 0, nullptr) == Status::InvalidInput,
+           "invalid offsets, source, and output rejected before access");
+    const uint8_t zero[] = {0, 0x16};
+    expect(awl::scan_world_map_message_stream(zero, sizeof(zero), &stream) == Status::Decoded &&
+               stream.tokens.size() == 1 && stream.consumed_bytes == 1 && stream.tokens[0].terminator,
+           "first terminator stops without requiring a valid trailing token");
+    auto bank_bytes = fixture();
+    bank_bytes[24] = 0x81; bank_bytes[25] = 0; bank_bytes[26] = 0;
+    awl::WorldMapMessageBank bank;
+    expect(bank.parse(bank_bytes) && bank.scan_entry(0, &stream) == Status::Decoded &&
+               stream.consumed_bytes == 3 && stream.tokens.size() == 2 &&
+               bank.scan_entry(2, &stream) == Status::Decoded && stream.consumed_bytes == 3,
+           "bank scans both logical aliases within the same physical safety extent");
+    const auto prior_bank_stream = stream;
+    expect(bank.scan_entry(1, &stream) == Status::MissingTerminator && same_stream(stream, prior_bank_stream) &&
+               bank.scan_entry(4, &stream) == Status::InvalidInput && same_stream(stream, prior_bank_stream),
+           "bank scan cannot read the next entry's terminator or replace output on an invalid index");
+    expect(bank.scan_entry(0, nullptr) == Status::InvalidInput, "bank scan requires output");
+    bank.clear();
+    expect(bank.scan_entry(0, &stream) == Status::InvalidInput && same_stream(stream, prior_bank_stream),
+           "cleared bank cannot scan stale entry bytes");
+}
+
 bool check_local(const char* root) {
     awl_memory_init();
     awl::filesystem_init();
     bool valid = awl::filesystem_mount("/", root);
     uint64_t digest = 14695981039346656037ull;
+    uint64_t stream_digest = 14695981039346656037ull;
     uint64_t entries = 0;
+    uint64_t token_count = 0;
+    uint64_t consumed_bytes = 0;
     auto hash_byte = [&](uint8_t byte) { digest = (digest ^ byte) * 1099511628211ull; };
     auto hash_word = [&](uint32_t word) {
         for (unsigned shift : {24u, 16u, 8u, 0u}) hash_byte(static_cast<uint8_t>(word >> shift));
+    };
+    auto hash_stream_word = [&](uint32_t word) {
+        for (unsigned shift : {24u, 16u, 8u, 0u}) {
+            stream_digest = (stream_digest ^ static_cast<uint8_t>(word >> shift)) * 1099511628211ull;
+        }
     };
     awl::WorldMapMessageBank bank;
     for (uint32_t id = 0; valid && id < 64; ++id) {
@@ -184,8 +280,20 @@ bool check_local(const char* root) {
             if (!valid) break;
             hash_word(i); hash_word(bounds.offset); hash_word(static_cast<uint32_t>(bounds.size));
             for (uint8_t byte : bytes) hash_byte(byte);
+            awl::WorldMapMessageStream stream;
+            valid = bank.scan_entry(i, &stream) == awl::WorldMapMessageStreamStatus::Decoded &&
+                !stream.tokens.empty() && stream.tokens.back().terminator && stream.consumed_bytes <= bounds.size;
+            if (!valid) break;
+            token_count += stream.tokens.size(); consumed_bytes += stream.consumed_bytes;
+            hash_stream_word(id); hash_stream_word(i);
+            hash_stream_word(static_cast<uint32_t>(stream.consumed_bytes));
+            hash_stream_word(static_cast<uint32_t>(stream.tokens.size()));
+            for (const auto& token : stream.tokens) {
+                hash_stream_word(static_cast<uint32_t>(token.offset)); hash_stream_word(token.tag);
+                hash_stream_word(token.visitor_slot); hash_stream_word(token.byte_count);
+            }
         }
-        std::printf("Message bank %u: %zu entries, %zu bytes; opaque bounds checked\n",
+        std::printf("Message bank %u: %zu entries, %zu bytes; bounds and token streams checked\n",
                     id, bank.entry_count(), bank.byte_size());
     }
     std::printf("Message catalog entries=%llu, digest=%016llx\n",
@@ -193,6 +301,10 @@ bool check_local(const char* root) {
     // Independent mapped-DOL catalog / direct-file Python probe supplies these
     // expectations. This checks opaque ownership only, not token semantics.
     valid = valid && entries == 14983 && digest == 0xaa12c3c9f29b06c2ull;
+    std::printf("Message streams: tokens=%llu, consumed=%llu, digest=%016llx\n",
+                static_cast<unsigned long long>(token_count), static_cast<unsigned long long>(consumed_bytes),
+                static_cast<unsigned long long>(stream_digest));
+    valid = valid && token_count == 902090 && consumed_bytes == 1612076 && stream_digest == 0x508ed55a9c95265bull;
     awl::filesystem_shutdown();
     awl_memory_shutdown();
     return valid;
@@ -204,6 +316,7 @@ int main(int argc, char** argv) {
     test_keys();
     test_container();
     test_native_load();
+    test_message_stream();
     if (argc == 3 && std::strcmp(argv[1], "--messages-local") == 0) {
         expect(check_local(argv[2]), "local complete catalog matches independent metadata/byte digest");
     } else if (argc != 1) {

@@ -122,4 +122,11 @@ bool WorldMapMessageBank::copy_entry(uint32_t index, std::vector<uint8_t>* out) 
     return true;
 }
 
+WorldMapMessageStreamStatus WorldMapMessageBank::scan_entry(
+    uint32_t index, WorldMapMessageStream* out) const {
+    if (out == nullptr || index >= entries_.size()) return WorldMapMessageStreamStatus::InvalidInput;
+    const auto& entry = entries_[index];
+    return scan_world_map_message_stream(bytes_.data() + entry.offset, entry.size, out);
+}
+
 } // namespace awl

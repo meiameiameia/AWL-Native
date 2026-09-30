@@ -28,6 +28,7 @@ set(SOURCES
     src/world_map_request_transition.cpp
     src/world_map_selection.cpp
     src/world_map_message_asset.cpp
+    src/world_map_message_stream.cpp
     src/world_map_camera.cpp
     src/world_map_scene_index.cpp
     src/world_map_collision_registry.cpp
@@ -64,6 +65,7 @@ set(HEADERS
     include/awl/world_map_request_transition.h
     include/awl/world_map_selection.h
     include/awl/world_map_message_asset.h
+    include/awl/world_map_message_stream.h
     src/world_map_transition_clock.h
     include/awl/world_map_camera.h
     include/awl/world_map_scene_index.h
@@ -226,6 +228,7 @@ add_executable(collision_asset_tests
     src/world_map_request_transition.cpp
     src/world_map_selection.cpp
     src/world_map_message_asset.cpp
+    src/world_map_message_stream.cpp
     src/world_map_camera.cpp
     src/world_map_scene_index.cpp
     src/world_map_collision_registry.cpp
@@ -272,6 +275,7 @@ add_test(NAME world_map_selection_tests COMMAND world_map_selection_tests)
 add_executable(world_map_message_asset_tests
     tests/world_map_message_asset_tests.cpp
     src/world_map_message_asset.cpp
+    src/world_map_message_stream.cpp
     src/filesystem.cpp
     src/memory.cpp
     src/platform.cpp
