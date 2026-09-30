@@ -6692,8 +6692,8 @@ bool check_local_event_conditions(const char* disc_root) {
                         actor_animation.base_descriptor_4 == 1 && actor_toggle.flag_158 == 1 &&
                         actor_presentation.phase == awl::WorldMapPresentationPhase::Reading;
                     // A separately supplied descriptor with absent optional
-                    // features/secondary model reaches hierarchy update. Its
-                    // initializer prefix is never accepted as a live action.
+                    // features/secondary model reaches primary link clearing.
+                    // Its supplied proposal is never accepted as a live action.
                     awl::WorldMapAnimationInitializerState initializer;
                     initializer.animation = actor_animation; initializer.primary = channel;
                     initializer.records = playback; initializer.has_optional_bindings = true;
@@ -6710,6 +6710,21 @@ bool check_local_event_conditions(const char* disc_root) {
                         initializer.animation.base_descriptor_4 == 1 && initializer.primary.elapsed_0 == 7 &&
                         !initializer.records[0].state.clip_10 && actor_toggle.flag_158 == 1 &&
                         actor_presentation.phase == awl::WorldMapPresentationPhase::Reading;
+                    initializer.model_links = awl::WorldMapModelLinkState{{
+                        {100,99,0,{300,0,0,0},{1,2,3,4}}, {300,100,4,{400,0,0,0},{}},
+                        {400,300,0,{}, {}}}};
+                    valid_script = valid_script && awl::prepare_world_map_animation_initializer(initializer, 2,
+                        awl::WorldMapActorAnimationDescriptor{2, 0, absent_features, 0},
+                        awl::WorldMapActorAnimationGroup{0, 200}, awl::WorldMapAnimationModelBinding{100, 1},
+                        &animation_bank, {}, &initializer_step) == awl::WorldMapAnimationInitializerStatus::Prepared &&
+                        initializer_step.hierarchy && initializer_step.hierarchy->writes.size() == 4 &&
+                        initializer_step.after.model_links->nodes[0].children_15c[0] == 0 &&
+                        initializer_step.after.model_links->nodes[1].parent_150 == 0 &&
+                        initializer_step.after.model_links->nodes[2].parent_150 == 0 &&
+                        initializer_step.after.model_links->nodes[0].parent_150 == 99 &&
+                        initializer.animation.base_descriptor_4 == 1 && initializer.primary.elapsed_0 == 7 &&
+                        !initializer.records[0].state.clip_10 && initializer.model_links->nodes[0].children_15c[0] == 300 &&
+                        actor_toggle.flag_158 == 1 && actor_presentation.phase == awl::WorldMapPresentationPhase::Reading;
                     valid_script = valid_script && awl::advance_world_map_presentation(staged_message.bytes.data(),
                         staged_message.bytes.size(), &presentation, 1, 0, 0, &presentation_step) ==
                             awl::WorldMapPresentationStatus::Advanced &&

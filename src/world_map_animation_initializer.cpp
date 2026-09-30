@@ -205,6 +205,13 @@ WorldMapAnimationInitializerStatus prepare_world_map_animation_initializer(
     step.after.records = settings.records_after;
     animation.flag_21 = fields.flag_13 ? 1 : 0;
     step.hierarchy_model = animation.model_identity_30;
-    return finish(Status::RequiresModelHierarchy);
+    if (!state.model_links) return finish(Status::RequiresModelHierarchy);
+    WorldMapModelLinkStep hierarchy;
+    const auto links = prepare_world_map_model_links_clear(*state.model_links, step.hierarchy_model, &hierarchy);
+    if (links == WorldMapModelLinkStatus::InvalidInput) return Status::InvalidInput;
+    step.hierarchy = hierarchy;
+    if (links != WorldMapModelLinkStatus::Prepared) return finish(Status::RequiresModelHierarchy);
+    step.after.model_links = std::move(hierarchy.after);
+    return finish(Status::Prepared);
 }
 } // namespace awl

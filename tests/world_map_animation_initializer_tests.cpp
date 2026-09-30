@@ -158,6 +158,36 @@ void test_feature() {
     expect(awl::prepare_world_map_animation_feature38(step.after,0,obs,&step) == FStatus::InvalidInput,
         "feature output aliasing is rejected");
 }
+void test_model_links() {
+    auto state=initial(); Step step;
+    state.model_links=awl::WorldMapModelLinkState{{
+        {100,99,0,{200,0,0,0},{1,2,3,4}}, {200,100,4,{300,0,0,0},{}}, {300,200,0,{999,0,0,0},{}}}};
+    expect(prepare(state,{2,0,absent,0},{},&step)==Status::Prepared && step.hierarchy &&
+        step.hierarchy->writes.size()==4 && step.after.model_links->nodes[0].parent_150==99 &&
+        step.after.model_links->nodes[0].children_15c[0]==0 && step.after.model_links->nodes[1].parent_150==0 &&
+        step.after.model_links->nodes[1].children_15c[0]==0 && step.after.model_links->nodes[2].children_15c[0]==999 &&
+        step.after.animation.base_descriptor_4==2 && step.after.records[0].state.clip_10 &&
+        state.animation.base_descriptor_4==1 && state.records[0].state.link_14==15 && state.model_links->nodes[0].children_15c[0]==200,
+        "no-secondary initializer prepares complete supplied metadata/link proposal without applying live actor state");
+    state.model_links->nodes.pop_back();
+    expect(prepare(state,{2,0,absent,0},{},&step)==Status::RequiresModelHierarchy && step.hierarchy &&
+        step.hierarchy->required_node==300 && step.hierarchy->writes.empty() &&
+        step.after.model_links->nodes[1].parent_150==100 && step.after.records[0].state.clip_10,
+        "missing nested hierarchy node blocks atomically at final helper after ordered metadata prefix");
+    state.model_links->nodes[0].identity=101;
+    expect(prepare(state,{2,0,absent,0},{},&step)==Status::RequiresModelHierarchy && step.hierarchy->required_node==100,
+        "hierarchy root must match the actual supplied primary model identity");
+    state.model_links->nodes[0].identity=100; state.model_links->nodes[0].flags_158=4;
+    state.model_links->nodes[1].children_15c[0]=100;
+    step.hierarchy_model=444;
+    expect(prepare(state,{2,0,absent,0},{},&step)==Status::InvalidInput && step.hierarchy_model==444,
+        "invalid final hierarchy preserves entire initializer output");
+    expect(prepare(state,{2,0,absent & ~(127u<<11),0},{},&step)==Status::RequiresSecondarySetup && !step.hierarchy,
+        "secondary setup boundary precedes unread invalid hierarchy");
+    state.animation.base_descriptor_4=2;
+    expect(prepare(state,{2,0,absent,0},{},&step)==Status::Unchanged && !step.hierarchy,
+        "base equality skips all supplied link validation and stores");
+}
 void test_settings_matrix() {
     const std::array<std::array<uint32_t,2>,6> clocks{{{0,0},{0,1},{1,2},{2,2},{0xfffffffe,UINT32_MAX},{UINT32_MAX,1}}};
     const std::array<std::array<uint64_t,4>,5> layouts{{{1,2,3,4},{2,2,3,4},{3,2,3,4},{4,2,3,4},{1,1,1,1}}};
@@ -263,4 +293,4 @@ void test_failure_order() {
         "channel settings output aliases are rejected");
 }
 } // namespace
-int main(){test_initializer();test_feature();test_failure_order();test_settings_matrix();test_tail_matrix();test_feature_matrix();return failures==0?0:1;}
+int main(){test_initializer();test_feature();test_model_links();test_failure_order();test_settings_matrix();test_tail_matrix();test_feature_matrix();return failures==0?0:1;}

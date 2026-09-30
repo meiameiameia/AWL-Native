@@ -1,6 +1,7 @@
 #pragma once
 
 #include "awl/world_map_animation_channel.h"
+#include "awl/world_map_model_links.h"
 
 namespace awl {
 
@@ -65,17 +66,19 @@ struct WorldMapAnimationInitializerState {
     std::optional<WorldMapAnimationFeature38> feature_38; // Absent means observed null, when bindings are known.
     std::optional<WorldMapAnimationFeature3c> feature_3c;
     uint64_t secondary_model_c0 = 0;
+    std::optional<WorldMapModelLinkState> model_links; // Missing means unknown, not empty.
 };
 enum class WorldMapAnimationInitializerStatus {
     Unchanged, RequiresDescriptor, RequiresBinding, RequiresModelSetup,
     RequiresOptionalBindings, RequiresFeatureTable, RequiresFeatureRow,
     RequiresFeature3cLookup, RequiresClock, RequiresSecondarySetup,
     RequiresSecondaryRelease, RequiresModelHierarchy, InvalidInput,
+    Prepared,
 };
 struct WorldMapAnimationInitializerStep {
-    // Unaccepted ordered prefix, never resumable or applicable. Reprepare
-    // from the original state when evidence arrives; no hierarchy success
-    // or parent presentation acknowledgement can be supplied here.
+    // Supplied-state proposal or unaccepted ordered prefix, never resumable
+    // or a live parent acknowledgement. Reprepare from the original state
+    // when evidence arrives; no arbitrary hierarchy success is accepted.
     WorldMapAnimationInitializerState after;
     std::optional<WorldMapActorAnimationStep> start;
     std::optional<WorldMapAnimationChannelStep> setup, settings;
@@ -84,11 +87,14 @@ struct WorldMapAnimationInitializerStep {
     bool loop = false;
     float rate = 0;
     uint64_t hierarchy_model = 0;
+    std::optional<WorldMapModelLinkStep> hierarchy;
 };
 // FUN_8017D660 -> FUN_8017DB28. Composes the first channel, optional
 // feature metadata, observed absent secondary model, clocks/rate/model
-// metadata. Present secondary setup/release and final FUN_8017DF68 remain
-// explicit stops. No arbitrary backend acknowledgement, live state or frame
+// metadata and FUN_8017DF68's primary link clearing from supplied nodes.
+// Prepared means this no-secondary initializer proposal is complete, not
+// executed as a live actor/presentation effect. Present secondary setup/release
+// and unknown/reached missing model links remain explicit stops. No frame
 // update. Input and out.after must not alias; InvalidInput preserves output.
 [[nodiscard]] WorldMapAnimationInitializerStatus prepare_world_map_animation_initializer(
     const WorldMapAnimationInitializerState& state, uint64_t requested,

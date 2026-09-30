@@ -38,6 +38,7 @@ set(SOURCES
     src/world_map_actor_animation.cpp
     src/world_map_animation_channel.cpp
     src/world_map_animation_initializer.cpp
+    src/world_map_model_links.cpp
     src/world_map_camera.cpp
     src/world_map_scene_index.cpp
     src/world_map_collision_registry.cpp
@@ -84,6 +85,7 @@ set(HEADERS
     include/awl/world_map_actor_animation.h
     include/awl/world_map_animation_channel.h
     include/awl/world_map_animation_initializer.h
+    include/awl/world_map_model_links.h
     src/world_map_transition_clock.h
     include/awl/world_map_camera.h
     include/awl/world_map_scene_index.h
@@ -256,6 +258,7 @@ add_executable(collision_asset_tests
     src/world_map_actor_animation.cpp
     src/world_map_animation_channel.cpp
     src/world_map_animation_initializer.cpp
+    src/world_map_model_links.cpp
     src/world_map_camera.cpp
     src/world_map_scene_index.cpp
     src/world_map_collision_registry.cpp
@@ -387,6 +390,7 @@ add_test(NAME world_map_animation_channel_tests COMMAND world_map_animation_chan
 add_executable(world_map_animation_initializer_tests
     tests/world_map_animation_initializer_tests.cpp
     src/world_map_animation_initializer.cpp
+    src/world_map_model_links.cpp
     src/world_map_animation_channel.cpp
     src/world_map_actor_animation.cpp
 )
@@ -397,3 +401,15 @@ else()
     target_compile_options(world_map_animation_initializer_tests PRIVATE -Wall -Wextra)
 endif()
 add_test(NAME world_map_animation_initializer_tests COMMAND world_map_animation_initializer_tests)
+
+add_executable(world_map_model_links_tests
+    tests/world_map_model_links_tests.cpp
+    src/world_map_model_links.cpp
+)
+target_include_directories(world_map_model_links_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+if(MSVC)
+    target_compile_options(world_map_model_links_tests PRIVATE /W4)
+else()
+    target_compile_options(world_map_model_links_tests PRIVATE -Wall -Wextra)
+endif()
+add_test(NAME world_map_model_links_tests COMMAND world_map_model_links_tests)
