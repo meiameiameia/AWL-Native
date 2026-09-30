@@ -1,6 +1,7 @@
 #pragma once
 
 #include "awl/world_map_message_stream.h"
+#include "awl/world_map_selection_rows.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -50,6 +51,10 @@ public:
     // effects are executed; invalid indices and scan failure preserve output.
     [[nodiscard]] WorldMapMessageStreamStatus scan_entry(
         uint32_t index, WorldMapMessageStream* out) const;
+    // Uses the same indexed safety extent for supplied-count row preparation.
+    // This does not establish that the game uses this message as a selection.
+    [[nodiscard]] WorldMapSelectionRowsStatus prepare_selection_rows(
+        uint32_t index, uint32_t row_count, WorldMapSelectionRows* out) const;
 
 private:
     std::vector<uint8_t> bytes_;

@@ -6552,6 +6552,7 @@ bool check_local_event_conditions(const char* disc_root) {
                     awl::WorldMapMessageBank message_bank;
                     awl::WorldMapMessageBounds message_bounds;
                     awl::WorldMapMessageStream message_stream;
+                    awl::WorldMapSelectionRows message_rows;
                     std::vector<uint8_t> message_bytes;
                     valid_script = awl::resolve_world_map_message_key(
                         command.instruction.callback_arguments[0],
@@ -6563,7 +6564,13 @@ bool check_local_event_conditions(const char* disc_root) {
                         message_bank.copy_entry(message_key.index, &message_bytes) && message_bytes.size() == 76 &&
                         message_bank.scan_entry(message_key.index, &message_stream) ==
                             awl::WorldMapMessageStreamStatus::Decoded &&
-                        message_stream.consumed_bytes == 73 && message_stream.tokens.size() == 41;
+                        message_stream.consumed_bytes == 73 && message_stream.tokens.size() == 41 &&
+                        message_bank.prepare_selection_rows(message_key.index, 2, &message_rows) ==
+                            awl::WorldMapSelectionRowsStatus::Prepared &&
+                        message_rows.row_count == 2 && message_rows.max_width_units == 20 &&
+                        message_rows.byte_budget == 74 && message_rows.aligned_storage_size == 76 &&
+                        message_rows.stop_token_offset == 72 && message_rows.bytes.size() == 73 &&
+                        message_rows.width == 528 && message_rows.height == 64;
                     constexpr uint64_t expected_request_digests[] = {
                         0xa491d22d6bd9d926ull, 0xcd23c6ae945521afull, 0x936962df319cd5b6ull};
                     for (unsigned scenario = 0; scenario < 3; ++scenario) {

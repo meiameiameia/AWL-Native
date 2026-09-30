@@ -171,6 +171,84 @@ bool same_stream(const awl::WorldMapMessageStream& a, const awl::WorldMapMessage
     return true;
 }
 
+bool same_rows(const awl::WorldMapSelectionRows& a, const awl::WorldMapSelectionRows& b) {
+    return a.row_count == b.row_count && a.max_width_units == b.max_width_units &&
+        a.byte_budget == b.byte_budget && a.aligned_storage_size == b.aligned_storage_size &&
+        a.stop_token_offset == b.stop_token_offset && a.consumed_bytes == b.consumed_bytes &&
+        a.width == b.width && a.height == b.height && a.bytes == b.bytes;
+}
+
+void test_selection_rows() {
+    using Status = awl::WorldMapSelectionRowsStatus;
+    const uint8_t bytes[] = {0x81, 91, 2, 0x16, 0, 0, 0, 0, 1,
+                            0x81, 92, 0x82, 93, 0x83, 94, 0, 0x16};
+    awl::WorldMapSelectionRows rows;
+    expect(awl::prepare_world_map_selection_rows(bytes, sizeof(bytes), 1, &rows) == Status::Prepared &&
+               rows.row_count == 1 && rows.max_width_units == 2 && rows.byte_budget == 10 &&
+               rows.aligned_storage_size == 12 && rows.stop_token_offset == 8 && rows.consumed_bytes == 9 &&
+               rows.width == 96 && rows.height == 32 &&
+               rows.bytes == std::vector<uint8_t>({0x81, 91, 2, 0x16, 0, 0, 0, 0, 0}),
+           "first row preserves zero arguments, counts tag 2/8x units, and replaces separator with zero");
+    expect(awl::prepare_world_map_selection_rows(bytes, sizeof(bytes), 2, &rows) == Status::Prepared &&
+               rows.row_count == 2 && rows.max_width_units == 3 && rows.byte_budget == 17 &&
+               rows.aligned_storage_size == 20 && rows.stop_token_offset == 15 && rows.consumed_bytes == 16 &&
+               rows.width == 120 && rows.height == 64 && rows.bytes.size() == 16 && rows.bytes.back() == 0 &&
+               std::memcmp(rows.bytes.data(), bytes, 16) == 0,
+           "complete requested rows update widest row and omit malformed trailing data");
+    const auto prior = rows;
+    expect(awl::prepare_world_map_selection_rows(bytes, sizeof(bytes), 3, &rows) == Status::InsufficientRows &&
+               same_rows(rows, prior), "terminator before requested row count preserves output");
+    const uint8_t default_byte[] = {0x90, 0x7f, 0};
+    expect(awl::prepare_world_map_selection_rows(default_byte, sizeof(default_byte), 1, &rows) == Status::Prepared &&
+               rows.max_width_units == 0 && rows.width == 48 && rows.bytes.size() == 3,
+           "default byte family contributes bytes without inventing width units");
+    const uint8_t blank[] = {1, 1, 0};
+    expect(awl::prepare_world_map_selection_rows(blank, sizeof(blank), 3, &rows) == Status::Prepared &&
+               rows.row_count == 3 && rows.max_width_units == 0 && rows.byte_budget == 4 &&
+               rows.aligned_storage_size == 4 && rows.width == 48 && rows.height == 96,
+           "blank rows and zero terminator retain exact budget/alignment boundary");
+    const uint8_t empty_row[] = {0};
+    expect(awl::prepare_world_map_selection_rows(empty_row, sizeof(empty_row), 1, &rows) == Status::Prepared &&
+               rows.bytes == std::vector<uint8_t>({0}) && rows.byte_budget == 2 && rows.aligned_storage_size == 4,
+           "single zero token prepares an empty bounded row");
+    const auto empty_prior = rows;
+    const uint8_t no_end[] = {0x81, 0};
+    const uint8_t partial[] = {0x37, 0, 0, 0};
+    expect(awl::prepare_world_map_selection_rows(no_end, sizeof(no_end), 1, &rows) == Status::MissingStopToken &&
+               same_rows(rows, empty_prior), "argument zero does not finalize a row");
+    expect(awl::prepare_world_map_selection_rows(partial, sizeof(partial), 1, &rows) == Status::TruncatedToken &&
+               same_rows(rows, empty_prior), "incomplete control token fails without replacing rows");
+    for (uint32_t count : {0u, 0x80000000u, UINT32_MAX}) {
+        expect(awl::prepare_world_map_selection_rows(bytes, sizeof(bytes), count, &rows) == Status::InvalidInput &&
+                   same_rows(rows, empty_prior), "nonpositive/unsupported signed row budget rejected");
+    }
+    expect(awl::prepare_world_map_selection_rows(bytes, sizeof(bytes), 0x7fffffffu, &rows) == Status::InsufficientRows &&
+               same_rows(rows, empty_prior), "maximum supported count still requires actual rows");
+    expect(awl::prepare_world_map_selection_rows(nullptr, 0, 1, &rows) == Status::InvalidInput &&
+               awl::prepare_world_map_selection_rows(bytes, SIZE_MAX, 1, &rows) == Status::InvalidInput &&
+               same_rows(rows, empty_prior) &&
+               awl::prepare_world_map_selection_rows(bytes, sizeof(bytes), 1, nullptr) == Status::InvalidInput,
+           "missing pointers and overflow-prone input size fail before access");
+    expect(awl::prepare_world_map_selection_rows(bytes, 0, 1, &rows) == Status::MissingStopToken &&
+               same_rows(rows, empty_prior), "empty span cannot supply a row boundary");
+    auto bank_bytes = fixture();
+    bank_bytes[24] = 0x81; bank_bytes[25] = 99; bank_bytes[26] = 1;
+    bank_bytes[27] = 0x37; // Unread after the supplied row count is reached.
+    awl::WorldMapMessageBank bank;
+    expect(bank.parse(bank_bytes) && bank.prepare_selection_rows(0, 1, &rows) == Status::Prepared &&
+               rows.bytes == std::vector<uint8_t>({0x81, 99, 0}) && rows.byte_budget == 4 &&
+               bank.prepare_selection_rows(2, 1, &rows) == Status::Prepared,
+           "bank aliases prepare the same row without scanning malformed subsequent data");
+    const auto bank_prior = rows;
+    expect(bank.prepare_selection_rows(0, 2, &rows) == Status::TruncatedToken && same_rows(rows, bank_prior) &&
+               bank.prepare_selection_rows(4, 1, &rows) == Status::InvalidInput && same_rows(rows, bank_prior) &&
+               bank.prepare_selection_rows(0, 1, nullptr) == Status::InvalidInput,
+           "bank row preparation respects physical extent and preserves invalid outputs");
+    bank.clear();
+    expect(bank.prepare_selection_rows(0, 1, &rows) == Status::InvalidInput && same_rows(rows, bank_prior),
+           "cleared bank cannot prepare stale rows");
+}
+
 void test_message_stream() {
     using Status = awl::WorldMapMessageStreamStatus;
     uint64_t digest = 14695981039346656037ull;
@@ -254,6 +332,8 @@ bool check_local(const char* root) {
     bool valid = awl::filesystem_mount("/", root);
     uint64_t digest = 14695981039346656037ull;
     uint64_t stream_digest = 14695981039346656037ull;
+    uint64_t row_digest = 14695981039346656037ull;
+    uint64_t row_cases = 0;
     uint64_t entries = 0;
     uint64_t token_count = 0;
     uint64_t consumed_bytes = 0;
@@ -264,6 +344,11 @@ bool check_local(const char* root) {
     auto hash_stream_word = [&](uint32_t word) {
         for (unsigned shift : {24u, 16u, 8u, 0u}) {
             stream_digest = (stream_digest ^ static_cast<uint8_t>(word >> shift)) * 1099511628211ull;
+        }
+    };
+    auto hash_row_word = [&](uint32_t word) {
+        for (unsigned shift : {24u, 16u, 8u, 0u}) {
+            row_digest = (row_digest ^ static_cast<uint8_t>(word >> shift)) * 1099511628211ull;
         }
     };
     awl::WorldMapMessageBank bank;
@@ -292,6 +377,28 @@ bool check_local(const char* root) {
                 hash_stream_word(static_cast<uint32_t>(token.offset)); hash_stream_word(token.tag);
                 hash_stream_word(token.visitor_slot); hash_stream_word(token.byte_count);
             }
+            uint32_t full_rows = 0;
+            for (const auto& token : stream.tokens) if (token.tag == 0 || token.tag == 1) ++full_rows;
+            // Supplied diagnostic counts, not original selection activation.
+            for (uint32_t wanted : {1u, full_rows}) {
+                awl::WorldMapSelectionRows rows;
+                valid = bank.prepare_selection_rows(i, wanted, &rows) == awl::WorldMapSelectionRowsStatus::Prepared;
+                if (!valid) break;
+                hash_row_word(id); hash_row_word(i); hash_row_word(wanted);
+                hash_row_word(rows.max_width_units); hash_row_word(rows.byte_budget);
+                hash_row_word(rows.aligned_storage_size); hash_row_word(static_cast<uint32_t>(rows.stop_token_offset));
+                hash_row_word(static_cast<uint32_t>(rows.consumed_bytes)); hash_row_word(static_cast<uint32_t>(rows.bytes.size()));
+                uint32_t width_bits = 0, height_bits = 0;
+                std::memcpy(&width_bits, &rows.width, sizeof(width_bits));
+                std::memcpy(&height_bits, &rows.height, sizeof(height_bits));
+                hash_row_word(width_bits); hash_row_word(height_bits);
+                for (uint8_t byte : rows.bytes) row_digest = (row_digest ^ byte) * 1099511628211ull;
+                ++row_cases;
+                const auto before = rows;
+                valid = bank.prepare_selection_rows(i, full_rows + 1, &rows) ==
+                    awl::WorldMapSelectionRowsStatus::InsufficientRows && same_rows(rows, before);
+                if (!valid) break;
+            }
         }
         std::printf("Message bank %u: %zu entries, %zu bytes; bounds and token streams checked\n",
                     id, bank.entry_count(), bank.byte_size());
@@ -305,6 +412,9 @@ bool check_local(const char* root) {
                 static_cast<unsigned long long>(token_count), static_cast<unsigned long long>(consumed_bytes),
                 static_cast<unsigned long long>(stream_digest));
     valid = valid && token_count == 902090 && consumed_bytes == 1612076 && stream_digest == 0x508ed55a9c95265bull;
+    std::printf("Supplied selection rows: cases=%llu, digest=%016llx\n",
+                static_cast<unsigned long long>(row_cases), static_cast<unsigned long long>(row_digest));
+    valid = valid && row_cases == 29966 && row_digest == 0x92417279568c8fddull;
     awl::filesystem_shutdown();
     awl_memory_shutdown();
     return valid;
@@ -317,6 +427,7 @@ int main(int argc, char** argv) {
     test_container();
     test_native_load();
     test_message_stream();
+    test_selection_rows();
     if (argc == 3 && std::strcmp(argv[1], "--messages-local") == 0) {
         expect(check_local(argv[2]), "local complete catalog matches independent metadata/byte digest");
     } else if (argc != 1) {

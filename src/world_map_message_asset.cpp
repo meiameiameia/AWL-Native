@@ -129,4 +129,11 @@ WorldMapMessageStreamStatus WorldMapMessageBank::scan_entry(
     return scan_world_map_message_stream(bytes_.data() + entry.offset, entry.size, out);
 }
 
+WorldMapSelectionRowsStatus WorldMapMessageBank::prepare_selection_rows(
+    uint32_t index, uint32_t row_count, WorldMapSelectionRows* out) const {
+    if (out == nullptr || index >= entries_.size()) return WorldMapSelectionRowsStatus::InvalidInput;
+    const auto& entry = entries_[index];
+    return prepare_world_map_selection_rows(bytes_.data() + entry.offset, entry.size, row_count, out);
+}
+
 } // namespace awl
