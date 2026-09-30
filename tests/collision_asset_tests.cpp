@@ -15,6 +15,7 @@
 #include "awl/world_map_presentation_data.h"
 #include "awl/world_map_presentation.h"
 #include "awl/world_map_feedback.h"
+#include "awl/world_map_presentation_actor.h"
 #include "awl/world_map_camera.h"
 #include "awl/world_map_scene_index.h"
 #include "awl/world_map_collision_assets.h"
@@ -6607,6 +6608,29 @@ bool check_local_event_conditions(const char* disc_root) {
                     presentation.window_units_28 = presentation_window.units;
                     presentation.fast_36 = presentation.lock_fast_37 = 1;
                     awl::WorldMapPresentationStep presentation_step;
+                    // A separate supplied actor-bearing rehearsal stops at
+                    // command dispatch before the tag-0x30 member change.
+                    auto actor_presentation = presentation;
+                    actor_presentation.manager_resource_60 = 0;
+                    awl::WorldMapPresentationStep actor_progression;
+                    awl::WorldMapPresentationActorSnapshot actor_snapshot;
+                    actor_snapshot.registrations = std::vector<awl::WorldMapPresentationActorRegistration>{{0, 11}};
+                    awl::WorldMapPresentationActorStep actor_step;
+                    valid_script = valid_script && awl::advance_world_map_presentation(staged_message.bytes.data(),
+                        staged_message.bytes.size(), &actor_presentation, 1, 0, 0, &actor_progression) ==
+                            awl::WorldMapPresentationStatus::RequiresActorEffects && actor_progression.actor_mode == 0u &&
+                        actor_progression.after.revealed_units_24 == 38 && actor_progression.after.resume_offset_20 == 72 &&
+                        actor_progression.phase_after_effects == awl::WorldMapPresentationPhase::InputWait &&
+                        awl::prepare_world_map_presentation_actor(actor_presentation.manager_resource_60,
+                            *actor_progression.actor_mode, actor_snapshot, &actor_step) ==
+                                awl::WorldMapPresentationActorStatus::RequiresActorCalls &&
+                        actor_step.call_count == 2 && actor_step.calls[0].kind ==
+                            awl::WorldMapPresentationActorCallKind::DirectCommand &&
+                        actor_step.calls[0].arguments == std::array<uint32_t, 5>{0, 0, 0, 0, 0} &&
+                        actor_step.calls[1].kind == awl::WorldMapPresentationActorCallKind::Toggle &&
+                        actor_step.calls[1].arguments[0] == 0 &&
+                        actor_presentation.phase == awl::WorldMapPresentationPhase::Reading &&
+                        actor_presentation.resume_offset_20 == 0 && actor_presentation.revealed_units_24 == 0;
                     valid_script = valid_script && awl::advance_world_map_presentation(staged_message.bytes.data(),
                         staged_message.bytes.size(), &presentation, 1, 0, 0, &presentation_step) ==
                             awl::WorldMapPresentationStatus::Advanced &&
