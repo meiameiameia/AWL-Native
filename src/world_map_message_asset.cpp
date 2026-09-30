@@ -136,4 +136,12 @@ WorldMapSelectionRowsStatus WorldMapMessageBank::prepare_selection_rows(
     return prepare_world_map_selection_rows(bytes_.data() + entry.offset, entry.size, row_count, out);
 }
 
+WorldMapMessageStagingStatus WorldMapMessageBank::stage_entry(
+    uint32_t index, const WorldMapMessageStagingContext& context,
+    uint32_t byte_limit, WorldMapStagedMessage* out) const {
+    if (out == nullptr || index >= entries_.size()) return WorldMapMessageStagingStatus::InvalidInput;
+    const auto& entry = entries_[index];
+    return stage_world_map_message(bytes_.data() + entry.offset, entry.size, context, byte_limit, out);
+}
+
 } // namespace awl

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "awl/world_map_message_stream.h"
+#include "awl/world_map_message_staging.h"
 #include "awl/world_map_selection_rows.h"
 
 #include <cstddef>
@@ -30,8 +31,8 @@ struct WorldMapMessageBounds {
 
 // Owns the supported MES container/index only. Entries remain opaque token
 // bytes; bounds end at the next greater offset or file end, possibly including
-// padding. Index order and aliases are preserved. No text, selection rows,
-// staging callbacks, presentation, or feedback effects are interpreted here.
+// padding. Index order and aliases are preserved. The explicit helpers below
+// compose bounded parsing/preparation; no live presentation or feedback runs.
 class WorldMapMessageBank {
 public:
     // The verified local shape has marker CDC3B0B0, a nonzero BE count,
@@ -55,6 +56,10 @@ public:
     // This does not establish that the game uses this message as a selection.
     [[nodiscard]] WorldMapSelectionRowsStatus prepare_selection_rows(
         uint32_t index, uint32_t row_count, WorldMapSelectionRows* out) const;
+    // Stages only the supported token subset within the indexed safety extent.
+    [[nodiscard]] WorldMapMessageStagingStatus stage_entry(
+        uint32_t index, const WorldMapMessageStagingContext& context,
+        uint32_t byte_limit, WorldMapStagedMessage* out) const;
 
 private:
     std::vector<uint8_t> bytes_;

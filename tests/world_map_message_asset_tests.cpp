@@ -178,6 +178,131 @@ bool same_rows(const awl::WorldMapSelectionRows& a, const awl::WorldMapSelection
         a.width == b.width && a.height == b.height && a.bytes == b.bytes;
 }
 
+bool same_staged(const awl::WorldMapStagedMessage& a, const awl::WorldMapStagedMessage& b) {
+    return a.bytes == b.bytes && a.consumed_bytes == b.consumed_bytes &&
+        a.context_expansions == b.context_expansions;
+}
+
+void test_message_staging() {
+    using Status = awl::WorldMapMessageStagingStatus;
+    awl::WorldMapMessageStagingContext context;
+    const uint8_t first[] = {0x81, 101, 0, 0x37};
+    const uint8_t nested[] = {2, 0x29, 0, 1, 0};
+    context.indexed_messages[0] = {first, sizeof(first)};
+    context.indexed_messages[1] = {nested, sizeof(nested)};
+    context.argument_words[3] = 1;
+    const uint8_t root[] = {0x16, 0, 0, 0, 0, 0x29, 0x83, 0x29, 0, 0, 0x37};
+    awl::WorldMapStagedMessage staged;
+    expect(awl::stage_world_map_message(root, sizeof(root), context, 12, &staged) == Status::Prepared &&
+               staged.bytes == std::vector<uint8_t>({0x16, 0, 0, 0, 0, 2, 0x81, 101, 1, 0x81, 101, 0}) &&
+               staged.consumed_bytes == 10 && staged.context_expansions == 3,
+           "staging expands nested/indirect context streams, replaces nested zeroes, and stops at root zero");
+    const auto prior = staged;
+    expect(awl::stage_world_map_message(root, sizeof(root), context, 11, &staged) == Status::OutputLimitExceeded &&
+               same_staged(staged, prior), "exact staged output limit includes root terminator and fails atomically");
+    const uint8_t out_of_range_reference[] = {0x29, 0xff, 0};
+    expect(awl::stage_world_map_message(out_of_range_reference, sizeof(out_of_range_reference), context, 3, &staged) ==
+               Status::Prepared && staged.bytes == std::vector<uint8_t>({0x81, 101, 0}),
+           "argument reference beyond eight words resolves to zero before message lookup");
+    const auto before_failures = staged;
+    context.argument_words[3] = UINT32_MAX;
+    expect(awl::stage_world_map_message(root, sizeof(root), context, 100, &staged) == Status::InvalidContextIndex &&
+               same_staged(staged, before_failures), "resolved invalid message index rejects instead of accessing pointers");
+    const uint8_t invalid_index[] = {0x29, 8, 0};
+    expect(awl::stage_world_map_message(invalid_index, sizeof(invalid_index), context, 100, &staged) ==
+               Status::InvalidContextIndex && same_staged(staged, before_failures), "literal context index is bounded");
+    const uint8_t slot_two[] = {0x29, 2, 0};
+    expect(awl::stage_world_map_message(slot_two, sizeof(slot_two), context, 100, &staged) == Status::RequiresSubstitution &&
+               same_staged(staged, before_failures), "missing supplied message preserves output and requires its source");
+    context.indexed_messages[2] = {nullptr, 1};
+    expect(awl::stage_world_map_message(slot_two, sizeof(slot_two), context, 100, &staged) == Status::InvalidInput &&
+               same_staged(staged, before_failures), "nonnull extent with absent pointer is invalid");
+    context.indexed_messages[2] = {slot_two, sizeof(slot_two)};
+    expect(awl::stage_world_map_message(slot_two, sizeof(slot_two), context, 100, &staged) == Status::CyclicSubstitution &&
+               same_staged(staged, before_failures), "direct context substitution cycle stops without mutation");
+    const uint8_t slot_three[] = {0x29, 3, 0};
+    context.indexed_messages[2] = {slot_three, sizeof(slot_three)};
+    context.indexed_messages[3] = {slot_two, sizeof(slot_two)};
+    expect(awl::stage_world_map_message(slot_two, sizeof(slot_two), context, 100, &staged) == Status::CyclicSubstitution &&
+               same_staged(staged, before_failures), "indirect context cycle stops independently of output growth");
+    const uint8_t truncated[] = {0x29};
+    const uint8_t unterminated[] = {0x81, 0};
+    context.indexed_messages[2] = {unterminated, sizeof(unterminated)};
+    expect(awl::stage_world_map_message(slot_two, sizeof(slot_two), context, 100, &staged) == Status::MissingTerminator &&
+               same_staged(staged, before_failures), "nested unterminated stream fails atomically");
+    expect(awl::stage_world_map_message(truncated, sizeof(truncated), context, 100, &staged) == Status::TruncatedToken &&
+               awl::stage_world_map_message(unterminated, sizeof(unterminated), context, 100, &staged) == Status::MissingTerminator &&
+               awl::stage_world_map_message(root, 0, context, 100, &staged) == Status::MissingTerminator &&
+               same_staged(staged, before_failures), "partial token/zero-valued argument/empty input do not supply termination");
+    expect(awl::stage_world_map_message(nullptr, 0, context, 100, &staged) == Status::InvalidInput &&
+               awl::stage_world_map_message(root, sizeof(root), context, 0, &staged) == Status::InvalidInput &&
+               awl::stage_world_map_message(root, sizeof(root), context, 100, nullptr) == Status::InvalidInput &&
+               same_staged(staged, before_failures), "missing output/source and zero output allowance rejected");
+    const uint8_t empty[] = {0};
+    context.indexed_messages[2] = {empty, sizeof(empty)};
+    expect(awl::stage_world_map_message(slot_two, sizeof(slot_two), context, 1, &staged) == Status::Prepared &&
+               staged.bytes == std::vector<uint8_t>({0}) && staged.context_expansions == 1,
+           "empty nested message leaves only the outer terminator");
+    const uint8_t unsupported[] = {0x20, 0, 0};
+    const auto before_blocked = staged;
+    context.indexed_messages[2] = {unsupported, sizeof(unsupported)};
+    expect(awl::stage_world_map_message(slot_two, sizeof(slot_two), context, 100, &staged) == Status::RequiresSubstitution &&
+               same_staged(staged, before_blocked), "unsupported nested source cannot be silently copied");
+    awl::WorldMapMessageStagingContext chain_context;
+    uint8_t chain[8][3]{};
+    for (uint8_t i = 0; i < 7; ++i) {
+        chain[i][0] = 0x29; chain[i][1] = static_cast<uint8_t>(i + 1);
+        chain_context.indexed_messages[i] = {chain[i], 3};
+    }
+    chain_context.indexed_messages[7] = {first, sizeof(first)};
+    const uint8_t slot_zero[] = {0x29, 0, 0};
+    expect(awl::stage_world_map_message(slot_zero, sizeof(slot_zero), chain_context, 3, &staged) == Status::Prepared &&
+               staged.context_expansions == 8 && staged.bytes == std::vector<uint8_t>({0x81, 101, 0}),
+           "all eight supplied slots can participate in an acyclic dependency chain");
+    chain_context.indexed_messages[7] = {slot_zero, sizeof(slot_zero)};
+    const auto before_long_cycle = staged;
+    expect(awl::stage_world_map_message(slot_zero, sizeof(slot_zero), chain_context, 100, &staged) ==
+               Status::CyclicSubstitution && same_staged(staged, before_long_cycle),
+           "eight-slot cycle is bounded before any unlimited recursion");
+    // Every dispatch family: the expected classification digest is derived
+    // independently from both original staging vtables, not requires_source.
+    uint64_t digest = 14695981039346656037ull;
+    for (unsigned tag = 0; tag < 256; ++tag) {
+        uint8_t token_bytes[6] = {static_cast<uint8_t>(tag), 0, 0, 0, 0, 0};
+        awl::WorldMapMessageToken token;
+        expect(awl::read_world_map_message_token(token_bytes, sizeof(token_bytes), 0, &token) ==
+                   awl::WorldMapMessageStreamStatus::Decoded, "staging dispatch fixture has a complete token");
+        const auto status = awl::stage_world_map_message(token_bytes, token.byte_count + 1, context, 100, &staged);
+        expect(status == Status::Prepared || status == Status::RequiresSubstitution, "all dispatch families classify explicitly");
+        for (uint8_t byte : {static_cast<uint8_t>(tag), static_cast<uint8_t>(status == Status::Prepared ? 0 : 1)}) {
+            digest = (digest ^ byte) * 1099511628211ull;
+        }
+        if (status == Status::Prepared) {
+            const std::vector<uint8_t> expected = tag == 0x29 ? std::vector<uint8_t>({0x81, 101, 0}) :
+                std::vector<uint8_t>(token_bytes, token_bytes + (tag == 0 ? 1 : token.byte_count + 1));
+            expect(staged.bytes == expected, "ordinary staging tokens preserve every argument byte");
+        }
+    }
+    expect(digest == 0x29757ddc8439521eull, "all staging families match original visitor classification");
+    awl::WorldMapMessageBank bank;
+    auto bytes = fixture();
+    bytes[24] = 0x29; bytes[25] = 0; bytes[26] = 0;
+    expect(bank.parse(bytes) && bank.stage_entry(0, context, 3, &staged) == Status::Prepared &&
+               staged.bytes == std::vector<uint8_t>({0x81, 101, 0}) &&
+               bank.stage_entry(2, context, 3, &staged) == Status::Prepared,
+           "bank staging shares bounded alias source ownership");
+    const auto bank_prior = staged;
+    expect(bank.stage_entry(4, context, 100, &staged) == Status::InvalidInput && same_staged(staged, bank_prior),
+           "invalid bank index preserves staged output");
+    expect(bank.stage_entry(0, context, 100, nullptr) == Status::InvalidInput, "bank staging requires output");
+    bytes[24] = 0x16; // Five-byte token exceeds the four-byte indexed extent.
+    expect(bank.parse(bytes) && bank.stage_entry(0, context, 100, &staged) == Status::TruncatedToken &&
+               same_staged(staged, bank_prior), "bank staging cannot read through the next physical entry");
+    bank.clear();
+    expect(bank.stage_entry(0, context, 100, &staged) == Status::InvalidInput && same_staged(staged, bank_prior),
+           "cleared bank cannot stage stale data");
+}
+
 void test_selection_rows() {
     using Status = awl::WorldMapSelectionRowsStatus;
     const uint8_t bytes[] = {0x81, 91, 2, 0x16, 0, 0, 0, 0, 1,
@@ -334,6 +459,8 @@ bool check_local(const char* root) {
     uint64_t stream_digest = 14695981039346656037ull;
     uint64_t row_digest = 14695981039346656037ull;
     uint64_t row_cases = 0;
+    uint64_t staging_digest = 14695981039346656037ull;
+    uint64_t staged_entries = 0, blocked_entries = 0, staged_bytes = 0;
     uint64_t entries = 0;
     uint64_t token_count = 0;
     uint64_t consumed_bytes = 0;
@@ -349,6 +476,11 @@ bool check_local(const char* root) {
     auto hash_row_word = [&](uint32_t word) {
         for (unsigned shift : {24u, 16u, 8u, 0u}) {
             row_digest = (row_digest ^ static_cast<uint8_t>(word >> shift)) * 1099511628211ull;
+        }
+    };
+    auto hash_staging_word = [&](uint32_t word) {
+        for (unsigned shift : {24u, 16u, 8u, 0u}) {
+            staging_digest = (staging_digest ^ static_cast<uint8_t>(word >> shift)) * 1099511628211ull;
         }
     };
     awl::WorldMapMessageBank bank;
@@ -399,6 +531,28 @@ bool check_local(const char* root) {
                     awl::WorldMapSelectionRowsStatus::InsufficientRows && same_rows(rows, before);
                 if (!valid) break;
             }
+            if (!valid) break;
+            // No replacement sources supplied: supported messages stage fully;
+            // all others must remain blocked, never silently pass through.
+            awl::WorldMapStagedMessage staged;
+            staged.bytes = {99};
+            const auto prior_staged = staged;
+            const auto staging_status = bank.stage_entry(i, {}, UINT32_MAX, &staged);
+            hash_staging_word(id); hash_staging_word(i);
+            hash_staging_word(static_cast<uint32_t>(staging_status));
+            if (staging_status == awl::WorldMapMessageStagingStatus::Prepared) {
+                valid = staged.context_expansions == 0 && staged.consumed_bytes == stream.consumed_bytes &&
+                    staged.bytes.size() == stream.consumed_bytes &&
+                    std::memcmp(staged.bytes.data(), bytes.data(), staged.bytes.size()) == 0;
+                hash_staging_word(static_cast<uint32_t>(staged.consumed_bytes));
+                hash_staging_word(static_cast<uint32_t>(staged.bytes.size())); hash_staging_word(0);
+                for (uint8_t byte : staged.bytes) staging_digest = (staging_digest ^ byte) * 1099511628211ull;
+                ++staged_entries; staged_bytes += staged.bytes.size();
+            } else {
+                valid = staging_status == awl::WorldMapMessageStagingStatus::RequiresSubstitution &&
+                    same_staged(staged, prior_staged);
+                ++blocked_entries;
+            }
         }
         std::printf("Message bank %u: %zu entries, %zu bytes; bounds and token streams checked\n",
                     id, bank.entry_count(), bank.byte_size());
@@ -415,6 +569,11 @@ bool check_local(const char* root) {
     std::printf("Supplied selection rows: cases=%llu, digest=%016llx\n",
                 static_cast<unsigned long long>(row_cases), static_cast<unsigned long long>(row_digest));
     valid = valid && row_cases == 29966 && row_digest == 0x92417279568c8fddull;
+    std::printf("Message staging without sources: prepared=%llu, blocked=%llu, bytes=%llu, digest=%016llx\n",
+                static_cast<unsigned long long>(staged_entries), static_cast<unsigned long long>(blocked_entries),
+                static_cast<unsigned long long>(staged_bytes), static_cast<unsigned long long>(staging_digest));
+    valid = valid && staged_entries == 11463 && blocked_entries == 3520 && staged_bytes == 1290755 &&
+        staging_digest == 0x66b45cf1ffd00907ull;
     awl::filesystem_shutdown();
     awl_memory_shutdown();
     return valid;
@@ -427,6 +586,7 @@ int main(int argc, char** argv) {
     test_container();
     test_native_load();
     test_message_stream();
+    test_message_staging();
     test_selection_rows();
     if (argc == 3 && std::strcmp(argv[1], "--messages-local") == 0) {
         expect(check_local(argv[2]), "local complete catalog matches independent metadata/byte digest");
