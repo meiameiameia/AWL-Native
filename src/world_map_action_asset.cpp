@@ -432,6 +432,58 @@ WorldMapActionStepStatus WorldMapActionScript::step_world_map(
     return out->effective_operand == 0 ? Status::Yielded : Status::Advanced;
 }
 
+WorldMapActionStepStatus WorldMapActionScript::step_world_map_request(
+    WorldMapActionScriptState* state, WorldMapCommand4Snapshot* command4,
+    WorldMapActionStep* out) const {
+    using Status = WorldMapActionStepStatus;
+    if (out != nullptr) *out = {};
+    if (state == nullptr || command4 == nullptr || out == nullptr) {
+        return Status::InvalidState;
+    }
+    // Inspect a copy so even ordinary instructions are not consumed by this
+    // command-specific entry point. Common validation and metadata are reused.
+    auto inspected = *state;
+    const Status status = step(&inspected, out);
+    if (status != Status::RequiresCallback) {
+        return status == Status::Advanced || status == Status::Halted
+            ? Status::InvalidOperand : status;
+    }
+    if (out->effective_operand != 4) return Status::RequiresCallback;
+
+    WorldMapCommandPreparation prepared;
+    const auto preparation = prepare_world_map_command(*state, command4, &prepared);
+    if (preparation == WorldMapCommandPreparationStatus::RequiresManagerSnapshot) {
+        return Status::RequiresCallback;
+    }
+    if (preparation != WorldMapCommandPreparationStatus::Prepared) {
+        return Status::InvalidState;
+    }
+    *out = prepared.instruction;
+    uint32_t result = prepared.stack_result;
+    if (prepared.effect == WorldMapCommandEffect::BeginRequest4) {
+        if (!command4->has_manager_state || command4->manager_state_48 == 0) {
+            // FUN_801020E4's idle branch needs resource/presentation setup.
+            // Do not accept it, store keys, or pop/push until supported.
+            return Status::RequiresCallback;
+        }
+        // FUN_801020E4 rejects nonzero +0x48 before any manager write.
+        // The dispatcher already stored both keys and pushes -1 on failure.
+        result = UINT32_MAX;
+    }
+    auto next = prepared.after_arguments;
+    if (static_cast<size_t>(next.stack_depth_1b0) + 1 >= next.stack_20.size()) {
+        return Status::InvalidOperand;
+    }
+    // FUN_80112D08: PowerPC slw uses the low six option bits and produces
+    // zero when bit five is set. Unsigned arithmetic preserves word wrap.
+    const uint32_t shift = next.options_1b4 & 63u;
+    next.stack_20[++next.stack_depth_1b0] = shift < 32 ? result << shift : 0u;
+    *state = next;
+    command4->key_530 = prepared.next_key_530;
+    command4->key_534 = prepared.next_key_534;
+    return Status::Advanced;
+}
+
 WorldMapCommandPreparationStatus WorldMapActionScript::prepare_world_map_command(
     const WorldMapActionScriptState& state,
     const WorldMapCommand4Snapshot* command4,

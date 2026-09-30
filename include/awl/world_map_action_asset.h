@@ -123,6 +123,14 @@ public:
     // Other commands preserve state and report RequiresCallback.
     [[nodiscard]] WorldMapActionStepStatus step_world_map(
         WorldMapActionScriptState* state, WorldMapActionStep* out) const;
+    // Command 4 only: consumes a busy-manager rejection of new keys, a
+    // same-key pending poll, or a same-key completed result. Only the supplied
+    // interpreter keys change in command4; manager fields remain read-only.
+    // Idle new requests require untranslated resources and preserve all state.
+    // This does not begin a request or connect a live request manager.
+    [[nodiscard]] WorldMapActionStepStatus step_world_map_request(
+        WorldMapActionScriptState* state, WorldMapCommand4Snapshot* command4,
+        WorldMapActionStep* out) const;
     // Prepares command 4/65 arguments and effect routing without consuming the
     // caller's state or accepting a backend effect. after_arguments is only a
     // supplied snapshot; it is not a completed command or gameplay acceptance.

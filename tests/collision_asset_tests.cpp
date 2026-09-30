@@ -1108,6 +1108,138 @@ void test_world_map_command_preparation() {
            "preparation retains common stack bounds validation");
 }
 
+void test_world_map_request_consumption() {
+    using Status = awl::WorldMapActionStepStatus;
+    using Instruction = awl::WorldMapActionInstruction;
+    awl::WorldMapActionScript script;
+    awl::WorldMapActionScriptState state;
+    awl::WorldMapCommand4Snapshot manager;
+    awl::WorldMapActionStep result;
+    // Invented repeatable program: three fixed-point arguments, command 4,
+    // save its result, and retry. Expectations come from the traced branches.
+    expect(script.parse(make_action_script({
+               Instruction{0x17, 0, 0, 640}, Instruction{0x17, 0, 0, 1024},
+               Instruction{0x17, 0, 0, 0xffffff80}, Instruction{0x25, 0, 0, 4},
+               Instruction{0x14, 0, 0, 2}, Instruction{0x18, 0, 0, 0}})) &&
+               script.initialize_state(0x2011, &state), "request retry program initializes");
+    auto arguments = [&]() {
+        for (unsigned i = 0; i < 3; ++i) {
+            expect(script.step_world_map(&state, &result) == Status::Advanced,
+                   "request retry program supplies its next arguments");
+        }
+    };
+    auto store_and_retry = [&](uint32_t expected) {
+        expect(script.step_world_map(&state, &result) == Status::Advanced &&
+                   state.variables_1b8[2] == expected && state.stack_depth_1b0 == 0 &&
+                   script.step_world_map(&state, &result) == Status::Advanced &&
+                   state.instruction_index_0c == 0, "request result saves before retry");
+    };
+    arguments();
+    const auto unresolved = state;
+    expect(script.step_world_map_request(&state, &manager, &result) == Status::RequiresCallback &&
+               same_action_state(state, unresolved) && manager.key_530 == UINT32_MAX &&
+               manager.key_534 == UINT32_MAX, "missing manager snapshot cannot consume new request");
+    manager.has_manager_state = true;
+    expect(script.step_world_map_request(&state, &manager, &result) == Status::RequiresCallback &&
+               same_action_state(state, unresolved) && manager.key_530 == UINT32_MAX,
+           "idle request remains blocked on untranslated presentation resources");
+    manager.manager_state_48 = 3;
+    manager.manager_result_1c0 = 23;
+    expect(script.step_world_map_request(&state, &manager, &result) == Status::Advanced &&
+               state.instruction_index_0c == 4 && state.stack_depth_1b0 == 1 &&
+               state.stack_20[1] == 0xffffff80 && manager.key_530 == 5 &&
+               manager.key_534 == 8 && manager.manager_state_48 == 3 &&
+               manager.manager_result_1c0 == 23 && result.callback_arguments[2] == UINT32_MAX,
+           "busy start rejects with scaled minus one but retains new keys and manager fields");
+    store_and_retry(0xffffff80);
+    arguments();
+    manager.has_manager_state = false;
+    const auto missing_poll = state;
+    expect(script.step_world_map_request(&state, &manager, &result) == Status::RequiresCallback &&
+               same_action_state(state, missing_poll) && manager.key_530 == 5 && manager.key_534 == 8,
+           "missing same-key manager snapshot preserves script and keys");
+    manager.has_manager_state = true;
+    expect(script.step_world_map_request(&state, &manager, &result) == Status::Advanced &&
+               state.stack_20[1] == 0 && state.stack_depth_1b0 == 1 && manager.key_530 == 5 &&
+               manager.key_534 == 8 && manager.manager_result_1c0 == 23,
+           "same-key pending request consumes arguments and pushes zero without finishing manager");
+    store_and_retry(0);
+    arguments();
+    manager.manager_state_48 = 0;
+    manager.manager_result_1c0 = 2;
+    expect(script.step_world_map_request(&state, &manager, &result) == Status::Advanced &&
+               state.stack_20[1] == 384 && state.stack_depth_1b0 == 1 &&
+               manager.key_530 == UINT32_MAX && manager.key_534 == UINT32_MAX &&
+               manager.manager_result_1c0 == 2,
+           "ready request pushes scaled incremented result and clears only interpreter keys");
+    store_and_retry(384);
+    arguments();
+    const auto retry = state;
+    expect(script.step_world_map_request(&state, &manager, &result) == Status::RequiresCallback &&
+               same_action_state(state, retry) && manager.key_530 == UINT32_MAX &&
+               manager.key_534 == UINT32_MAX, "completed request retry needs actual begin backend again");
+
+    // Sentinel argument reads and PPC shifts are checked independently of the
+    // retry program. Result -1 is preserved; other results increment with wrap.
+    for (uint32_t options : {0u, 7u, 31u, 32u, 63u, 64u}) {
+        expect(script.parse(make_action_script({Instruction{0x25, 0, 0, 4}}, options)) &&
+                   script.initialize_state(0, &state), "request scale boundary initializes");
+        manager = {};
+        manager.key_530 = 0;
+        manager.key_534 = 0;
+        manager.has_manager_state = true;
+        manager.manager_result_1c0 = UINT32_MAX;
+        const uint32_t minus_one = options == 7 ? 0xffffff80u :
+            options == 31 ? 0x80000000u : options == 32 || options == 63 ? 0u : UINT32_MAX;
+        expect(script.step_world_map_request(&state, &manager, &result) == Status::Advanced &&
+                   state.stack_depth_1b0 == 1 && state.stack_20[1] == minus_one &&
+                   manager.key_530 == UINT32_MAX && manager.key_534 == UINT32_MAX,
+               "empty-stack completion preserves sentinel and verified low-six-bit result scale");
+    }
+    expect(script.parse(make_action_script({Instruction{0x25, 1, 0, 3}}, 0)) &&
+               script.initialize_state(0, &state), "effective request command initializes");
+    state.operand_base_4d8 = 1;
+    state.stack_depth_1b0 = 4;
+    state.stack_20[1] = 0xfeedbeef;
+    state.stack_20[2] = 10;
+    state.stack_20[3] = 20;
+    state.stack_20[4] = 99;
+    state.variables_1b8[199] = 0x12345678;
+    manager = {};
+    manager.key_530 = 10;
+    manager.key_534 = 20;
+    manager.has_manager_state = true;
+    manager.manager_result_1c0 = 0xfffffffe;
+    auto expected = state;
+    expected.instruction_index_0c = 1;
+    expected.stack_depth_1b0 = 2;
+    expected.stack_20[2] = UINT32_MAX;
+    expect(script.step_world_map_request(&state, &manager, &result) == Status::Advanced &&
+               same_action_state(state, expected) && result.effective_operand == 4,
+           "completion respects effective command, lower stack, full state, and result wrap");
+    expect(script.initialize_state(0, &state), "invalid request state initializes");
+    state.stack_depth_1b0 = 100;
+    const auto invalid = state;
+    manager.key_530 = 17;
+    expect(script.step_world_map_request(&state, &manager, &result) == Status::InvalidState &&
+               same_action_state(state, invalid) && manager.key_530 == 17 &&
+               script.step_world_map_request(nullptr, &manager, &result) == Status::InvalidState &&
+               script.step_world_map_request(&state, nullptr, &result) == Status::InvalidState &&
+               script.step_world_map_request(&state, &manager, nullptr) == Status::InvalidState,
+           "invalid pointers and stack bounds preserve all supplied request state");
+    expect(script.parse(make_action_script({Instruction{0x25, 0, 0, 65}})) &&
+               script.initialize_state(0, &state), "unsupported request command initializes");
+    const auto unsupported = state;
+    expect(script.step_world_map_request(&state, &manager, &result) == Status::RequiresCallback &&
+               same_action_state(state, unsupported) && manager.key_530 == 17,
+           "request entry point leaves other callbacks unconsumed");
+    expect(script.parse(make_action_script({Instruction{0x17, 0, 0, 128}})) &&
+               script.initialize_state(0, &state), "ordinary instruction initializes");
+    const auto ordinary = state;
+    expect(script.step_world_map_request(&state, &manager, &result) == Status::InvalidOperand &&
+               same_action_state(state, ordinary), "request entry point does not consume ordinary instructions");
+}
+
 void test_world_map_room_collision_mapping() {
     using Status = awl::WorldMapRoomCollisionStatus;
     awl::WorldMapRoomCollisionState state;
@@ -6254,6 +6386,41 @@ bool check_local_event_conditions(const char* disc_root) {
                         ? awl::WorldMapCommandEffect::BeginRequest4
                         : awl::WorldMapCommandEffect::LevelTransition65) &&
                     !command.has_stack_result;
+                // The real script prefix, with explicitly supplied manager
+                // fields. This does not claim a live request was started.
+                auto unresolved_request = next_boundary;
+                valid_script = valid_script && script.step_world_map_request(
+                    &unresolved_request, &manager, &boundary) == Step::RequiresCallback &&
+                    same_action_state(unresolved_request, next_boundary) &&
+                    manager.key_530 == UINT32_MAX && manager.key_534 == UINT32_MAX;
+                if (valid_script && code_count == 1105) {
+                    constexpr uint64_t expected_request_digests[] = {
+                        0xa491d22d6bd9d926ull, 0xcd23c6ae945521afull, 0x936962df319cd5b6ull};
+                    for (unsigned scenario = 0; scenario < 3; ++scenario) {
+                        auto supplied = next_boundary;
+                        manager = {};
+                        manager.has_manager_state = true;
+                        manager.manager_state_48 = scenario == 2 ? 0u : 3u;
+                        manager.manager_result_1c0 = 2;
+                        if (scenario != 0) {
+                            manager.key_530 = command.instruction.callback_arguments[0];
+                            manager.key_534 = command.instruction.callback_arguments[1];
+                        }
+                        valid_script = valid_script && script.step_world_map_request(
+                            &supplied, &manager, &boundary) == Step::Advanced &&
+                            supplied.state_4 == 1 && supplied.instruction_index_0c == 19 &&
+                            supplied.stack_depth_1b0 == 2 && manager.manager_result_1c0 == 2 &&
+                            manager.manager_state_48 == (scenario == 2 ? 0u : 3u) &&
+                            manager.key_530 == (scenario == 2 ? UINT32_MAX :
+                                command.instruction.callback_arguments[0]) &&
+                            manager.key_534 == (scenario == 2 ? UINT32_MAX :
+                                command.instruction.callback_arguments[1]);
+                        digest = 14695981039346656037ull;
+                        for (const uint32_t value : supplied.stack_20) hash_word(value);
+                        for (const uint32_t value : supplied.variables_1b8) hash_word(value);
+                        valid_script = valid_script && digest == expected_request_digests[scenario];
+                    }
+                }
                 return valid_script;
             };
             using Request = awl::WorldMapMovementRequestStatus;
@@ -6327,7 +6494,7 @@ bool check_local_event_conditions(const char* disc_root) {
             }
         }
         if (valid) {
-            std::printf("Event conditions phase %u: %zu entries, %zu payload bytes; callbacks, next stop, and command preparation verified\n",
+            std::printf("Event conditions phase %u: %zu entries, %zu payload bytes; callbacks, command preparation, and supplied request results verified\n",
                         phase, conditions.entry_count(), payload_bytes);
         }
     }
@@ -7656,6 +7823,7 @@ int main(int argc, char** argv) {
     test_world_map_action_execution();
     test_world_map_action_callbacks();
     test_world_map_command_preparation();
+    test_world_map_request_consumption();
     test_world_map_room_collision_mapping();
     test_world_map_packed_saved_conditions();
     test_world_map_room_condition_evaluator();
