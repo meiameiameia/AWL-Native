@@ -6731,7 +6731,7 @@ bool check_local_event_conditions(const char* disc_root) {
                         !initializer.records[0].state.clip_10 && initializer.model_links->nodes[0].children_15c[0] == 300 &&
                         actor_toggle.flag_158 == 1 && actor_presentation.phase == awl::WorldMapPresentationPhase::Reading;
                     // A separate selected-secondary diagnostic reads the owned
-                    // ACT metadata and saves the already-proposed primary
+                    // ACT resource/poses and saves the already-proposed primary
                     // target record, then stops before model construction.
                     initializer.secondary_model_c0 = 300;
                     initializer.secondary_model = awl::WorldMapSecondaryModelRecord{300, 0, model_resource.count_6, 0, 0, 0, 0, 2};
@@ -6750,6 +6750,9 @@ bool check_local_event_conditions(const char* disc_root) {
                         initializer_step.secondary_setup->saved_playback->value_18 == 7 &&
                         initializer_step.secondary_setup->construction && !initializer_step.secondary_setup->construction->allocation_size &&
                         initializer_step.secondary_setup->construction->resource.reference.bank_identity == 500 &&
+                        initializer_step.secondary_setup->construction->preparation_status == awl::WorldMapModelPreparationStatus::Prepared &&
+                        initializer_step.secondary_setup->construction->preparation.prepared &&
+                        initializer_step.secondary_setup->construction->preparation.prepared->records.size() == model_resource.count_6 &&
                         !initializer_step.settings && !initializer_step.hierarchy && initializer.secondary_model_c0 == 300 &&
                         initializer.animation.base_descriptor_4 == 1 && initializer.primary.elapsed_0 == 7 &&
                         !initializer.records[1].state.clip_10 && actor_toggle.flag_158 == 1 &&

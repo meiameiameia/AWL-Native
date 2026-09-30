@@ -430,3 +430,15 @@ else()
     target_compile_options(world_map_secondary_model_tests PRIVATE -Wall -Wextra)
 endif()
 add_test(NAME world_map_secondary_model_tests COMMAND world_map_secondary_model_tests)
+
+add_executable(world_map_model_resource_tests
+    tests/world_map_model_resource_tests.cpp
+    src/world_map_secondary_model.cpp
+)
+target_include_directories(world_map_model_resource_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+if(MSVC)
+    target_compile_options(world_map_model_resource_tests PRIVATE /W4)
+else()
+    target_compile_options(world_map_model_resource_tests PRIVATE -Wall -Wextra)
+endif()
+add_test(NAME world_map_model_resource_tests COMMAND world_map_model_resource_tests)
