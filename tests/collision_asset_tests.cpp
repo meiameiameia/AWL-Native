@@ -9,6 +9,7 @@
 #include "awl/world_map_trigger_asset.h"
 #include "awl/world_map_event_conditions.h"
 #include "awl/world_map_action_asset.h"
+#include "awl/world_map_request_transition.h"
 #include "awl/world_map_camera.h"
 #include "awl/world_map_scene_index.h"
 #include "awl/world_map_collision_assets.h"
@@ -1238,6 +1239,155 @@ void test_world_map_request_consumption() {
     const auto ordinary = state;
     expect(script.step_world_map_request(&state, &manager, &result) == Status::InvalidOperand &&
                same_action_state(state, ordinary), "request entry point does not consume ordinary instructions");
+}
+
+bool same_request_transition(const awl::WorldMapRequestTransitionState& a,
+                             const awl::WorldMapRequestTransitionState& b) {
+    return a.manager_state_48 == b.manager_state_48 &&
+        a.manager_result_1c0 == b.manager_result_1c0 && a.manager_resource_60 == b.manager_resource_60 &&
+        a.has_active_transition == b.has_active_transition && a.active_state_20 == b.active_state_20 &&
+        a.clock_current_28 == b.clock_current_28 && a.clock_end_2c == b.clock_end_2c &&
+        a.clock_begin_30 == b.clock_begin_30 && a.clock_duration_34 == b.clock_duration_34;
+}
+
+void test_world_map_request_transition() {
+    using Status = awl::WorldMapRequestTransitionStatus;
+    using State = awl::WorldMapRequestTransitionState;
+    State state;
+    const auto idle = state;
+    expect(awl::advance_world_map_request_transition(&state, 100) == Status::Idle &&
+               awl::close_world_map_request_transition(&state, 100) == Status::Idle &&
+               same_request_transition(state, idle), "idle manager leaves transition fields untouched");
+    state.manager_state_48 = 1;
+    const auto missing = state;
+    expect(awl::advance_world_map_request_transition(&state, 100) == Status::RequiresActiveTransition &&
+               awl::close_world_map_request_transition(&state, 100) == Status::RequiresActiveTransition &&
+               same_request_transition(state, missing), "missing active request object cannot advance or cancel");
+    state.has_active_transition = true;
+    state.manager_result_1c0 = 2;
+    state.manager_resource_60 = 17;
+    state.clock_duration_34 = 4;
+    state.active_state_20 = 99; // opening resets the previous state/counter
+    expect(awl::advance_world_map_request_transition(&state, 100) == Status::Advanced &&
+               state.manager_state_48 == 2 && state.active_state_20 == 0 &&
+               state.clock_current_28 == 100 && state.clock_begin_30 == 100 && state.clock_end_2c == 104,
+           "opening initializes the active clock before moving manager from one to two");
+    expect(awl::advance_world_map_request_transition(&state, 103) == Status::Advanced &&
+               state.manager_state_48 == 2 && state.active_state_20 == 0 && state.clock_current_28 == 103,
+           "opening stays pending before its unsigned endpoint");
+    expect(awl::advance_world_map_request_transition(&state, 104) == Status::Advanced &&
+               state.manager_state_48 == 3 && state.active_state_20 == 2 &&
+               state.clock_begin_30 == 104 && state.clock_end_2c == 108 && state.clock_current_28 == 108,
+           "opening endpoint parks a newly reset clock and enters presentation state");
+    const auto presentation = state;
+    expect(awl::advance_world_map_request_transition(&state, 109) == Status::RequiresPresentation &&
+               same_request_transition(state, presentation), "presentation requires its real backend before proceeding");
+    expect(awl::close_world_map_request_transition(&state, 110) == Status::Advanced &&
+               state.manager_state_48 == 4 && state.active_state_20 == 1 &&
+               state.clock_current_28 == 110 && state.clock_begin_30 == 110 && state.clock_end_2c == 114,
+           "cancellation from presentation starts a separate closing clock");
+    const auto closing = state;
+    expect(awl::close_world_map_request_transition(&state, 112) == Status::Unchanged &&
+               same_request_transition(state, closing), "repeated cancellation does not restart closing");
+    expect(awl::advance_world_map_request_transition(&state, 113) == Status::Advanced &&
+               state.manager_state_48 == 4 && state.clock_current_28 == 113,
+           "closing stays busy before its endpoint");
+    const auto before_release = state;
+    expect(awl::advance_world_map_request_transition(&state, 114) == Status::RequiresResourceRelease &&
+               awl::advance_world_map_request_transition(&state, 115) == Status::RequiresResourceRelease &&
+               same_request_transition(state, before_release) && state.manager_result_1c0 == 2 &&
+               state.manager_resource_60 == 17, "unsupported release cannot clear manager or lose resource/result ownership");
+    awl::WorldMapActionScript script;
+    awl::WorldMapActionScriptState script_state;
+    awl::WorldMapActionStep instruction;
+    expect(script.parse(make_action_script({awl::WorldMapActionInstruction{0x25, 0, 0, 4}})) &&
+               script.initialize_state(0, &script_state), "request closing polling composition initializes");
+    awl::WorldMapCommand4Snapshot poll;
+    poll.key_530 = 0;
+    poll.key_534 = 0;
+    poll.has_manager_state = true;
+    poll.manager_state_48 = state.manager_state_48;
+    poll.manager_result_1c0 = state.manager_result_1c0;
+    expect(script.step_world_map_request(&script_state, &poll, &instruction) ==
+               awl::WorldMapActionStepStatus::Advanced && script_state.stack_20[1] == 0 &&
+               poll.key_530 == 0 && poll.key_534 == 0,
+           "script still polls zero after a closing endpoint until real resource release completes");
+
+    for (uint32_t manager_state : {1u, 2u, 3u}) {
+        state = {};
+        state.has_active_transition = true;
+        state.manager_state_48 = manager_state;
+        state.clock_duration_34 = 3;
+        expect(awl::close_world_map_request_transition(&state, 20) == Status::Advanced &&
+                   state.manager_state_48 == 4 && state.active_state_20 == 1 &&
+                   state.clock_current_28 == 20 && state.clock_end_2c == 23,
+               "all three active manager states share the verified cancellation branch");
+    }
+    state = {};
+    state.has_active_transition = true;
+    state.manager_state_48 = 1;
+    expect(awl::advance_world_map_request_transition(&state, 50) == Status::Advanced &&
+               state.manager_state_48 == 2 && state.active_state_20 == 0 &&
+               awl::advance_world_map_request_transition(&state, 50) == Status::Advanced &&
+               state.manager_state_48 == 3 && state.active_state_20 == 2,
+           "zero duration still requires the next manager update to finish opening");
+    state.manager_state_48 = 2;
+    expect(awl::advance_world_map_request_transition(&state, 100) == Status::Advanced &&
+               state.manager_state_48 == 3 && state.clock_current_28 == 50 && state.clock_end_2c == 50,
+           "parked active endpoint ignores subsequent clock values");
+    state.manager_state_48 = 1;
+    state.clock_duration_34 = 10;
+    expect(awl::advance_world_map_request_transition(&state, 100) == Status::Advanced &&
+               awl::advance_world_map_request_transition(&state, 90) == Status::Advanced &&
+               state.clock_current_28 == 100 && state.manager_state_48 == 2 &&
+               awl::advance_world_map_request_transition(&state, 200) == Status::Advanced &&
+               state.manager_state_48 == 3 && state.clock_begin_30 == 200 &&
+               state.clock_current_28 == 210 && state.clock_end_2c == 210,
+           "rewind clamps to begin and overshoot parks relative to the supplied clock");
+    state.manager_state_48 = 1;
+    state.clock_duration_34 = 4;
+    expect(awl::advance_world_map_request_transition(&state, 0xfffffffe) == Status::Advanced &&
+               state.clock_begin_30 == 2 && state.clock_end_2c == 0xfffffffe &&
+               state.clock_current_28 == 0xfffffffe &&
+               awl::advance_world_map_request_transition(&state, 0xffffffff) == Status::Advanced &&
+               state.manager_state_48 == 3 && state.active_state_20 == 2 &&
+               state.clock_begin_30 == 3 && state.clock_end_2c == UINT32_MAX && state.clock_current_28 == 3,
+           "word overflow preserves unsigned endpoint sorting and original parked-current behavior");
+    state = {};
+    state.has_active_transition = true;
+    state.manager_state_48 = 2;
+    state.active_state_20 = 1;
+    state.clock_end_2c = 4;
+    state.clock_duration_34 = 4;
+    expect(awl::advance_world_map_request_transition(&state, 4) == Status::Advanced &&
+               state.manager_state_48 == 2 && state.active_state_20 == 3,
+           "opening manager tests exact active state two instead of any completed transition");
+    state.manager_state_48 = 4;
+    state.active_state_20 = 0;
+    expect(awl::advance_world_map_request_transition(&state, 8) == Status::Advanced &&
+               state.manager_state_48 == 4 && state.active_state_20 == 2,
+           "closing manager tests exact active state three instead of any completed transition");
+    state.manager_state_48 = 2;
+    state.clock_begin_30 = 10;
+    state.clock_end_2c = 5;
+    const auto bad_clock = state;
+    expect(awl::advance_world_map_request_transition(&state, 20) == Status::InvalidState &&
+               same_request_transition(state, bad_clock), "invalid counter bounds fail atomically");
+    state.clock_begin_30 = 0;
+    state.clock_current_28 = 0;
+    state.clock_end_2c = 5;
+    state.active_state_20 = 4;
+    const auto bad_active = state;
+    expect(awl::advance_world_map_request_transition(&state, 20) == Status::InvalidState &&
+               same_request_transition(state, bad_active), "unsupported active transition state is rejected");
+    state.manager_state_48 = 5;
+    const auto invalid = state;
+    expect(awl::advance_world_map_request_transition(&state, 20) == Status::InvalidState &&
+               awl::close_world_map_request_transition(&state, 20) == Status::InvalidState &&
+               same_request_transition(state, invalid) &&
+               awl::advance_world_map_request_transition(nullptr, 20) == Status::InvalidState &&
+               awl::close_world_map_request_transition(nullptr, 20) == Status::InvalidState,
+           "invalid manager state and null outputs cannot enter the unchecked DOL dispatch table");
 }
 
 void test_world_map_room_collision_mapping() {
@@ -6420,6 +6570,30 @@ bool check_local_event_conditions(const char* disc_root) {
                         for (const uint32_t value : supplied.variables_1b8) hash_word(value);
                         valid_script = valid_script && digest == expected_request_digests[scenario];
                     }
+                    awl::WorldMapRequestTransitionState closing;
+                    closing.manager_state_48 = 3;
+                    closing.manager_result_1c0 = 2;
+                    closing.has_active_transition = true;
+                    closing.clock_duration_34 = 4;
+                    valid_script = valid_script && awl::close_world_map_request_transition(
+                        &closing, 100) == awl::WorldMapRequestTransitionStatus::Advanced;
+                    const auto before_release = closing;
+                    valid_script = valid_script && awl::advance_world_map_request_transition(
+                        &closing, 104) == awl::WorldMapRequestTransitionStatus::RequiresResourceRelease &&
+                        same_request_transition(closing, before_release);
+                    manager.key_530 = command.instruction.callback_arguments[0];
+                    manager.key_534 = command.instruction.callback_arguments[1];
+                    manager.manager_state_48 = closing.manager_state_48;
+                    manager.manager_result_1c0 = closing.manager_result_1c0;
+                    auto waiting_for_release = next_boundary;
+                    valid_script = valid_script && script.step_world_map_request(
+                        &waiting_for_release, &manager, &boundary) == Step::Advanced &&
+                        waiting_for_release.instruction_index_0c == 19 &&
+                        waiting_for_release.stack_depth_1b0 == 2;
+                    digest = 14695981039346656037ull;
+                    for (const uint32_t value : waiting_for_release.stack_20) hash_word(value);
+                    for (const uint32_t value : waiting_for_release.variables_1b8) hash_word(value);
+                    valid_script = valid_script && digest == expected_request_digests[1];
                 }
                 return valid_script;
             };
@@ -7824,6 +7998,7 @@ int main(int argc, char** argv) {
     test_world_map_action_callbacks();
     test_world_map_command_preparation();
     test_world_map_request_consumption();
+    test_world_map_request_transition();
     test_world_map_room_collision_mapping();
     test_world_map_packed_saved_conditions();
     test_world_map_room_condition_evaluator();
