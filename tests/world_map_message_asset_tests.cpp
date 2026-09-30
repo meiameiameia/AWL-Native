@@ -1,5 +1,6 @@
 #include "awl/world_map_message_asset.h"
 #include "awl/world_map_presentation_data.h"
+#include "awl/world_map_presentation.h"
 #include "awl/filesystem.h"
 #include "awl/memory.h"
 
@@ -8,7 +9,9 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -682,6 +685,198 @@ void test_presentation_data() {
     expect(digest == 0x4879bc83cbb9b034ull, "presentation results match independent mapped-DOL callback matrix");
 }
 
+bool same_presentation_state(const awl::WorldMapPresentationState& a, const awl::WorldMapPresentationState& b) {
+    return std::tie(a.phase, a.display_offset_1c, a.resume_offset_20, a.revealed_units_24, a.window_units_28,
+        a.deadline_2c, a.interval_30, a.completion_gate_34, a.pacing_stop_35, a.fast_36, a.lock_fast_37,
+        a.scroll_48, a.manager_input_mode_58, a.manager_resource_60) ==
+        std::tie(b.phase, b.display_offset_1c, b.resume_offset_20, b.revealed_units_24, b.window_units_28,
+        b.deadline_2c, b.interval_30, b.completion_gate_34, b.pacing_stop_35, b.fast_36, b.lock_fast_37,
+        b.scroll_48, b.manager_input_mode_58, b.manager_resource_60);
+}
+
+void hash_presentation_step(uint64_t& digest, awl::WorldMapPresentationStatus status, const awl::WorldMapPresentationStep& step) {
+    const auto& s = step.after;
+    uint32_t scroll_bits = 0;
+    std::memcpy(&scroll_bits, &s.scroll_48, sizeof(scroll_bits));
+    for (uint32_t value : {static_cast<uint32_t>(status), static_cast<uint32_t>(s.phase),
+        offset_word(s.display_offset_1c), offset_word(s.resume_offset_20), s.revealed_units_24, s.window_units_28,
+        s.deadline_2c, s.interval_30, static_cast<uint32_t>(s.completion_gate_34), static_cast<uint32_t>(s.pacing_stop_35),
+        static_cast<uint32_t>(s.fast_36), static_cast<uint32_t>(s.lock_fast_37), scroll_bits,
+        s.manager_input_mode_58, s.manager_resource_60, step.visited_tokens,
+        offset_word(step.blocked_token_offset), offset_word(step.next_token_offset),
+        step.feedback_id ? static_cast<uint32_t>(*step.feedback_id) : UINT32_MAX,
+        step.feedback_channel_check ? 1u : 0u, step.actor_mode.value_or(UINT32_MAX),
+        step.phase_after_effects ? static_cast<uint32_t>(*step.phase_after_effects) : UINT32_MAX,
+        step.reports_complete ? 1u : 0u}) hash_presentation_word(digest, value);
+}
+
+bool check_runtime_presentation(const std::vector<uint8_t>& bytes, uint64_t& digest, uint64_t& prepared, uint64_t& blocked) {
+    awl::WorldMapPresentationWindow window;
+    if (awl::count_world_map_presentation_window(bytes.data(), bytes.size(), 0, &window) !=
+        awl::WorldMapPresentationDataStatus::Prepared) return false;
+    awl::WorldMapPresentationState state;
+    state.display_offset_1c = state.resume_offset_20 = 0;
+    state.fast_36 = state.lock_fast_37 = 1;
+    state.window_units_28 = window.units;
+    awl::WorldMapPresentationStep step;
+    const auto status = awl::prepare_world_map_presentation_step(bytes.data(), bytes.size(), state, 1, 0, 0, &step);
+    hash_presentation_step(digest, status, step);
+    if (status == awl::WorldMapPresentationStatus::Prepared) { ++prepared; return true; }
+    if (status == awl::WorldMapPresentationStatus::RequiresControlHandler) { ++blocked; return true; }
+    return false;
+}
+
+void test_runtime_presentation() {
+    using Status = awl::WorldMapPresentationStatus;
+    using Phase = awl::WorldMapPresentationPhase;
+    const uint8_t message[] = {2, 1, 2, 0x30, 0};
+    awl::WorldMapPresentationState initial;
+    initial.display_offset_1c = initial.resume_offset_20 = 0;
+    initial.window_units_28 = 2;
+    auto state = initial;
+    awl::WorldMapPresentationStep step;
+    expect(awl::advance_world_map_presentation(message, sizeof(message), &state, 1, 0, 0x100, &step) == Status::Advanced &&
+        state.phase == Phase::InputWait && state.resume_offset_20 == 4 && state.revealed_units_24 == 2 &&
+        state.pacing_stop_35 == 1 && state.deadline_2c == 27 && step.visited_tokens == 4 && !step.reports_complete,
+        "fast supplied reading reaches tag 30 input wait despite pacing flag set by last unit");
+    const auto wait = state;
+    expect(awl::advance_world_map_presentation(message, sizeof(message), &state, 2, 0, 0, &step) == Status::Advanced &&
+        same_presentation_state(state, wait), "neutral input wait preserves all state");
+    for (uint32_t mode = 0; mode < 3; ++mode) {
+        constexpr uint32_t masks[] = {0x100, 0x800, 0x900};
+        state = wait; state.manager_input_mode_58 = mode; state.manager_resource_60 = 77;
+        const auto before = state;
+        expect(awl::advance_world_map_presentation(message, sizeof(message), &state, 2, masks[mode], 0, &step) ==
+            Status::RequiresFeedback && same_presentation_state(state, before) && step.feedback_id == 3 &&
+            !step.feedback_channel_check && step.actor_mode == 5u && step.phase_after_effects == Phase::Reading &&
+            step.after.phase == Phase::InputWait, "input masks prepare feedback before actor effects and phase store");
+        expect(awl::advance_world_map_presentation(message, sizeof(message), &state, 2, 0x200, masks[mode], &step) ==
+            Status::Advanced && same_presentation_state(state, before), "wait reads pressed word, ignoring repeat and unrelated buttons");
+    }
+    state = initial;
+    const auto before_feedback = state;
+    expect(awl::advance_world_map_presentation(message, sizeof(message), &state, 1, 0, 0, &step) == Status::RequiresFeedback &&
+        same_presentation_state(state, before_feedback) && step.after.revealed_units_24 == 1 && step.after.pacing_stop_35 == 1 &&
+        step.feedback_id == 6 && step.feedback_channel_check && step.blocked_token_offset == 0 && step.next_token_offset == 1,
+        "normal reading stops at glyph channel/feedback boundary without consuming supplied state");
+    uint64_t retry_a = 14695981039346656037ull, retry_b = retry_a;
+    hash_presentation_step(retry_a, Status::RequiresFeedback, step);
+    expect(awl::advance_world_map_presentation(message, sizeof(message), &state, 1, 0, 0, &step) == Status::RequiresFeedback,
+        "feedback stop is repeatable");
+    hash_presentation_step(retry_b, Status::RequiresFeedback, step);
+    expect(retry_a == retry_b && same_presentation_state(state, before_feedback), "retry neither advances nor accumulates reveal state");
+    state = initial; state.window_units_28 = 1;
+    expect(awl::advance_world_map_presentation(message, sizeof(message), &state, 1, 0, 0x100, &step) == Status::Advanced &&
+        state.phase == Phase::Reading && state.resume_offset_20 == 1 && state.revealed_units_24 == 1 && step.visited_tokens == 2,
+        "generic separator retains current pointer after fast reveal reaches window count");
+    const auto paced = state;
+    expect(awl::advance_world_map_presentation(message, sizeof(message), &state, 27, 0, 0x100, &step) == Status::Advanced &&
+        same_presentation_state(state, paced) && step.visited_tokens == 0, "deadline equality waits under original unsigned comparison");
+    expect(awl::advance_world_map_presentation(message, sizeof(message), &state, 28, 0, 0x100, &step) == Status::Advanced &&
+        state.phase == Phase::InputWait && state.revealed_units_24 == 2, "later clock clears pacing and resumes from retained separator");
+    state = initial; state.lock_fast_37 = 5; state.fast_36 = 1; state.deadline_2c = UINT32_MAX;
+    expect(awl::advance_world_map_presentation(message, sizeof(message), &state, 0, 0, 0, &step) == Status::Advanced &&
+        state.fast_36 == 1 && state.deadline_2c == UINT32_MAX && step.visited_tokens == 0,
+        "nonzero fast lock preserves byte and unsigned deadline does not invent wrap-aware readiness");
+    state = initial; state.deadline_2c = 100;
+    expect(awl::advance_world_map_presentation(message, sizeof(message), &state, 100, 0, 0x100, &step) == Status::Advanced &&
+        state.fast_36 == 1 && step.visited_tokens == 0, "unlocked fast byte updates even before reading deadline");
+    const uint8_t terminated[] = {2, 0};
+    state = initial; state.window_units_28 = 1; state.manager_resource_60 = 77;
+    const auto before_actor = state;
+    expect(awl::advance_world_map_presentation(terminated, sizeof(terminated), &state, 1, 0, 0x100, &step) == Status::RequiresActorEffects &&
+        same_presentation_state(state, before_actor) && !step.after.resume_offset_20 && step.after.phase == Phase::Reading &&
+        step.actor_mode == 0u && step.phase_after_effects == Phase::Completion && step.blocked_token_offset == 1,
+        "zero pointer store precedes blocked actor effects; completion member is not prematurely installed");
+    state.manager_resource_60 = UINT32_MAX;
+    expect(awl::advance_world_map_presentation(terminated, sizeof(terminated), &state, 1, 0, 0x100, &step) == Status::Advanced &&
+        state.phase == Phase::Completion && !step.reports_complete, "zero selects completion, whose return runs on a later update");
+    state = initial; state.window_units_28 = 1; state.revealed_units_24 = UINT32_MAX;
+    state.interval_30 = UINT32_MAX;
+    expect(awl::advance_world_map_presentation(terminated, sizeof(terminated), &state, 1, 0, 0x100, &step) == Status::Advanced &&
+        state.revealed_units_24 == 0 && state.pacing_stop_35 == 0 && state.deadline_2c == 0 && state.phase == Phase::Completion,
+        "reveal increment and clock addition wrap before unsigned window comparison");
+    for (uint8_t gate : {uint8_t{0}, uint8_t{1}, uint8_t{255}}) {
+        state.completion_gate_34 = gate;
+        expect(awl::advance_world_map_presentation(terminated, sizeof(terminated), &state, 2, 0, 0, &step) == Status::Advanced &&
+            step.reports_complete == (gate == 0), "completion return is gated by byte 34, without changing manager ownership");
+    }
+    const uint8_t resumed[] = {0x31, 1, 2, 0};
+    state = initial; state.fast_36 = state.lock_fast_37 = 1;
+    expect(awl::advance_world_map_presentation(resumed, sizeof(resumed), &state, 1, 0, 0, &step) == Status::Advanced &&
+        state.display_offset_1c == 2 && state.resume_offset_20 == 1 && state.revealed_units_24 == 0 &&
+        state.window_units_28 == 1 && state.deadline_2c == 0xffffffe6u && step.visited_tokens == 1,
+        "tag 31 skips one separator for display, keeps resume pointer, resets clock and stops walk");
+    state = initial; state.phase = Phase::Scrolling; state.revealed_units_24 = 2; state.scroll_48 = 31;
+    expect(awl::advance_world_map_presentation(message, sizeof(message), &state, 100, 0, 0, &step) == Status::Advanced &&
+        state.phase == Phase::Scrolling && state.scroll_48 > 32 && state.display_offset_1c == 0,
+        "scroll threshold is tested before adding DOL increment");
+    expect(awl::advance_world_map_presentation(message, sizeof(message), &state, 100, 0, 0, &step) == Status::Advanced &&
+        state.phase == Phase::Reading && state.scroll_48 == 0 && state.display_offset_1c == 2 &&
+        state.revealed_units_24 == 1 && state.window_units_28 == 1 && state.deadline_2c == 73,
+        "scroll completion drops one data pass, recounts and resets clock before member change");
+    state = initial; state.phase = Phase::Scrolling; state.scroll_48 = 32; state.manager_resource_60 = 77;
+    const auto blocked_scroll = state;
+    expect(awl::advance_world_map_presentation(message, sizeof(message), &state, 100, 0, 0, &step) == Status::RequiresActorEffects &&
+        same_presentation_state(state, blocked_scroll) && step.after.revealed_units_24 == UINT32_MAX &&
+        step.after.phase == Phase::Scrolling && step.actor_mode == 5u && step.phase_after_effects == Phase::Reading,
+        "scroll effects cannot commit candidate data stores, including original unsigned subtraction");
+    state = initial; state.phase = Phase::Hold;
+    const auto held = state;
+    expect(awl::advance_world_map_presentation(message, sizeof(message), &state, 100, 0x100, 0x100, &step) == Status::Advanced &&
+        same_presentation_state(state, held) && !step.reports_complete, "hold member returns false and has no inferred timer effects");
+    state.phase = Phase::Selection;
+    const auto selecting = state;
+    expect(awl::advance_world_map_presentation(message, sizeof(message), &state, 100, 0x100, 0x100, &step) == Status::RequiresSelection &&
+        same_presentation_state(state, selecting), "selection update remains an explicit ownership/effect boundary");
+    const auto stable_step = step;
+    const uint8_t partial[] = {0x80}; const uint8_t missing[] = {2};
+    for (const auto& bad : {std::pair{partial, sizeof(partial)}, std::pair{missing, sizeof(missing)}}) {
+        expect(awl::advance_world_map_presentation(bad.first, bad.second, &state, 100, 0, 0, &step) == Status::InvalidInput &&
+            same_presentation_state(state, selecting) && same_presentation_state(step.after, stable_step.after),
+            "malformed complete input preserves state and previous proposal");
+    }
+    for (size_t offset : {size_t{1}, size_t{2}, SIZE_MAX}) {
+        state = initial; state.resume_offset_20 = offset;
+        expect(awl::prepare_world_map_presentation_step(terminated, sizeof(terminated), state, 1, 0, 0, &step) ==
+            (offset == 1 ? Status::Prepared : Status::InvalidInput), "supplied resume accepts zero boundary and rejects beyond it");
+    }
+    state = initial; state.phase = static_cast<Phase>(99);
+    expect(awl::prepare_world_map_presentation_step(message, sizeof(message), state, 1, 0, 0, &step) == Status::InvalidState,
+        "unknown member state rejected");
+    state = initial; state.phase = Phase::InputWait; state.manager_input_mode_58 = 3;
+    expect(awl::prepare_world_map_presentation_step(message, sizeof(message), state, 1, 0, 0, &step) == Status::InvalidState,
+        "only three verified manager input masks accepted");
+    state = initial; state.scroll_48 = std::numeric_limits<float>::infinity();
+    expect(awl::prepare_world_map_presentation_step(message, sizeof(message), state, 1, 0, 0, &step) == Status::InvalidState,
+        "nonfinite scroll rejected");
+    expect(awl::prepare_world_map_presentation_step(message, sizeof(message), step.after, 1, 0, 0, &step) == Status::InvalidInput &&
+        awl::advance_world_map_presentation(message, sizeof(message), &step.after, 1, 0, 0, &step) == Status::InvalidInput &&
+        awl::prepare_world_map_presentation_step(nullptr, 0, initial, 1, 0, 0, &step) == Status::InvalidInput &&
+        awl::prepare_world_map_presentation_step(message, SIZE_MAX, initial, 1, 0, 0, &step) == Status::InvalidInput &&
+        awl::prepare_world_map_presentation_step(message, sizeof(message), initial, 1, 0, 0, nullptr) == Status::InvalidInput &&
+        awl::advance_world_map_presentation(message, sizeof(message), nullptr, 1, 0, 0, &step) == Status::InvalidInput,
+        "invalid span, output, state pointer and proposal alias rejected");
+    uint64_t digest = 14695981039346656037ull;
+    for (uint32_t tag = 0; tag < 256; ++tag) {
+        uint8_t token_bytes[8] = {static_cast<uint8_t>(tag)};
+        awl::WorldMapMessageToken token;
+        expect(awl::read_world_map_message_token(token_bytes, sizeof(token_bytes), 0, &token) ==
+            awl::WorldMapMessageStreamStatus::Decoded, "runtime matrix token boundaries are available");
+        std::vector<uint8_t> bytes(token_bytes, token_bytes + token.byte_count); bytes.insert(bytes.end(), {1, 2, 0});
+        for (uint32_t resource : {UINT32_MAX, 41u}) {
+            state = initial; state.window_units_28 = 1000; state.fast_36 = state.lock_fast_37 = 1;
+            state.manager_resource_60 = resource;
+            hash_presentation_word(digest, tag); hash_presentation_word(digest, resource);
+            const auto status = awl::prepare_world_map_presentation_step(bytes.data(), bytes.size(), state, 1, 0, 0, &step);
+            expect(status == Status::Prepared || status == Status::RequiresActorEffects || status == Status::RequiresControlHandler,
+                "every runtime token route either prepares or stops explicitly");
+            hash_presentation_step(digest, status, step);
+        }
+    }
+    expect(digest == 0xee7df8dd2e24ef93ull, "512 runtime plans match independent mapped callback/store/branch probe");
+}
+
 bool check_local(const char* root) {
     awl_memory_init();
     awl::filesystem_init();
@@ -694,6 +889,7 @@ bool check_local(const char* root) {
     uint64_t staged_entries = 0, blocked_entries = 0, staged_bytes = 0, staged_numbers = 0;
     uint64_t entries = 0;
     uint64_t presentation_digest = 14695981039346656037ull;
+    uint64_t runtime_digest = 14695981039346656037ull, runtime_prepared = 0, runtime_blocked = 0;
     uint64_t token_count = 0;
     uint64_t consumed_bytes = 0;
     auto hash_byte = [&](uint8_t byte) { digest = (digest ^ byte) * 1099511628211ull; };
@@ -767,6 +963,9 @@ bool check_local(const char* root) {
             hash_presentation_word(presentation_digest, id); hash_presentation_word(presentation_digest, i);
             valid = check_presentation_data(bytes, presentation_digest);
             if (!valid) break;
+            hash_presentation_word(runtime_digest, id); hash_presentation_word(runtime_digest, i);
+            valid = check_runtime_presentation(bytes, runtime_digest, runtime_prepared, runtime_blocked);
+            if (!valid) break;
             // Diagnostic zero numeric/argument words, no message sources.
             // These supplied values are not evidence of live game state.
             awl::WorldMapStagedMessage staged;
@@ -817,6 +1016,10 @@ bool check_local(const char* root) {
     std::printf("Presentation data from raw diagnostic views: cases=%llu, digest=%016llx\n",
         static_cast<unsigned long long>(entries * 3), static_cast<unsigned long long>(presentation_digest));
     valid = valid && presentation_digest == 0xcc9d77c26dc3d78bull;
+    std::printf("Presentation plans with supplied fast mode/no actor: prepared=%llu, blocked=%llu, digest=%016llx\n",
+        static_cast<unsigned long long>(runtime_prepared), static_cast<unsigned long long>(runtime_blocked),
+        static_cast<unsigned long long>(runtime_digest));
+    valid = valid && runtime_prepared == 10806 && runtime_blocked == 4177 && runtime_digest == 0xafdd53f31c11ffeeull;
     awl::filesystem_shutdown();
     awl_memory_shutdown();
     return valid;
@@ -833,6 +1036,7 @@ int main(int argc, char** argv) {
     test_numeric_staging();
     test_selection_rows();
     test_presentation_data();
+    test_runtime_presentation();
     if (argc == 3 && std::strcmp(argv[1], "--messages-local") == 0) {
         expect(check_local(argv[2]), "local complete catalog matches independent metadata/byte digest");
     } else if (argc != 1) {

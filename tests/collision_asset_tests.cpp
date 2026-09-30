@@ -13,6 +13,7 @@
 #include "awl/world_map_selection.h"
 #include "awl/world_map_message_asset.h"
 #include "awl/world_map_presentation_data.h"
+#include "awl/world_map_presentation.h"
 #include "awl/world_map_camera.h"
 #include "awl/world_map_scene_index.h"
 #include "awl/world_map_collision_assets.h"
@@ -6597,6 +6598,26 @@ bool check_local_event_conditions(const char* disc_root) {
                             0, 38, &presentation_advance) == awl::WorldMapPresentationDataStatus::Prepared &&
                         presentation_advance.start_offset == 34 && presentation_advance.dropped_units == 18 &&
                         presentation_advance.remaining_revealed_units == 20 && presentation_advance.window.units == 20;
+                    // Supplied fast reading with no actor/resource is a data
+                    // rehearsal. Matching input stops before feedback; it does
+                    // not execute or complete the parent request.
+                    awl::WorldMapPresentationState presentation;
+                    presentation.display_offset_1c = presentation.resume_offset_20 = 0;
+                    presentation.window_units_28 = presentation_window.units;
+                    presentation.fast_36 = presentation.lock_fast_37 = 1;
+                    awl::WorldMapPresentationStep presentation_step;
+                    valid_script = valid_script && awl::advance_world_map_presentation(staged_message.bytes.data(),
+                        staged_message.bytes.size(), &presentation, 1, 0, 0, &presentation_step) ==
+                            awl::WorldMapPresentationStatus::Advanced &&
+                        presentation.phase == awl::WorldMapPresentationPhase::InputWait && presentation.resume_offset_20 == 72 &&
+                        presentation.revealed_units_24 == 38 && presentation_step.visited_tokens == 40 &&
+                        awl::advance_world_map_presentation(staged_message.bytes.data(), staged_message.bytes.size(),
+                            &presentation, 2, 0, 0, &presentation_step) == awl::WorldMapPresentationStatus::Advanced &&
+                        presentation.phase == awl::WorldMapPresentationPhase::InputWait &&
+                        awl::advance_world_map_presentation(staged_message.bytes.data(), staged_message.bytes.size(),
+                            &presentation, 2, 0x100, 0, &presentation_step) == awl::WorldMapPresentationStatus::RequiresFeedback &&
+                        presentation_step.feedback_id == 3 && presentation_step.phase_after_effects == awl::WorldMapPresentationPhase::Reading &&
+                        presentation.phase == awl::WorldMapPresentationPhase::InputWait && presentation.revealed_units_24 == 38;
                     constexpr uint64_t expected_request_digests[] = {
                         0xa491d22d6bd9d926ull, 0xcd23c6ae945521afull, 0x936962df319cd5b6ull};
                     for (unsigned scenario = 0; scenario < 3; ++scenario) {
