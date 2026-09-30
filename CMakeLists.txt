@@ -35,6 +35,7 @@ set(SOURCES
     src/world_map_presentation.cpp
     src/world_map_feedback.cpp
     src/world_map_presentation_actor.cpp
+    src/world_map_actor_animation.cpp
     src/world_map_camera.cpp
     src/world_map_scene_index.cpp
     src/world_map_collision_registry.cpp
@@ -78,6 +79,7 @@ set(HEADERS
     include/awl/world_map_presentation.h
     include/awl/world_map_feedback.h
     include/awl/world_map_presentation_actor.h
+    include/awl/world_map_actor_animation.h
     src/world_map_transition_clock.h
     include/awl/world_map_camera.h
     include/awl/world_map_scene_index.h
@@ -247,6 +249,7 @@ add_executable(collision_asset_tests
     src/world_map_presentation.cpp
     src/world_map_feedback.cpp
     src/world_map_presentation_actor.cpp
+    src/world_map_actor_animation.cpp
     src/world_map_camera.cpp
     src/world_map_scene_index.cpp
     src/world_map_collision_registry.cpp
@@ -345,3 +348,19 @@ elseif(MSVC)
     target_compile_options(world_map_presentation_actor_tests PRIVATE /W4)
 endif()
 add_test(NAME world_map_presentation_actor_tests COMMAND world_map_presentation_actor_tests)
+
+add_executable(world_map_actor_animation_tests
+    tests/world_map_actor_animation_tests.cpp
+    src/world_map_actor_animation.cpp
+    src/world_map_presentation_actor.cpp
+    src/world_map_presentation.cpp
+    src/world_map_presentation_data.cpp
+    src/world_map_message_stream.cpp
+)
+target_include_directories(world_map_actor_animation_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(world_map_actor_animation_tests PRIVATE -Wall -Wextra)
+elseif(MSVC)
+    target_compile_options(world_map_actor_animation_tests PRIVATE /W4)
+endif()
+add_test(NAME world_map_actor_animation_tests COMMAND world_map_actor_animation_tests)

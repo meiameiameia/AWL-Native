@@ -16,6 +16,7 @@
 #include "awl/world_map_presentation.h"
 #include "awl/world_map_feedback.h"
 #include "awl/world_map_presentation_actor.h"
+#include "awl/world_map_actor_animation.h"
 #include "awl/world_map_camera.h"
 #include "awl/world_map_scene_index.h"
 #include "awl/world_map_collision_assets.h"
@@ -6631,6 +6632,30 @@ bool check_local_event_conditions(const char* disc_root) {
                         actor_step.calls[1].arguments[0] == 0 &&
                         actor_presentation.phase == awl::WorldMapPresentationPhase::Reading &&
                         actor_presentation.resume_offset_20 == 0 && actor_presentation.revealed_units_24 == 0;
+                    // Constructor selection is still missing. A separately
+                    // supplied descriptor/binding reaches first model setup,
+                    // preserving both actual animation and the later toggle.
+                    awl::WorldMapActorAnimationState actor_animation;
+                    actor_animation.current_descriptor_0 = actor_animation.base_descriptor_4 = 1;
+                    actor_animation.completed_20 = actor_animation.flag_21 = 1;
+                    actor_animation.restart_count_2c = 7;
+                    actor_animation.model_identity_30 = 100;
+                    awl::WorldMapActorAnimationStep animation_step;
+                    awl::WorldMapActorPresentationToggleState actor_toggle{0x3a, 1, 9, 3.0f};
+                    valid_script = valid_script && awl::prepare_world_map_actor_animation_start(actor_animation, 2,
+                        std::nullopt, std::nullopt, &animation_step) == awl::WorldMapActorAnimationStatus::RequiresDescriptor &&
+                        awl::prepare_world_map_actor_animation_start(actor_animation, 2,
+                            awl::WorldMapActorAnimationDescriptor{2, 0, 0, 0}, awl::WorldMapActorAnimationGroup{0, 200},
+                            &animation_step) == awl::WorldMapActorAnimationStatus::RequiresModelSetup &&
+                        animation_step.primary_setup && animation_step.primary_setup->model_identity == 100 &&
+                        animation_step.primary_setup->bank_identity == 200 && animation_step.primary_setup->clip_index == 0 &&
+                        animation_step.primary_setup->blend_count == 0 &&
+                        animation_step.after.current_descriptor_0 == 2 && animation_step.after.base_descriptor_4 == 2 &&
+                        animation_step.after.completed_20 == 0 && animation_step.after.flag_21 == 0 &&
+                        animation_step.after.restart_count_2c == 0 && actor_animation.base_descriptor_4 == 1 &&
+                        actor_animation.completed_20 == 1 && actor_animation.flag_21 == 1 && actor_animation.restart_count_2c == 7 &&
+                        actor_toggle.flag_158 == 1 && actor_toggle.value_150 == 9 &&
+                        actor_presentation.phase == awl::WorldMapPresentationPhase::Reading;
                     valid_script = valid_script && awl::advance_world_map_presentation(staged_message.bytes.data(),
                         staged_message.bytes.size(), &presentation, 1, 0, 0, &presentation_step) ==
                             awl::WorldMapPresentationStatus::Advanced &&
