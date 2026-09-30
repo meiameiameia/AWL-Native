@@ -1,4 +1,5 @@
 #include "awl/world_map_message_asset.h"
+#include "awl/world_map_presentation_data.h"
 #include "awl/filesystem.h"
 #include "awl/memory.h"
 
@@ -8,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -543,6 +545,143 @@ void test_message_stream() {
            "cleared bank cannot scan stale entry bytes");
 }
 
+bool same_window(const awl::WorldMapPresentationWindow& a, const awl::WorldMapPresentationWindow& b) {
+    if (a.units != b.units) return false;
+    for (size_t i = 0; i < a.passes.size(); ++i) {
+        const auto& x = a.passes[i]; const auto& y = b.passes[i];
+        if (x.units != y.units || x.stop_offset != y.stop_offset || x.next_offset != y.next_offset || x.stop != y.stop) return false;
+    }
+    return true;
+}
+
+void hash_presentation_word(uint64_t& digest, uint32_t word) {
+    for (unsigned shift : {24u, 16u, 8u, 0u}) digest = (digest ^ static_cast<uint8_t>(word >> shift)) * 1099511628211ull;
+}
+uint32_t offset_word(std::optional<size_t> offset) { return offset ? static_cast<uint32_t>(*offset) : UINT32_MAX; }
+void hash_window(uint64_t& digest, const awl::WorldMapPresentationWindow& window) {
+    hash_presentation_word(digest, window.units);
+    for (const auto& pass : window.passes) {
+        hash_presentation_word(digest, pass.units);
+        hash_presentation_word(digest, offset_word(pass.stop_offset));
+        hash_presentation_word(digest, offset_word(pass.next_offset));
+        hash_presentation_word(digest, static_cast<uint32_t>(pass.stop));
+    }
+}
+
+bool check_presentation_data(const std::vector<uint8_t>& bytes, uint64_t& digest) {
+    using Status = awl::WorldMapPresentationDataStatus;
+    awl::WorldMapPresentationWindow window;
+    awl::WorldMapPresentationResume resume;
+    awl::WorldMapPresentationAdvance advance;
+    if (awl::count_world_map_presentation_window(bytes.data(), bytes.size(), 0, &window) != Status::Prepared ||
+        awl::resume_world_map_presentation_data(bytes.data(), bytes.size(), 0, &resume) != Status::Prepared ||
+        awl::advance_world_map_presentation_data(bytes.data(), bytes.size(), 0, 0, &advance) != Status::Prepared) return false;
+    hash_window(digest, window);
+    hash_presentation_word(digest, static_cast<uint32_t>(resume.start_offset));
+    hash_presentation_word(digest, resume.skipped_separator ? 1u : 0u);
+    hash_window(digest, resume.window);
+    hash_presentation_word(digest, offset_word(advance.start_offset));
+    hash_presentation_word(digest, advance.dropped_units);
+    hash_presentation_word(digest, advance.remaining_revealed_units);
+    hash_window(digest, advance.window);
+    return true;
+}
+
+void test_presentation_data() {
+    using Status = awl::WorldMapPresentationDataStatus;
+    using Stop = awl::WorldMapPresentationStop;
+    // Invented tokens, including zero-valued arguments and default controls.
+    const uint8_t bytes[] = {2, 0x80, 0, 0x30, 0xff, 1, 2, 0};
+    awl::WorldMapPresentationWindow window;
+    expect(awl::count_world_map_presentation_window(bytes, sizeof(bytes), 0, &window) == Status::Prepared &&
+        window.units == 3 && window.passes[0].units == 2 && window.passes[0].stop_offset == 5 &&
+        window.passes[0].next_offset == 6 && window.passes[0].stop == Stop::Separator &&
+        window.passes[1].units == 1 && window.passes[1].next_offset == 7 &&
+        window.passes[2].units == 0 && window.passes[2].stop == Stop::Terminator,
+        "presentation counts three passes; controls/embedded zero arguments do not count or terminate");
+    const auto prior = window;
+    expect(awl::count_world_map_presentation_window(bytes, sizeof(bytes), 2, &window) == Status::InvalidInput &&
+        same_window(window, prior), "offset into glyph argument is rejected atomically");
+    expect(awl::count_world_map_presentation_window(bytes, sizeof(bytes), 6, &window) == Status::Prepared && window.units == 1,
+        "nonzero token boundary is a valid supplied start");
+    expect(awl::count_world_map_presentation_window(bytes, sizeof(bytes), std::nullopt, &window) == Status::Prepared &&
+        window.units == 0 && window.passes[0].stop == Stop::NoStart && !window.passes[0].next_offset,
+        "absent source pointer differs from byte-zero offset");
+    std::vector<uint8_t> capped(21, 2); capped.push_back(1); capped.push_back(2); capped.push_back(0);
+    expect(awl::count_world_map_presentation_window(capped.data(), capped.size(), 0, &window) == Status::Prepared &&
+        window.units == 22 && window.passes[0].stop == Stop::Separator && window.passes[1].units == 1,
+        "exactly 21 units still permits separator continuation");
+    capped[21] = 2;
+    expect(awl::count_world_map_presentation_window(capped.data(), capped.size(), 0, &window) == Status::Prepared &&
+        window.units == 21 && window.passes[0].stop == Stop::UnitLimit && window.passes[0].stop_offset == 21 &&
+        !window.passes[0].next_offset && window.passes[1].stop == Stop::NoStart,
+        "22nd countable token stops with no guessed continuation");
+    awl::WorldMapPresentationAdvance advance;
+    expect(awl::advance_world_map_presentation_data(bytes, sizeof(bytes), 0, 1, &advance) == Status::Prepared &&
+        advance.start_offset == 6 && advance.dropped_units == 2 && advance.remaining_revealed_units == UINT32_MAX &&
+        advance.window.units == 1, "one-pass advancement retains original unsigned revealed-word subtraction");
+    expect(awl::advance_world_map_presentation_data(capped.data(), capped.size(), 0, 21, &advance) == Status::Prepared &&
+        !advance.start_offset && advance.remaining_revealed_units == 0 && advance.window.units == 0,
+        "advancing a capped pass recounts an absent source as zero");
+    std::vector<uint8_t> three_rows;
+    for (unsigned row = 0; row < 3; ++row) {
+        three_rows.insert(three_rows.end(), 21, 2); three_rows.push_back(1);
+    }
+    three_rows.push_back(0x80); // Unopened fourth pass is deliberately incomplete.
+    expect(awl::count_world_map_presentation_window(three_rows.data(), three_rows.size(), 0, &window) == Status::Prepared &&
+        window.units == 63 && window.passes[2].next_offset == 66 && window.passes[2].stop == Stop::Separator,
+        "window counts exactly three passes; it does not validate an unopened fourth pass");
+    const uint8_t leading[] = {1, 1, 2, 0};
+    awl::WorldMapPresentationResume resume;
+    expect(awl::resume_world_map_presentation_data(leading, sizeof(leading), 0, &resume) == Status::Prepared &&
+        resume.skipped_separator && resume.start_offset == 1 && resume.window.passes[0].units == 0 &&
+        resume.window.passes[0].stop_offset == 1 && resume.window.units == 1,
+        "resume skips exactly one leading separator, retaining the second");
+    const uint8_t blank[] = {0, 2, 0};
+    expect(awl::resume_world_map_presentation_data(blank, sizeof(blank), 0, &resume) == Status::Prepared &&
+        !resume.skipped_separator && resume.start_offset == 0 && resume.window.units == 0,
+        "resume keeps zero rather than walking beyond termination");
+    const auto stable_window = window; const auto stable_resume = resume; const auto stable_advance = advance;
+    const uint8_t partial[] = {2, 0x80}; const uint8_t missing[] = {2, 1, 2};
+    for (const auto& entry : {std::pair{partial, sizeof(partial)}, std::pair{missing, sizeof(missing)}}) {
+        const auto expected = entry.first == partial ? Status::TruncatedToken : Status::MissingStopToken;
+        expect(awl::count_world_map_presentation_window(entry.first, entry.second, 0, &window) == expected &&
+            same_window(window, stable_window), "late count failure preserves window");
+        expect(awl::resume_world_map_presentation_data(entry.first, entry.second, 0, &resume) == expected &&
+            resume.start_offset == stable_resume.start_offset && resume.skipped_separator == stable_resume.skipped_separator &&
+            same_window(resume.window, stable_resume.window), "late resume failure preserves all output");
+        expect(awl::advance_world_map_presentation_data(entry.first, entry.second, 0, 0, &advance) == expected &&
+            advance.start_offset == stable_advance.start_offset && advance.dropped_units == stable_advance.dropped_units &&
+            advance.remaining_revealed_units == stable_advance.remaining_revealed_units &&
+            same_window(advance.window, stable_advance.window), "late advance failure preserves all output");
+    }
+    expect(awl::count_world_map_presentation_window(blank, sizeof(blank), 1, &window) == Status::InvalidInput &&
+        awl::count_world_map_presentation_window(bytes, sizeof(bytes), sizeof(bytes), &window) == Status::InvalidInput &&
+        awl::count_world_map_presentation_window(bytes, sizeof(bytes), SIZE_MAX, &window) == Status::InvalidInput &&
+        awl::count_world_map_presentation_window(nullptr, 0, std::nullopt, &window) == Status::InvalidInput &&
+        awl::count_world_map_presentation_window(bytes, SIZE_MAX, 0, &window) == Status::InvalidInput &&
+        awl::count_world_map_presentation_window(bytes, sizeof(bytes), 0, nullptr) == Status::InvalidInput &&
+        awl::resume_world_map_presentation_data(bytes, sizeof(bytes), 0, nullptr) == Status::InvalidInput &&
+        awl::advance_world_map_presentation_data(bytes, sizeof(bytes), 0, 0, nullptr) == Status::InvalidInput &&
+        same_window(window, stable_window), "invalid pointer/extent/boundary/output rejected without mutation");
+    expect(awl::count_world_map_presentation_window(bytes, 0, 0, &window) == Status::MissingStopToken &&
+        awl::resume_world_map_presentation_data(bytes, 0, 0, &resume) == Status::MissingStopToken &&
+        awl::advance_world_map_presentation_data(bytes, 0, 0, 0, &advance) == Status::MissingStopToken,
+        "empty supplied stream cannot establish a stop");
+    uint64_t digest = 14695981039346656037ull;
+    for (uint32_t tag = 0; tag < 256; ++tag) {
+        uint8_t token_bytes[8] = {static_cast<uint8_t>(tag)};
+        awl::WorldMapMessageToken token;
+        expect(awl::read_world_map_message_token(token_bytes, sizeof(token_bytes), 0, &token) ==
+            awl::WorldMapMessageStreamStatus::Decoded, "synthetic presentation tag has bounded token metadata");
+        std::vector<uint8_t> stream(token_bytes, token_bytes + token.byte_count);
+        stream.insert(stream.end(), {1, 2, 0});
+        hash_presentation_word(digest, tag);
+        expect(check_presentation_data(stream, digest), "all 256 tags compose counting, resume and advance");
+    }
+    expect(digest == 0x4879bc83cbb9b034ull, "presentation results match independent mapped-DOL callback matrix");
+}
+
 bool check_local(const char* root) {
     awl_memory_init();
     awl::filesystem_init();
@@ -554,6 +693,7 @@ bool check_local(const char* root) {
     uint64_t staging_digest = 14695981039346656037ull;
     uint64_t staged_entries = 0, blocked_entries = 0, staged_bytes = 0, staged_numbers = 0;
     uint64_t entries = 0;
+    uint64_t presentation_digest = 14695981039346656037ull;
     uint64_t token_count = 0;
     uint64_t consumed_bytes = 0;
     auto hash_byte = [&](uint8_t byte) { digest = (digest ^ byte) * 1099511628211ull; };
@@ -624,6 +764,9 @@ bool check_local(const char* root) {
                 if (!valid) break;
             }
             if (!valid) break;
+            hash_presentation_word(presentation_digest, id); hash_presentation_word(presentation_digest, i);
+            valid = check_presentation_data(bytes, presentation_digest);
+            if (!valid) break;
             // Diagnostic zero numeric/argument words, no message sources.
             // These supplied values are not evidence of live game state.
             awl::WorldMapStagedMessage staged;
@@ -671,6 +814,9 @@ bool check_local(const char* root) {
                 static_cast<unsigned long long>(staging_digest));
     valid = valid && staged_entries == 11533 && blocked_entries == 3450 && staged_bytes == 1295763 && staged_numbers == 118 &&
         staging_digest == 0xce50a504bb0b5c42ull;
+    std::printf("Presentation data from raw diagnostic views: cases=%llu, digest=%016llx\n",
+        static_cast<unsigned long long>(entries * 3), static_cast<unsigned long long>(presentation_digest));
+    valid = valid && presentation_digest == 0xcc9d77c26dc3d78bull;
     awl::filesystem_shutdown();
     awl_memory_shutdown();
     return valid;
@@ -686,6 +832,7 @@ int main(int argc, char** argv) {
     test_message_staging();
     test_numeric_staging();
     test_selection_rows();
+    test_presentation_data();
     if (argc == 3 && std::strcmp(argv[1], "--messages-local") == 0) {
         expect(check_local(argv[2]), "local complete catalog matches independent metadata/byte digest");
     } else if (argc != 1) {

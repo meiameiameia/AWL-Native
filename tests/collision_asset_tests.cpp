@@ -12,6 +12,7 @@
 #include "awl/world_map_request_transition.h"
 #include "awl/world_map_selection.h"
 #include "awl/world_map_message_asset.h"
+#include "awl/world_map_presentation_data.h"
 #include "awl/world_map_camera.h"
 #include "awl/world_map_scene_index.h"
 #include "awl/world_map_collision_assets.h"
@@ -6554,6 +6555,9 @@ bool check_local_event_conditions(const char* disc_root) {
                     awl::WorldMapMessageStream message_stream;
                     awl::WorldMapSelectionRows message_rows;
                     awl::WorldMapStagedMessage staged_message;
+                    awl::WorldMapPresentationWindow presentation_window;
+                    awl::WorldMapPresentationResume presentation_resume;
+                    awl::WorldMapPresentationAdvance presentation_advance;
                     std::vector<uint8_t> message_bytes;
                     valid_script = awl::resolve_world_map_message_key(
                         command.instruction.callback_arguments[0],
@@ -6578,7 +6582,21 @@ bool check_local_event_conditions(const char* disc_root) {
                         message_rows.row_count == 2 && message_rows.max_width_units == 20 &&
                         message_rows.byte_budget == 74 && message_rows.aligned_storage_size == 76 &&
                         message_rows.stop_token_offset == 72 && message_rows.bytes.size() == 73 &&
-                        message_rows.width == 528 && message_rows.height == 64;
+                        message_rows.width == 528 && message_rows.height == 64 &&
+                        awl::count_world_map_presentation_window(staged_message.bytes.data(), staged_message.bytes.size(),
+                            0, &presentation_window) == awl::WorldMapPresentationDataStatus::Prepared &&
+                        presentation_window.units == 38 && presentation_window.passes[0].units == 18 &&
+                        presentation_window.passes[0].stop_offset == 33 && presentation_window.passes[0].next_offset == 34 &&
+                        presentation_window.passes[1].units == 20 && presentation_window.passes[1].next_offset == 72 &&
+                        presentation_window.passes[2].units == 0 && presentation_window.passes[2].next_offset == 72 &&
+                        awl::resume_world_map_presentation_data(staged_message.bytes.data(), staged_message.bytes.size(),
+                            0, &presentation_resume) == awl::WorldMapPresentationDataStatus::Prepared &&
+                        !presentation_resume.skipped_separator && presentation_resume.start_offset == 0 &&
+                        presentation_resume.window.units == 38 &&
+                        awl::advance_world_map_presentation_data(staged_message.bytes.data(), staged_message.bytes.size(),
+                            0, 38, &presentation_advance) == awl::WorldMapPresentationDataStatus::Prepared &&
+                        presentation_advance.start_offset == 34 && presentation_advance.dropped_units == 18 &&
+                        presentation_advance.remaining_revealed_units == 20 && presentation_advance.window.units == 20;
                     constexpr uint64_t expected_request_digests[] = {
                         0xa491d22d6bd9d926ull, 0xcd23c6ae945521afull, 0x936962df319cd5b6ull};
                     for (unsigned scenario = 0; scenario < 3; ++scenario) {
