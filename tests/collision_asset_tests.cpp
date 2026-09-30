@@ -14,6 +14,7 @@
 #include "awl/world_map_message_asset.h"
 #include "awl/world_map_presentation_data.h"
 #include "awl/world_map_presentation.h"
+#include "awl/world_map_feedback.h"
 #include "awl/world_map_camera.h"
 #include "awl/world_map_scene_index.h"
 #include "awl/world_map_collision_assets.h"
@@ -6617,6 +6618,19 @@ bool check_local_event_conditions(const char* disc_root) {
                         awl::advance_world_map_presentation(staged_message.bytes.data(), staged_message.bytes.size(),
                             &presentation, 2, 0x100, 0, &presentation_step) == awl::WorldMapPresentationStatus::RequiresFeedback &&
                         presentation_step.feedback_id == 3 && presentation_step.phase_after_effects == awl::WorldMapPresentationPhase::Reading &&
+                        presentation.phase == awl::WorldMapPresentationPhase::InputWait && presentation.revealed_units_24 == 38;
+                    awl::WorldMapFeedbackRegistry feedback_registry;
+                    awl::WorldMapFeedbackStep feedback_step;
+                    awl::WorldMapFeedbackRequest feedback_request;
+                    uint64_t feedback_identity = 0;
+                    valid_script = valid_script && presentation_step.feedback_id &&
+                        feedback_registry.create_request(1, *presentation_step.feedback_id) &&
+                        feedback_registry.link_request(1, 1) &&
+                        feedback_registry.find_request(1, 3, std::nullopt, &feedback_identity) && feedback_identity == 1 &&
+                        feedback_registry.start_request(1, {255, 255, 0}, std::nullopt, &feedback_step) ==
+                            awl::WorldMapFeedbackStatus::RequiresPlayback &&
+                        feedback_step.operation == awl::WorldMapFeedbackOperation::Start && feedback_step.feedback_id == 3 &&
+                        feedback_registry.request(1, &feedback_request) && feedback_request.result_18 == UINT32_MAX &&
                         presentation.phase == awl::WorldMapPresentationPhase::InputWait && presentation.revealed_units_24 == 38;
                     constexpr uint64_t expected_request_digests[] = {
                         0xa491d22d6bd9d926ull, 0xcd23c6ae945521afull, 0x936962df319cd5b6ull};
