@@ -17,6 +17,7 @@
 #include "awl/world_map_feedback.h"
 #include "awl/world_map_presentation_actor.h"
 #include "awl/world_map_actor_animation.h"
+#include "awl/world_map_animation_channel.h"
 #include "awl/world_map_camera.h"
 #include "awl/world_map_scene_index.h"
 #include "awl/world_map_collision_assets.h"
@@ -6366,6 +6367,11 @@ bool check_local_event_conditions(const char* disc_root) {
     awl::WorldMapEventConditions conditions;
     awl::WorldMapGlobalActionArchive actions;
     valid = valid && actions.load() && actions.node_count() == 106;
+    // Diagnostic bank choice; live descriptor/group/model ownership is absent.
+    std::ifstream animation_input(std::filesystem::path(disc_root) / "files" / "boy_0.anm.arc", std::ios::binary);
+    std::vector<uint8_t> animation_bytes((std::istreambuf_iterator<char>(animation_input)), {});
+    awl::WorldMapAnimationBank animation_bank;
+    valid = valid && animation_bank.parse(200, std::move(animation_bytes));
     std::array<uint8_t, 128> unset_saved_bytes{};
     const awl::WorldMapPackedSavedValues unset_saved{
         unset_saved_bytes.data(), unset_saved_bytes.size(), 1};
@@ -6445,7 +6451,7 @@ bool check_local_event_conditions(const char* disc_root) {
             state.has_time_state = true;
             awl::WorldMapMovementRequestPreparation prepared;
             std::vector<uint8_t> action_bytes;
-            auto check_script = [](const std::vector<uint8_t>& bytes,
+            auto check_script = [&animation_bank](const std::vector<uint8_t>& bytes,
                                    uint32_t code_count, uint32_t string_count) {
                 awl::WorldMapActionScript script;
                 awl::WorldMapActionScriptState reset;
@@ -6655,6 +6661,34 @@ bool check_local_event_conditions(const char* disc_root) {
                         animation_step.after.restart_count_2c == 0 && actor_animation.base_descriptor_4 == 1 &&
                         actor_animation.completed_20 == 1 && actor_animation.flag_21 == 1 && actor_animation.restart_count_2c == 7 &&
                         actor_toggle.flag_158 == 1 && actor_toggle.value_150 == 9 &&
+                        actor_presentation.phase == awl::WorldMapPresentationPhase::Reading;
+                    // A supplied model binding and owned bank now prepare the
+                    // complete first channel helper. Remaining initializer
+                    // effects still prevent descriptor/presentation acceptance.
+                    awl::WorldMapAnimationChannelState channel{7, 9, 2, 0, 0, 3, 2};
+                    awl::WorldMapAnimationPlayback target;
+                    target.rate_4 = 5; target.word_14 = 6; target.value_18 = 7;
+                    const std::vector<awl::WorldMapAnimationPlaybackRecord> playback{{1, {}}, {2, target}};
+                    awl::WorldMapAnimationChannelStep channel_step;
+                    awl::WorldMapAnimationClip selected_clip;
+                    valid_script = valid_script && animation_step.primary_setup &&
+                        awl::prepare_world_map_animation_channel(channel, playback, *animation_step.primary_setup,
+                            std::nullopt, &animation_bank, &channel_step) ==
+                                awl::WorldMapAnimationChannelStatus::RequiresModelBinding &&
+                        awl::prepare_world_map_animation_channel(channel, playback, *animation_step.primary_setup,
+                            awl::WorldMapAnimationModelBinding{100, 1}, &animation_bank, &channel_step) ==
+                                awl::WorldMapAnimationChannelStatus::Prepared &&
+                        animation_bank.resolve(0, &selected_clip) &&
+                        channel_step.branch == awl::WorldMapAnimationChannelBranch::NoClip &&
+                        channel_step.after.elapsed_0 == 0 && channel_step.after.duration_4 == 0 &&
+                        channel_step.after.mode_18 == 0 && channel_step.after.blend_14 == 3 &&
+                        channel_step.records_after[1].state.clip_10 &&
+                        channel_step.records_after[1].state.clip_10->offset == selected_clip.reference.offset &&
+                        channel_step.records_after[1].state.limit_c == selected_clip.parameter_zero &&
+                        channel_step.records_after[1].state.rate_4 == 5 &&
+                        channel_step.records_after[1].state.word_14 == 6 && channel_step.records_after[1].state.value_18 == 7 &&
+                        channel.elapsed_0 == 7 && channel.mode_18 == 2 && !playback[1].state.clip_10 &&
+                        actor_animation.base_descriptor_4 == 1 && actor_toggle.flag_158 == 1 &&
                         actor_presentation.phase == awl::WorldMapPresentationPhase::Reading;
                     valid_script = valid_script && awl::advance_world_map_presentation(staged_message.bytes.data(),
                         staged_message.bytes.size(), &presentation, 1, 0, 0, &presentation_step) ==
