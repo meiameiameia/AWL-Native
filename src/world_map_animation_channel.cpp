@@ -1,4 +1,5 @@
 #include "awl/world_map_animation_channel.h"
+#include "world_map_flat_archive.h"
 
 #include <algorithm>
 #include <cmath>
@@ -30,34 +31,9 @@ bool WorldMapAnimationBank::parse(uint64_t identity, std::vector<uint8_t> bytes)
         if (!bounded(bytes.size(), 8, uint64_t(be16(bytes.data() + 4)) * 16)) return false;
         entries.push_back({0, static_cast<uint32_t>(bytes.size())});
     } else {
-        if (bytes.size() < 0x20) return false;
-        const uint32_t nodes = be32(bytes.data() + 4), metadata = be32(bytes.data() + 8);
-        const uint32_t data_start = be32(bytes.data() + 12);
-        if (nodes < 0x20 || !bounded(bytes.size(), nodes, metadata) ||
-            uint64_t(nodes) + metadata > data_start || data_start > bytes.size() ||
-            !bounded(bytes.size(), nodes, 12)) return false;
-        const uint32_t count = be32(bytes.data() + nodes + 8);
-        const uint64_t names = uint64_t(nodes) + uint64_t(count) * 12;
-        const uint64_t end = uint64_t(nodes) + metadata;
-        if (count < 2 || names >= end || !bounded(bytes.size(), nodes, uint64_t(count) * 12) ||
-            be32(bytes.data() + nodes) != 0x01000000u || be32(bytes.data() + nodes + 4) != 0) return false;
-        std::vector<std::pair<uint64_t, uint64_t>> extents;
-        for (uint32_t i = 1; i < count; ++i) {
-            const auto* node = bytes.data() + nodes + size_t(i) * 12;
-            const uint32_t tag = be32(node), offset = be32(node + 4), size = be32(node + 8);
-            const uint64_t name = names + (tag & 0xffffffu);
-            if ((tag >> 24) != 0 || name >= end || offset < data_start || size == 0 ||
-                !bounded(bytes.size(), offset, size)) return false;
-            const auto* first = bytes.data() + name;
-            const void* terminator = std::memchr(first, 0, static_cast<size_t>(end - name));
-            if (terminator == nullptr || terminator == first) return false;
-            entries.push_back({offset, size});
-            extents.emplace_back(offset, uint64_t(offset) + size);
-        }
-        std::sort(extents.begin(), extents.end());
-        for (size_t i = 1; i < extents.size(); ++i) {
-            if (extents[i].first < extents[i - 1].second) return false;
-        }
+        std::vector<detail::FlatArchiveEntry> files;
+        if (!detail::parse_flat_archive(bytes, &files)) return false;
+        for (const auto& file : files) entries.push_back({file.offset, file.size});
     }
     bytes_ = std::move(bytes); entries_ = std::move(entries);
     archive_ = archive; identity_ = identity;

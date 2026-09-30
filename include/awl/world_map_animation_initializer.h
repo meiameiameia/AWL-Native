@@ -2,6 +2,7 @@
 
 #include "awl/world_map_animation_channel.h"
 #include "awl/world_map_model_links.h"
+#include "awl/world_map_secondary_model.h"
 
 namespace awl {
 
@@ -28,11 +29,18 @@ struct WorldMapAnimationFeature3cLookup {
     uint32_t index = 0;
     uint64_t resource_identity = 0;
 };
+struct WorldMapAnimationSecondaryGroup {
+    uint32_t group_index = 0;
+    uint64_t model_bank_identity = 0; // Selected row's inline ARC wrapper at +4.
+};
 struct WorldMapAnimationInitializerObservations {
     std::optional<uint32_t> clock;
     std::optional<uint64_t> fallback_table_38, fallback_table_24;
     std::vector<WorldMapAnimationFeatureRow> rows;
     std::optional<WorldMapAnimationFeature3cLookup> feature_3c;
+    std::optional<WorldMapAnimationSecondaryGroup> secondary_group;
+    const WorldMapModelBank* model_bank = nullptr;
+    std::optional<uint64_t> secondary_arena_cc; // Unknown versus observed null buffer.
 };
 enum class WorldMapAnimationFeatureStatus { Prepared, RequiresTable, RequiresRow, RequiresClock, InvalidInput };
 struct WorldMapAnimationFeatureStep {
@@ -67,6 +75,8 @@ struct WorldMapAnimationInitializerState {
     std::optional<WorldMapAnimationFeature3c> feature_3c;
     uint64_t secondary_model_c0 = 0;
     std::optional<WorldMapModelLinkState> model_links; // Missing means unknown, not empty.
+    std::optional<WorldMapSecondaryModelRecord> secondary_model;
+    std::optional<WorldMapSecondaryFeatureRecord> secondary_feature;
 };
 enum class WorldMapAnimationInitializerStatus {
     Unchanged, RequiresDescriptor, RequiresBinding, RequiresModelSetup,
@@ -88,12 +98,15 @@ struct WorldMapAnimationInitializerStep {
     float rate = 0;
     uint64_t hierarchy_model = 0;
     std::optional<WorldMapModelLinkStep> hierarchy;
+    std::optional<WorldMapSecondarySetupStep> secondary_setup;
+    std::optional<WorldMapSecondaryReleaseStep> secondary_release;
 };
 // FUN_8017D660 -> FUN_8017DB28. Composes the first channel, optional
-// feature metadata, observed absent secondary model, clocks/rate/model
+// feature metadata, absent or fully prepared no-free secondary release, clocks/rate/model
 // metadata and FUN_8017DF68's primary link clearing from supplied nodes.
 // Prepared means this no-secondary initializer proposal is complete, not
-// executed as a live actor/presentation effect. Present secondary setup/release
+// executed as a live actor/presentation effect. Secondary setup prepares resource,
+// compatibility/save and construction arguments; construction/owned release
 // and unknown/reached missing model links remain explicit stops. No frame
 // update. Input and out.after must not alias; InvalidInput preserves output.
 [[nodiscard]] WorldMapAnimationInitializerStatus prepare_world_map_animation_initializer(

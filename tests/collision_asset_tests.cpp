@@ -6373,6 +6373,11 @@ bool check_local_event_conditions(const char* disc_root) {
     std::vector<uint8_t> animation_bytes((std::istreambuf_iterator<char>(animation_input)), {});
     awl::WorldMapAnimationBank animation_bank;
     valid = valid && animation_bank.parse(200, std::move(animation_bytes));
+    std::ifstream model_input(std::filesystem::path(disc_root) / "files" / "boy_0.arc", std::ios::binary);
+    std::vector<uint8_t> model_bytes((std::istreambuf_iterator<char>(model_input)), {});
+    awl::WorldMapModelBank model_bank;
+    awl::WorldMapModelResource model_resource;
+    valid = valid && model_bank.parse(500, std::move(model_bytes)) && model_bank.resolve(1, &model_resource);
     std::array<uint8_t, 128> unset_saved_bytes{};
     const awl::WorldMapPackedSavedValues unset_saved{
         unset_saved_bytes.data(), unset_saved_bytes.size(), 1};
@@ -6452,7 +6457,7 @@ bool check_local_event_conditions(const char* disc_root) {
             state.has_time_state = true;
             awl::WorldMapMovementRequestPreparation prepared;
             std::vector<uint8_t> action_bytes;
-            auto check_script = [&animation_bank](const std::vector<uint8_t>& bytes,
+            auto check_script = [&animation_bank, &model_bank, &model_resource](const std::vector<uint8_t>& bytes,
                                    uint32_t code_count, uint32_t string_count) {
                 awl::WorldMapActionScript script;
                 awl::WorldMapActionScriptState reset;
@@ -6725,6 +6730,30 @@ bool check_local_event_conditions(const char* disc_root) {
                         initializer.animation.base_descriptor_4 == 1 && initializer.primary.elapsed_0 == 7 &&
                         !initializer.records[0].state.clip_10 && initializer.model_links->nodes[0].children_15c[0] == 300 &&
                         actor_toggle.flag_158 == 1 && actor_presentation.phase == awl::WorldMapPresentationPhase::Reading;
+                    // A separate selected-secondary diagnostic reads the owned
+                    // ACT metadata and saves the already-proposed primary
+                    // target record, then stops before model construction.
+                    initializer.secondary_model_c0 = 300;
+                    initializer.secondary_model = awl::WorldMapSecondaryModelRecord{300, 0, model_resource.count_6, 0, 0, 0, 0, 2};
+                    awl::WorldMapAnimationInitializerObservations secondary_observations;
+                    secondary_observations.secondary_group = awl::WorldMapAnimationSecondaryGroup{0, 500};
+                    secondary_observations.model_bank = &model_bank; secondary_observations.secondary_arena_cc = 999;
+                    const uint32_t secondary_selected = (absent_features & ~(127u << 11)) | (1u << 11);
+                    valid_script = valid_script && awl::prepare_world_map_animation_initializer(initializer, 2,
+                        awl::WorldMapActorAnimationDescriptor{2, 0, secondary_selected, 0},
+                        awl::WorldMapActorAnimationGroup{0, 200}, awl::WorldMapAnimationModelBinding{100, 1},
+                        &animation_bank, secondary_observations, &initializer_step) == awl::WorldMapAnimationInitializerStatus::RequiresSecondarySetup &&
+                        initializer_step.secondary_setup && initializer_step.secondary_setup->retain_playback &&
+                        initializer_step.secondary_setup->saved_playback && initializer_step.secondary_setup->saved_playback->clip_10 &&
+                        initializer_step.secondary_setup->saved_playback->clip_10->offset == selected_clip.reference.offset &&
+                        initializer_step.secondary_setup->saved_playback->link_14 == 6 &&
+                        initializer_step.secondary_setup->saved_playback->value_18 == 7 &&
+                        initializer_step.secondary_setup->construction && !initializer_step.secondary_setup->construction->allocation_size &&
+                        initializer_step.secondary_setup->construction->resource.reference.bank_identity == 500 &&
+                        !initializer_step.settings && !initializer_step.hierarchy && initializer.secondary_model_c0 == 300 &&
+                        initializer.animation.base_descriptor_4 == 1 && initializer.primary.elapsed_0 == 7 &&
+                        !initializer.records[1].state.clip_10 && actor_toggle.flag_158 == 1 &&
+                        actor_presentation.phase == awl::WorldMapPresentationPhase::Reading;
                     valid_script = valid_script && awl::advance_world_map_presentation(staged_message.bytes.data(),
                         staged_message.bytes.size(), &presentation, 1, 0, 0, &presentation_step) ==
                             awl::WorldMapPresentationStatus::Advanced &&

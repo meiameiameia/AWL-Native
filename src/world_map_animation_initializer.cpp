@@ -176,8 +176,28 @@ WorldMapAnimationInitializerStatus prepare_world_map_animation_initializer(
         }
         if (resource != state.feature_3c->resource_0) step.after.feature_3c = WorldMapAnimationFeature3c{resource, 0, 0};
     }
-    if (fields.secondary_index) { step.secondary_index = fields.secondary_index; return finish(Status::RequiresSecondarySetup); }
-    if (state.secondary_model_c0 != 0) return finish(Status::RequiresSecondaryRelease);
+    if (fields.secondary_index) {
+        step.secondary_index = fields.secondary_index;
+        if (!observations.secondary_group) return finish(Status::RequiresSecondarySetup);
+        if (observations.secondary_group->group_index != fields.group_index) return Status::InvalidInput;
+        WorldMapSecondarySetupStep secondary;
+        const auto status = prepare_world_map_secondary_model_setup(*fields.secondary_index,
+            observations.secondary_group->model_bank_identity, observations.model_bank,
+            state.secondary_model_c0, state.secondary_model, step.after.records, observations.secondary_arena_cc, &secondary);
+        if (status == WorldMapSecondarySetupStatus::InvalidInput) return Status::InvalidInput;
+        step.secondary_setup = std::move(secondary);
+        return finish(Status::RequiresSecondarySetup);
+    }
+    if (state.secondary_model_c0 != 0) {
+        WorldMapSecondaryReleaseStep release;
+        const auto status = prepare_world_map_secondary_model_release(state.secondary_model_c0,
+            state.secondary_model, state.secondary_feature, &release);
+        if (status == WorldMapSecondaryReleaseStatus::InvalidInput) return Status::InvalidInput;
+        step.secondary_release = release;
+        if (status != WorldMapSecondaryReleaseStatus::Prepared) return finish(Status::RequiresSecondaryRelease);
+        step.after.secondary_model_c0 = release.wrapper_after;
+        step.after.secondary_model = release.model_after; step.after.secondary_feature = release.feature_after;
+    }
     auto& animation = step.after.animation;
     switch (fields.mode_10) {
     case 0: step.loop = false; break;

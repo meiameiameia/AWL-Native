@@ -188,6 +188,53 @@ void test_model_links() {
     expect(prepare(state,{2,0,absent,0},{},&step)==Status::Unchanged && !step.hierarchy,
         "base equality skips all supplied link validation and stores");
 }
+void test_secondary() {
+    // Invented single-file U8 with two opaque ACT records.
+    std::vector<uint8_t> bytes(152);
+    auto put=[&](size_t offset,uint32_t word){for(unsigned i=0;i<4;++i)bytes[offset+i]=static_cast<uint8_t>(word>>(24-i*8));};
+    put(0,0x55aa382d);put(4,32);put(8,32);put(12,64);put(32,0x01000000);put(40,2);
+    put(44,1);put(48,64);put(52,88);bytes[57]='x';put(64,0x007b7960);put(68,2);put(84,0xffff0000);
+    awl::WorldMapModelBank model_bank;expect(model_bank.parse(500,std::move(bytes)),"synthetic secondary bank parses");
+    auto state=initial();state.secondary_model_c0=300;
+    state.secondary_model=awl::WorldMapSecondaryModelRecord{300,10,2,20,30,0,0,2};
+    Observations obs;obs.secondary_group=awl::WorldMapAnimationSecondaryGroup{0,500};obs.model_bank=&model_bank;obs.secondary_arena_cc=0;
+    const uint32_t selected=(absent & ~(127u<<11))|(1u<<11);Step step;
+    expect(prepare(state,{2,2u<<10,selected,0},obs,&step)==Status::RequiresSecondarySetup && step.secondary_setup &&
+        step.secondary_setup->construction && step.secondary_setup->construction->allocation_size==488u &&
+        step.secondary_setup->saved_playback && step.secondary_setup->saved_playback->clip_10->bank_identity==200 &&
+        step.secondary_setup->saved_playback->limit_c==8 && step.secondary_setup->saved_playback->link_14==25 &&
+        step.secondary_setup->saved_playback->value_18==26 && !step.settings && !step.hierarchy &&
+        state.records[1].state.clip_10->bank_identity==77 && state.secondary_model_c0==300 &&
+        step.after.animation.deadline_10==23,"secondary save reads ordered primary-channel proposal before clocks/settings, stopping at construction");
+    obs.secondary_arena_cc.reset();
+    expect(prepare(state,{2,0,selected,0},obs,&step)==Status::RequiresSecondarySetup &&
+        step.secondary_setup->saved_playback && !step.secondary_setup->construction,
+        "unknown secondary arena cannot silently become an allocation request");
+    obs.secondary_group->group_index=1;step.hierarchy_model=444;
+    expect(prepare(state,{2,0,selected,0},obs,&step)==Status::InvalidInput && step.hierarchy_model==444,
+        "wrong secondary group row rejects without overwriting initializer output");
+    state.secondary_model->flags_174=7;
+    expect(prepare(state,{2,0,absent,0},obs,&step)==Status::RequiresSecondaryRelease &&
+        step.secondary_release->required_call->kind==awl::WorldMapSecondaryReleaseKind::Asset && !step.settings &&
+        step.after.secondary_model_c0==300,"absent selection stops before first owned resource free, ignoring unused bank/arena");
+    state.secondary_model->flags_174=0;state.secondary_model->feature_14=400;
+    expect(prepare(state,{2,0,absent,0},obs,&step)==Status::RequiresSecondaryRelease &&
+        step.secondary_release->required_record==400,"missing reached release feature blocks before later settings");
+    state.secondary_feature=awl::WorldMapSecondaryFeatureRecord{400,50,0};
+    state.model_links=awl::WorldMapModelLinkState{{{100,99,0,{300,0,0,0},{}},{300,100,0,{}, {}}}};
+    expect(prepare(state,{2,0,absent,0},obs,&step)==Status::Prepared && step.secondary_release &&
+        step.after.secondary_model_c0==0 && step.after.secondary_feature->buffer_34==0 &&
+        step.after.secondary_model->resource_0==10 && step.after.model_links->nodes[1].parent_150==0 &&
+        state.secondary_model_c0==300 && state.secondary_feature->buffer_34==50 && state.model_links->nodes[1].parent_150==100,
+        "complete no-free release composes with final primary links as a supplied proposal, preserving actual snapshots");
+    state.secondary_feature->flags_38=1;
+    expect(prepare(state,{2,0,absent,0},obs,&step)==Status::RequiresSecondaryRelease &&
+        step.secondary_release->required_call->resource_identity==50 && step.after.secondary_feature->buffer_34==50,
+        "owned feature buffer free cannot be acknowledged by supplied state");
+    state.secondary_feature->flags_38=0;state.secondary_feature->identity=401;step.hierarchy_model=444;
+    expect(prepare(state,{2,0,absent,0},obs,&step)==Status::InvalidInput && step.hierarchy_model==444,
+        "invalid release evidence preserves complete initializer output");
+}
 void test_settings_matrix() {
     const std::array<std::array<uint32_t,2>,6> clocks{{{0,0},{0,1},{1,2},{2,2},{0xfffffffe,UINT32_MAX},{UINT32_MAX,1}}};
     const std::array<std::array<uint64_t,4>,5> layouts{{{1,2,3,4},{2,2,3,4},{3,2,3,4},{4,2,3,4},{1,1,1,1}}};
@@ -293,4 +340,4 @@ void test_failure_order() {
         "channel settings output aliases are rejected");
 }
 } // namespace
-int main(){test_initializer();test_feature();test_model_links();test_failure_order();test_settings_matrix();test_tail_matrix();test_feature_matrix();return failures==0?0:1;}
+int main(){test_initializer();test_feature();test_model_links();test_secondary();test_failure_order();test_settings_matrix();test_tail_matrix();test_feature_matrix();return failures==0?0:1;}
