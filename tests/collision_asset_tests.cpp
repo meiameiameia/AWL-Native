@@ -19,6 +19,7 @@
 #include "awl/world_map_actor_animation.h"
 #include "awl/world_map_animation_channel.h"
 #include "awl/world_map_animation_initializer.h"
+#include "awl/world_map_model_initialization.h"
 #include "awl/world_map_camera.h"
 #include "awl/world_map_scene_index.h"
 #include "awl/world_map_collision_assets.h"
@@ -6757,6 +6758,20 @@ bool check_local_event_conditions(const char* disc_root) {
                         initializer.animation.base_descriptor_4 == 1 && initializer.primary.elapsed_0 == 7 &&
                         !initializer.records[1].state.clip_10 && actor_toggle.flag_158 == 1 &&
                         actor_presentation.phase == awl::WorldMapPresentationPhase::Reading;
+                    // The owned prepared ACT also yields a checked core
+                    // proposal. Actual arena/model publication remains before
+                    // the initializer can accept this construction request.
+                    if (valid_script) {
+                        awl::WorldMapModelCoreInitialization core;
+                        valid_script = awl::prepare_world_map_model_core(
+                            *initializer_step.secondary_setup->construction->preparation.prepared, &core) ==
+                            awl::WorldMapModelCoreStatus::Prepared && core.core &&
+                            core.core->nodes.size() == model_resource.count_6 &&
+                            core.core->inverse_initial_matrices.size() == model_resource.count_6 &&
+                            initializer.secondary_model_c0 == 300 && initializer.primary.elapsed_0 == 7 &&
+                            !initializer.records[1].state.clip_10 &&
+                            actor_presentation.phase == awl::WorldMapPresentationPhase::Reading;
+                    }
                     valid_script = valid_script && awl::advance_world_map_presentation(staged_message.bytes.data(),
                         staged_message.bytes.size(), &presentation, 1, 0, 0, &presentation_step) ==
                             awl::WorldMapPresentationStatus::Advanced &&
