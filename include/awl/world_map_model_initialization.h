@@ -15,7 +15,7 @@ struct WorldMapModelCoreNode {
     uint64_t feature_8 = 0;
     std::optional<WorldMapModelResourceReference> pose_c;
     uint32_t word_10 = 0;
-    // +14 is NOT written by FUN_8019D534. No value is fabricated for it.
+    std::optional<uint32_t> next_feature_14; // Unknown until E7C4; local index + 1, zero null.
 };
 struct WorldMapModelCorePlayback {
     float position_0 = 0, rate_4 = 1;
@@ -35,7 +35,8 @@ struct WorldMapModelCore {
     WorldMapModelCorePlayback playback;
     std::vector<WorldMapModelCoreNode> nodes;
     std::vector<WorldMapModelMatrix> inverse_initial_matrices;
-    uint64_t auxiliary_c = 0, allocation_10 = 0, feature_14 = 0, head_50 = 0;
+    uint64_t auxiliary_c = 0, allocation_10 = 0, feature_14 = 0;
+    uint32_t head_50 = 0; // Model-local node index + 1, zero null.
     uint8_t byte_1c = 0;
     std::array<uint8_t,4> bytes_114{};
     uint32_t word_118 = 0, word_11c = 0, word_154 = 0;
@@ -117,7 +118,9 @@ class WorldMapNativeModel;
 // every reached child must be present in owners, never dereferenced by its key.
 // Resource/node indices come from private banks/cores, not copied proposals.
 // Missing metadata/flags/source or catchable allocation failure changes no
-// owner. Nonnull +C4 remains RequiresFeatureBinding. No actor acknowledgement,
+// owner. Nonnull +C4 stores a borrowed feature key and prepares its sorted
+// node list before attachment. It does not own or execute the feature.
+// No actor acknowledgement,
 // model lifetime registry, pose evaluation or rendering is provided.
 [[nodiscard]] WorldMapModelAttachmentStatus apply_world_map_native_model_attachments(
     const std::vector<WorldMapNativeModel*>& owners,

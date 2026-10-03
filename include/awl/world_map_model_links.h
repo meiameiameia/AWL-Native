@@ -7,6 +7,17 @@
 
 namespace awl {
 
+// Model-local list keys are node index + 1; zero is a known null link.
+// E7C4 establishes reached +14 links; fresh construction leaves them unknown.
+struct WorldMapModelFeatureNode {
+    uint8_t order_1 = 0;
+    uint64_t feature_8 = 0; // Borrowed key, never dereferenced here.
+    std::optional<uint32_t> next_14;
+};
+struct WorldMapModelFeatureState {
+    uint32_t head_50 = 0;
+    std::vector<WorldMapModelFeatureNode> nodes;
+};
 // Supplied semantic snapshots, not serialized model objects or discovered
 // runtime ownership. Whole-node identities preserve shared-child aliases.
 struct WorldMapModelLinkNode {
@@ -15,6 +26,7 @@ struct WorldMapModelLinkNode {
     std::optional<uint32_t> flags_158 = 0; // Native construction leaves this unknown.
     std::array<uint64_t, 4> children_15c{};
     std::array<uint16_t, 4> attachments_16c{}; // Retained opaque halfwords.
+    std::optional<WorldMapModelFeatureState> features;
 };
 struct WorldMapModelLinkState {
     std::vector<WorldMapModelLinkNode> nodes;
@@ -23,6 +35,7 @@ struct WorldMapModelLinkWrite {
     uint64_t identity = 0;
     uint32_t offset = 0;
     uint64_t value = 0;
+    std::optional<uint32_t> node_index; // Present for feature node +8/+14 stores.
 };
 enum class WorldMapModelLinkStatus { Prepared, Advanced, RequiresNode, InvalidInput, RequiresFlags };
 struct WorldMapModelLinkStep {
@@ -71,12 +84,15 @@ struct WorldMapModelAttachmentStep {
     std::optional<uint16_t> feature_node_index;
     std::optional<uint32_t> auxiliary_slot, secondary_slot; // No free slot means no attachment stores.
 };
-// FUN_8017DF68's primary clear and observed-null +C4 path. A nonnull +C8
+// FUN_8017DF68's primary clear and both reached source paths. Nonnull +C4
+// uses DBF4: replace the selected secondary feature key; if previously null,
+// rebuild E7C4's stable ascending priority list, then attach secondary.
+// Without supplied feature nodes it stops at RequiresFeatureBinding.
+// An observed-null +C4 and nonnull +C8
 // selects a secondary node, attaches C8 under secondary at that index,
 // clears C8's flag bits 3, then attaches secondary under primary using its
 // resource halfword. First free
 // slot and all writes/whole-model aliases follow F7B0/F808/FB78 order.
-// Nonnull +C4 stops before DBF4's untranslated feature sorting/binding.
 // Missing reached evidence rolls back all writes; invalid preserves output.
 // Does not own models, interpret whole attachment payloads or evaluate poses.
 [[nodiscard]] WorldMapModelAttachmentStatus prepare_world_map_model_attachments(

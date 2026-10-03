@@ -9,12 +9,19 @@ using Step = awl::WorldMapModelLinkStep;
 using Status = awl::WorldMapModelLinkStatus;
 int failures = 0;
 void expect(bool yes, const char* message) { if (!yes) { ++failures; std::cerr << "FAIL: " << message << '\n'; } }
+bool same_features(const std::optional<awl::WorldMapModelFeatureState>& a,const std::optional<awl::WorldMapModelFeatureState>& b) {
+    if(a.has_value()!=b.has_value())return false;if(!a)return true;
+    if(a->head_50!=b->head_50 || a->nodes.size()!=b->nodes.size())return false;
+    for(size_t i=0;i<a->nodes.size();++i)if(a->nodes[i].order_1!=b->nodes[i].order_1 ||
+        a->nodes[i].feature_8!=b->nodes[i].feature_8 || a->nodes[i].next_14!=b->nodes[i].next_14)return false;
+    return true;
+}
 bool same(const State& a, const State& b) {
     if (a.nodes.size() != b.nodes.size()) return false;
     for (size_t i = 0; i < a.nodes.size(); ++i) {
         const auto& x = a.nodes[i]; const auto& y = b.nodes[i];
         if (x.identity != y.identity || x.parent_150 != y.parent_150 || x.flags_158 != y.flags_158 ||
-            x.children_15c != y.children_15c || x.attachments_16c != y.attachments_16c) return false;
+            x.children_15c != y.children_15c || x.attachments_16c != y.attachments_16c || !same_features(x.features,y.features)) return false;
     }
     return true;
 }
@@ -176,7 +183,7 @@ void test_attachments() {
         step.required_field==0xc4 && same(step.after,state) && step.writes.empty(),"unknown C4 rolls back primary clearing");
     request.feature_c4=99;
     expect(awl::prepare_world_map_model_attachments(state,request,bindings,&step)==AStatus::RequiresFeatureBinding &&
-        step.feature_node_index==2 && step.required_source==99 && same(step.after,state),
+        step.feature_node_index==2u && step.required_source==99 && same(step.after,state),
         "nonnull C4 records selected node and stops before untranslated feature binding");
     request.feature_c4=0;request.auxiliary_model_c8.reset();
     expect(awl::prepare_world_map_model_attachments(state,request,bindings,&step)==AStatus::RequiresSource &&
@@ -256,5 +263,69 @@ void test_attachment_matrix() {
     std::cout<<"MODEL_ATTACHMENT_MATRIX "<<cases<<' '<<std::hex<<digest<<std::dec<<'\n';
     expect(cases==13824 && digest==0x14c76bc961fda019ull,"whole attachment wrapper agrees with raw instructions and first evidence stops");
 }
+void test_feature_binding() {
+    using AStatus=awl::WorldMapModelAttachmentStatus;
+    State state{{{1,0,std::nullopt,{},{}},{2,0,std::nullopt,{},{}}}};
+    state.nodes[1].features=awl::WorldMapModelFeatureState{99,{{3,11,std::nullopt},{1,12,77},{1,0,std::nullopt},{2,14,88},{1,15,99},{0,0,66}}};
+    const std::vector<awl::WorldMapModelAttachmentBinding> bindings{{2,uint16_t(2),uint16_t(0xbeef)}};
+    awl::WorldMapModelAttachmentRequest request{1,2,0x100000063ull,std::nullopt};awl::WorldMapModelAttachmentStep step;
+    expect(awl::prepare_world_map_model_attachments(state,request,bindings,&step)==AStatus::Prepared && step.writes.size()==16 &&
+        step.after.nodes[0].children_15c[0]==2 && step.after.nodes[1].flags_158==15u && step.feature_node_index==2u,
+        "nonnull feature path completes before attachment and never reads unknown C8");
+    const auto& f=*step.after.nodes[1].features;
+    expect(f.head_50==2u && f.nodes[1].next_14==3u && f.nodes[2].next_14==5u && f.nodes[4].next_14==4u &&
+        f.nodes[3].next_14==1u && f.nodes[0].next_14==0u && f.nodes[5].next_14==66u && f.nodes[2].feature_8==*request.feature_c4,
+        "stable ascending byte priorities include equal-order nodes in original order; inactive links stay opaque");
+    expect(step.writes[0].node_index==2u && step.writes[0].offset==8 && step.writes[1].offset==0x50 &&
+        step.writes[1].value==0 && !step.writes[1].node_index,"feature store precedes list-head reset and node insertion writes");
+    const auto sorted=step.after;request.feature_c4=77;
+    expect(awl::prepare_world_map_model_attachments(sorted,request,bindings,&step)==AStatus::Prepared && step.writes.size()==7 &&
+        step.after.nodes[1].features->head_50==2u && step.after.nodes[1].features->nodes[2].feature_8==77 &&
+        step.after.nodes[1].features->nodes[2].next_14==5u,"nonnull replacement skips sorting after primary clears its prior child");
+    auto missing=bindings;missing[0].resource_attachment_index.reset();
+    expect(awl::prepare_world_map_model_attachments(state,request,missing,&step)==AStatus::RequiresAttachmentIndex &&
+        same(step.after,state) && step.writes.empty(),"late missing attachment metadata rolls back feature and sorted-list writes");
+    missing=bindings;missing[0].first_node_index=uint16_t(9);step.required_model=123;
+    expect(awl::prepare_world_map_model_attachments(state,request,missing,&step)==AStatus::InvalidInput && step.required_model==123,
+        "out-of-range selected node preserves output before any accepted feature update");
+    auto empty=state;empty.nodes[1].features->nodes.clear();
+    expect(awl::prepare_world_map_model_attachments(empty,request,bindings,&step)==AStatus::InvalidInput,
+        "zero-count selector fallback cannot fabricate a node or dereference an empty table");
+}
+void feature_binding_digest() {
+    using AStatus=awl::WorldMapModelAttachmentStatus;
+    const std::array<std::array<uint32_t,2>,4> layouts{{{1,2},{2,2},{0,2},{1,1}}};
+    uint64_t digest=14695981039346656037ull;unsigned cases=0;
+    for(uint32_t seed=0;seed<512;++seed)for(const auto& layout:layouts)for(uint32_t variant=0;variant<2;++variant) {
+        const uint32_t count=seed%9,selected=count?(seed>>3)%count:0;
+        State state;std::vector<awl::WorldMapModelAttachmentBinding> bindings;
+        for(uint32_t model=1;model<=2;++model) {
+            Node node;node.identity=model;node.flags_158.reset();node.features.emplace();node.features->head_50=seed&8?77:0;
+            for(uint32_t i=0;i<count;++i)node.features->nodes.push_back({static_cast<uint8_t>((seed>>(i%8))&3),
+                (seed>>(i%9))&1?100+i+model*10:0, (seed+i)&1?std::nullopt:std::optional<uint32_t>(90+i)});
+            state.nodes.push_back(node);bindings.push_back({model,static_cast<uint16_t>(selected),
+                seed&16?std::nullopt:std::optional<uint16_t>(static_cast<uint16_t>(500+model))});
+        }
+        const awl::WorldMapModelAttachmentRequest request{layout[0],layout[1],999+variant,std::nullopt};
+        awl::WorldMapModelAttachmentStep step;const auto status=awl::prepare_world_map_model_attachments(state,request,bindings,&step);
+        expect(status==AStatus::Prepared || status==AStatus::RequiresAttachmentIndex || status==AStatus::InvalidInput,
+            "complete feature snapshots reach success or the independently mapped node/table/parent boundary");
+        for(uint32_t w:{seed,layout[0],layout[1],variant,uint32_t(status),uint32_t(step.required_model),
+            uint32_t(step.feature_node_index.has_value()),uint32_t(step.feature_node_index.value_or(0))})hash32(digest,w);
+        const auto& after=status==AStatus::InvalidInput?state:step.after;
+        for(const auto& node:after.nodes) {
+            for(uint32_t w:{uint32_t(node.identity),uint32_t(node.parent_150),node.flags_158?1u:0u,node.flags_158.value_or(0)})hash32(digest,w);
+            for(auto child:node.children_15c)hash32(digest,uint32_t(child));for(auto index:node.attachments_16c)hash32(digest,index);
+            hash32(digest,node.features->head_50);
+            for(const auto& f:node.features->nodes)for(uint32_t w:{uint32_t(f.order_1),uint32_t(f.feature_8),f.next_14?1u:0u,f.next_14.value_or(0)})hash32(digest,w);
+        }
+        hash32(digest,uint32_t(step.writes.size()));
+        for(const auto& w:step.writes)for(uint32_t x:{uint32_t(w.identity),w.offset,uint32_t(w.value),w.node_index.value_or(UINT32_MAX)})hash32(digest,x);
+        ++cases;
+    }
+    std::cout<<"MODEL_FEATURE_BINDING_MATRIX "<<cases<<' '<<std::hex<<digest<<std::dec<<'\n';
+    expect(cases==4096 && digest==0xad407db874cb9771ull,"feature list and attachment order match mapped original instructions");
+}
+
 } // namespace
-int main() {test_order();test_failure();test_matrix();test_attachments();test_attachment_matrix();return failures==0?0:1;}
+int main() {test_order();test_failure();test_matrix();test_attachments();test_attachment_matrix();test_feature_binding();feature_binding_digest();return failures==0?0:1;}

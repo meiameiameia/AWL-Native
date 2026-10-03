@@ -109,18 +109,6 @@ WorldMapModelAttachmentStatus prepare_world_map_model_attachments(
     }
     if(request.secondary_model==0){*out=std::move(step);return Status::Prepared;}
     if(!request.feature_c4){step.required_field=0xc4;return stop(Status::RequiresSource);}
-    if(*request.feature_c4!=0) {
-        const auto* row=binding(request.secondary_model);
-        if(!row || !row->first_node_index)return stop(Status::RequiresNodeIndex,request.secondary_model);
-        step.feature_node_index=row->first_node_index;step.required_source=*request.feature_c4;
-        return stop(Status::RequiresFeatureBinding,request.secondary_model);
-    }
-    if(!request.auxiliary_model_c8){step.required_field=0xc8;return stop(Status::RequiresSource);}
-    const auto auxiliary=*request.auxiliary_model_c8;
-    if(auxiliary==0){*out=std::move(step);return Status::Prepared;}
-    // DFCC retains r3 from DF8C: DB4C scans secondary, not the C8 child.
-    const auto* secondary_binding=binding(request.secondary_model);
-    if(!secondary_binding || !secondary_binding->first_node_index)return stop(Status::RequiresNodeIndex,request.secondary_model);
     auto attach=[&](uint64_t parent,uint64_t child,uint16_t index,std::optional<uint32_t>& slot) {
         if(parent==0 || child==0)return Status::InvalidInput;
         auto* node=find(parent);if(!node){step.required_model=parent;return Status::RequiresNode;}
@@ -133,17 +121,60 @@ WorldMapModelAttachmentStatus prepare_world_map_model_attachments(
         }
         return Status::Prepared;
     };
-    auto status=attach(request.secondary_model,auxiliary,*secondary_binding->first_node_index,step.auxiliary_slot);
-    if(status==Status::InvalidInput)return status;
-    if(status!=Status::Prepared)return stop(status,step.required_model);
-    auto* auxiliary_node=find(auxiliary);
-    if(!auxiliary_node)return stop(Status::RequiresNode,auxiliary);
-    if(!auxiliary_node->flags_158){step.required_field=0x158;return stop(Status::RequiresFlags,auxiliary);}
-    auxiliary_node->flags_158=*auxiliary_node->flags_158&~3u;
-    step.writes.push_back({auxiliary,0x158,*auxiliary_node->flags_158});
+    const auto* secondary_binding=binding(request.secondary_model);
+    if(*request.feature_c4!=0) {
+        if(!secondary_binding || !secondary_binding->first_node_index)return stop(Status::RequiresNodeIndex,request.secondary_model);
+        step.feature_node_index=secondary_binding->first_node_index;
+        auto* secondary=find(request.secondary_model);
+        if(!secondary)return stop(Status::RequiresNode,request.secondary_model);
+        if(!secondary->features) {
+            step.required_source=*request.feature_c4;
+            return stop(Status::RequiresFeatureBinding,request.secondary_model);
+        }
+        auto& features=*secondary->features;
+        const uint32_t selected=*step.feature_node_index;
+        if(features.nodes.size()>0xffff || selected>=features.nodes.size())return Status::InvalidInput;
+        const bool rebuild=features.nodes[selected].feature_8==0;
+        features.nodes[selected].feature_8=*request.feature_c4;
+        step.writes.push_back({request.secondary_model,8,*request.feature_c4,selected});
+        if(rebuild) {
+            // E7C4 starts a new list, so no old/unknown +14 is traversed.
+            features.head_50=0;step.writes.push_back({request.secondary_model,0x50,0});
+            for(uint32_t i=0;i<features.nodes.size();++i) {
+                auto& candidate=features.nodes[i];if(candidate.feature_8==0)continue;
+                uint32_t previous=0,current=features.head_50;
+                while(current!=0) {
+                    const auto& reached=features.nodes[current-1];
+                    if(reached.order_1>candidate.order_1)break;
+                    previous=current;current=*reached.next_14;
+                }
+                candidate.next_14=current;step.writes.push_back({request.secondary_model,0x14,current,i});
+                if(previous==0) {
+                    features.head_50=i+1;step.writes.push_back({request.secondary_model,0x50,i+1});
+                } else {
+                    features.nodes[previous-1].next_14=i+1;
+                    step.writes.push_back({request.secondary_model,0x14,i+1,previous-1});
+                }
+            }
+        }
+    } else {
+        if(!request.auxiliary_model_c8){step.required_field=0xc8;return stop(Status::RequiresSource);}
+        const auto auxiliary=*request.auxiliary_model_c8;
+        if(auxiliary==0){*out=std::move(step);return Status::Prepared;}
+        // DFCC retains r3 from DF8C: DB4C scans secondary, not the C8 child.
+        if(!secondary_binding || !secondary_binding->first_node_index)return stop(Status::RequiresNodeIndex,request.secondary_model);
+        const auto status=attach(request.secondary_model,auxiliary,*secondary_binding->first_node_index,step.auxiliary_slot);
+        if(status==Status::InvalidInput)return status;
+        if(status!=Status::Prepared)return stop(status,step.required_model);
+        auto* auxiliary_node=find(auxiliary);
+        if(!auxiliary_node)return stop(Status::RequiresNode,auxiliary);
+        if(!auxiliary_node->flags_158){step.required_field=0x158;return stop(Status::RequiresFlags,auxiliary);}
+        auxiliary_node->flags_158=*auxiliary_node->flags_158&~3u;
+        step.writes.push_back({auxiliary,0x158,*auxiliary_node->flags_158});
+    }
     if(!secondary_binding || !secondary_binding->resource_attachment_index)
         return stop(Status::RequiresAttachmentIndex,request.secondary_model);
-    status=attach(request.primary_model,request.secondary_model,*secondary_binding->resource_attachment_index,step.secondary_slot);
+    const auto status=attach(request.primary_model,request.secondary_model,*secondary_binding->resource_attachment_index,step.secondary_slot);
     if(status==Status::InvalidInput)return status;
     if(status!=Status::Prepared)return stop(status,step.required_model);
     *out=std::move(step);return Status::Prepared;

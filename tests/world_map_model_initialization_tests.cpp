@@ -576,9 +576,16 @@ Owner attachment_owner(uint32_t seed,std::optional<uint16_t> attachment=std::nul
     expect(awl::construct_world_map_secondary_model(bank,1,setup,&owner).status==ConstructionStatus::Constructed,
         "attachment fixture constructs its private native resource");return owner;
 }
+bool same_features(const std::optional<awl::WorldMapModelFeatureState>& a,const std::optional<awl::WorldMapModelFeatureState>& b){
+    if(a.has_value()!=b.has_value())return false;if(!a)return true;
+    if(a->head_50!=b->head_50 || a->nodes.size()!=b->nodes.size())return false;
+    for(size_t i=0;i<a->nodes.size();++i)if(a->nodes[i].order_1!=b->nodes[i].order_1 ||
+        a->nodes[i].feature_8!=b->nodes[i].feature_8 || a->nodes[i].next_14!=b->nodes[i].next_14)return false;
+    return true;
+}
 bool same_links(const awl::WorldMapModelLinkNode& a,const awl::WorldMapModelLinkNode& b){
     return a.identity==b.identity && a.parent_150==b.parent_150 && a.flags_158==b.flags_158 &&
-        a.children_15c==b.children_15c && a.attachments_16c==b.attachments_16c;
+        a.children_15c==b.children_15c && a.attachments_16c==b.attachments_16c && same_features(a.features,b.features);
 }
 void test_native_attachments(){
     auto primary=attachment_owner(67);auto secondary=attachment_owner(67,uint16_t(0xbeef),1);
@@ -602,10 +609,6 @@ void test_native_attachments(){
     expect(awl::apply_world_map_native_model_attachments(owners,request,&step)==AttachmentStatus::RequiresSource && step.required_field==0xc4 &&
         same_links(primary->model_links(),before_p) && same_links(secondary->model_links(),before_s) && same_links(auxiliary->model_links(),before_a),
         "missing source evidence cannot publish even primary clearing");
-    request.feature_c4=99;
-    expect(awl::apply_world_map_native_model_attachments(owners,request,&step)==AttachmentStatus::RequiresFeatureBinding &&
-        step.required_source==99 && step.feature_node_index==1 && same_links(primary->model_links(),before_p),
-        "nonnull feature source stops before sorting/binding and retains real owners");
     request.feature_c4=0;
     expect(awl::apply_world_map_native_model_attachments({primary.get(),auxiliary.get()},request,&step)==AttachmentStatus::RequiresNode &&
         step.required_model==s && same_links(primary->model_links(),before_p),"missing reached borrowed key stops without dereferencing it");
@@ -634,6 +637,49 @@ void test_native_attachments(){
     std::cout<<"NATIVE_ATTACHMENT_ALLOCATION_FAILURES "<<rejected<<'\n';
 #endif
 }
+void test_native_feature_attachments(){
+    auto primary=attachment_owner(67),secondary=attachment_owner(67,uint16_t(0xbeef),1);
+    if(!primary || !secondary)return;
+    const auto p=primary->binding().model_identity,s=secondary->binding().model_identity;
+    const std::vector<awl::WorldMapNativeModel*> owners{primary.get(),secondary.get()};AttachmentStep step;
+    awl::WorldMapModelAttachmentRequest request{p,s,0x100000063ull,std::nullopt};
+    expect(awl::apply_world_map_native_model_attachments(owners,request,&step)==AttachmentStatus::Advanced && step.writes.size()==8 &&
+        secondary->core().head_50==2 && secondary->core().nodes[1].next_feature_14==0u &&
+        secondary->core().nodes[1].feature_8==*request.feature_c4 && !secondary->core().nodes[0].next_feature_14 &&
+        !secondary->core().nodes[2].next_feature_14 && primary->core().children_15c[0]==s && secondary->core().flags_158==15u,
+        "owned feature key/list and attachment publish together; C8 and inactive links remain unread");
+    request.feature_c4=77;
+    expect(awl::apply_world_map_native_model_attachments(owners,request,&step)==AttachmentStatus::Advanced && step.writes.size()==7 &&
+        secondary->core().head_50==2 && secondary->core().nodes[1].next_feature_14==0u && secondary->core().nodes[1].feature_8==77 &&
+        !secondary->core().nodes[2].next_feature_14,"replacement preserves the owner's list and skips its rebuild");
+    auto missing=attachment_owner(67),empty=attachment_owner(64,uint16_t(0xbeef));if(!missing || !empty)return;
+    const auto before_p=primary->model_links(),before_s=secondary->model_links(),before_missing=missing->model_links();
+    request.secondary_model=missing->binding().model_identity;
+    expect(awl::apply_world_map_native_model_attachments({primary.get(),secondary.get(),missing.get()},request,&step)==
+        AttachmentStatus::RequiresAttachmentIndex && same_links(primary->model_links(),before_p) &&
+        same_links(secondary->model_links(),before_s) && same_links(missing->model_links(),before_missing),
+        "late absent private table retains primary clearing, feature key and unknown list fields atomically");
+    request.secondary_model=empty->binding().model_identity;step.required_model=123;
+    expect(awl::apply_world_map_native_model_attachments({primary.get(),secondary.get(),empty.get()},request,&step)==
+        AttachmentStatus::InvalidInput && step.required_model==123 && empty->core().head_50==0 &&
+        same_links(primary->model_links(),before_p),"zero-node fallback rejects before graph/feature publication and preserves output");
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    auto fresh=attachment_owner(67,uint16_t(0xbeef),1);if(!fresh)return;
+    const std::vector<awl::WorldMapNativeModel*> fresh_owners{primary.get(),secondary.get(),fresh.get()};
+    request.secondary_model=fresh->binding().model_identity;const auto before_fresh=fresh->model_links();
+    const auto live=allocation_probe::live;size_t rejected=0;bool advanced=false;
+    for(size_t fail_at=0;fail_at<128;++fail_at){
+        allocation_probe::remaining=fail_at;allocation_probe::enabled=true;
+        const auto status=awl::apply_world_map_native_model_attachments(fresh_owners,request,&step);
+        allocation_probe::enabled=false;if(status==AttachmentStatus::Advanced){advanced=true;break;}++rejected;
+        expect(status==AttachmentStatus::AllocationFailure && allocation_probe::live==live && same_links(primary->model_links(),before_p) &&
+            same_links(secondary->model_links(),before_s) && same_links(fresh->model_links(),before_fresh),
+            "feature-list allocation failures preserve every native owner and release all proposals");
+    }
+    expect(advanced && rejected>8,"feature-path allocation sweep reaches graph/list/write publication");
+    std::cout<<"NATIVE_FEATURE_ATTACHMENT_ALLOCATION_FAILURES "<<rejected<<'\n';
+#endif
+}
 void native_attachment_digest(){
     uint64_t digest=14695981039346656037ull;unsigned cases=0;const auto baseline=allocation_probe::live;
     auto hash=[&](uint32_t w){for(unsigned i=0;i<4;++i){digest^=(w>>(24-i*8))&255;digest*=1099511628211ull;}};
@@ -657,15 +703,18 @@ void native_attachment_digest(){
         for(uint32_t i=1;i<=3;++i){const auto node=models[i-1]->model_links();
             for(uint32_t w:{i,normalized(node.parent_150),node.flags_158?1u:0u,node.flags_158.value_or(0)})hash(w);
             for(const auto child:node.children_15c)hash(normalized(child));for(const auto index:node.attachments_16c)hash(index);
+            hash(node.features->head_50);
+            for(const auto& f:node.features->nodes)for(uint32_t w:{uint32_t(f.order_1),uint32_t(f.feature_8),f.next_14?1u:0u,f.next_14.value_or(0)})hash(w);
         }
         hash(uint32_t(step.writes.size()));
         for(const auto& w:step.writes){hash(normalized(w.identity));hash(w.offset);
-            hash(w.offset==0x150 || (w.offset>=0x15c && w.offset<=0x168)?normalized(w.value):uint32_t(w.value));}
+            hash(w.offset==0x150 || (w.offset>=0x15c && w.offset<=0x168)?normalized(w.value):uint32_t(w.value));
+            hash(w.node_index.value_or(UINT32_MAX));}
         ++cases;
     }
     expect(allocation_probe::live==baseline,"all native attachment owner/proposal lifetimes release across the matrix");
-    std::cout<<"NATIVE_ATTACHMENT_MATRIX "<<cases<<' '<<std::hex<<digest<<std::dec<<'\n';
-    expect(cases==1152 && digest==0xb14580010187a15dull,"native private node/resource selectors agree with reached original caller instructions");
+    std::cout<<"NATIVE_FEATURE_ATTACHMENT_MATRIX "<<cases<<' '<<std::hex<<digest<<std::dec<<'\n';
+    expect(cases==1152 && digest==0xd3fa746cf2bb1751ull,"native private node/resource selectors, feature fields and stores agree with original instructions");
 }
 void local_core(const std::filesystem::path& disc,const std::filesystem::path& comparison){
     std::ifstream input(disc/"files"/"boy_0.arc",std::ios::binary);std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(input)),{});
@@ -721,6 +770,10 @@ void local_core(const std::filesystem::path& disc,const std::filesystem::path& c
         "local player ACT has no +1C attachment payload and cannot be fabricated into a secondary attachment");
     expect(awl::apply_world_map_native_model_attachments({owner.get()},{s,s,0,0},&attachments)==AttachmentStatus::Advanced &&
         attachments.writes.empty() && same_links(owner->model_links(),before),"observed null C4/C8 skips unused local attachment metadata");
+    expect(awl::apply_world_map_native_model_attachments({local_primary.get(),owner.get()}, {p,s,99,std::nullopt}, &attachments)==
+        AttachmentStatus::RequiresAttachmentIndex && attachments.required_model==s && attachments.feature_node_index &&
+        attachments.writes.empty() && same_links(owner->model_links(),before) && owner->core().head_50==0,
+        "local feature preparation cannot bypass missing attachment metadata or publish a partial sorted list");
 }
 } // namespace
 int main(int argc,char** argv){
@@ -732,7 +785,7 @@ int main(int argc,char** argv){
 #endif
     test_core();test_inverse();matrix_digest();test_construction();construction_digest();test_native_channel();native_channel_digest();secondary_caller_digest();
     test_native_settings();native_settings_digest();secondary_settings_caller_digest();
-    test_native_attachments();native_attachment_digest();
+    test_native_attachments();test_native_feature_attachments();native_attachment_digest();
     if((argc==3 || argc==4) && std::string(argv[1])=="--model-core-local")local_core(argv[2],argc==4?argv[3]:"");
     else if(argc!=1)expect(false,"usage: --model-core-local <disc> [ignored comparison]");
     return failures==0?0:1;

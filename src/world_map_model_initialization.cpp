@@ -86,7 +86,7 @@ WorldMapModelCoreStatus prepare_world_map_model_core(
         const auto& source=resource.records[visit.record];
         const auto index=static_cast<uint16_t>(core.nodes.size());
         core.nodes.push_back({visit.record,static_cast<uint8_t>(source.word_18>>24),
-            static_cast<uint8_t>(source.word_18>>16),visit.parent,source.word_14>>16,0,source.pointers[0],0});
+            static_cast<uint8_t>(source.word_18>>16),visit.parent,source.word_14>>16,0,source.pointers[0],0,std::nullopt});
         if(source.pointers[2]) {
             uint32_t next;if(!record_index(*source.pointers[2],&next))return Status::InvalidInput;
             stack.push_back({next,visit.parent});
@@ -159,7 +159,12 @@ WorldMapSecondaryModelRecord WorldMapNativeModel::record() const {
         core_.resource.count_6,core_.auxiliary_c,core_.allocation_10,core_.feature_14,flags_174(),keys.playback_178};
 }
 WorldMapModelLinkNode WorldMapNativeModel::model_links() const {
-    return {binding().model_identity,core_.parent_150,core_.flags_158,core_.children_15c,core_.attachments_16c};
+    WorldMapModelLinkNode result{binding().model_identity,core_.parent_150,core_.flags_158,
+        core_.children_15c,core_.attachments_16c,std::nullopt};
+    result.features.emplace();result.features->head_50=core_.head_50;
+    result.features->nodes.reserve(core_.nodes.size());
+    for(const auto& node:core_.nodes)result.features->nodes.push_back({node.order_1,node.feature_8,node.next_feature_14});
+    return result;
 }
 WorldMapModelConstructionResult construct_world_map_secondary_model(
     const WorldMapModelBank& bank,uint32_t index,const WorldMapSecondarySetupStep& setup,
@@ -308,6 +313,11 @@ WorldMapModelAttachmentStatus apply_world_map_native_model_attachments(
             const auto& node=out->after.nodes[i];auto& core=owners[i]->core_;
             core.parent_150=node.parent_150;core.flags_158=node.flags_158;
             core.children_15c=node.children_15c;core.attachments_16c=node.attachments_16c;
+            core.head_50=node.features->head_50;
+            for(size_t j=0;j<core.nodes.size();++j) {
+                core.nodes[j].feature_8=node.features->nodes[j].feature_8;
+                core.nodes[j].next_feature_14=node.features->nodes[j].next_14;
+            }
         }
         return Status::Advanced;
     } catch(const std::bad_alloc&) {return Status::AllocationFailure;}

@@ -6819,6 +6819,11 @@ bool check_local_event_conditions(const char* disc_root) {
                                     {0,secondary_key,std::nullopt,std::nullopt},&attachments) ==
                                     awl::WorldMapModelAttachmentStatus::RequiresSource && attachments.required_field == 0xc4 &&
                                 model->core().parent_150 == 0 && !model->core().flags_158 &&
+                                awl::apply_world_map_native_model_attachments({model.get()},
+                                    {0,secondary_key,99,std::nullopt},&attachments) ==
+                                    awl::WorldMapModelAttachmentStatus::RequiresAttachmentIndex && attachments.required_model == secondary_key &&
+                                model->core().head_50 == 0 && model->core().nodes[0].feature_8 == 0 &&
+                                !model->core().nodes[0].next_feature_14 &&
                                 initializer.secondary_model_c0 == 300 && actor_presentation.phase == awl::WorldMapPresentationPhase::Reading;
                         }
                     }
