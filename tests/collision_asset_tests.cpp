@@ -6797,6 +6797,18 @@ bool check_local_event_conditions(const char* disc_root) {
                                 model->animation_bank(200) && model->playback()->link_14 == 6 &&
                                 initializer.secondary_model_c0 == 300 && !initializer.records[1].state.clip_10 &&
                                 actor_presentation.phase == awl::WorldMapPresentationPhase::Reading;
+                            // This invented descriptor's mode zero selects loop
+                            // zero and rate +1 for both channels. Apply only the
+                            // separate native secondary metadata diagnostic.
+                            valid_script = valid_script && awl::apply_world_map_native_animation_channel_settings(
+                                model.get(),&secondary_channel,&records,0,1,&secondary_channel_step) ==
+                                    awl::WorldMapAnimationChannelStatus::Advanced && model->playback() &&
+                                model->playback()->clip_10 && model->playback()->clip_10->offset == selected_clip.reference.offset &&
+                                model->playback()->position_0 == 0 && model->playback()->rate_4 == 1 &&
+                                model->playback()->word_8 == 0 && model->playback()->link_14 == 0 && model->playback()->value_18 == 0 &&
+                                model->animation_bank(200) && initializer.secondary_model_c0 == 300 &&
+                                initializer.primary.elapsed_0 == 7 && !initializer.records[1].state.clip_10 &&
+                                actor_toggle.flag_158 == 1 && actor_presentation.phase == awl::WorldMapPresentationPhase::Reading;
                         }
                     }
                     valid_script = valid_script && awl::advance_world_map_presentation(staged_message.bytes.data(),

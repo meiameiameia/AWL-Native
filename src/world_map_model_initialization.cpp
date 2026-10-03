@@ -1,4 +1,5 @@
 #include "awl/world_map_model_initialization.h"
+#include "awl/world_map_animation_initializer.h"
 
 #include <algorithm>
 #include <cmath>
@@ -244,6 +245,30 @@ WorldMapAnimationChannelStatus advance_world_map_native_secondary_channel(
         auto external=prepared.records_after;const auto model_after=external.back().state;external.pop_back();
         *out=std::move(prepared);
         if(!retained)model->animation_banks_.swap(banks_after);
+        model->set_playback(model_after);*channel=out->after;records->swap(external);
+        return Status::Advanced;
+    } catch(const std::bad_alloc&) {
+        return Status::AllocationFailure;
+    }
+}
+WorldMapAnimationChannelStatus apply_world_map_native_animation_channel_settings(
+    WorldMapNativeModel* model,WorldMapAnimationChannelState* channel,
+    std::vector<WorldMapAnimationPartialPlaybackRecord>* records,
+    uint32_t loop,float rate,WorldMapAnimationPartialChannelStep* out) {
+    using Status=WorldMapAnimationChannelStatus;
+    if(model==nullptr || channel==nullptr || records==nullptr || out==nullptr ||
+        channel==&out->after || records==&out->records_after)return Status::InvalidInput;
+    const auto binding=model->binding();
+    for(const auto& record:*records)if(record.identity==binding.playback_178)return Status::InvalidInput;
+    try {
+        auto pool=*records;pool.push_back({binding.playback_178,model->partial_playback()});
+        WorldMapAnimationPartialChannelStep prepared;
+        const auto status=prepare_world_map_partial_animation_channel_settings(*channel,pool,
+            binding.model_identity,binding,loop,rate,&prepared);
+        if(status==Status::InvalidInput)return status;
+        if(status!=Status::Prepared){*out=std::move(prepared);return status;}
+        auto external=prepared.records_after;const auto model_after=external.back().state;external.pop_back();
+        *out=std::move(prepared);
         model->set_playback(model_after);*channel=out->after;records->swap(external);
         return Status::Advanced;
     } catch(const std::bad_alloc&) {

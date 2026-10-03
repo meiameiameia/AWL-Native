@@ -55,21 +55,21 @@ WorldMapAnimationFeatureStatus prepare_world_map_animation_feature38(
     return Status::Prepared;
 }
 
-WorldMapAnimationChannelStatus prepare_world_map_animation_channel_settings(
-    const WorldMapAnimationChannelState& channel, const std::vector<WorldMapAnimationPlaybackRecord>& records,
+WorldMapAnimationChannelStatus prepare_world_map_partial_animation_channel_settings(
+    const WorldMapAnimationChannelState& channel, const std::vector<WorldMapAnimationPartialPlaybackRecord>& records,
     uint64_t model_identity, const std::optional<WorldMapAnimationModelBinding>& model,
-    uint32_t loop, float rate, WorldMapAnimationChannelStep* out) {
+    uint32_t loop, float rate, WorldMapAnimationPartialChannelStep* out) {
     using Status = WorldMapAnimationChannelStatus;
     if (out == nullptr || &channel == &out->after || &records == &out->records_after || !std::isfinite(rate)) return Status::InvalidInput;
     for (size_t i = 0; i < records.size(); ++i) {
         if (records[i].identity == 0) return Status::InvalidInput;
         for (size_t j = 0; j < i; ++j) if (records[i].identity == records[j].identity) return Status::InvalidInput;
     }
-    WorldMapAnimationChannelStep step; step.after = channel; step.records_after = records;
+    WorldMapAnimationPartialChannelStep step; step.after = channel; step.records_after = records;
     auto stop = [&](Status status, uint64_t required = 0) {
         step.records_after = records; step.required_record = required; *out = step; return status;
     };
-    auto find = [&](uint64_t identity) -> WorldMapAnimationPlayback* {
+    auto find = [&](uint64_t identity) -> WorldMapAnimationPartialPlayback* {
         for (auto& record : step.records_after) if (record.identity == identity) return &record.state;
         return nullptr;
     };
@@ -79,8 +79,11 @@ WorldMapAnimationChannelStatus prepare_world_map_animation_channel_settings(
     target->word_8 = loop & 0xffu; target->rate_4 = rate;
     if (rate >= 0) target->position_0 = 0.0f;
     else {
-        if (!std::isfinite(target->limit_c)) return Status::InvalidInput;
-        target->position_0 = target->limit_c - reset_epsilon();
+        if (!target->limit_c) {
+            step.required_fields = 2; return stop(Status::RequiresPlaybackFields, channel.target_8);
+        }
+        if (!std::isfinite(*target->limit_c)) return Status::InvalidInput;
+        target->position_0 = *target->limit_c - reset_epsilon();
         if (!std::isfinite(target->position_0)) return Status::InvalidInput;
     }
     // Unsupported signed modes with an incomplete clock perform no model call.
@@ -93,7 +96,12 @@ WorldMapAnimationChannelStatus prepare_world_map_animation_channel_settings(
         if (!from) { step.required_record = source; return Status::RequiresPlaybackRecord; }
         auto* to = find(destination);
         if (!to) { step.required_record = destination; return Status::RequiresPlaybackRecord; }
-        if (!std::isfinite(from->position_0) || !std::isfinite(from->rate_4) || !std::isfinite(from->limit_c)) return Status::InvalidInput;
+        if (!std::isfinite(from->position_0) || !std::isfinite(from->rate_4)) return Status::InvalidInput;
+        if (!from->word_8 || !from->limit_c) {
+            step.required_record = source; step.required_fields = from->word_8 ? 2u : 1u;
+            return Status::RequiresPlaybackFields;
+        }
+        if (!std::isfinite(*from->limit_c)) return Status::InvalidInput;
         *to = *from; to->link_14 = 0; to->value_18 = 0.0f;
         return Status::Prepared;
     };
@@ -128,6 +136,29 @@ WorldMapAnimationChannelStatus prepare_world_map_animation_channel_settings(
     if (status == Status::InvalidInput) return status;
     if (status != Status::Prepared) return stop(status, step.required_record);
     *out = std::move(step); return Status::Prepared;
+}
+
+WorldMapAnimationChannelStatus prepare_world_map_animation_channel_settings(
+    const WorldMapAnimationChannelState& channel, const std::vector<WorldMapAnimationPlaybackRecord>& records,
+    uint64_t model_identity, const std::optional<WorldMapAnimationModelBinding>& model,
+    uint32_t loop, float rate, WorldMapAnimationChannelStep* out) {
+    using Status = WorldMapAnimationChannelStatus;
+    if (out == nullptr || &channel == &out->after || &records == &out->records_after) return Status::InvalidInput;
+    std::vector<WorldMapAnimationPartialPlaybackRecord> partial;
+    partial.reserve(records.size());
+    for (const auto& record : records) partial.push_back({record.identity, partial_world_map_animation_playback(record.state)});
+    WorldMapAnimationPartialChannelStep prepared;
+    const auto status = prepare_world_map_partial_animation_channel_settings(channel, partial, model_identity, model, loop, rate, &prepared);
+    if (status == Status::InvalidInput) return status;
+    WorldMapAnimationChannelStep step;
+    step.after = prepared.after; step.branch = prepared.branch; step.required_record = prepared.required_record;
+    step.records_after.reserve(prepared.records_after.size());
+    for (const auto& record : prepared.records_after) {
+        const auto playback = record.state.complete();
+        if (!playback) return Status::InvalidInput; // Complete input never loses known fields.
+        step.records_after.push_back({record.identity, *playback});
+    }
+    *out = std::move(step); return status;
 }
 
 WorldMapAnimationInitializerStatus prepare_world_map_animation_initializer(

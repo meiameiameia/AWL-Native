@@ -339,5 +339,47 @@ void test_failure_order() {
         awl::prepare_world_map_animation_channel_settings(channel,channel_step.records_after,100,std::nullopt,1,1,&channel_step)==CStatus::InvalidInput,
         "channel settings output aliases are rejected");
 }
+void test_partial_settings() {
+    using CStatus=awl::WorldMapAnimationChannelStatus;
+    std::vector<awl::WorldMapAnimationPartialPlaybackRecord> pool;
+    for(const auto& record:records())pool.push_back({record.identity,awl::partial_world_map_animation_playback(record.state)});
+    Channel channel{1,2,2,3,4,0.25f,1};awl::WorldMapAnimationPartialChannelStep step;
+    const awl::WorldMapAnimationModelBinding model{100,1};
+    pool[1].state.limit_c.reset();pool[2].state.word_8.reset();pool[2].state.value_18.reset();
+    expect(awl::prepare_world_map_partial_animation_channel_settings(channel,pool,100,std::nullopt,257,-1,&step)==
+        CStatus::RequiresPlaybackFields && step.required_record==2 && step.required_fields==2 &&
+        step.records_after[1].state.rate_4==21 && step.records_after[1].state.word_8==22u,
+        "reverse reset needs target limit before model binding and rolls back earlier loop/rate writes");
+    expect(awl::prepare_world_map_partial_animation_channel_settings(channel,pool,100,model,257,1,&step)==
+        CStatus::RequiresPlaybackFields && step.required_record==3 && step.required_fields==1 &&
+        step.records_after[1].state.rate_4==21 && step.records_after[0].state.position_0==10,
+        "forward reset skips unknown target limit but reached previous copy requires its word");
+    pool[2].state.word_8=32;pool[2].state.limit_c.reset();
+    expect(awl::prepare_world_map_partial_animation_channel_settings(channel,pool,100,model,257,1,&step)==
+        CStatus::RequiresPlaybackFields && step.required_record==3 && step.required_fields==2,
+        "copy reports source limit only after word is known");
+    pool[2].state.limit_c=33.0f;
+    expect(awl::prepare_world_map_partial_animation_channel_settings(channel,pool,100,model,257,1,&step)==CStatus::Prepared &&
+        step.records_after[0].state.complete() && step.records_after[0].state.link_14==2 &&
+        step.records_after[0].state.value_18==0.5f && !step.records_after[2].state.value_18,
+        "FECC establishes model weight before linking without reading unknown previous weight");
+    channel.mode_18=UINT32_MAX;
+    expect(awl::prepare_world_map_partial_animation_channel_settings(channel,pool,0,std::nullopt,256,-0.0f,&step)==CStatus::Prepared &&
+        !step.branch && bits(step.records_after[1].state.position_0)==0 && bits(step.records_after[1].state.rate_4)==0x80000000u &&
+        step.records_after[1].state.word_8==0u && !step.records_after[1].state.limit_c,
+        "incomplete unsupported signed mode needs no model/copy; negative zero resets to positive zero");
+    channel.mode_18=0;channel.target_8=1;pool[0].state.word_8.reset();pool[0].state.value_18.reset();
+    expect(awl::prepare_world_map_partial_animation_channel_settings(channel,pool,100,model,257,1,&step)==CStatus::Prepared &&
+        step.records_after[0].state.complete() && step.records_after[0].state.word_8==1u && step.records_after[0].state.value_18==0,
+        "self-copy reads loop established earlier and supplies reset weight without inventing fields");
+    channel={1,2,2,3,4,0.25f,2};pool.erase(pool.begin()+2);
+    expect(awl::prepare_world_map_partial_animation_channel_settings(channel,pool,100,model,1,1,&step)==CStatus::RequiresPlaybackRecord &&
+        step.required_record==3 && step.records_after[0].state.position_0==10 && !step.records_after[0].state.value_18,
+        "late missing previous destination rolls back older copy/model link and target settings");
+    const auto required=step.required_record;
+    expect(awl::prepare_world_map_partial_animation_channel_settings(step.after,pool,100,model,1,1,&step)==CStatus::InvalidInput &&
+        awl::prepare_world_map_partial_animation_channel_settings(channel,step.records_after,100,model,1,1,&step)==CStatus::InvalidInput &&
+        step.required_record==required,"partial settings reject aliased outputs without replacing diagnostics");
+}
 } // namespace
-int main(){test_initializer();test_feature();test_model_links();test_secondary();test_failure_order();test_settings_matrix();test_tail_matrix();test_feature_matrix();return failures==0?0:1;}
+int main(){test_initializer();test_feature();test_model_links();test_secondary();test_failure_order();test_partial_settings();test_settings_matrix();test_tail_matrix();test_feature_matrix();return failures==0?0:1;}

@@ -99,6 +99,17 @@ class WorldMapNativeModel;
     uint32_t descriptor_word_4, uint64_t animation_bank_identity,
     const WorldMapAnimationBank* bank, WorldMapAnimationPartialChannelStep* out);
 
+// Applies supplied loop/rate settings and FUN_801A6A14 metadata to the native
+// owner and external partial records. The secondary caller uses the same
+// control values as primary at 8017DE18..20 and 8017DE78..94. The authoritative
+// owner key is appended only to out.records_after, as for channel setup.
+// All returned failures preserve owner/channel/external records. No bank
+// lookup, actor clocks, attachment, pose evaluation or acknowledgement occurs.
+[[nodiscard]] WorldMapAnimationChannelStatus apply_world_map_native_animation_channel_settings(
+    WorldMapNativeModel* model, WorldMapAnimationChannelState* channel,
+    std::vector<WorldMapAnimationPartialPlaybackRecord>* records,
+    uint32_t loop, float rate, WorldMapAnimationPartialChannelStep* out);
+
 // Native owner for the CD50/D0FC null-arena, null-secondary-resource path.
 // Typed C++ storage replaces the PPC heap/cursor's packed pointer layout.
 // It owns a private immutable bank snapshot and the constructed core, so
@@ -132,6 +143,10 @@ private:
         WorldMapNativeModel*, WorldMapAnimationChannelState*,
         std::vector<WorldMapAnimationPartialPlaybackRecord>*, uint32_t, uint64_t,
         const WorldMapAnimationBank*, WorldMapAnimationPartialChannelStep*);
+    friend WorldMapAnimationChannelStatus apply_world_map_native_animation_channel_settings(
+        WorldMapNativeModel*, WorldMapAnimationChannelState*,
+        std::vector<WorldMapAnimationPartialPlaybackRecord>*, uint32_t, float,
+        WorldMapAnimationPartialChannelStep*);
     void set_playback(const WorldMapAnimationPartialPlayback& playback) noexcept;
     WorldMapNativeModel(std::unique_ptr<const WorldMapModelBank> bank, WorldMapModelCore core,
         std::optional<WorldMapAnimationPlayback> playback);

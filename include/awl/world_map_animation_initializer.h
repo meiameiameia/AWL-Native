@@ -65,6 +65,15 @@ struct WorldMapAnimationFeatureStep {
     const std::vector<WorldMapAnimationPlaybackRecord>& records,
     uint64_t model_identity, const std::optional<WorldMapAnimationModelBinding>& model,
     uint32_t loop, float rate, WorldMapAnimationChannelStep* out);
+// The same metadata writes/copies with FDE8's unwritten fields represented
+// explicitly. Reverse reset requires target +C; FECC requires source +8/+C
+// but establishes destination +18 without reading its old/source value.
+// Missing evidence rolls back even earlier loop/rate/reset/link writes.
+[[nodiscard]] WorldMapAnimationChannelStatus prepare_world_map_partial_animation_channel_settings(
+    const WorldMapAnimationChannelState& channel,
+    const std::vector<WorldMapAnimationPartialPlaybackRecord>& records,
+    uint64_t model_identity, const std::optional<WorldMapAnimationModelBinding>& model,
+    uint32_t loop, float rate, WorldMapAnimationPartialChannelStep* out);
 
 struct WorldMapAnimationInitializerState {
     WorldMapActorAnimationState animation;
