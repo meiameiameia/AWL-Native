@@ -20,8 +20,10 @@ struct WorldMapModelCorePlayback {
     float position_0 = 0, rate_4 = 1;
     std::optional<WorldMapAnimationClipReference> clip_10;
     uint64_t link_14 = 0;
-    // FUN_8019FDE8 leaves +8/+C/+18 unwritten; this is not a complete
-    // WorldMapAnimationPlayback and must not be used as one.
+    // FDE8 leaves these unwritten. Restoration or a later observed channel
+    // write can establish values, but no default value is fabricated.
+    std::optional<uint32_t> word_8;
+    std::optional<float> limit_c, value_18;
 };
 struct WorldMapModelCore {
     WorldMapModelResource resource;
@@ -81,6 +83,21 @@ class WorldMapNativeModel;
 [[nodiscard]] WorldMapModelConstructionResult construct_world_map_secondary_model(
     const WorldMapModelBank& bank, uint32_t index, const WorldMapSecondarySetupStep& setup,
     std::unique_ptr<WorldMapNativeModel>* out);
+// Caller 8017DCF4..DD2C: descriptor secondary index, (index-1)&FFFF,
+// blend bits with 31->10, r6=0 and start=+0. Advances a native owner's
+// supplied channel and external partial records atomically, retaining the
+// selected bank snapshot. The owner's playback record is authoritative and
+// appended to out.records_after only; callers must not duplicate its key.
+// A null bank can reuse an already retained identity. Different bytes under
+// a retained identity reject; other retained banks live until model destruction.
+// Missing fields/bank/records or allocation failure do not change owner,
+// channel or external records. No settings, attachments, pose evaluation or
+// parent acknowledgement. External clip/blend references remain borrowed.
+[[nodiscard]] WorldMapAnimationChannelStatus advance_world_map_native_secondary_channel(
+    WorldMapNativeModel* model, WorldMapAnimationChannelState* channel,
+    std::vector<WorldMapAnimationPartialPlaybackRecord>* records,
+    uint32_t descriptor_word_4, uint64_t animation_bank_identity,
+    const WorldMapAnimationBank* bank, WorldMapAnimationPartialChannelStep* out);
 
 // Native owner for the CD50/D0FC null-arena, null-secondary-resource path.
 // Typed C++ storage replaces the PPC heap/cursor's packed pointer layout.
@@ -98,9 +115,11 @@ public:
     const std::vector<WorldMapModelCoreAllocation>& storage_requests() const { return storage_requests_; }
     uint32_t consumed_size() const { return core_.consumed_size + 0x20u; }
     uint32_t flags_174() const { return 4; }
-    // Fresh construction leaves three playback fields unknown. Only the
-    // caller's compatible seven-field restore makes this snapshot complete.
+    // Fresh construction leaves three playback fields unknown. Restoration
+    // or sufficient observed channel writes can make this snapshot complete.
     const std::optional<WorldMapAnimationPlayback>& playback() const { return playback_; }
+    WorldMapAnimationPartialPlayback partial_playback() const noexcept;
+    const WorldMapAnimationBank* animation_bank(uint64_t identity) const;
     // Opaque host identities are valid only while this owner lives. They
     // replace native pointer keys, not serialized PPC addresses or game IDs.
     WorldMapAnimationModelBinding binding() const;
@@ -109,11 +128,17 @@ private:
     friend WorldMapModelConstructionResult construct_world_map_secondary_model(
         const WorldMapModelBank&, uint32_t, const WorldMapSecondarySetupStep&,
         std::unique_ptr<WorldMapNativeModel>*);
+    friend WorldMapAnimationChannelStatus advance_world_map_native_secondary_channel(
+        WorldMapNativeModel*, WorldMapAnimationChannelState*,
+        std::vector<WorldMapAnimationPartialPlaybackRecord>*, uint32_t, uint64_t,
+        const WorldMapAnimationBank*, WorldMapAnimationPartialChannelStep*);
+    void set_playback(const WorldMapAnimationPartialPlayback& playback) noexcept;
     WorldMapNativeModel(std::unique_ptr<const WorldMapModelBank> bank, WorldMapModelCore core,
         std::optional<WorldMapAnimationPlayback> playback);
     std::unique_ptr<const WorldMapModelBank> bank_;
     WorldMapModelCore core_;
     std::vector<WorldMapModelCoreAllocation> storage_requests_;
     std::optional<WorldMapAnimationPlayback> playback_;
+    std::vector<std::shared_ptr<const WorldMapAnimationBank>> animation_banks_;
 };
 } // namespace awl

@@ -132,12 +132,21 @@ WorldMapNativeModel::WorldMapNativeModel(std::unique_ptr<const WorldMapModelBank
     // The final buffer is unused here; retain the target cursor request as
     // layout evidence without allocating a dummy packed PPC byte buffer.
     storage_requests_.push_back({core_.consumed_size,0x20});
-    if(playback_) {
-        core_.playback.position_0=playback_->position_0;
-        core_.playback.rate_4=playback_->rate_4;
-        core_.playback.clip_10=playback_->clip_10;
-        core_.playback.link_14=playback_->link_14;
-    }
+    if(playback_)set_playback(partial_world_map_animation_playback(*playback_));
+}
+WorldMapAnimationPartialPlayback WorldMapNativeModel::partial_playback() const noexcept {
+    const auto& p=core_.playback;
+    return {p.position_0,p.rate_4,p.word_8,p.limit_c,p.clip_10,p.link_14,p.value_18};
+}
+void WorldMapNativeModel::set_playback(const WorldMapAnimationPartialPlayback& p) noexcept {
+    core_.playback.position_0=p.position_0;core_.playback.rate_4=p.rate_4;
+    core_.playback.clip_10=p.clip_10;core_.playback.link_14=p.link_14;
+    core_.playback.word_8=p.word_8;core_.playback.limit_c=p.limit_c;core_.playback.value_18=p.value_18;
+    playback_=p.complete();
+}
+const WorldMapAnimationBank* WorldMapNativeModel::animation_bank(uint64_t identity) const {
+    for(const auto& bank:animation_banks_)if(bank->identity()==identity)return bank.get();
+    return nullptr;
 }
 WorldMapAnimationModelBinding WorldMapNativeModel::binding() const {
     return {static_cast<uint64_t>(reinterpret_cast<uintptr_t>(this)),
@@ -198,6 +207,47 @@ WorldMapModelConstructionResult construct_world_map_secondary_model(
         return {Status::Constructed};
     } catch(const std::bad_alloc&) {
         return {Status::AllocationFailure};
+    }
+}
+WorldMapAnimationChannelStatus advance_world_map_native_secondary_channel(
+    WorldMapNativeModel* model,WorldMapAnimationChannelState* channel,
+    std::vector<WorldMapAnimationPartialPlaybackRecord>* records,
+    uint32_t descriptor_word,uint64_t bank_identity,const WorldMapAnimationBank* bank,
+    WorldMapAnimationPartialChannelStep* out) {
+    using Status=WorldMapAnimationChannelStatus;
+    if(model==nullptr || channel==nullptr || records==nullptr || out==nullptr ||
+        channel==&out->after || records==&out->records_after || bank_identity==0)return Status::InvalidInput;
+    const uint32_t index=(descriptor_word>>11)&127u;
+    if(index==127)return Status::InvalidInput; // Absent-secondary caller uses release, not this call.
+    WorldMapModelResource resource;
+    if(!model->bank().resolve(index,&resource) || resource.reference.offset!=model->core_.resource.reference.offset)
+        return Status::InvalidInput;
+    const auto binding=model->binding();
+    for(const auto& record:*records)if(record.identity==binding.playback_178)return Status::InvalidInput;
+    uint32_t blend=(descriptor_word>>6)&31u;if(blend==31)blend=10;
+    const WorldMapActorAnimationSetup setup{binding.model_identity,bank_identity,(index-1u)&0xffffu,blend,0,0.0f};
+    try {
+        const auto* retained=model->animation_bank(bank_identity);
+        const auto* selected_bank=bank?bank:retained;
+        auto pool=*records;pool.push_back({binding.playback_178,model->partial_playback()});
+        WorldMapAnimationPartialChannelStep prepared;
+        const auto status=prepare_world_map_partial_animation_channel(*channel,pool,setup,binding,selected_bank,&prepared);
+        if(status==Status::InvalidInput)return status;
+        if(status!=Status::Prepared){*out=std::move(prepared);return status;}
+        if(retained && !retained->same_contents(*selected_bank))return Status::InvalidInput;
+        std::vector<std::shared_ptr<const WorldMapAnimationBank>> banks_after;
+        if(!retained){
+            banks_after=model->animation_banks_;
+            banks_after.push_back(std::make_shared<const WorldMapAnimationBank>(*selected_bank));
+        }
+        // All potentially throwing data allocations finish before publication.
+        auto external=prepared.records_after;const auto model_after=external.back().state;external.pop_back();
+        *out=std::move(prepared);
+        if(!retained)model->animation_banks_.swap(banks_after);
+        model->set_playback(model_after);*channel=out->after;records->swap(external);
+        return Status::Advanced;
+    } catch(const std::bad_alloc&) {
+        return Status::AllocationFailure;
     }
 }
 } // namespace awl

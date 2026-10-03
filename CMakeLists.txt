@@ -450,6 +450,7 @@ add_executable(world_map_model_initialization_tests
     tests/world_map_model_initialization_tests.cpp
     src/world_map_model_initialization.cpp
     src/world_map_secondary_model.cpp
+    src/world_map_animation_channel.cpp
 )
 target_include_directories(world_map_model_initialization_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
 if(MSVC)

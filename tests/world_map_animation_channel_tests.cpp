@@ -193,6 +193,50 @@ void hash_playback(uint64_t& digest, const Record& record) {
         bits(p.limit_c), p.clip_10 ? static_cast<uint32_t>(p.clip_10->bank_identity) : 0u,
         p.clip_10 ? p.clip_10->offset : 0u, static_cast<uint32_t>(p.link_14), bits(p.value_18)}) hash(digest, word);
 }
+void test_partial_channel() {
+    Bank bank;expect(bank.parse(200,raw()),"partial channel bank loads");
+    const Setup setup{100,200,0,10,0,0};const Binding binding{100,1};
+    auto pool=[](bool active){std::vector<awl::WorldMapAnimationPartialPlaybackRecord> result;
+        for(const auto& record:records(active))result.push_back({record.identity,awl::partial_world_map_animation_playback(record.state)});
+        return result;};
+    auto partial=pool(false);awl::WorldMapAnimationPartialChannelStep step;
+    partial[0].state.word_8.reset();partial[0].state.limit_c.reset();partial[0].state.value_18.reset();
+    partial[1].state.word_8.reset();partial[1].state.limit_c.reset();partial[1].state.value_18.reset();
+    const Channel no_clip{0,0,2,0,0,-3,99};
+    expect(awl::prepare_world_map_partial_animation_channel(no_clip,partial,setup,binding,&bank,&step)==Status::Prepared &&
+        step.branch==Branch::NoClip && !step.records_after[0].state.word_8 && !step.records_after[0].state.limit_c &&
+        step.records_after[1].state.word_8==0u && step.records_after[1].state.limit_c==-2 &&
+        step.records_after[1].state.rate_4==21 && step.records_after[1].state.link_14==25 &&
+        !step.records_after[1].state.value_18 && !step.records_after[1].state.complete(),
+        "no-clip reads no unknown model fields; target initialization preserves unknown weight and known rate/link");
+    partial=pool(true);partial[0].state.word_8.reset();partial[0].state.limit_c.reset();
+    const Channel completed{0,0,2,3,4,-3,2};
+    expect(awl::prepare_world_map_partial_animation_channel(completed,partial,setup,binding,&bank,&step)==Status::RequiresPlaybackFields &&
+        step.required_record==1 && step.required_fields==1 && step.after.elapsed_0==0 &&
+        step.records_after[2].state.position_0==30,"first reached unknown source word blocks before limit and preserves copies");
+    partial[0].state.word_8=12;
+    expect(awl::prepare_world_map_partial_animation_channel(completed,partial,setup,binding,&bank,&step)==Status::RequiresPlaybackFields &&
+        step.required_record==1 && step.required_fields==2,"known source word exposes the later unknown source limit");
+    partial=pool(true);partial[1].state.word_8.reset();
+    const Channel interrupted{1,2,2,3,4,-3,1};
+    expect(awl::prepare_world_map_partial_animation_channel(interrupted,partial,setup,binding,&bank,&step)==Status::RequiresPlaybackFields &&
+        step.required_record==2 && step.required_fields==1 && step.records_after[3].state.position_0==40 &&
+        step.after.blend_14==-3,"late unknown copy source rolls back the earlier previous-to-older copy");
+    partial=pool(true);partial[1].state.value_18.reset();partial[2].state.value_18.reset();
+    expect(awl::prepare_world_map_partial_animation_channel(interrupted,partial,setup,binding,&bank,&step)==Status::Prepared &&
+        step.records_after[3].state.value_18==0 && step.records_after[2].state.value_18==0 &&
+        !step.records_after[1].state.value_18 && step.records_after[2].state.complete(),
+        "FECC resets unknown source weights without reading them while FE08 retains target unknown weight");
+    partial=pool(true);partial[0].state.value_18.reset();
+    const Channel all_alias{0,0,1,1,1,-3,2};
+    expect(awl::prepare_world_map_partial_animation_channel(all_alias,partial,setup,binding,&bank,&step)==Status::Prepared &&
+        step.records_after[0].state.complete() && step.records_after[0].state.value_18==0 &&
+        step.records_after[0].state.link_14==0 && step.records_after[0].state.limit_c==-2,
+        "self-copy establishes reset weight before aliased target initialization without reading old unknown weight");
+    const auto saved=step.required_record;partial[0].state.limit_c=std::numeric_limits<float>::infinity();
+    expect(awl::prepare_world_map_partial_animation_channel(completed,partial,setup,binding,&bank,&step)==Status::InvalidInput &&
+        step.required_record==saved,"reached known nonfinite copy limit rejects without output mutation");
+}
 void test_matrix() {
     Bank bank; expect(bank.parse(200, raw()), "matrix bank loads");
     const std::array<std::array<uint32_t, 2>, 8> clocks{{{0,0}, {0,1}, {1,2}, {2,2}, {3,2},
@@ -238,7 +282,7 @@ void local_bank(const std::filesystem::path& disc) {
 }
 } // namespace
 int main(int argc, char** argv) {
-    test_bank(); test_channel(); test_matrix();
+    test_bank(); test_channel(); test_partial_channel(); test_matrix();
     if (argc == 3 && std::string(argv[1]) == "--animation-bank-local") local_bank(argv[2]);
     else if (argc != 1) expect(false, "usage: --animation-bank-local <disc>");
     return failures == 0 ? 0 : 1;

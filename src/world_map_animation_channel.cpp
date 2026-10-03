@@ -60,12 +60,19 @@ bool WorldMapAnimationBank::resolve(uint32_t index, WorldMapAnimationClip* out) 
     return false;
 }
 
-WorldMapAnimationChannelStatus prepare_world_map_animation_channel(
+std::optional<WorldMapAnimationPlayback> WorldMapAnimationPartialPlayback::complete() const noexcept {
+    if(!word_8 || !limit_c || !value_18)return std::nullopt;
+    return WorldMapAnimationPlayback{position_0,rate_4,*word_8,*limit_c,clip_10,link_14,*value_18};
+}
+WorldMapAnimationPartialPlayback partial_world_map_animation_playback(const WorldMapAnimationPlayback& p) noexcept {
+    return {p.position_0,p.rate_4,p.word_8,p.limit_c,p.clip_10,p.link_14,p.value_18};
+}
+WorldMapAnimationChannelStatus prepare_world_map_partial_animation_channel(
     const WorldMapAnimationChannelState& channel,
-    const std::vector<WorldMapAnimationPlaybackRecord>& records,
+    const std::vector<WorldMapAnimationPartialPlaybackRecord>& records,
     const WorldMapActorAnimationSetup& setup,
     const std::optional<WorldMapAnimationModelBinding>& model,
-    const WorldMapAnimationBank* bank, WorldMapAnimationChannelStep* out) {
+    const WorldMapAnimationBank* bank, WorldMapAnimationPartialChannelStep* out) {
     using Status = WorldMapAnimationChannelStatus;
     if (out == nullptr || &channel == &out->after || &records == &out->records_after ||
         setup.model_identity == 0 || setup.bank_identity == 0 || !std::isfinite(setup.start_value)) return Status::InvalidInput;
@@ -73,7 +80,7 @@ WorldMapAnimationChannelStatus prepare_world_map_animation_channel(
         if (records[i].identity == 0) return Status::InvalidInput;
         for (size_t j = 0; j < i; ++j) if (records[i].identity == records[j].identity) return Status::InvalidInput;
     }
-    WorldMapAnimationChannelStep step;
+    WorldMapAnimationPartialChannelStep step;
     step.after = channel; step.records_after = records;
     auto stop = [&](Status status, uint64_t required = 0) {
         step.after = channel; step.records_after = records; step.required_record = required;
@@ -81,7 +88,7 @@ WorldMapAnimationChannelStatus prepare_world_map_animation_channel(
     };
     if (!model) return stop(Status::RequiresModelBinding);
     if (model->model_identity != setup.model_identity || model->playback_178 == 0) return Status::InvalidInput;
-    auto find = [&](uint64_t identity) -> WorldMapAnimationPlayback* {
+    auto find = [&](uint64_t identity) -> WorldMapAnimationPartialPlayback* {
         for (auto& record : step.records_after) if (record.identity == identity) return &record.state;
         return nullptr;
     };
@@ -94,6 +101,7 @@ WorldMapAnimationChannelStatus prepare_world_map_animation_channel(
     } else {
         // The reached record copies execute in order, including aliasing.
         bool unsafe_copy = false;
+        uint32_t missing_fields = 0;
         auto copy = [&](uint64_t source, uint64_t destination) -> std::optional<uint64_t> {
             const auto* from = find(source);
             if (from == nullptr) return source;
@@ -101,10 +109,13 @@ WorldMapAnimationChannelStatus prepare_world_map_animation_channel(
             if (to == nullptr) return destination;
             // NaN conversion/payload behavior of PPC lfs/stfs is outside this
             // finite snapshot translation. Unread/retained fields stay opaque.
-            if (!std::isfinite(from->position_0) || !std::isfinite(from->rate_4) || !std::isfinite(from->limit_c)) {
+            if (!std::isfinite(from->position_0) || !std::isfinite(from->rate_4)) {
                 unsafe_copy = true;
                 return std::nullopt;
             }
+            if(!from->word_8){missing_fields=1;return source;}
+            if(!from->limit_c){missing_fields=2;return source;}
+            if(!std::isfinite(*from->limit_c)){unsafe_copy=true;return std::nullopt;}
             *to = *from; to->link_14 = 0; to->value_18 = 0.0f;
             return std::nullopt;
         };
@@ -126,6 +137,7 @@ WorldMapAnimationChannelStatus prepare_world_map_animation_channel(
             step.after.mode_18 = 2;
         }
         if (unsafe_copy) return Status::InvalidInput;
+        if(missing_fields){step.required_fields=missing_fields;return stop(Status::RequiresPlaybackFields,*missing);}
         if (missing) return *missing == 0 ? Status::InvalidInput : stop(Status::RequiresPlaybackRecord, *missing);
     }
     if (bank == nullptr || !bank->loaded()) return stop(Status::RequiresBank);
@@ -142,6 +154,30 @@ WorldMapAnimationChannelStatus prepare_world_map_animation_channel(
     step.clip = clip;
     *out = std::move(step);
     return Status::Prepared;
+}
+
+WorldMapAnimationChannelStatus prepare_world_map_animation_channel(
+    const WorldMapAnimationChannelState& channel,
+    const std::vector<WorldMapAnimationPlaybackRecord>& records,
+    const WorldMapActorAnimationSetup& setup,
+    const std::optional<WorldMapAnimationModelBinding>& model,
+    const WorldMapAnimationBank* bank, WorldMapAnimationChannelStep* out) {
+    using Status=WorldMapAnimationChannelStatus;
+    if(out==nullptr || &channel==&out->after || &records==&out->records_after)return Status::InvalidInput;
+    std::vector<WorldMapAnimationPartialPlaybackRecord> partial;
+    partial.reserve(records.size());
+    for(const auto& record:records)partial.push_back({record.identity,partial_world_map_animation_playback(record.state)});
+    WorldMapAnimationPartialChannelStep prepared;
+    const auto status=prepare_world_map_partial_animation_channel(channel,partial,setup,model,bank,&prepared);
+    if(status==Status::InvalidInput)return status;
+    WorldMapAnimationChannelStep step;
+    step.after=prepared.after;step.branch=prepared.branch;step.clip=prepared.clip;step.required_record=prepared.required_record;
+    step.records_after.reserve(prepared.records_after.size());
+    for(const auto& record:prepared.records_after){
+        const auto complete=record.state.complete();if(!complete)return Status::InvalidInput;
+        step.records_after.push_back({record.identity,*complete});
+    }
+    *out=std::move(step);return status;
 }
 
 WorldMapAnimationChannelStatus advance_world_map_animation_channel(

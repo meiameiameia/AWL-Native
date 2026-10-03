@@ -6781,6 +6781,23 @@ bool check_local_event_conditions(const char* disc_root) {
                             initializer.secondary_model_c0 == 300 && initializer.primary.elapsed_0 == 7 &&
                             !initializer.records[1].state.clip_10 &&
                             actor_presentation.phase == awl::WorldMapPresentationPhase::Reading;
+                        if (valid_script) {
+                            awl::WorldMapAnimationChannelState secondary_channel{0,0,301,302,303,-3,99};
+                            std::vector<awl::WorldMapAnimationPartialPlaybackRecord> records{
+                                {301,awl::partial_world_map_animation_playback(initializer.records[0].state)},
+                                {302,awl::partial_world_map_animation_playback(initializer.records[0].state)},
+                                {303,awl::partial_world_map_animation_playback(initializer.records[0].state)}};
+                            awl::WorldMapAnimationPartialChannelStep secondary_channel_step;
+                            valid_script = awl::advance_world_map_native_secondary_channel(model.get(),&secondary_channel,&records,
+                                secondary_selected,200,&animation_bank,&secondary_channel_step) == awl::WorldMapAnimationChannelStatus::Advanced &&
+                                secondary_channel_step.clip && secondary_channel_step.clip->reference.bank_identity == 200 &&
+                                secondary_channel.duration_4 == ((secondary_selected >> 6 & 31u) == 31u ? 10u : secondary_selected >> 6 & 31u) &&
+                                records[0].state.clip_10->offset == secondary_channel_step.clip->reference.offset &&
+                                records[1].state.link_14 == 0 && records[1].state.value_18 == 0 &&
+                                model->animation_bank(200) && model->playback()->link_14 == 6 &&
+                                initializer.secondary_model_c0 == 300 && !initializer.records[1].state.clip_10 &&
+                                actor_presentation.phase == awl::WorldMapPresentationPhase::Reading;
+                        }
                     }
                     valid_script = valid_script && awl::advance_world_map_presentation(staged_message.bytes.data(),
                         staged_message.bytes.size(), &presentation, 1, 0, 0, &presentation_step) ==
