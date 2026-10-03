@@ -1,4 +1,5 @@
 #include "awl/world_map_model_initialization.h"
+#include "awl/world_map_model_feature.h"
 
 #include <algorithm>
 #include <cmath>
@@ -834,6 +835,72 @@ void native_source_digest(){
     std::cout<<"NATIVE_SOURCE_TRANSITION_MATRIX "<<cases<<' '<<std::hex<<digest<<std::dec<<'\n';
     expect(cases==864 && digest==0xcddb07e1d61a19a5ull,"source fields, sequential graph/feature state and ordered stores match all three mapped DOL setters");
 }
+bool same_feature_object(const awl::WorldMapModelFeatureObjectState& a,const awl::WorldMapModelFeatureObjectState& b){
+    if(a.resource_0!=b.resource_0 || a.buffer_34!=b.buffer_34 || a.matrix_4!=b.matrix_4 || a.flags_38!=b.flags_38 ||
+        a.enabled_3c!=b.enabled_3c || a.byte_3d!=b.byte_3d || a.metadata_44!=b.metadata_44 || a.cache_48.size()!=b.cache_48.size())return false;
+    for(size_t i=0;i<a.cache_48.size();++i){const auto& x=a.cache_48[i];const auto& y=b.cache_48[i];
+        if(x.channel!=y.channel || x.texture.has_value()!=y.texture.has_value() ||
+            (x.texture && (x.texture->bank_identity!=y.texture->bank_identity || x.texture->index!=y.texture->index)))return false;
+    }
+    return true;
+}
+void test_owned_feature_attachment(){
+    using FeatureStatus=awl::WorldMapModelFeatureStatus;
+    auto primary=attachment_owner(67),secondary=attachment_owner(67,uint16_t(0xbeef),1);if(!primary || !secondary)return;
+    std::unique_ptr<awl::WorldMapNativeModelFeature> feature;
+    expect(awl::construct_world_map_native_model_feature(2,&feature)==FeatureStatus::Constructed && feature && !feature->attachment_source(),
+        "actual initial empty-feature predicate skips a newly owned feature source");if(!feature)return;
+    awl::WorldMapHeldItemFeatureObservations observations;
+    observations.row=awl::WorldMapHeldItemFeatureRow{11,3,1,2,10,20,30,40};
+    observations.resource=awl::WorldMapModelFeatureResourceBinding{awl::WorldMapHeldItemFeatureBank::Primary,1,900,901,
+        std::vector<awl::WorldMapModelFeatureCommand>{{1,0},{1,1}}};observations.texture_bank_identity=0x100000003ull;
+    awl::WorldMapHeldItemFeatureStep feature_step;
+    expect(awl::advance_world_map_native_held_item_feature(feature.get(),11,observations,&feature_step)==FeatureStatus::Advanced &&
+        feature->attachment_source() && feature->state().cache_48[0].texture->index==10 && feature->state().cache_48[1].texture->index==20,
+        "supported supplied item resources prepare an owned feature and both texture cache channels");
+    awl::WorldMapModelAttachmentRequest sources{primary->binding().model_identity,secondary->binding().model_identity,std::nullopt,std::nullopt};SourceStep step;
+    const std::vector<awl::WorldMapNativeModel*> owners{primary.get(),secondary.get()};
+    expect(feature->attachment_source() && awl::apply_world_map_native_model_source_change(owners,&sources,*feature->attachment_source(),&step)==
+        AttachmentStatus::Advanced && sources.feature_c4==feature->identity() && sources.auxiliary_model_c8==0u &&
+        secondary->core().nodes[1].feature_8==feature->identity() && primary->core().children_15c[0]==secondary->binding().model_identity,
+        "native feature owner supplies a stable borrowed key to the complete separate source/attachment transaction");
+    const auto populated=feature->state();
+    expect(awl::advance_world_map_native_held_item_feature(feature.get(),0,{},&feature_step)==FeatureStatus::Advanced && !feature->attachment_source() &&
+        feature->state().cache_48[0].texture->index==10 && sources.feature_c4==feature->identity() &&
+        secondary->core().nodes[1].feature_8==feature->identity(),"feature reset retains cache and does not invent an automatic holder/graph clear");
+    expect(awl::apply_world_map_native_model_source_change(owners,&sources,{SourceKind::Clear,0},&step)==AttachmentStatus::Advanced &&
+        sources.feature_c4==0u && primary->core().children_15c[0]==0 && secondary->core().nodes[1].feature_8==feature->identity(),
+        "separate holder clear detaches while the owned feature remains live and its node key remains borrowed");
+    // The detached model still retains that feature key. Release both model
+    // borrowers before replacing or destroying the feature owner.
+    secondary.reset();primary.reset();
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    size_t rejected=0;bool constructed=false;const auto original=feature.get();const auto before=feature->state();const auto live=allocation_probe::live;
+    for(size_t fail_at=0;fail_at<64;++fail_at){
+        allocation_probe::remaining=fail_at;allocation_probe::enabled=true;
+        const auto status=awl::construct_world_map_native_model_feature(2,&feature);allocation_probe::enabled=false;
+        if(status==FeatureStatus::Constructed){constructed=true;break;}++rejected;
+        expect(status==FeatureStatus::AllocationFailure && feature.get()==original && allocation_probe::live==live && same_feature_object(feature->state(),before),
+            "every feature construction allocation failure preserves the existing owner and frees pending cache/object storage");
+    }
+    expect(constructed && rejected==2,"native feature constructor has two checked allocation stages");
+    std::cout<<"NATIVE_FEATURE_CONSTRUCTION_ALLOCATION_FAILURES "<<rejected<<'\n';
+    rejected=0;bool advanced=false;const auto fresh=feature->state();const auto old_out=feature_step.after;const auto old_count=feature_step.writes.size();
+    const auto update_live=allocation_probe::live;
+    for(size_t fail_at=0;fail_at<64;++fail_at){
+        allocation_probe::remaining=fail_at;allocation_probe::enabled=true;
+        const auto status=awl::advance_world_map_native_held_item_feature(feature.get(),11,observations,&feature_step);allocation_probe::enabled=false;
+        if(status==FeatureStatus::Advanced){advanced=true;break;}++rejected;
+        expect(status==FeatureStatus::AllocationFailure && allocation_probe::live==update_live && same_feature_object(feature->state(),fresh) &&
+            same_feature_object(feature_step.after,old_out) && feature_step.writes.size()==old_count,
+            "every feature update allocation failure preserves owner/output and releases copied cache/write proposals");
+    }
+    expect(advanced && rejected>3 && same_feature_object(feature->state(),populated),"feature update failure sweep reaches the last publication copy");
+    std::cout<<"NATIVE_HELD_FEATURE_ALLOCATION_FAILURES "<<rejected<<'\n';
+#else
+    expect(populated.resource_0==900,"retained complete feature snapshot identifies the supplied resource");
+#endif
+}
 void local_core(const std::filesystem::path& disc,const std::filesystem::path& comparison){
     std::ifstream input(disc/"files"/"boy_0.arc",std::ios::binary);std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(input)),{});
     awl::WorldMapModelBank bank;awl::WorldMapModelPreparationStep prepared;Step step;
@@ -916,6 +983,7 @@ int main(int argc,char** argv){
     test_core();test_inverse();matrix_digest();test_construction();construction_digest();test_native_channel();native_channel_digest();secondary_caller_digest();
     test_native_settings();native_settings_digest();secondary_settings_caller_digest();
     test_native_attachments();test_native_feature_attachments();native_attachment_digest();test_native_source_changes();native_source_digest();
+    test_owned_feature_attachment();
     if((argc==3 || argc==4) && std::string(argv[1])=="--model-core-local")local_core(argv[2],argc==4?argv[3]:"");
     else if(argc!=1)expect(false,"usage: --model-core-local <disc> [ignored comparison]");
     return failures==0?0:1;

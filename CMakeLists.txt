@@ -41,6 +41,7 @@ set(SOURCES
     src/world_map_model_links.cpp
     src/world_map_secondary_model.cpp
     src/world_map_model_initialization.cpp
+    src/world_map_model_feature.cpp
     src/world_map_camera.cpp
     src/world_map_scene_index.cpp
     src/world_map_collision_registry.cpp
@@ -90,6 +91,7 @@ set(HEADERS
     include/awl/world_map_model_links.h
     include/awl/world_map_secondary_model.h
     include/awl/world_map_model_initialization.h
+    include/awl/world_map_model_feature.h
     src/world_map_flat_archive.h
     src/world_map_transition_clock.h
     include/awl/world_map_camera.h
@@ -449,6 +451,7 @@ add_test(NAME world_map_model_resource_tests COMMAND world_map_model_resource_te
 add_executable(world_map_model_initialization_tests
     tests/world_map_model_initialization_tests.cpp
     src/world_map_model_initialization.cpp
+    src/world_map_model_feature.cpp
     src/world_map_secondary_model.cpp
     src/world_map_animation_channel.cpp
     src/world_map_animation_initializer.cpp
@@ -462,3 +465,15 @@ else()
     target_compile_options(world_map_model_initialization_tests PRIVATE -Wall -Wextra)
 endif()
 add_test(NAME world_map_model_initialization_tests COMMAND world_map_model_initialization_tests)
+
+add_executable(world_map_model_feature_tests
+    tests/world_map_model_feature_tests.cpp
+    src/world_map_model_feature.cpp
+)
+target_include_directories(world_map_model_feature_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+if(MSVC)
+    target_compile_options(world_map_model_feature_tests PRIVATE /W4)
+else()
+    target_compile_options(world_map_model_feature_tests PRIVATE -Wall -Wextra)
+endif()
+add_test(NAME world_map_model_feature_tests COMMAND world_map_model_feature_tests)
