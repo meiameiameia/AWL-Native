@@ -79,6 +79,7 @@ struct WorldMapHeldItemFeatureStep {
     const WorldMapHeldItemFeatureObservations& observations, WorldMapHeldItemFeatureStep* out);
 
 class WorldMapNativeModelFeature;
+class WorldMapHeldItemAssets;
 // Complete 80012000/27D0 null-resource/null-arena construction with typed
 // owned cache storage. Initial player calls use the verified capacity two.
 // Payload words remain unknown until binding. Unsafe PPC size wrap rejects;
@@ -109,7 +110,11 @@ private:
         uint32_t, std::unique_ptr<WorldMapNativeModelFeature>*);
     friend WorldMapModelFeatureStatus advance_world_map_native_held_item_feature(
         WorldMapNativeModelFeature*, int32_t, const WorldMapHeldItemFeatureObservations&, WorldMapHeldItemFeatureStep*);
+    friend WorldMapModelFeatureStatus advance_world_map_native_held_item_feature_from_assets(
+        WorldMapNativeModelFeature*, int32_t, const std::optional<WorldMapHeldItemFeatureRow>&,
+        std::optional<uint8_t>, std::shared_ptr<const WorldMapHeldItemAssets>, WorldMapHeldItemFeatureStep*);
     explicit WorldMapNativeModelFeature(WorldMapModelFeatureObjectState state) noexcept;
     WorldMapModelFeatureObjectState state_;
+    std::vector<std::shared_ptr<const WorldMapHeldItemAssets>> asset_providers_;
 };
 } // namespace awl
