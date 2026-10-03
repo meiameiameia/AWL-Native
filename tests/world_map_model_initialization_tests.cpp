@@ -2,13 +2,37 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <limits>
+#include <new>
 #include <string>
+#if defined(_MSC_VER) && defined(_DEBUG)
+#include <crtdbg.h>
+#endif
+
+// Fail real native allocations at each construction stage. This affects
+// this test executable only, never the production allocator or other tests.
+namespace allocation_probe {
+bool enabled=false;
+size_t remaining=0, live=0;
+}
+void* operator new(size_t size) {
+    if(allocation_probe::enabled && allocation_probe::remaining--==0)throw std::bad_alloc();
+    if(void* pointer=std::malloc(size==0?1:size)){++allocation_probe::live;return pointer;}
+    throw std::bad_alloc();
+}
+void operator delete(void* pointer) noexcept {
+    if(pointer){--allocation_probe::live;std::free(pointer);}
+}
+void* operator new[](size_t size){return ::operator new(size);}
+void operator delete[](void* pointer) noexcept {::operator delete(pointer);}
+void operator delete(void* pointer,size_t) noexcept {::operator delete(pointer);}
+void operator delete[](void* pointer,size_t) noexcept {::operator delete(pointer);}
 
 namespace {
 using Resource=awl::WorldMapPreparedModelResource;
@@ -133,6 +157,151 @@ void matrix_digest(){
     // Filled from the independently executed mapped constructor instructions.
     expect(digest==0xe9a1e6e889dd2022ull,"model core layout and ordered node fields agree with original mapped instructions");
 }
+using ConstructionStatus=awl::WorldMapModelConstructionStatus;
+using Setup=awl::WorldMapSecondarySetupStep;
+using Owner=std::unique_ptr<awl::WorldMapNativeModel>;
+void put(std::vector<uint8_t>& b,size_t at,uint32_t word){for(unsigned i=0;i<4;++i)b[at+i]=static_cast<uint8_t>(word>>(24-i*8));}
+awl::WorldMapModelBank bank_fixture(uint32_t seed=3,unsigned fault=0){
+    const uint32_t count=seed%64,table=32+count*28,size=table+count*52;
+    const bool extended=(seed&64)!=0;
+    std::vector<uint8_t> bytes(64+size);
+    put(bytes,0,0x55aa382d);put(bytes,4,32);put(bytes,8,32);put(bytes,12,64);
+    put(bytes,32,0x01000000);put(bytes,40,2);put(bytes,44,1);put(bytes,48,64);put(bytes,52,size);bytes[57]='m';
+    const size_t base=64;put(bytes,base,0x007b7960);put(bytes,base+4,count);put(bytes,base+12,count?32:0);
+    put(bytes,base+20,extended?0:0xffff0000u);
+    for(uint32_t i=0;i<count;++i){const size_t record=base+32+i*28,pose=base+table+i*52;
+        put(bytes,record,table+i*52);put(bytes,record+8,i+1<count?32+(i+1)*28:0);
+        put(bytes,record+20,(((seed+i*17)&65535)<<16)|0x1357);
+        put(bytes,record+24,0x01000000|(((seed+i*7)&255)<<16)|0xa55a);
+        put(bytes,pose,0); // Independently obvious identity, no quaternion error.
+        if(fault==1 && i==1){put(bytes,pose,0x02000000);put(bytes,pose+16,bits(90));}
+        if(fault==2 && i==1)put(bytes,pose,0x10000000); // Explicit zero/singular matrix.
+        if(fault==3 && i+1==count)put(bytes,record+8,32); // Cycle back to root.
+        if(fault==4 && i==1)put(bytes,record,table); // Shared in-place pose span.
+    }
+    awl::WorldMapModelBank bank;expect(bank.parse(0x100000003ull,std::move(bytes)),"invented native-owner bank parses");return bank;
+}
+awl::WorldMapAnimationPlayback saved_playback(uint32_t seed){
+    return {float(seed)/4,-1.25f,0xdead0000u+seed,7.5f,
+        awl::WorldMapAnimationClipReference{0x200000003ull,0x80+seed},0x300000003ull+seed,-4.25f};
+}
+Setup setup_fixture(const awl::WorldMapModelBank& bank,uint32_t seed=0){
+    Setup setup;awl::WorldMapModelResource resource;
+    expect(bank.resolve(1,&resource),"invented model metadata resolves");
+    const bool retain=(seed&128)!=0;
+    const auto saved=saved_playback(seed);
+    const std::vector<awl::WorldMapAnimationPlaybackRecord> records{{700,saved}};
+    const awl::WorldMapSecondaryModelRecord model{300,0,retain?resource.count_6:resource.count_6+1u,0,0,0,0,700};
+    const auto status=awl::prepare_world_map_secondary_model_setup(1,bank.identity(),&bank,300,model,records,uint64_t(0),&setup);
+    expect(status==awl::WorldMapSecondarySetupStatus::RequiresConstruction ||
+        status==awl::WorldMapSecondarySetupStatus::RequiresResourcePreparation,"supplied setup reaches construction or explicit resource stop");
+    return setup;
+}
+void test_construction(){
+    auto bank=bank_fixture(67);auto setup=setup_fixture(bank);Owner model;
+    expect(awl::construct_world_map_secondary_model(bank,1,setup,&model).status==ConstructionStatus::Constructed && model,
+        "null-arena/null-secondary constructor creates a real native owner");
+    if(!model)return;
+    const auto record=model->record();const auto keys=model->binding();
+    expect(model->flags_174()==4 && record.identity==keys.model_identity && record.playback_178==keys.playback_178 &&
+        record.identity!=0 && record.playback_178!=0 && record.identity!=record.playback_178 && record.count_4==3 &&
+        record.resource_0!=0 && record.auxiliary_c==0 && record.allocation_10==0 && record.feature_14==0,
+        "owned model exposes stable distinct native keys, count and supported zero-feature state");
+    expect(!model->playback() && model->core().playback.rate_4==1 && model->storage_requests().size()==5 &&
+        model->storage_requests().back().size==32 && model->storage_requests().back().offset==model->core().consumed_size &&
+        model->consumed_size()==656 && model->core().resource.allocation_size==800,
+        "fresh playback stays partial; D0FC final cursor request and conservative estimate remain distinct");
+    const auto* previous=model.get();
+    for(unsigned fault=0;fault<15;++fault){auto bad=setup;
+        switch(fault){
+        case 0:bad.resource.reset();break;case 1:bad.construction.reset();break;
+        case 2:bad.resource->reference.bank_identity=9;break;case 3:++bad.construction->resource.count_6;break;
+        case 4:bad.construction->argument_5=1;break;case 5:bad.construction->allocation_size.reset();break;
+        case 6:++*bad.construction->allocation_size;break;case 7:bad.construction->result_flags_174=0;break;
+        case 8:bad.retain_playback=true;break;case 9:bad.saved_playback=saved_playback(0);break;
+        case 10:bad.retain_playback=true;bad.saved_playback=saved_playback(0);bad.saved_playback->limit_c=std::numeric_limits<float>::infinity();break;
+        case 11:bad.construction->preparation_status=awl::WorldMapModelPreparationStatus::RequiresEulerRotation;break;
+        case 12:bad.construction->arena_identity=99;break; // Contradictory owned-size proposal.
+        case 13:++bad.resource->allocation_size;break;case 14:++bad.construction->resource.reference.offset;break;
+        }
+        expect(awl::construct_world_map_secondary_model(bank,1,bad,&model).status==ConstructionStatus::InvalidInput &&
+            model.get()==previous && model->binding().model_identity==keys.model_identity,
+            "malformed supplied proposals preserve the existing native owner and binding");
+    }
+    setup.construction->arena_identity=0x400000003ull;setup.construction->allocation_size.reset();setup.construction->result_flags_174=0;
+    const auto blocked=awl::construct_world_map_secondary_model(bank,1,setup,&model);
+    expect(blocked.status==ConstructionStatus::RequiresArenaBinding && blocked.required_arena==0x400000003ull &&
+        model.get()==previous,"external arena is an explicit unaccepted stop and cannot replace a native owner");
+    setup=setup_fixture(bank,128);const auto saved=*setup.saved_playback;
+    expect(awl::construct_world_map_secondary_model(bank,1,setup,&model).status==ConstructionStatus::Constructed && model.get()!=previous &&
+        model->playback() && model->playback()->position_0==saved.position_0 && model->playback()->rate_4==saved.rate_4 &&
+        model->playback()->word_8==saved.word_8 && model->playback()->limit_c==saved.limit_c &&
+        model->playback()->clip_10->bank_identity==saved.clip_10->bank_identity && model->playback()->clip_10->offset==saved.clip_10->offset &&
+        model->playback()->link_14==saved.link_14 && model->playback()->value_18==saved.value_18 &&
+        model->core().playback.link_14==saved.link_14,
+        "compatible replacement restores all seven fields, retaining blend identity/weight rather than FECC resets");
+    previous=model.get();
+    for(unsigned fault=1;fault<=4;++fault){const auto bad_bank=bank_fixture(67,fault);const auto bad_setup=setup_fixture(bad_bank);
+        const auto stopped=awl::construct_world_map_secondary_model(bad_bank,1,bad_setup,&model);
+        const auto expected=fault==1 || fault==4?ConstructionStatus::RequiresResourcePreparation:
+            fault==2?ConstructionStatus::SingularMatrix:ConstructionStatus::InvalidInput;
+        expect(stopped.status==expected && (fault>2 || stopped.required_index==1) && model.get()==previous,
+            "Euler, singular, cyclic and shared-pose boundaries preserve an existing native owner without partial acceptance");
+    }
+    // Construction uses bank bytes, not a caller-editable prepared-view copy.
+    setup.construction->preparation.prepared->records.clear();
+    expect(awl::construct_world_map_secondary_model(bank,1,setup,&model).status==ConstructionStatus::Constructed &&
+        model->core().nodes.size()==3,"native construction re-prepares owned bytes instead of trusting copied fixup state");
+    bank.clear();awl::WorldMapModelResource resource;
+    expect(!bank.loaded() && model->bank().resolve(1,&resource) && resource.count_6==3 && model->core().nodes.size()==3,
+        "clearing source bank leaves the owner's private resource bytes and hierarchy valid");
+    bank=bank_fixture(70);expect(model->bank().resolve(1,&resource) && resource.count_6==3 && bank.resolve(1,&resource) && resource.count_6==6,
+        "reusing a source identity cannot change an already constructed model's resource generation");
+    expect(awl::construct_world_map_secondary_model(bank,1,setup,nullptr).status==ConstructionStatus::InvalidInput,
+        "null native owner output rejects");
+    setup=setup_fixture(bank,128);
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    const auto baseline=allocation_probe::live;previous=model.get();size_t rejected=0;
+    for(size_t fail_at=0;fail_at<128;++fail_at){
+        allocation_probe::remaining=fail_at;allocation_probe::enabled=true;
+        const auto result=awl::construct_world_map_secondary_model(bank,1,setup,&model);
+        allocation_probe::enabled=false;
+        if(result.status==ConstructionStatus::Constructed)break;
+        ++rejected;expect(result.status==ConstructionStatus::AllocationFailure && model.get()==previous &&
+            allocation_probe::live==baseline,"allocation failure at every reached stage releases partial ownership and preserves prior model");
+    }
+    expect(rejected>5 && model.get()!=previous,"allocation sweep reaches late constructor allocations and eventual successful replacement");
+    std::cout<<"NATIVE_MODEL_ALLOCATION_FAILURES "<<rejected<<'\n';
+#else
+    // MSVC's checked vector default/move constructors allocate iterator
+    // proxies inside noexcept functions. Injecting failure there terminates
+    // in the STL before a caller can catch bad_alloc. Keep those checks on;
+    // the complete allocation-failure sweep runs in the Release build.
+    std::cout<<"NATIVE_MODEL_ALLOCATION_FAILURES checked in Release only\n";
+#endif
+}
+void construction_digest(){
+    uint64_t digest=14695981039346656037ull;
+    const auto baseline=allocation_probe::live;
+    auto hash=[&](uint32_t w){for(unsigned i=0;i<4;++i){digest^=(w>>(24-i*8))&255;digest*=1099511628211ull;}};
+    for(uint32_t seed=0;seed<512;++seed){auto bank=bank_fixture(seed);const auto setup=setup_fixture(bank,seed);Owner model;
+        expect(awl::construct_world_map_secondary_model(bank,1,setup,&model).status==ConstructionStatus::Constructed,
+            "supplied constructor/restore matrix creates a native owner");if(!model)continue;
+        const auto& c=model->core();hash(seed);hash(c.resource.allocation_size);hash(model->consumed_size());hash(model->flags_174());
+        hash(static_cast<uint32_t>(model->storage_requests().size()));
+        for(const auto& allocation:model->storage_requests()){hash(allocation.offset);hash(allocation.size);}
+        hash(static_cast<uint32_t>(c.nodes.size()));hash(static_cast<uint32_t>(c.inverse_initial_matrices.size()));
+        hash(bits(c.playback.position_0));hash(bits(c.playback.rate_4));
+        hash(c.playback.clip_10?c.playback.clip_10->offset:0);hash(static_cast<uint32_t>(c.playback.link_14));
+        hash(model->playback()?1u:0u);
+        if(model->playback()){const auto& p=*model->playback();hash(p.word_8);hash(bits(p.limit_c));hash(bits(p.value_18));}
+        for(const auto& n:c.nodes){hash(n.source_record_index);hash(n.type_0);hash(n.order_1);hash(n.parent_2);hash(n.value_4);}
+    }
+    expect(allocation_probe::live==baseline,"all 512 owned-bank/core/playback lifetimes release their native allocations");
+    std::cout<<"MODEL_CONSTRUCTION_MATRIX 512 "<<std::hex<<digest<<std::dec<<'\n';
+    // Set only after comparison with mapped CD50/D0FC/cursor/040C instructions.
+    expect(digest==0xdc747cc02b29f6b3ull,"mapped constructor and compatible restore matrix agrees");
+}
 void local_core(const std::filesystem::path& disc,const std::filesystem::path& comparison){
     std::ifstream input(disc/"files"/"boy_0.arc",std::ios::binary);std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(input)),{});
     awl::WorldMapModelBank bank;awl::WorldMapModelPreparationStep prepared;Step step;
@@ -154,9 +323,22 @@ void local_core(const std::filesystem::path& disc,const std::filesystem::path& c
         }
         std::cout<<"LOCAL_MODEL_CORE_MAPPED "<<cases<<" maximum normalized error "<<maximum<<'\n';expect(cases==165,"all 55 local nodes compared under three reciprocal estimates");
     }
+    auto setup=setup_fixture(bank,128);Owner owner;
+    expect(awl::construct_world_map_secondary_model(bank,1,setup,&owner).status==ConstructionStatus::Constructed && owner &&
+        owner->core().nodes.size()==55 && owner->consumed_size()==4400 && owner->flags_174()==4 && owner->playback() &&
+        owner->playback()->link_14==setup.saved_playback->link_14,"local 55-node ACT constructs a native owner and restores supplied compatible playback");
+    bank.clear();expect(owner && owner->bank().loaded() && owner->core().inverse_initial_matrices.size()==55,
+        "local native model survives release of its source bank");
 }
 } // namespace
-int main(int argc,char** argv){test_core();test_inverse();matrix_digest();
+int main(int argc,char** argv){
+#if defined(_MSC_VER) && defined(_DEBUG)
+    // Report assertions to the test runner, without an interactive dialog.
+    for(int kind:{_CRT_WARN,_CRT_ERROR,_CRT_ASSERT}){
+        _CrtSetReportMode(kind,_CRTDBG_MODE_FILE);_CrtSetReportFile(kind,_CRTDBG_FILE_STDERR);
+    }
+#endif
+    test_core();test_inverse();matrix_digest();test_construction();construction_digest();
     if((argc==3 || argc==4) && std::string(argv[1])=="--model-core-local")local_core(argv[2],argc==4?argv[3]:"");
     else if(argc!=1)expect(false,"usage: --model-core-local <disc> [ignored comparison]");
     return failures==0?0:1;

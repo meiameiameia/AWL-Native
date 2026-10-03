@@ -6758,16 +6758,26 @@ bool check_local_event_conditions(const char* disc_root) {
                         initializer.animation.base_descriptor_4 == 1 && initializer.primary.elapsed_0 == 7 &&
                         !initializer.records[1].state.clip_10 && actor_toggle.flag_158 == 1 &&
                         actor_presentation.phase == awl::WorldMapPresentationPhase::Reading;
-                    // The owned prepared ACT also yields a checked core
-                    // proposal. Actual arena/model publication remains before
-                    // the initializer can accept this construction request.
+                    // The supplied external arena still lacks a native binding.
+                    // A separate null-arena diagnostic constructs a real owned
+                    // model and restores the compatible saved playback. Neither
+                    // path publishes it into the actor/initializer state.
                     if (valid_script) {
-                        awl::WorldMapModelCoreInitialization core;
-                        valid_script = awl::prepare_world_map_model_core(
-                            *initializer_step.secondary_setup->construction->preparation.prepared, &core) ==
-                            awl::WorldMapModelCoreStatus::Prepared && core.core &&
-                            core.core->nodes.size() == model_resource.count_6 &&
-                            core.core->inverse_initial_matrices.size() == model_resource.count_6 &&
+                        std::unique_ptr<awl::WorldMapNativeModel> model;
+                        auto native_setup = *initializer_step.secondary_setup;
+                        const auto blocked = awl::construct_world_map_secondary_model(model_bank, 1, native_setup, &model);
+                        native_setup.construction->arena_identity = 0;
+                        native_setup.construction->allocation_size = model_resource.allocation_size;
+                        native_setup.construction->result_flags_174 = 4;
+                        valid_script = blocked.status == awl::WorldMapModelConstructionStatus::RequiresArenaBinding &&
+                            blocked.required_arena == 999 && !model &&
+                            awl::construct_world_map_secondary_model(model_bank, 1, native_setup, &model).status ==
+                                awl::WorldMapModelConstructionStatus::Constructed && model &&
+                            model->core().nodes.size() == model_resource.count_6 &&
+                            model->core().inverse_initial_matrices.size() == model_resource.count_6 &&
+                            model->consumed_size() == 4400 && model->flags_174() == 4 && model->playback() &&
+                            model->playback()->clip_10 && model->playback()->clip_10->offset == selected_clip.reference.offset &&
+                            model->playback()->link_14 == 6 && model->playback()->value_18 == 7 &&
                             initializer.secondary_model_c0 == 300 && initializer.primary.elapsed_0 == 7 &&
                             !initializer.records[1].state.clip_10 &&
                             actor_presentation.phase == awl::WorldMapPresentationPhase::Reading;

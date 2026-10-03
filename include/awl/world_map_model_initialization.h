@@ -2,6 +2,8 @@
 
 #include "awl/world_map_secondary_model.h"
 
+#include <memory>
+
 namespace awl {
 struct WorldMapModelCoreAllocation { uint32_t offset = 0, size = 0; };
 struct WorldMapModelCoreNode {
@@ -56,4 +58,62 @@ struct WorldMapModelCoreInitialization {
 // opaque fields, complete playback, model publication, skinning or rendering.
 [[nodiscard]] WorldMapModelCoreStatus prepare_world_map_model_core(
     const WorldMapPreparedModelResource& resource, WorldMapModelCoreInitialization* out);
+
+enum class WorldMapModelConstructionStatus {
+    Constructed, RequiresArenaBinding, RequiresResourcePreparation,
+    SingularMatrix, AllocationFailure, InvalidInput,
+};
+struct WorldMapModelConstructionResult {
+    WorldMapModelConstructionStatus status = WorldMapModelConstructionStatus::InvalidInput;
+    uint32_t required_index = 0; // Resource record for Euler, core node for singular inverse.
+    uint64_t required_arena = 0;
+};
+class WorldMapNativeModel;
+// Consumes a supplied setup proposal, re-resolving/preparing its resource from
+// the bank before construction. CD50 assigns flag 4; D0FC's fresh no-feature
+// path records its final 0x20 cursor request. A compatible saved playback is
+// restored through the caller's FUN_801A040C step without FECC blend resets.
+// Unsupported external arenas, resource layouts/Euler and singular matrices
+// stop explicitly. All returned failures preserve *out and its existing owner.
+// Successful replacement destroys only the old native owner in *out; this
+// does not translate CE88 frees of original resource/feature/heap objects.
+// No secondary channel, attachment, frame evaluation or actor acknowledgement.
+[[nodiscard]] WorldMapModelConstructionResult construct_world_map_secondary_model(
+    const WorldMapModelBank& bank, uint32_t index, const WorldMapSecondarySetupStep& setup,
+    std::unique_ptr<WorldMapNativeModel>* out);
+
+// Native owner for the CD50/D0FC null-arena, null-secondary-resource path.
+// Typed C++ storage replaces the PPC heap/cursor's packed pointer layout.
+// It owns a private immutable bank snapshot and the constructed core, so
+// clearing/reusing the source bank cannot invalidate resource references.
+// No original heap bookkeeping, external arena or live actor is represented.
+class WorldMapNativeModel {
+public:
+    WorldMapNativeModel(const WorldMapNativeModel&) = delete;
+    WorldMapNativeModel& operator=(const WorldMapNativeModel&) = delete;
+    WorldMapNativeModel(WorldMapNativeModel&&) = delete;
+    WorldMapNativeModel& operator=(WorldMapNativeModel&&) = delete;
+    const WorldMapModelCore& core() const { return core_; }
+    const WorldMapModelBank& bank() const { return *bank_; }
+    const std::vector<WorldMapModelCoreAllocation>& storage_requests() const { return storage_requests_; }
+    uint32_t consumed_size() const { return core_.consumed_size + 0x20u; }
+    uint32_t flags_174() const { return 4; }
+    // Fresh construction leaves three playback fields unknown. Only the
+    // caller's compatible seven-field restore makes this snapshot complete.
+    const std::optional<WorldMapAnimationPlayback>& playback() const { return playback_; }
+    // Opaque host identities are valid only while this owner lives. They
+    // replace native pointer keys, not serialized PPC addresses or game IDs.
+    WorldMapAnimationModelBinding binding() const;
+    WorldMapSecondaryModelRecord record() const;
+private:
+    friend WorldMapModelConstructionResult construct_world_map_secondary_model(
+        const WorldMapModelBank&, uint32_t, const WorldMapSecondarySetupStep&,
+        std::unique_ptr<WorldMapNativeModel>*);
+    WorldMapNativeModel(std::unique_ptr<const WorldMapModelBank> bank, WorldMapModelCore core,
+        std::optional<WorldMapAnimationPlayback> playback);
+    std::unique_ptr<const WorldMapModelBank> bank_;
+    WorldMapModelCore core_;
+    std::vector<WorldMapModelCoreAllocation> storage_requests_;
+    std::optional<WorldMapAnimationPlayback> playback_;
+};
 } // namespace awl

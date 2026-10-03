@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <new>
 #include <utility>
 
 namespace awl {
@@ -121,5 +122,82 @@ WorldMapModelCoreStatus prepare_world_map_model_core(
         }
     }
     *out={std::move(core),0};return Status::Prepared;
+}
+
+WorldMapNativeModel::WorldMapNativeModel(std::unique_ptr<const WorldMapModelBank> bank,
+    WorldMapModelCore core, std::optional<WorldMapAnimationPlayback> playback)
+    : bank_(std::move(bank)), core_(std::move(core)), storage_requests_(core_.allocations),
+      playback_(std::move(playback)) {
+    // D0FC -> E7C4 -> DD44 reaches no feature calls for this fresh core.
+    // The final buffer is unused here; retain the target cursor request as
+    // layout evidence without allocating a dummy packed PPC byte buffer.
+    storage_requests_.push_back({core_.consumed_size,0x20});
+    if(playback_) {
+        core_.playback.position_0=playback_->position_0;
+        core_.playback.rate_4=playback_->rate_4;
+        core_.playback.clip_10=playback_->clip_10;
+        core_.playback.link_14=playback_->link_14;
+    }
+}
+WorldMapAnimationModelBinding WorldMapNativeModel::binding() const {
+    return {static_cast<uint64_t>(reinterpret_cast<uintptr_t>(this)),
+        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&playback_))};
+}
+WorldMapSecondaryModelRecord WorldMapNativeModel::record() const {
+    const auto keys=binding();
+    return {keys.model_identity,static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&core_.resource)),
+        core_.resource.count_6,core_.auxiliary_c,core_.allocation_10,core_.feature_14,flags_174(),keys.playback_178};
+}
+WorldMapModelConstructionResult construct_world_map_secondary_model(
+    const WorldMapModelBank& bank,uint32_t index,const WorldMapSecondarySetupStep& setup,
+    std::unique_ptr<WorldMapNativeModel>* out) {
+    using Status=WorldMapModelConstructionStatus;
+    const WorldMapModelConstructionResult invalid{Status::InvalidInput};
+    if(out==nullptr || !setup.resource || !setup.construction ||
+        setup.retain_playback!=setup.saved_playback.has_value())return invalid;
+    const auto& request=*setup.construction;
+    WorldMapModelResource resource;
+    if(!bank.resolve(index,&resource))return invalid;
+    auto matches=[&](const WorldMapModelResource& r) {
+        return r.reference.bank_identity==resource.reference.bank_identity && r.reference.offset==resource.reference.offset &&
+            r.size==resource.size && r.count_6==resource.count_6 && r.field_14==resource.field_14 &&
+            r.core_storage_size==resource.core_storage_size && r.allocation_size==resource.allocation_size;
+    };
+    if(!matches(*setup.resource) || !matches(request.resource) || request.argument_5!=0)return invalid;
+    if(setup.saved_playback) {
+        const auto& p=*setup.saved_playback;
+        if(!std::isfinite(p.position_0) || !std::isfinite(p.rate_4) || !std::isfinite(p.limit_c) ||
+            !std::isfinite(p.value_18))return invalid;
+    }
+    if(request.arena_identity!=0) {
+        if(request.allocation_size || request.result_flags_174!=0)return invalid;
+        return {Status::RequiresArenaBinding,0,request.arena_identity};
+    }
+    if(!request.allocation_size || *request.allocation_size!=resource.allocation_size ||
+        request.result_flags_174!=4)return invalid;
+    try {
+        // A private snapshot prevents a caller's later clear/reparse from
+        // invalidating this model. No copied fixup proposal is trusted as a
+        // substitute for owned bytes; prepare the snapshot again.
+        auto owned_bank=std::make_unique<const WorldMapModelBank>(bank);
+        WorldMapModelPreparationStep prepared;
+        const auto preparation=owned_bank->prepare(index,&prepared);
+        if(preparation!=request.preparation_status)return invalid;
+        if(preparation==WorldMapModelPreparationStatus::InvalidInput)return invalid;
+        if(preparation!=WorldMapModelPreparationStatus::Prepared)
+            return {Status::RequiresResourcePreparation,prepared.required_record_index};
+        if(!prepared.prepared)return invalid;
+        WorldMapModelCoreInitialization initialized;
+        const auto status=prepare_world_map_model_core(*prepared.prepared,&initialized);
+        if(status==WorldMapModelCoreStatus::SingularMatrix)return {Status::SingularMatrix,initialized.required_node_index};
+        if(status!=WorldMapModelCoreStatus::Prepared || !initialized.core ||
+            initialized.core->consumed_size+0x20u>resource.allocation_size)return invalid;
+        auto model=std::unique_ptr<WorldMapNativeModel>(new WorldMapNativeModel(
+            std::move(owned_bank),std::move(*initialized.core),setup.saved_playback));
+        *out=std::move(model);
+        return {Status::Constructed};
+    } catch(const std::bad_alloc&) {
+        return {Status::AllocationFailure};
+    }
 }
 } // namespace awl
