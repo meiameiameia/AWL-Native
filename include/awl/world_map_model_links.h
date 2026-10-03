@@ -99,4 +99,28 @@ struct WorldMapModelAttachmentStep {
     const WorldMapModelLinkState& state, const WorldMapModelAttachmentRequest& request,
     const std::vector<WorldMapModelAttachmentBinding>& bindings, WorldMapModelAttachmentStep* out);
 
+enum class WorldMapModelSourceKind { Feature, AuxiliaryModel, Clear };
+struct WorldMapModelSourceChange {
+    WorldMapModelSourceKind kind = WorldMapModelSourceKind::Clear;
+    uint64_t key = 0; // Borrowed identity; zero is valid. Clear requires zero.
+};
+struct WorldMapModelSourceWrite { uint32_t offset = 0; uint64_t value = 0; };
+struct WorldMapModelSourceStep {
+    WorldMapModelAttachmentRequest after;
+    // Both holder stores precede every attachment store. Absent on a stop.
+    std::optional<std::array<WorldMapModelSourceWrite, 2>> source_writes;
+    WorldMapModelAttachmentStep attachments;
+};
+// FUN_8017DEE4/DF10/DF3C: replace C4/C8, then always call DF68, even
+// for repeated/zero keys or a null secondary. Feature writes C4 then C8;
+// auxiliary/clear also write C4 then C8. Old unknown sources are not read.
+// Models +30/+C0 stay supplied; selecting auxiliary or clearing does not
+// erase a previously stored node feature. Missing evidence rolls back sources
+// and graph together. Invalid input/output aliases preserve output. These
+// supplied fields are not a game-owned actor/holder or feature lifetime.
+[[nodiscard]] WorldMapModelAttachmentStatus prepare_world_map_model_source_change(
+    const WorldMapModelLinkState& state, const WorldMapModelAttachmentRequest& sources,
+    const WorldMapModelSourceChange& change,
+    const std::vector<WorldMapModelAttachmentBinding>& bindings, WorldMapModelSourceStep* out);
+
 } // namespace awl

@@ -179,4 +179,28 @@ WorldMapModelAttachmentStatus prepare_world_map_model_attachments(
     if(status!=Status::Prepared)return stop(status,step.required_model);
     *out=std::move(step);return Status::Prepared;
 }
+WorldMapModelAttachmentStatus prepare_world_map_model_source_change(
+    const WorldMapModelLinkState& state,const WorldMapModelAttachmentRequest& sources,
+    const WorldMapModelSourceChange& change,
+    const std::vector<WorldMapModelAttachmentBinding>& bindings,WorldMapModelSourceStep* out) {
+    using Status=WorldMapModelAttachmentStatus;
+    if(out==nullptr || &sources==&out->after || &state==&out->attachments.after)return Status::InvalidInput;
+    auto selected=sources;
+    switch(change.kind) {
+    case WorldMapModelSourceKind::Feature:selected.feature_c4=change.key;selected.auxiliary_model_c8=0;break;
+    case WorldMapModelSourceKind::AuxiliaryModel:selected.feature_c4=0;selected.auxiliary_model_c8=change.key;break;
+    case WorldMapModelSourceKind::Clear:
+        if(change.key!=0)return Status::InvalidInput;
+        selected.feature_c4=0;selected.auxiliary_model_c8=0;break;
+    default:return Status::InvalidInput;
+    }
+    WorldMapModelSourceStep step;step.after=sources;
+    const auto status=prepare_world_map_model_attachments(state,selected,bindings,&step.attachments);
+    if(status==Status::InvalidInput)return status;
+    if(status==Status::Prepared) {
+        step.after=selected;
+        step.source_writes=std::array<WorldMapModelSourceWrite,2>{{{0xc4,*selected.feature_c4},{0xc8,*selected.auxiliary_model_c8}}};
+    }
+    *out=std::move(step);return status;
+}
 } // namespace awl

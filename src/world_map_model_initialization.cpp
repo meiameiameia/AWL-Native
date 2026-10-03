@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <new>
+#include <type_traits>
 #include <utility>
 
 namespace awl {
@@ -283,42 +284,71 @@ WorldMapAnimationChannelStatus apply_world_map_native_animation_channel_settings
         return Status::AllocationFailure;
     }
 }
+namespace {
+bool valid_model_owners(const std::vector<WorldMapNativeModel*>& owners) {
+    for(size_t i=0;i<owners.size();++i) {
+        if(owners[i]==nullptr)return false;
+        for(size_t j=0;j<i;++j)if(owners[i]==owners[j])return false;
+    }
+    return true;
+}
+void snapshot_model_owners(const std::vector<WorldMapNativeModel*>& owners,
+    WorldMapModelLinkState& state,std::vector<WorldMapModelAttachmentBinding>& bindings) {
+    for(const auto* owner:owners) {
+        state.nodes.push_back(owner->model_links());
+        uint16_t first=0;
+        for(size_t i=0;i<owner->core().nodes.size();++i)if(owner->core().nodes[i].value_4!=0xffff) {
+            first=static_cast<uint16_t>(i);break;
+        }
+        uint16_t index=0;std::optional<uint16_t> attachment;
+        if(owner->bank().resolve_attachment_index(owner->core().resource.reference,&index))attachment=index;
+        bindings.push_back({owner->binding().model_identity,first,attachment});
+    }
+}
+} // namespace
+void WorldMapNativeModel::publish_links(const WorldMapModelLinkNode& node) noexcept {
+    core_.parent_150=node.parent_150;core_.flags_158=node.flags_158;
+    core_.children_15c=node.children_15c;core_.attachments_16c=node.attachments_16c;
+    core_.head_50=node.features->head_50;
+    for(size_t j=0;j<core_.nodes.size();++j) {
+        core_.nodes[j].feature_8=node.features->nodes[j].feature_8;
+        core_.nodes[j].next_feature_14=node.features->nodes[j].next_14;
+    }
+}
 WorldMapModelAttachmentStatus apply_world_map_native_model_attachments(
     const std::vector<WorldMapNativeModel*>& owners,
     const WorldMapModelAttachmentRequest& request,WorldMapModelAttachmentStep* out) {
     using Status=WorldMapModelAttachmentStatus;
-    if(out==nullptr)return Status::InvalidInput;
-    for(size_t i=0;i<owners.size();++i) {
-        if(owners[i]==nullptr)return Status::InvalidInput;
-        for(size_t j=0;j<i;++j)if(owners[i]==owners[j])return Status::InvalidInput;
-    }
+    if(out==nullptr || !valid_model_owners(owners))return Status::InvalidInput;
     try {
         WorldMapModelLinkState state;std::vector<WorldMapModelAttachmentBinding> bindings;
-        for(const auto* owner:owners) {
-            state.nodes.push_back(owner->model_links());
-            uint16_t first=0;
-            for(size_t i=0;i<owner->core_.nodes.size();++i)if(owner->core_.nodes[i].value_4!=0xffff) {
-                first=static_cast<uint16_t>(i);break;
-            }
-            uint16_t index=0;std::optional<uint16_t> attachment;
-            if(owner->bank().resolve_attachment_index(owner->core_.resource.reference,&index))attachment=index;
-            bindings.push_back({owner->binding().model_identity,first,attachment});
-        }
+        snapshot_model_owners(owners,state,bindings);
         WorldMapModelAttachmentStep prepared;
         const auto status=prepare_world_map_model_attachments(state,request,bindings,&prepared);
         if(status==Status::InvalidInput)return status;
         if(status!=Status::Prepared){*out=std::move(prepared);return status;}
         *out=std::move(prepared); // All allocating work ends before publication.
-        for(size_t i=0;i<owners.size();++i) {
-            const auto& node=out->after.nodes[i];auto& core=owners[i]->core_;
-            core.parent_150=node.parent_150;core.flags_158=node.flags_158;
-            core.children_15c=node.children_15c;core.attachments_16c=node.attachments_16c;
-            core.head_50=node.features->head_50;
-            for(size_t j=0;j<core.nodes.size();++j) {
-                core.nodes[j].feature_8=node.features->nodes[j].feature_8;
-                core.nodes[j].next_feature_14=node.features->nodes[j].next_14;
-            }
-        }
+        for(size_t i=0;i<owners.size();++i)owners[i]->publish_links(out->after.nodes[i]);
+        return Status::Advanced;
+    } catch(const std::bad_alloc&) {return Status::AllocationFailure;}
+}
+WorldMapModelAttachmentStatus apply_world_map_native_model_source_change(
+    const std::vector<WorldMapNativeModel*>& owners,WorldMapModelAttachmentRequest* sources,
+    const WorldMapModelSourceChange& change,WorldMapModelSourceStep* out) {
+    using Status=WorldMapModelAttachmentStatus;
+    static_assert(std::is_nothrow_move_assignable_v<WorldMapModelSourceStep>);
+    static_assert(std::is_nothrow_copy_assignable_v<WorldMapModelAttachmentRequest>);
+    if(sources==nullptr || out==nullptr || sources==&out->after || !valid_model_owners(owners))return Status::InvalidInput;
+    try {
+        WorldMapModelLinkState state;std::vector<WorldMapModelAttachmentBinding> bindings;
+        snapshot_model_owners(owners,state,bindings);
+        WorldMapModelSourceStep prepared;
+        const auto status=prepare_world_map_model_source_change(state,*sources,change,bindings,&prepared);
+        if(status==Status::InvalidInput)return status;
+        if(status!=Status::Prepared){*out=std::move(prepared);return status;}
+        *out=std::move(prepared); // Moves/scalar stores below cannot allocate.
+        for(size_t i=0;i<owners.size();++i)owners[i]->publish_links(out->attachments.after.nodes[i]);
+        *sources=out->after;
         return Status::Advanced;
     } catch(const std::bad_alloc&) {return Status::AllocationFailure;}
 }

@@ -126,6 +126,15 @@ class WorldMapNativeModel;
     const std::vector<WorldMapNativeModel*>& owners,
     const WorldMapModelAttachmentRequest& request, WorldMapModelAttachmentStep* out);
 
+// Applies one source operation and its complete supported attachment path to
+// supplied live owners. Retained C4/C8 fields and model graphs publish together
+// after all allocating work. Repeated/zero selections still rebuild links.
+// Failure preserves sources, every owner and (for invalid/allocation failure)
+// output. No actor binding, feature execution or lifetime discovery occurs.
+[[nodiscard]] WorldMapModelAttachmentStatus apply_world_map_native_model_source_change(
+    const std::vector<WorldMapNativeModel*>& owners, WorldMapModelAttachmentRequest* sources,
+    const WorldMapModelSourceChange& change, WorldMapModelSourceStep* out);
+
 // Native owner for the CD50/D0FC null-arena, null-secondary-resource path.
 // Typed C++ storage replaces the PPC heap/cursor's packed pointer layout.
 // It owns a private immutable bank snapshot and the constructed core, so
@@ -166,6 +175,10 @@ private:
         WorldMapAnimationPartialChannelStep*);
     friend WorldMapModelAttachmentStatus apply_world_map_native_model_attachments(
         const std::vector<WorldMapNativeModel*>&, const WorldMapModelAttachmentRequest&, WorldMapModelAttachmentStep*);
+    friend WorldMapModelAttachmentStatus apply_world_map_native_model_source_change(
+        const std::vector<WorldMapNativeModel*>&, WorldMapModelAttachmentRequest*,
+        const WorldMapModelSourceChange&, WorldMapModelSourceStep*);
+    void publish_links(const WorldMapModelLinkNode& node) noexcept;
     void set_playback(const WorldMapAnimationPartialPlayback& playback) noexcept;
     WorldMapNativeModel(std::unique_ptr<const WorldMapModelBank> bank, WorldMapModelCore core,
         std::optional<WorldMapAnimationPlayback> playback);

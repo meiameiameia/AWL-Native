@@ -716,6 +716,124 @@ void native_attachment_digest(){
     std::cout<<"NATIVE_FEATURE_ATTACHMENT_MATRIX "<<cases<<' '<<std::hex<<digest<<std::dec<<'\n';
     expect(cases==1152 && digest==0xd3fa746cf2bb1751ull,"native private node/resource selectors, feature fields and stores agree with original instructions");
 }
+using SourceKind=awl::WorldMapModelSourceKind;
+using SourceStep=awl::WorldMapModelSourceStep;
+bool same_sources(const awl::WorldMapModelAttachmentRequest& a,const awl::WorldMapModelAttachmentRequest& b){
+    return a.primary_model==b.primary_model && a.secondary_model==b.secondary_model &&
+        a.feature_c4==b.feature_c4 && a.auxiliary_model_c8==b.auxiliary_model_c8;
+}
+void test_native_source_changes(){
+    auto primary=attachment_owner(67),secondary=attachment_owner(67,uint16_t(0xbeef),1),auxiliary=attachment_owner(66);
+    if(!primary || !secondary || !auxiliary)return;
+    const auto p=primary->binding().model_identity,s=secondary->binding().model_identity,a=auxiliary->binding().model_identity;
+    const std::vector<awl::WorldMapNativeModel*> owners{primary.get(),secondary.get(),auxiliary.get()};
+    awl::WorldMapModelAttachmentRequest sources{p,s,std::nullopt,std::nullopt};SourceStep step;
+    expect(awl::apply_world_map_native_model_source_change(owners,&sources,{SourceKind::Feature,0x100000063ull},&step)==AttachmentStatus::Advanced &&
+        same_sources(sources,step.after) && sources.feature_c4==0x100000063ull && sources.auxiliary_model_c8==0u &&
+        secondary->core().nodes[1].feature_8==0x100000063ull && primary->core().children_15c[0]==s,
+        "source fields, selected node key and graph publish together into supplied native state");
+    expect(awl::apply_world_map_native_model_source_change(owners,&sources,{SourceKind::Feature,77},&step)==AttachmentStatus::Advanced &&
+        sources.feature_c4==77u && secondary->core().nodes[1].feature_8==77 && secondary->core().head_50==2,
+        "native feature replacement retains the selected list and publishes the new source key");
+    expect(awl::apply_world_map_native_model_source_change(owners,&sources,{SourceKind::AuxiliaryModel,a},&step)==AttachmentStatus::Advanced &&
+        sources.feature_c4==0u && sources.auxiliary_model_c8==a && secondary->core().children_15c[0]==a &&
+        auxiliary->core().flags_158==12u && secondary->core().nodes[1].feature_8==77,
+        "switch to auxiliary retains prior node features rather than inventing their release/clear");
+    const auto before_p=primary->model_links(),before_s=secondary->model_links();const auto before_sources=sources;
+    expect(awl::apply_world_map_native_model_source_change({primary.get(),secondary.get()},&sources,{SourceKind::Clear,0},&step)==
+        AttachmentStatus::RequiresNode && step.attachments.required_model==a && !step.source_writes && same_sources(sources,before_sources) &&
+        same_links(primary->model_links(),before_p) && same_links(secondary->model_links(),before_s),
+        "missing reached borrowed owner blocks source clearing and graph changes atomically");
+    step.after.primary_model=432;
+    expect(awl::apply_world_map_native_model_source_change({nullptr},&sources,{SourceKind::Clear,0},&step)==AttachmentStatus::InvalidInput &&
+        awl::apply_world_map_native_model_source_change({primary.get(),primary.get()},&sources,{SourceKind::Clear,0},&step)==AttachmentStatus::InvalidInput &&
+        awl::apply_world_map_native_model_source_change(owners,&step.after,{SourceKind::Clear,0},&step)==AttachmentStatus::InvalidInput &&
+        awl::apply_world_map_native_model_source_change(owners,nullptr,{SourceKind::Clear,0},&step)==AttachmentStatus::InvalidInput &&
+        awl::apply_world_map_native_model_source_change(owners,&sources,{SourceKind::Clear,0},nullptr)==AttachmentStatus::InvalidInput &&
+        awl::apply_world_map_native_model_source_change(owners,&sources,{SourceKind::Clear,1},&step)==AttachmentStatus::InvalidInput &&
+        awl::apply_world_map_native_model_source_change(owners,&sources,{static_cast<SourceKind>(99),0},&step)==AttachmentStatus::InvalidInput &&
+        step.after.primary_model==432 && same_sources(sources,before_sources),"native invalid input/output aliases preserve diagnostics and sources");
+    expect(awl::apply_world_map_native_model_source_change(owners,&sources,{SourceKind::Clear,0},&step)==AttachmentStatus::Advanced &&
+        sources.feature_c4==0u && sources.auxiliary_model_c8==0u && step.attachments.writes.size()==4 &&
+        primary->core().children_15c[0]==0 && secondary->core().children_15c[0]==0 && auxiliary->core().parent_150==0 &&
+        secondary->core().nodes[1].feature_8==77 && secondary->core().head_50==2 && auxiliary->core().flags_158==12u,
+        "native clear detaches all reached links while retaining flags, feature keys and list state");
+    auto missing=attachment_owner(67);if(!missing)return;
+    sources={p,missing->binding().model_identity,std::nullopt,0};const auto missing_sources=sources;
+    const auto cleared_p=primary->model_links(),before_missing=missing->model_links(),cleared_a=auxiliary->model_links();
+    expect(awl::apply_world_map_native_model_source_change({primary.get(),missing.get(),auxiliary.get()},&sources,
+        {SourceKind::AuxiliaryModel,a},&step)==AttachmentStatus::RequiresAttachmentIndex && !step.source_writes &&
+        same_sources(sources,missing_sources) && same_links(primary->model_links(),cleared_p) &&
+        same_links(missing->model_links(),before_missing) && same_links(auxiliary->model_links(),cleared_a),
+        "missing private attachment table cannot leave selected sources or auxiliary attachment prefix behind");
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    auto fresh_p=attachment_owner(67),fresh_s=attachment_owner(67,uint16_t(0xbeef),1),fresh_a=attachment_owner(66);
+    if(!fresh_p || !fresh_s || !fresh_a)return;
+    const std::vector<awl::WorldMapNativeModel*> fresh{fresh_p.get(),fresh_s.get(),fresh_a.get()};
+    sources={fresh_p->binding().model_identity,fresh_s->binding().model_identity,std::nullopt,std::nullopt};
+    const std::array<awl::WorldMapModelSourceChange,3> changes{{{SourceKind::Feature,99},
+        {SourceKind::AuxiliaryModel,fresh_a->binding().model_identity},{SourceKind::Clear,0}}};
+    for(const auto& change:changes){
+        const auto old_p=fresh_p->model_links(),old_s=fresh_s->model_links(),old_a=fresh_a->model_links();const auto old_sources=sources;
+        const auto live=allocation_probe::live;size_t rejected=0;bool advanced=false;
+        const auto old_output=step.after;const auto old_writes=step.attachments.writes.size();
+        for(size_t fail_at=0;fail_at<128;++fail_at){
+            allocation_probe::remaining=fail_at;allocation_probe::enabled=true;
+            const auto status=awl::apply_world_map_native_model_source_change(fresh,&sources,change,&step);
+            allocation_probe::enabled=false;if(status==AttachmentStatus::Advanced){advanced=true;break;}++rejected;
+            expect(status==AttachmentStatus::AllocationFailure && allocation_probe::live==live && same_sources(sources,old_sources) &&
+                same_sources(step.after,old_output) && step.attachments.writes.size()==old_writes && same_links(fresh_p->model_links(),old_p) &&
+                same_links(fresh_s->model_links(),old_s) && same_links(fresh_a->model_links(),old_a),
+                "every source transaction allocation failure releases proposals and preserves sources, output and all owners");
+        }
+        expect(advanced && rejected>8,"source-operation failure sweep reaches final graph publication");
+        std::cout<<"NATIVE_SOURCE_ALLOCATION_FAILURES "<<uint32_t(change.kind)<<' '<<rejected<<'\n';
+    }
+#endif
+}
+void native_source_digest(){
+    uint64_t digest=14695981039346656037ull;unsigned cases=0;const auto baseline=allocation_probe::live;
+    auto hash=[&](uint32_t w){for(unsigned i=0;i<4;++i){digest^=(w>>(24-i*8))&255;digest*=1099511628211ull;}};
+    const std::array<std::array<uint32_t,3>,3> layouts{{{1,2,3},{0,2,3},{1,0,3}}};
+    for(uint32_t seed=0;seed<32;++seed)for(const auto& layout:layouts){
+        std::array<Owner,3> models;
+        for(uint32_t i=1;i<=3;++i)models[i-1]=attachment_owner(64+(seed+i)%4,
+            seed&8?std::nullopt:std::optional<uint16_t>(static_cast<uint16_t>(seed*17+i)),(seed>>2)%5);
+        if(!models[0] || !models[1] || !models[2])continue;
+        auto key=[&](uint32_t id){return id?models[id-1]->binding().model_identity:0;};
+        auto normalized=[&](uint64_t id){for(uint32_t i=1;i<=3;++i)if(id==key(i))return i;return static_cast<uint32_t>(id);};
+        awl::WorldMapModelAttachmentRequest sources{key(layout[0]),key(layout[1]),
+            seed&1?std::nullopt:std::optional<uint64_t>(77),seed&2?std::nullopt:std::optional<uint64_t>(key(layout[2]))};
+        const std::vector<awl::WorldMapNativeModel*> owners{models[0].get(),models[1].get(),models[2].get()};
+        const std::array<awl::WorldMapModelSourceChange,9> changes{{{SourceKind::Feature,99},{SourceKind::Feature,99},{SourceKind::Feature,100},
+            {SourceKind::AuxiliaryModel,key(layout[2])},{SourceKind::AuxiliaryModel,key(layout[2])},{SourceKind::Clear,0},
+            {SourceKind::Feature,0},{SourceKind::AuxiliaryModel,0},{SourceKind::Clear,0}}};
+        for(uint32_t operation=0;operation<changes.size();++operation){
+            SourceStep step;const auto status=awl::apply_world_map_native_model_source_change(owners,&sources,changes[operation],&step);
+            expect(status==AttachmentStatus::Advanced || status==AttachmentStatus::RequiresAttachmentIndex || status==AttachmentStatus::InvalidInput,
+                "native source matrix reaches success or independently mapped resource/node/null-parent boundaries");
+            for(uint32_t w:{seed,layout[0],layout[1],layout[2],operation,uint32_t(status),normalized(step.attachments.required_model),
+                uint32_t(step.attachments.required_source),step.attachments.required_field,uint32_t(step.attachments.feature_node_index.has_value()),
+                uint32_t(step.attachments.feature_node_index.value_or(0)),uint32_t(sources.feature_c4.has_value()),uint32_t(sources.feature_c4.value_or(0)),
+                uint32_t(sources.auxiliary_model_c8.has_value()),normalized(sources.auxiliary_model_c8.value_or(0))})hash(w);
+            for(uint32_t i=1;i<=3;++i){const auto node=models[i-1]->model_links();
+                for(uint32_t w:{i,normalized(node.parent_150),node.flags_158?1u:0u,node.flags_158.value_or(0)})hash(w);
+                for(const auto child:node.children_15c)hash(normalized(child));for(const auto index:node.attachments_16c)hash(index);
+                hash(node.features->head_50);
+                for(const auto& f:node.features->nodes)for(uint32_t w:{uint32_t(f.order_1),uint32_t(f.feature_8),f.next_14?1u:0u,f.next_14.value_or(0)})hash(w);
+            }
+            hash(uint32_t(step.source_writes.has_value()));
+            if(step.source_writes)for(const auto& w:*step.source_writes){hash(w.offset);hash(w.offset==0xc8?normalized(w.value):uint32_t(w.value));}
+            hash(uint32_t(step.attachments.writes.size()));
+            for(const auto& w:step.attachments.writes){hash(normalized(w.identity));hash(w.offset);
+                hash(w.offset==0x150 || (w.offset>=0x15c && w.offset<=0x168)?normalized(w.value):uint32_t(w.value));hash(w.node_index.value_or(UINT32_MAX));}
+            ++cases;
+        }
+    }
+    expect(allocation_probe::live==baseline,"source transaction matrix releases every native owner and diagnostic proposal");
+    std::cout<<"NATIVE_SOURCE_TRANSITION_MATRIX "<<cases<<' '<<std::hex<<digest<<std::dec<<'\n';
+    expect(cases==864 && digest==0xcddb07e1d61a19a5ull,"source fields, sequential graph/feature state and ordered stores match all three mapped DOL setters");
+}
 void local_core(const std::filesystem::path& disc,const std::filesystem::path& comparison){
     std::ifstream input(disc/"files"/"boy_0.arc",std::ios::binary);std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(input)),{});
     awl::WorldMapModelBank bank;awl::WorldMapModelPreparationStep prepared;Step step;
@@ -774,6 +892,18 @@ void local_core(const std::filesystem::path& disc,const std::filesystem::path& c
         AttachmentStatus::RequiresAttachmentIndex && attachments.required_model==s && attachments.feature_node_index &&
         attachments.writes.empty() && same_links(owner->model_links(),before) && owner->core().head_50==0,
         "local feature preparation cannot bypass missing attachment metadata or publish a partial sorted list");
+    awl::WorldMapModelAttachmentRequest sources{p,s,std::nullopt,std::nullopt};SourceStep source_step;const auto before_sources=sources;
+    const std::vector<awl::WorldMapNativeModel*> owners{local_primary.get(),owner.get(),auxiliary.get()};
+    for(const auto& change:std::array<awl::WorldMapModelSourceChange,2>{{{SourceKind::Feature,99},{SourceKind::AuxiliaryModel,a}}}){
+        expect(awl::apply_world_map_native_model_source_change(owners,&sources,change,&source_step)==AttachmentStatus::RequiresAttachmentIndex &&
+            source_step.attachments.required_model==s && !source_step.source_writes && same_sources(sources,before_sources) &&
+            same_links(owner->model_links(),before) && !auxiliary->core().flags_158 && local_primary->core().children_15c[0]==0,
+            "local source setter rolls back source, graph and feature state when the diagnostic ACT lacks attachment data");
+    }
+    expect(awl::apply_world_map_native_model_source_change(owners,&sources,{SourceKind::Clear,0},&source_step)==AttachmentStatus::Advanced &&
+        sources.feature_c4==0u && sources.auxiliary_model_c8==0u && source_step.source_writes && source_step.attachments.writes.empty() &&
+        same_links(owner->model_links(),before),"local clear establishes both source fields without reading the unused missing ACT attachment table");
+    std::cout<<"LOCAL_MODEL_SOURCE_TRANSACTIONS feature/auxiliary blocked; clear prepared\n";
 }
 } // namespace
 int main(int argc,char** argv){
@@ -785,7 +915,7 @@ int main(int argc,char** argv){
 #endif
     test_core();test_inverse();matrix_digest();test_construction();construction_digest();test_native_channel();native_channel_digest();secondary_caller_digest();
     test_native_settings();native_settings_digest();secondary_settings_caller_digest();
-    test_native_attachments();test_native_feature_attachments();native_attachment_digest();
+    test_native_attachments();test_native_feature_attachments();native_attachment_digest();test_native_source_changes();native_source_digest();
     if((argc==3 || argc==4) && std::string(argv[1])=="--model-core-local")local_core(argv[2],argc==4?argv[3]:"");
     else if(argc!=1)expect(false,"usage: --model-core-local <disc> [ignored comparison]");
     return failures==0?0:1;

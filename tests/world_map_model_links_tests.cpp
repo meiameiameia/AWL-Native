@@ -327,5 +327,54 @@ void feature_binding_digest() {
     expect(cases==4096 && digest==0xad407db874cb9771ull,"feature list and attachment order match mapped original instructions");
 }
 
+bool same_sources(const awl::WorldMapModelAttachmentRequest& a,const awl::WorldMapModelAttachmentRequest& b) {
+    return a.primary_model==b.primary_model && a.secondary_model==b.secondary_model &&
+        a.feature_c4==b.feature_c4 && a.auxiliary_model_c8==b.auxiliary_model_c8;
+}
+void test_source_changes() {
+    using AStatus=awl::WorldMapModelAttachmentStatus;using Kind=awl::WorldMapModelSourceKind;
+    State graph{{{1},{2},{3}}};graph.nodes[1].features=awl::WorldMapModelFeatureState{0,{{1,0,std::nullopt}}};
+    const std::vector<awl::WorldMapModelAttachmentBinding> bindings{{2,uint16_t(0),uint16_t(0xbeef)}};
+    awl::WorldMapModelAttachmentRequest sources{1,2,std::nullopt,std::nullopt};awl::WorldMapModelSourceStep step;
+    expect(awl::prepare_world_map_model_source_change(graph,sources,{Kind::Feature,0x100000063ull},bindings,&step)==AStatus::Prepared &&
+        step.after.feature_c4==0x100000063ull && step.after.auxiliary_model_c8==0u && step.source_writes &&
+        (*step.source_writes)[0].offset==0xc4 && (*step.source_writes)[0].value==0x100000063ull &&
+        (*step.source_writes)[1].offset==0xc8 && (*step.source_writes)[1].value==0 &&
+        step.attachments.after.nodes[0].children_15c[0]==2,
+        "feature selection establishes both unknown source fields and completes attachments, retaining all 64 key bits");
+    graph=step.attachments.after;sources=step.after;
+    expect(awl::prepare_world_map_model_source_change(graph,sources,{Kind::Feature,0x100000063ull},bindings,&step)==AStatus::Prepared &&
+        step.attachments.writes.size()==7 && same(step.attachments.after,graph),
+        "same feature selection still clears and reattaches, without unnecessary list rebuild");
+    expect(awl::prepare_world_map_model_source_change(graph,sources,{Kind::AuxiliaryModel,3},bindings,&step)==AStatus::Prepared &&
+        step.after.feature_c4==0u && step.after.auxiliary_model_c8==3u && step.attachments.after.nodes[1].children_15c[0]==3 &&
+        step.attachments.after.nodes[2].flags_158==12u && step.attachments.after.nodes[1].features->nodes[0].feature_8==0x100000063ull,
+        "auxiliary selection clears holder C4 while retaining the earlier node feature and applying auxiliary flags");
+    graph=step.attachments.after;sources=step.after;
+    expect(awl::prepare_world_map_model_source_change(graph,sources,{Kind::Clear,0},{},&step)==AStatus::Prepared &&
+        step.after.feature_c4==0u && step.after.auxiliary_model_c8==0u && step.attachments.writes.size()==4 &&
+        step.attachments.after.nodes[0].children_15c[0]==0 && step.attachments.after.nodes[1].children_15c[0]==0 &&
+        step.attachments.after.nodes[1].features->nodes[0].feature_8==0x100000063ull &&
+        step.attachments.after.nodes[1].attachments_16c[0]==0 && step.attachments.after.nodes[2].flags_158==12u,
+        "clear detaches the reached graph without reading unused metadata or clearing retained features/halfwords/flags");
+    expect(awl::prepare_world_map_model_source_change(graph,sources,{Kind::Feature,88},{{2,uint16_t(0),std::nullopt}},&step)==
+        AStatus::RequiresAttachmentIndex && same_sources(step.after,sources) && !step.source_writes &&
+        same(step.attachments.after,graph) && step.attachments.writes.empty(),
+        "late attachment evidence stop rolls back both source stores and all earlier graph/feature changes");
+    auto unknown=graph;unknown.nodes[1].flags_158.reset();
+    expect(awl::prepare_world_map_model_source_change(unknown,sources,{Kind::Clear,0},{},&step)==AStatus::RequiresFlags &&
+        step.attachments.required_field==0x158 && !step.source_writes && same_sources(step.after,sources) && same(step.attachments.after,unknown),
+        "clear still requires reached child flags and cannot publish either source store alone");
+    step.after.primary_model=432;
+    expect(awl::prepare_world_map_model_source_change(graph,sources,{Kind::Clear,1},bindings,&step)==AStatus::InvalidInput &&
+        awl::prepare_world_map_model_source_change(graph,sources,{static_cast<Kind>(99),0},bindings,&step)==AStatus::InvalidInput &&
+        awl::prepare_world_map_model_source_change(graph,sources,{Kind::Clear,0},bindings,nullptr)==AStatus::InvalidInput &&
+        awl::prepare_world_map_model_source_change(graph,step.after,{Kind::Clear,0},bindings,&step)==AStatus::InvalidInput &&
+        awl::prepare_world_map_model_source_change(step.attachments.after,sources,{Kind::Clear,0},bindings,&step)==AStatus::InvalidInput &&
+        step.after.primary_model==432,"invalid operations, nonzero clear keys and output aliases preserve output");
+    expect(awl::prepare_world_map_model_source_change({}, {0,0,std::nullopt,std::nullopt}, {Kind::AuxiliaryModel,123}, {}, &step)==AStatus::Prepared &&
+        step.after.feature_c4==0u && step.after.auxiliary_model_c8==123u && step.source_writes && step.attachments.writes.empty(),
+        "null models still establish source fields without resolving or owning the unused auxiliary key");
+}
 } // namespace
-int main() {test_order();test_failure();test_matrix();test_attachments();test_attachment_matrix();test_feature_binding();feature_binding_digest();return failures==0?0:1;}
+int main() {test_order();test_failure();test_matrix();test_attachments();test_attachment_matrix();test_feature_binding();feature_binding_digest();test_source_changes();return failures==0?0:1;}

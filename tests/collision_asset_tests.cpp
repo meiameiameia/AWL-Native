@@ -6825,6 +6825,23 @@ bool check_local_event_conditions(const char* disc_root) {
                                 model->core().head_50 == 0 && model->core().nodes[0].feature_8 == 0 &&
                                 !model->core().nodes[0].next_feature_14 &&
                                 initializer.secondary_model_c0 == 300 && actor_presentation.phase == awl::WorldMapPresentationPhase::Reading;
+                            // Supplied holder fields only: the setter must not
+                            // publish its two source stores on this ACT stop.
+                            awl::WorldMapModelAttachmentRequest sources{0,secondary_key,std::nullopt,std::nullopt};
+                            awl::WorldMapModelSourceStep source_step;
+                            valid_script = valid_script && awl::apply_world_map_native_model_source_change({model.get()},&sources,
+                                {awl::WorldMapModelSourceKind::Feature,99},&source_step) ==
+                                    awl::WorldMapModelAttachmentStatus::RequiresAttachmentIndex &&
+                                source_step.attachments.required_model == secondary_key && !source_step.source_writes &&
+                                !sources.feature_c4 && !sources.auxiliary_model_c8 && model->core().head_50 == 0 &&
+                                model->core().nodes[0].feature_8 == 0 && !model->core().nodes[0].next_feature_14 &&
+                                awl::apply_world_map_native_model_source_change({model.get()},&sources,
+                                    {awl::WorldMapModelSourceKind::Clear,0},&source_step) ==
+                                    awl::WorldMapModelAttachmentStatus::Advanced && sources.feature_c4 == 0u &&
+                                sources.auxiliary_model_c8 == 0u && source_step.attachments.writes.empty() &&
+                                initializer.secondary_model_c0 == 300 && initializer.primary.elapsed_0 == 7 &&
+                                !initializer.records[1].state.clip_10 && actor_toggle.flag_158 == 1 &&
+                                actor_presentation.phase == awl::WorldMapPresentationPhase::Reading;
                         }
                     }
                     valid_script = valid_script && awl::advance_world_map_presentation(staged_message.bytes.data(),
