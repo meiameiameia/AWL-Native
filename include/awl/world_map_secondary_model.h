@@ -52,6 +52,11 @@ public:
     [[nodiscard]] uint64_t identity() const { return identity_; }
     [[nodiscard]] size_t file_count() const { return entries_.size(); }
     [[nodiscard]] bool resolve(uint32_t node_index, WorldMapModelResource* out) const;
+    // A0688/F808's first halfword from prepared +1C. Only a nonzero +18
+    // and bounded two-byte relative payload are supported; null/opaque +1C
+    // is not interpreted as the resource header or an attachment table.
+    [[nodiscard]] bool resolve_attachment_index(
+        const WorldMapModelResourceReference& resource, uint16_t* out) const;
     // FUN_801A04E0 as immutable owned bytes and bounded native references,
     // not 32-bit pointer writes or a relocated marker in the source. All
     // reached offsets stay inside this file. Pose spans must be aligned,

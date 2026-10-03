@@ -74,6 +74,21 @@ void test_bank() {
     expect(b.resolve(1,&r) && r.core_storage_size==7864608 && r.allocation_size==7864640,
         "maximum halfword count stays bounded and sizing has no native word overflow");
 }
+void test_attachment_index() {
+    auto bytes=archive(1);put(bytes,120,1);put(bytes,124,58);bytes[154]=0xbe;bytes[155]=0xef;
+    Bank b;awl::WorldMapModelResource meta;uint16_t index=77;
+    expect(b.parse(300,bytes) && b.resolve(1,&meta) && b.resolve_attachment_index(meta.reference,&index) && index==0xbeef,
+        "attachment lookup reads exactly the first bounded big-endian halfword, including the last two file bytes");
+    for(unsigned fault=0;fault<5;++fault){auto bad=bytes;
+        if(fault==0)put(bad,120,0);if(fault==1)put(bad,124,0);if(fault==2)put(bad,124,59);
+        if(fault==3)put(bad,124,UINT32_MAX);if(fault==4)put(bad,96,UINT32_MAX);
+        expect(b.parse(300,bad) && !b.resolve_attachment_index({300,96},&index) && index==0xbeef,
+            "null, opaque, truncated, high-offset or unsupported-resource attachment data preserves output");
+    }
+    expect(b.parse(300,bytes) && !b.resolve_attachment_index({301,96},&index) &&
+        !b.resolve_attachment_index({300,97},&index) && !b.resolve_attachment_index({300,156},&index) &&
+        !b.resolve_attachment_index({300,96},nullptr),"attachment references must identify their owning supported model file");
+}
 void test_setup() {
     const auto b=bank();const std::vector<awl::WorldMapAnimationPlaybackRecord> records{{8,playback(1)}};
     Model model;model.identity=9;model.count_4=2;model.playback_178=8;Setup step;
@@ -213,7 +228,7 @@ void local_bank(const std::filesystem::path& disc) {
 }
 } // namespace
 int main(int argc,char** argv){
-    test_bank();test_setup();test_release();test_setup_matrix();test_release_matrix();
+    test_bank();test_attachment_index();test_setup();test_release();test_setup_matrix();test_release_matrix();
     if(argc==3 && std::string(argv[1])=="--model-bank-local")local_bank(argv[2]);
     else if(argc!=1)expect(false,"usage: --model-bank-local <disc>");
     return failures==0?0:1;

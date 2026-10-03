@@ -83,6 +83,17 @@ bool WorldMapModelBank::resolve(uint32_t index, WorldMapModelResource* out) cons
     *out = {{identity_, entry.offset}, entry.size, count, field, core, core + 0x20u};
     return true;
 }
+bool WorldMapModelBank::resolve_attachment_index(const WorldMapModelResourceReference& resource,uint16_t* out) const {
+    if(out==nullptr || resource.bank_identity!=identity_ || !loaded())return false;
+    for(size_t i=0;i<entries_.size();++i)if(entries_[i].offset==resource.offset) {
+        WorldMapModelResource meta;if(!resolve(static_cast<uint32_t>(i+1),&meta))return false;
+        const auto* data=bytes_.data()+resource.offset;
+        const uint32_t count=detail::archive_be32(data+0x18),offset=detail::archive_be32(data+0x1c);
+        if(count==0 || offset==0 || !detail::archive_range(meta.size,offset,2))return false;
+        *out=be16(data+offset);return true;
+    }
+    return false;
+}
 WorldMapModelPreparationStatus WorldMapModelBank::prepare(uint32_t index, WorldMapModelPreparationStep* out) const {
     using Status = WorldMapModelPreparationStatus;
     if (out == nullptr) return Status::InvalidInput;

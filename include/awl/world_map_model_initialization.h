@@ -1,6 +1,7 @@
 #pragma once
 
 #include "awl/world_map_secondary_model.h"
+#include "awl/world_map_model_links.h"
 
 #include <memory>
 
@@ -41,7 +42,8 @@ struct WorldMapModelCore {
     uint64_t parent_150 = 0;
     std::array<uint64_t,4> children_15c{};
     std::array<uint16_t,4> attachments_16c{0xffff,0xffff,0xffff,0xffff};
-    // +158/+174 and all other absent fields remain unwritten/unknown.
+    std::optional<uint32_t> flags_158; // Unwritten until an observed attachment flag store.
+    // +174 and all other absent fields remain unwritten/unknown.
 };
 enum class WorldMapModelCoreStatus { Prepared, SingularMatrix, InvalidInput };
 struct WorldMapModelCoreInitialization {
@@ -110,6 +112,17 @@ class WorldMapNativeModel;
     std::vector<WorldMapAnimationPartialPlaybackRecord>* records,
     uint32_t loop, float rate, WorldMapAnimationPartialChannelStep* out);
 
+// Builds the authoritative link graph from supplied live native owners and
+// applies only the supported DF68 path atomically. Links remain borrowed keys;
+// every reached child must be present in owners, never dereferenced by its key.
+// Resource/node indices come from private banks/cores, not copied proposals.
+// Missing metadata/flags/source or catchable allocation failure changes no
+// owner. Nonnull +C4 remains RequiresFeatureBinding. No actor acknowledgement,
+// model lifetime registry, pose evaluation or rendering is provided.
+[[nodiscard]] WorldMapModelAttachmentStatus apply_world_map_native_model_attachments(
+    const std::vector<WorldMapNativeModel*>& owners,
+    const WorldMapModelAttachmentRequest& request, WorldMapModelAttachmentStep* out);
+
 // Native owner for the CD50/D0FC null-arena, null-secondary-resource path.
 // Typed C++ storage replaces the PPC heap/cursor's packed pointer layout.
 // It owns a private immutable bank snapshot and the constructed core, so
@@ -135,6 +148,7 @@ public:
     // replace native pointer keys, not serialized PPC addresses or game IDs.
     WorldMapAnimationModelBinding binding() const;
     WorldMapSecondaryModelRecord record() const;
+    WorldMapModelLinkNode model_links() const;
 private:
     friend WorldMapModelConstructionResult construct_world_map_secondary_model(
         const WorldMapModelBank&, uint32_t, const WorldMapSecondarySetupStep&,
@@ -147,6 +161,8 @@ private:
         WorldMapNativeModel*, WorldMapAnimationChannelState*,
         std::vector<WorldMapAnimationPartialPlaybackRecord>*, uint32_t, float,
         WorldMapAnimationPartialChannelStep*);
+    friend WorldMapModelAttachmentStatus apply_world_map_native_model_attachments(
+        const std::vector<WorldMapNativeModel*>&, const WorldMapModelAttachmentRequest&, WorldMapModelAttachmentStep*);
     void set_playback(const WorldMapAnimationPartialPlayback& playback) noexcept;
     WorldMapNativeModel(std::unique_ptr<const WorldMapModelBank> bank, WorldMapModelCore core,
         std::optional<WorldMapAnimationPlayback> playback);

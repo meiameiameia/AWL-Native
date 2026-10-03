@@ -6809,6 +6809,17 @@ bool check_local_event_conditions(const char* disc_root) {
                                 model->animation_bank(200) && initializer.secondary_model_c0 == 300 &&
                                 initializer.primary.elapsed_0 == 7 && !initializer.records[1].state.clip_10 &&
                                 actor_toggle.flag_158 == 1 && actor_presentation.phase == awl::WorldMapPresentationPhase::Reading;
+                            awl::WorldMapModelAttachmentStep attachments;
+                            const auto secondary_key=model->binding().model_identity;
+                            valid_script = valid_script && awl::apply_world_map_native_model_attachments({model.get()},
+                                {100,secondary_key,std::nullopt,std::nullopt},&attachments) ==
+                                    awl::WorldMapModelAttachmentStatus::RequiresNode && attachments.required_model == 100 &&
+                                model->core().parent_150 == 0 && !model->core().flags_158 &&
+                                awl::apply_world_map_native_model_attachments({model.get()},
+                                    {0,secondary_key,std::nullopt,std::nullopt},&attachments) ==
+                                    awl::WorldMapModelAttachmentStatus::RequiresSource && attachments.required_field == 0xc4 &&
+                                model->core().parent_150 == 0 && !model->core().flags_158 &&
+                                initializer.secondary_model_c0 == 300 && actor_presentation.phase == awl::WorldMapPresentationPhase::Reading;
                         }
                     }
                     valid_script = valid_script && awl::advance_world_map_presentation(staged_message.bytes.data(),

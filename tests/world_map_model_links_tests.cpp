@@ -133,7 +133,7 @@ void test_matrix() {
         if(status!=Status::Prepared) return;
         hash32(digest,family);hash32(digest,seed);hash32(digest,static_cast<uint32_t>(step.after.nodes.size()));
         for(const auto& node:step.after.nodes) {
-            hash64(digest,node.identity);hash64(digest,node.parent_150);hash32(digest,node.flags_158);
+            hash64(digest,node.identity);hash64(digest,node.parent_150);hash32(digest,*node.flags_158);
             for(auto child:node.children_15c) hash64(digest,child);
             for(auto attachment:node.attachments_16c) hash32(digest,attachment);
         }
@@ -151,5 +151,110 @@ void test_matrix() {
         step.writes.size()==8190 && step.after.nodes.back().parent_150==0 &&
         step.after.nodes[0].parent_150==101,"long supplied chain uses bounded explicit traversal without native recursion");
 }
+void test_attachments() {
+    using AStatus=awl::WorldMapModelAttachmentStatus;
+    using Binding=awl::WorldMapModelAttachmentBinding;
+    const State state{{{1,101,std::nullopt,{4,0,0,0},{10,11,12,13}},
+        {2,102,std::nullopt,{4,0,0,0},{20,21,22,23}},
+        {3,103,std::nullopt,{}, {30,31,32,33}}, {4,104,0u,{}, {40,41,42,43}}}};
+    const std::vector<Binding> bindings{{1,uint16_t(0),std::nullopt},{2,uint16_t(2),uint16_t(0xbeef)},
+        {3,uint16_t(1),uint16_t(0)},{4,uint16_t(0),uint16_t(0)}};
+    awl::WorldMapModelAttachmentRequest request{1,2,0,3};awl::WorldMapModelAttachmentStep step;
+    expect(awl::prepare_world_map_model_attachments(state,request,bindings,&step)==AStatus::Prepared &&
+        step.auxiliary_slot==1u && step.secondary_slot==0u && !step.after.nodes[0].flags_158 &&
+        step.after.nodes[0].children_15c[0]==2 && step.after.nodes[0].attachments_16c[0]==0xbeef &&
+        step.after.nodes[1].parent_150==1 && step.after.nodes[1].flags_158==15u &&
+        step.after.nodes[1].children_15c[1]==3 && step.after.nodes[1].attachments_16c[1]==2 &&
+        step.after.nodes[2].parent_150==2 && step.after.nodes[2].flags_158==12u && step.after.nodes[3].parent_150==0,
+        "primary clear, first-free auxiliary link, flags clear and resource-based secondary link preserve unknown root flag");
+    expect(step.writes.size()==11 && step.writes[0].identity==4 && step.writes[0].offset==0x150 && step.writes[0].value==0,
+        "ordered clear precedes all attachment stores");
+    const std::array<uint32_t,9> offsets{0x150,0x160,0x16e,0x158,0x158,0x150,0x15c,0x16c,0x158};
+    for(size_t i=0;i<offsets.size();++i)expect(step.writes[i+2].offset==offsets[i],"attach/halfword/flag stores have original order");
+    request.feature_c4.reset();
+    expect(awl::prepare_world_map_model_attachments(state,request,bindings,&step)==AStatus::RequiresSource &&
+        step.required_field==0xc4 && same(step.after,state) && step.writes.empty(),"unknown C4 rolls back primary clearing");
+    request.feature_c4=99;
+    expect(awl::prepare_world_map_model_attachments(state,request,bindings,&step)==AStatus::RequiresFeatureBinding &&
+        step.feature_node_index==2 && step.required_source==99 && same(step.after,state),
+        "nonnull C4 records selected node and stops before untranslated feature binding");
+    request.feature_c4=0;request.auxiliary_model_c8.reset();
+    expect(awl::prepare_world_map_model_attachments(state,request,bindings,&step)==AStatus::RequiresSource &&
+        step.required_field==0xc8 && same(step.after,state),"C8 evidence is required only after observed null C4");
+    request.auxiliary_model_c8=0;
+    expect(awl::prepare_world_map_model_attachments(state,request,{},&step)==AStatus::Prepared &&
+        step.writes.size()==2 && !step.after.nodes[1].flags_158,"null C8 skips all secondary data/flag/index reads");
+    request.auxiliary_model_c8=3;auto missing=bindings;missing[1].resource_attachment_index.reset();
+    expect(awl::prepare_world_map_model_attachments(state,request,missing,&step)==AStatus::RequiresAttachmentIndex &&
+        step.required_model==2 && same(step.after,state) && step.writes.empty(),"missing resource halfword rolls back auxiliary stores and flag clear");
+    missing=bindings;missing[1].first_node_index.reset();
+    expect(awl::prepare_world_map_model_attachments(state,request,missing,&step)==AStatus::RequiresNodeIndex &&
+        step.required_model==2 && same(step.after,state) && step.writes.empty(),
+        "C8 path selects the secondary model's node before reading the auxiliary child");
+    auto full=state;full.nodes[1].children_15c={4,4,4,4};
+    expect(awl::prepare_world_map_model_attachments(full,request,bindings,&step)==AStatus::RequiresFlags &&
+        step.required_model==3 && step.required_field==0x158 && same(step.after,full),
+        "full secondary slots skip flag initialization; later auxiliary flag read remains unknown");
+    full.nodes[2].flags_158=0x80000007u;
+    expect(awl::prepare_world_map_model_attachments(full,request,bindings,&step)==AStatus::Prepared && !step.auxiliary_slot &&
+        step.after.nodes[2].parent_150==103 && step.after.nodes[2].flags_158==0x80000004u,
+        "known full-slot path retains parent while still clearing only auxiliary flag bits three");
+    State self{{{1,0,std::nullopt,{}, {1,2,3,4}}}};request={1,1,0,1};
+    expect(awl::prepare_world_map_model_attachments(self,request,{{1,uint16_t(2),uint16_t(0xbeef)}},&step)==AStatus::Prepared &&
+        step.after.nodes[0].children_15c==std::array<uint64_t,4>{1,1,0,0} && step.after.nodes[0].parent_150==1 &&
+        step.after.nodes[0].flags_158==15u && step.after.nodes[0].attachments_16c[0]==2 && step.after.nodes[0].attachments_16c[1]==0xbeef,
+        "whole-model self aliases observe sequential first-free slots and final flag overwrite");
+    auto unknown=state;unknown.nodes[3].flags_158.reset();
+    Step clear;
+    expect(awl::prepare_world_map_model_links_clear(unknown,1,&clear)==Status::RequiresFlags && clear.required_node==4 &&
+        clear.writes.empty() && same(clear.after,unknown),"reached unknown child flags roll back parent clear");
+    step.required_model=77;
+    expect(awl::prepare_world_map_model_attachments(step.after,request,bindings,&step)==AStatus::InvalidInput && step.required_model==77,
+        "attachment output aliases reject without overwriting diagnostics");
+}
+void test_attachment_matrix() {
+    using AStatus=awl::WorldMapModelAttachmentStatus;
+    const std::array<std::array<uint64_t,3>,6> layouts{{{1,2,3},{1,2,2},{1,1,3},{1,1,1},{1,2,1},{0,2,3}}};
+    uint64_t digest=14695981039346656037ull;unsigned cases=0;
+    for(uint32_t seed=0;seed<128;++seed)for(uint32_t mask=0;mask<3;++mask)for(uint32_t family=0;family<6;++family)
+        for(const auto& layout:layouts){
+            State state;std::vector<awl::WorldMapModelAttachmentBinding> bindings;
+            for(uint32_t i=1;i<=4;++i){
+                Node node;node.identity=i;node.parent_150=100+i;node.flags_158=i==4?0u:(seed+i-1)&31u;
+                if((i==3 && mask==1) || (i==4 && mask==2))node.flags_158.reset();
+                for(uint32_t slot=0;slot<4;++slot){node.attachments_16c[slot]=static_cast<uint16_t>(i*10+slot);
+                    if(i==1)node.children_15c[slot]=slot==0 && (seed&1)?4:0;
+                    if(i==2)node.children_15c[slot]=(seed>>(slot+1))&1?4:0;
+                    if(i==3)node.children_15c[slot]=slot==0?99:0;
+                }
+                state.nodes.push_back(node);uint16_t first=0;
+                for(uint16_t j=0;j<4;++j){const uint32_t value=(seed>>j)&1?0xffffu:j==2?0x1ffffu:i*10+j;
+                    if(value!=0xffff){first=j;break;}}
+                bindings.push_back({i,first,seed&64?std::nullopt:std::optional<uint16_t>(static_cast<uint16_t>(seed*17+i))});
+            }
+            const awl::WorldMapModelAttachmentRequest request{layout[0],family==0?0:layout[1],
+                family<2?std::nullopt:std::optional<uint64_t>(family==2?99:0),
+                family<4?std::nullopt:std::optional<uint64_t>(family==4?0:layout[2])};
+            awl::WorldMapModelAttachmentStep step;
+            const auto status=awl::prepare_world_map_model_attachments(state,request,bindings,&step);
+            expect(status!=AStatus::AllocationFailure && status!=AStatus::RequiresNode && status!=AStatus::RequiresNodeIndex,
+                "bounded attachment matrix has supplied model/node metadata");
+            for(uint32_t w:{seed,mask,family,uint32_t(layout[0]),uint32_t(layout[1]),uint32_t(layout[2]),uint32_t(status),
+                uint32_t(step.required_model),uint32_t(step.required_source),step.required_field,uint32_t(step.feature_node_index.has_value()),
+                uint32_t(step.feature_node_index.value_or(0))})hash32(digest,w);
+            const auto& after=status==AStatus::InvalidInput?state:step.after;
+            for(const auto& node:after.nodes){
+                hash32(digest,uint32_t(node.identity));hash32(digest,uint32_t(node.parent_150));
+                hash32(digest,node.flags_158?1u:0u);hash32(digest,node.flags_158.value_or(0));
+                for(const auto child:node.children_15c)hash32(digest,uint32_t(child));
+                for(const auto index:node.attachments_16c)hash32(digest,index);
+            }
+            hash32(digest,uint32_t(step.writes.size()));
+            for(const auto& w:step.writes){hash32(digest,uint32_t(w.identity));hash32(digest,w.offset);hash32(digest,uint32_t(w.value));}
+            ++cases;
+        }
+    std::cout<<"MODEL_ATTACHMENT_MATRIX "<<cases<<' '<<std::hex<<digest<<std::dec<<'\n';
+    expect(cases==13824 && digest==0x14c76bc961fda019ull,"whole attachment wrapper agrees with raw instructions and first evidence stops");
+}
 } // namespace
-int main() {test_order();test_failure();test_matrix();return failures==0?0:1;}
+int main() {test_order();test_failure();test_matrix();test_attachments();test_attachment_matrix();return failures==0?0:1;}

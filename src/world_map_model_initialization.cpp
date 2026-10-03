@@ -158,6 +158,9 @@ WorldMapSecondaryModelRecord WorldMapNativeModel::record() const {
     return {keys.model_identity,static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&core_.resource)),
         core_.resource.count_6,core_.auxiliary_c,core_.allocation_10,core_.feature_14,flags_174(),keys.playback_178};
 }
+WorldMapModelLinkNode WorldMapNativeModel::model_links() const {
+    return {binding().model_identity,core_.parent_150,core_.flags_158,core_.children_15c,core_.attachments_16c};
+}
 WorldMapModelConstructionResult construct_world_map_secondary_model(
     const WorldMapModelBank& bank,uint32_t index,const WorldMapSecondarySetupStep& setup,
     std::unique_ptr<WorldMapNativeModel>* out) {
@@ -274,5 +277,39 @@ WorldMapAnimationChannelStatus apply_world_map_native_animation_channel_settings
     } catch(const std::bad_alloc&) {
         return Status::AllocationFailure;
     }
+}
+WorldMapModelAttachmentStatus apply_world_map_native_model_attachments(
+    const std::vector<WorldMapNativeModel*>& owners,
+    const WorldMapModelAttachmentRequest& request,WorldMapModelAttachmentStep* out) {
+    using Status=WorldMapModelAttachmentStatus;
+    if(out==nullptr)return Status::InvalidInput;
+    for(size_t i=0;i<owners.size();++i) {
+        if(owners[i]==nullptr)return Status::InvalidInput;
+        for(size_t j=0;j<i;++j)if(owners[i]==owners[j])return Status::InvalidInput;
+    }
+    try {
+        WorldMapModelLinkState state;std::vector<WorldMapModelAttachmentBinding> bindings;
+        for(const auto* owner:owners) {
+            state.nodes.push_back(owner->model_links());
+            uint16_t first=0;
+            for(size_t i=0;i<owner->core_.nodes.size();++i)if(owner->core_.nodes[i].value_4!=0xffff) {
+                first=static_cast<uint16_t>(i);break;
+            }
+            uint16_t index=0;std::optional<uint16_t> attachment;
+            if(owner->bank().resolve_attachment_index(owner->core_.resource.reference,&index))attachment=index;
+            bindings.push_back({owner->binding().model_identity,first,attachment});
+        }
+        WorldMapModelAttachmentStep prepared;
+        const auto status=prepare_world_map_model_attachments(state,request,bindings,&prepared);
+        if(status==Status::InvalidInput)return status;
+        if(status!=Status::Prepared){*out=std::move(prepared);return status;}
+        *out=std::move(prepared); // All allocating work ends before publication.
+        for(size_t i=0;i<owners.size();++i) {
+            const auto& node=out->after.nodes[i];auto& core=owners[i]->core_;
+            core.parent_150=node.parent_150;core.flags_158=node.flags_158;
+            core.children_15c=node.children_15c;core.attachments_16c=node.attachments_16c;
+        }
+        return Status::Advanced;
+    } catch(const std::bad_alloc&) {return Status::AllocationFailure;}
 }
 } // namespace awl
