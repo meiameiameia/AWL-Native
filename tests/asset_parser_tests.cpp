@@ -11,6 +11,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -75,10 +76,26 @@ static std::vector<uint8_t> make_tpl(uint16_t width, uint16_t height, uint32_t f
     return bytes;
 }
 
+static uint32_t fixture_be32(const uint8_t* p) {
+    return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) |
+           (uint32_t(p[2]) << 8) | uint32_t(p[3]);
+}
+
+// The verified table has a resource/name pair at +20/+24. Builders that
+// extend the payload remove and then append this trailing name explicitly.
+static void append_single_section_gpl_name(std::vector<uint8_t>& bytes) {
+    put_be32(bytes, 24, static_cast<uint32_t>(bytes.size()));
+    constexpr char name[] = "synthetic";
+    bytes.insert(bytes.end(), name, name + sizeof(name));
+}
+static void remove_single_section_gpl_name(std::vector<uint8_t>& bytes) {
+    bytes.resize(fixture_be32(bytes.data() + 24));
+}
+
 static std::vector<uint8_t> make_gpl(uint8_t primitive, uint8_t first_position_index,
                                       uint32_t position_data_offset = 28,
                                       uint32_t vertex_descriptor = 0x00000828) {
-    constexpr size_t section_offset = 24;
+    constexpr size_t section_offset = 28;
     constexpr size_t position_header_offset = section_offset + 20;
     constexpr size_t position_data_absolute = section_offset + 28;
     constexpr size_t color_header_relative = 64;
@@ -177,6 +194,7 @@ static std::vector<uint8_t> make_gpl(uint8_t primitive, uint8_t first_position_i
     bytes[display_list_offset + 9] = 2;
     bytes[display_list_offset + 10] = 2;
     bytes[display_list_offset + 11] = 2;
+    append_single_section_gpl_name(bytes);
     return bytes;
 }
 
@@ -184,7 +202,7 @@ static std::vector<uint8_t> make_indexed_color_gpl(
     bool rgba4, uint8_t first_color_index = 0,
     bool include_target_tev = false,
     uint32_t vertex_descriptor = 0x000008A8) {
-    constexpr size_t section_offset = 24;
+    constexpr size_t section_offset = 28;
     constexpr size_t position_header_relative = 20;
     constexpr size_t position_header_offset =
         section_offset + position_header_relative;
@@ -326,13 +344,14 @@ static std::vector<uint8_t> make_indexed_color_gpl(
             bytes[reference_offset++] = static_cast<uint8_t>(i);
         }
     }
+    append_single_section_gpl_name(bytes);
     return bytes;
 }
 
 static std::vector<uint8_t> make_gpl_with_texture_command(
     uint32_t command_word, uint8_t command_type = 1,
     bool include_target_tev = false, uint32_t tev_word = 1) {
-    constexpr size_t section_offset = 24;
+    constexpr size_t section_offset = 28;
     constexpr size_t material_header_offset = section_offset + 120;
     constexpr size_t command_list_relative = 132;
     constexpr size_t command_list_offset =
@@ -347,6 +366,7 @@ static std::vector<uint8_t> make_gpl_with_texture_command(
     const size_t display_list_offset = section_offset + display_list_relative;
 
     std::vector<uint8_t> bytes = make_gpl(0x90, 0);
+    remove_single_section_gpl_name(bytes);
     constexpr size_t original_display_list_offset = section_offset + 148;
     const std::vector<uint8_t> primitive(
         bytes.begin() + original_display_list_offset, bytes.end());
@@ -379,16 +399,18 @@ static std::vector<uint8_t> make_gpl_with_texture_command(
              static_cast<uint32_t>(display_list_size));
     std::copy(primitive.begin(), primitive.end(),
               bytes.begin() + display_list_offset);
+    append_single_section_gpl_name(bytes);
     return bytes;
 }
 
 static std::vector<uint8_t> make_multi_primitive_gpl() {
-    constexpr size_t section_offset = 24;
+    constexpr size_t section_offset = 28;
     constexpr size_t geometry_command_offset = section_offset + 132;
     constexpr size_t display_list_offset = section_offset + 148;
     constexpr uint32_t display_list_size = 56;
 
     std::vector<uint8_t> bytes = make_gpl(0x90, 0);
+    remove_single_section_gpl_name(bytes);
     bytes.resize(display_list_offset + display_list_size, 0);
     std::fill(bytes.begin() + display_list_offset, bytes.end(), uint8_t{0});
     put_be32(bytes, geometry_command_offset + 12, display_list_size);
@@ -409,11 +431,12 @@ static std::vector<uint8_t> make_multi_primitive_gpl() {
     append_primitive(0x80, 4);
     append_primitive(0x98, 3);
     append_primitive(0xA0, 3);
+    append_single_section_gpl_name(bytes);
     return bytes;
 }
 
 static std::vector<uint8_t> make_ordered_multi_draw_gpl() {
-    constexpr size_t section_offset = 24;
+    constexpr size_t section_offset = 28;
     constexpr size_t material_header_offset = section_offset + 120;
     constexpr size_t command_list_relative = 132;
     constexpr size_t command_list_offset =
@@ -426,6 +449,7 @@ static std::vector<uint8_t> make_ordered_multi_draw_gpl() {
     constexpr size_t display_size = 12;
 
     std::vector<uint8_t> bytes = make_gpl(0x90, 0);
+    remove_single_section_gpl_name(bytes);
     bytes.resize(first_display_offset + display_size * 3, 0);
     std::fill(bytes.begin() + command_list_offset, bytes.end(), uint8_t{0});
 
@@ -476,24 +500,150 @@ static std::vector<uint8_t> make_ordered_multi_draw_gpl() {
             bytes[reference_offset + 2] = static_cast<uint8_t>(vertex);
         }
     }
+    append_single_section_gpl_name(bytes);
     return bytes;
 }
 
 static std::vector<uint8_t> make_multi_section_gpl() {
     std::vector<uint8_t> bytes =
         make_gpl_with_texture_command(0x11110002, 1, true, 1);
-    const uint32_t second_section_offset =
-        static_cast<uint32_t>(bytes.size() + sizeof(uint32_t));
-
-    // Add room for the second section-table entry. This moves the complete,
-    // valid first section from offset 24 to offset 28 without changing any of
-    // its section-relative offsets.
-    bytes.insert(bytes.begin() + 24, sizeof(uint32_t), uint8_t{0});
+    remove_single_section_gpl_name(bytes);
+    // Two complete eight-byte pairs move the first section from 28 to 36.
+    // Its internal offsets stay section-relative.
+    bytes.insert(bytes.begin() + 28, 8, uint8_t{0});
+    const uint32_t second = static_cast<uint32_t>(bytes.size());
+    bytes.resize(static_cast<size_t>(second) + 20, 0);
+    const uint32_t names = static_cast<uint32_t>(bytes.size());
+    constexpr char name_bytes[] = "first\0second";
+    bytes.insert(bytes.end(), name_bytes, name_bytes + sizeof(name_bytes));
     put_be32(bytes, 12, 2);
-    put_be32(bytes, 20, 28);
-    put_be32(bytes, 24, second_section_offset);
-    bytes.resize(static_cast<size_t>(second_section_offset) + 20, 0);
+    put_be32(bytes, 20, 36);
+    put_be32(bytes, 24, names);
+    put_be32(bytes, 28, second);
+    put_be32(bytes, 32, names + 6);
     return bytes;
+}
+
+// Independent table fixture: +0x10 selects a table at 32, not 20; serialized
+// group order is the reverse of physical section order. Each span is 32 bytes.
+static std::vector<uint8_t> make_paired_table_gpl() {
+    std::vector<uint8_t> bytes(139, 0);
+    put_be32(bytes, 0, 0x005BBC61);
+    put_be32(bytes, 12, 2);
+    put_be32(bytes, 16, 32);
+    put_be32(bytes, 20, 0xFFFFFFFF); // Cannot substitute a hardcoded table.
+    put_be32(bytes, 24, 0xFFFFFFFF);
+    put_be32(bytes, 32, 96);
+    put_be32(bytes, 36, 134);
+    put_be32(bytes, 40, 64);
+    put_be32(bytes, 44, 128);
+    put_be32(bytes, 64, 20);
+    put_be32(bytes, 96 + 16, 20);
+    constexpr char names[] = "alpha\0beta";
+    std::copy(names, names + sizeof(names), bytes.begin() + 128);
+    return bytes;
+}
+
+static bool test_gpl_paired_table_and_spans(const fs::path& root) {
+    ASSERT_TRUE(write_fixture(root, "gpl_pairs.gpl", make_paired_table_gpl()));
+    awl::GplFile gpl;
+    ASSERT_TRUE(awl::gpl_load_from_file("/gpl_pairs.gpl", &gpl));
+    ASSERT_TRUE(gpl.header.section_table_offset == 32 && gpl.sections.size() == 2);
+    ASSERT_TRUE((gpl.header.section_offsets == std::vector<uint32_t>{96, 64}));
+    ASSERT_TRUE(gpl.sections[0].offset == 96 && gpl.sections[0].name_offset == 134);
+    ASSERT_TRUE(gpl.sections[1].offset == 64 && gpl.sections[1].name_offset == 128);
+    ASSERT_TRUE(gpl.sections[0].raw_size == 32 && gpl.sections[1].raw_size == 32);
+    ASSERT_TRUE((gpl.sections[0].sub_offsets == std::vector<uint32_t>{0,0,0,0,20}));
+    ASSERT_TRUE((gpl.sections[1].sub_offsets == std::vector<uint32_t>{20,0,0,0,0}));
+    const auto* raw = static_cast<const uint8_t*>(gpl.raw_file_data);
+    ASSERT_TRUE(gpl.sections[0].raw_data == raw + 96 &&
+                gpl.sections[1].raw_data == raw + 64);
+    ASSERT_TRUE(std::strcmp(reinterpret_cast<const char*>(raw + 134), "beta") == 0);
+    // A name can be in file bounds while outside the section's geometry span.
+    auto bytes = make_gpl(0x90, 0);
+    put_be32(bytes, 28 + 20, fixture_be32(bytes.data() + 24) - 28);
+    ASSERT_TRUE(write_fixture(root, "gpl_attr_into_names.gpl", bytes));
+    ASSERT_TRUE(awl::gpl_load_from_file("/gpl_attr_into_names.gpl", &gpl));
+    awl::GplMeshAnalysis mesh;
+    ASSERT_FALSE(awl::gpl_parse_display_list_for_analysis(gpl, "name boundary", &mesh));
+    ASSERT_TRUE(mesh.indices.empty());
+    return true;
+}
+
+static bool test_gpl_rejects_invalid_pairs(const fs::path& root) {
+    const auto valid = make_paired_table_gpl();
+    const std::pair<size_t,uint32_t> faults[] = {
+        {0, 0xFFFFFFFF}, {12, 0}, {12, 65536},
+        {16, 0}, {16, 16}, {16, 33}, {16, 136}, {16, 0xFFFFFFFC},
+        {32, 40}, {32, 97}, {32, 136}, {32, 64}, {32, 68},
+        {36, 0}, {36, 139}, {36, 4}, {44, 96},
+        {64, 4}, {64, 32}, {112, 32}, {112, 0xFFFFFFFF}
+    };
+    awl::GplFile gpl;
+    for (const auto& fault : faults) {
+        auto bytes = valid;
+        put_be32(bytes, fault.first, fault.second);
+        ASSERT_TRUE(write_fixture(root, "gpl_bad_pair.gpl", bytes));
+        ASSERT_FALSE(awl::gpl_load_from_file("/gpl_bad_pair.gpl", &gpl));
+        ASSERT_TRUE(gpl.raw_file_data == nullptr && gpl.raw_file_size == 0 &&
+                    gpl.sections.empty() && gpl.header.section_offsets.empty());
+    }
+    auto empty_name = valid;
+    empty_name[134] = 0;
+    auto no_terminator = valid;
+    std::fill(no_terminator.begin() + 128, no_terminator.end(), uint8_t{'X'});
+    auto interleaved = valid;
+    interleaved[90] = 'X';
+    put_be32(interleaved, 44, 90);
+    for (const auto& bytes : {empty_name, no_terminator, interleaved}) {
+        ASSERT_TRUE(write_fixture(root, "gpl_bad_pair.gpl", bytes));
+        ASSERT_FALSE(awl::gpl_load_from_file("/gpl_bad_pair.gpl", &gpl));
+    }
+    for (size_t size = 0; size < valid.size(); ++size) {
+        const std::vector<uint8_t> prefix(valid.begin(), valid.begin() + size);
+        ASSERT_TRUE(write_fixture(root, "gpl_truncated_pair.gpl", prefix));
+        ASSERT_FALSE(awl::gpl_load_from_file("/gpl_truncated_pair.gpl", &gpl));
+        ASSERT_TRUE(gpl.raw_file_data == nullptr && gpl.sections.empty());
+    }
+    // Existing loader contract: even a failed replacement clears old ownership.
+    ASSERT_TRUE(write_fixture(root, "gpl_pairs.gpl", valid));
+    ASSERT_TRUE(awl::gpl_load_from_file("/gpl_pairs.gpl", &gpl));
+    ASSERT_FALSE(awl::gpl_load_from_file("/missing.gpl", &gpl));
+    ASSERT_TRUE(gpl.raw_file_data == nullptr && gpl.sections.empty());
+    return true;
+}
+
+static bool test_local_gpl_banks(const char* disc) {
+    ASSERT_TRUE(awl::filesystem_mount("/", disc));
+    uint64_t digest = 14695981039346656037ull;
+    const auto hash = [&digest](uint32_t word) {
+        for (unsigned i = 0; i < 4; ++i) {
+            digest ^= (word >> (24 - i * 8)) & 255;
+            digest *= 1099511628211ull;
+        }
+    };
+    size_t total = 0;
+    for (const char* path : {"/files/symbol.gpl", "/files/real.gpl"}) {
+        awl::GplFile gpl;
+        ASSERT_TRUE(awl::gpl_load_from_file(path, &gpl));
+        ASSERT_TRUE(gpl.sections.size() == (total == 0 ? 196u : 27u));
+        hash(gpl.header.section_count);
+        hash(gpl.header.section_table_offset);
+        for (const auto& section : gpl.sections) {
+            hash(section.offset); hash(section.name_offset);
+            for (const auto sub : section.sub_offsets) hash(sub);
+            ASSERT_TRUE(section.raw_size >= 20);
+            ++total;
+        }
+        awl::GplDrawSequenceAnalysis sequence;
+        ASSERT_FALSE(awl::gpl_parse_draw_sequence_for_analysis(gpl, "local bank", &sequence));
+        ASSERT_TRUE(sequence.batches.empty());
+    }
+    std::cout << "LOCAL_GPL_SECTION_PAIRS " << total << ' ' << std::hex << digest
+              << std::dec << '\n';
+    // Verified DOL 801A3DB8 relocation supplies all paired and subheader words.
+    ASSERT_TRUE(total == 223 && digest == 0xeec0820730b566d8ull);
+    return true;
 }
 
 static bool test_valid_rgb5a3(const fs::path& root) {
@@ -792,7 +942,7 @@ static bool test_gpl_position16_indexed_color_layout(const fs::path& root) {
     ASSERT_TRUE(mesh.raw_refs[2].uv_idx == 2);
     awl::gpl_free(&gpl);
 
-    constexpr size_t section_offset = 24;
+    constexpr size_t section_offset = 28;
     constexpr size_t command_list_relative = 136;
     constexpr size_t geometry_command_offset =
         section_offset + command_list_relative;
@@ -841,7 +991,7 @@ static bool test_gpl_position16_color16_layout(const fs::path& root) {
     ASSERT_TRUE(mesh.raw_refs[2].uv_idx == 2);
     awl::gpl_free(&gpl);
 
-    constexpr size_t section_offset = 24;
+    constexpr size_t section_offset = 28;
     constexpr size_t command_list_relative = 136;
     constexpr size_t geometry_command_offset =
         section_offset + command_list_relative;
@@ -893,7 +1043,7 @@ static bool test_gpl_position16_color16_uv16_layout(const fs::path& root) {
     ASSERT_TRUE(mesh.raw_refs[2].uv_idx == 2);
     awl::gpl_free(&gpl);
 
-    constexpr size_t section_offset = 24;
+    constexpr size_t section_offset = 28;
     constexpr size_t command_list_relative = 136;
     constexpr size_t geometry_command_offset =
         section_offset + command_list_relative;
@@ -938,7 +1088,7 @@ static bool test_gpl_rejects_bad_indexed_colors(const fs::path& root) {
     awl::gpl_free(&gpl);
 
     std::vector<uint8_t> bytes = make_indexed_color_gpl(true);
-    constexpr size_t color_header_offset = 24 + 64;
+    constexpr size_t color_header_offset = 28 + 64;
     put_be32(bytes, color_header_offset, 0xFFFFFFF0);
     ASSERT_TRUE(write_fixture(root, "indexed_bad_color_bounds.gpl", bytes));
     ASSERT_TRUE(
@@ -1032,9 +1182,11 @@ static bool test_gpl_reference_and_layout_validation(const fs::path& root) {
     awl::gpl_free(&gpl);
 
     std::vector<uint8_t> trailing_command = make_gpl(0x90, 0);
-    constexpr size_t section_offset = 24;
+    constexpr size_t section_offset = 28;
     constexpr size_t geometry_command_offset = section_offset + 132;
+    remove_single_section_gpl_name(trailing_command);
     trailing_command.push_back(0x61);
+    append_single_section_gpl_name(trailing_command);
     put_be32(trailing_command, geometry_command_offset + 12, 13);
     ASSERT_TRUE(write_fixture(root, "gpl_trailing_command.gpl",
                               trailing_command));
@@ -1080,7 +1232,7 @@ static bool test_gpl_texture_command(const fs::path& root) {
 
 static bool test_gpl_rejects_additional_command_draw_range(
     const fs::path& root) {
-    constexpr size_t section_offset = 24;
+    constexpr size_t section_offset = 28;
     constexpr size_t texture_command_offset = section_offset + 132;
     constexpr uint32_t display_list_relative = 164;
     std::vector<uint8_t> bytes =
@@ -1129,7 +1281,7 @@ static bool test_gpl_ordered_draw_sequence(const fs::path& root) {
     awl::gpl_free(&gpl);
 
     std::vector<uint8_t> bytes = make_ordered_multi_draw_gpl();
-    constexpr size_t command_list_offset = 24 + 132;
+    constexpr size_t command_list_offset = 28 + 132;
     bytes[command_list_offset + 49] = 0;
     ASSERT_TRUE(write_fixture(root, "gpl_ordered_bad_texture_state.gpl",
                               bytes));
@@ -1180,7 +1332,7 @@ static bool test_gpl_analysis_rejects_multiple_sections(
 
 static bool test_gpl_texture_command_rejects_bad_bounds(
     const fs::path& root) {
-    constexpr size_t section_offset = 24;
+    constexpr size_t section_offset = 28;
     constexpr size_t material_header_offset = section_offset + 120;
     std::vector<uint8_t> bytes =
         make_gpl_with_texture_command(0x11110002);
@@ -1202,7 +1354,7 @@ static bool test_gpl_texture_command_rejects_bad_bounds(
 }
 
 static bool test_gpl_target_material(const fs::path& root) {
-    constexpr size_t section_offset = 24;
+    constexpr size_t section_offset = 28;
     constexpr size_t color_data_offset = section_offset + 72;
     std::vector<uint8_t> bytes =
         make_gpl_with_texture_command(0x11110002, 1, true, 1);
@@ -1228,7 +1380,7 @@ static bool test_gpl_target_material(const fs::path& root) {
 
 static bool test_gpl_target_material_rejects_unverified_state(
     const fs::path& root) {
-    constexpr size_t section_offset = 24;
+    constexpr size_t section_offset = 28;
     constexpr size_t normal_descriptor_offset = section_offset + 108;
     constexpr size_t material_header_offset = section_offset + 120;
     constexpr size_t command_list_offset = section_offset + 132;
@@ -1252,7 +1404,9 @@ static bool test_gpl_target_material_rejects_unverified_state(
 
     bytes = make_gpl_with_texture_command(0x11110002, 1, true, 1);
     put_be16(bytes, material_header_offset + 8, 4);
+    remove_single_section_gpl_name(bytes);
     bytes.resize(bytes.size() + 16, 0);
+    append_single_section_gpl_name(bytes);
     bytes[command_list_offset + 48] = 3;
     put_be32(bytes, command_list_offset + 52, 1);
     ASSERT_TRUE(write_fixture(root, "gpl_duplicate_tev.gpl", bytes));
@@ -1262,7 +1416,11 @@ static bool test_gpl_target_material_rejects_unverified_state(
     return true;
 }
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc != 1 && (argc != 3 || std::string(argv[1]) != "--gpl-banks-local")) {
+        std::cerr << "Usage: asset_parser_tests [--gpl-banks-local <disc>]\n";
+        return 2;
+    }
     const auto unique_value =
         std::chrono::high_resolution_clock::now().time_since_epoch().count();
     const fs::path fixture_root =
@@ -1312,6 +1470,10 @@ int main() {
         test_tpl_rejects_truncated_or_impossible_mip_chain, fixture_root);
     run("test_tpl_rejects_malformed_bounds", test_tpl_rejects_malformed_bounds,
         fixture_root);
+    run("test_gpl_paired_table_and_spans", test_gpl_paired_table_and_spans,
+        fixture_root);
+    run("test_gpl_rejects_invalid_pairs", test_gpl_rejects_invalid_pairs,
+        fixture_root);
     run("test_valid_gpl_triangle", test_valid_gpl_triangle, fixture_root);
     run("test_gpl_indexed_color_layouts", test_gpl_indexed_color_layouts,
         fixture_root);
@@ -1342,6 +1504,11 @@ int main() {
     run("test_gpl_target_material_rejects_unverified_state",
         test_gpl_target_material_rejects_unverified_state, fixture_root);
 
+    if (argc == 3) {
+        awl::filesystem_shutdown();
+        awl::filesystem_init();
+        if (!test_local_gpl_banks(argv[2])) ++failures;
+    }
     awl::filesystem_shutdown();
     awl_memory_shutdown();
     fs::remove_all(fixture_root, error);

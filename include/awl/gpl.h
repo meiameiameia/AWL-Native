@@ -9,10 +9,12 @@ namespace awl {
 // GPL file header
 struct GplHeader {
     uint32_t magic = 0;     // 0x005BBC61
-    uint32_t unknown1 = 0;  // Likely a version or flags
-    uint32_t unknown2 = 0;  // Likely related to data size or flags
+    uint32_t unknown1 = 0;  // Opaque auxiliary control word at +4
+    uint32_t unknown2 = 0;  // Auxiliary offset at +8 when both words are nonzero
     uint32_t section_count = 0; // Number of sections inside this GPL
-    uint32_t constant = 0;  // Always 0x14? Needs verification
+    uint32_t section_table_offset = 0; // File-relative table; pairs have stride 8
+    // Resource offsets in serialized order. Each pair's second word is retained
+    // as GplSection::name_offset, not interpreted as another resource.
     std::vector<uint32_t> section_offsets;
 };
 
@@ -37,6 +39,7 @@ struct GplAttrHeader {
 // GPL section descriptor
 struct GplSection {
     uint32_t offset = 0;
+    uint32_t name_offset = 0; // File-relative bounded, terminated name
     std::vector<uint32_t> sub_offsets;
     // Pointers into the raw file data
     const uint8_t* raw_data = nullptr;
@@ -59,7 +62,10 @@ struct GplFile {
     std::vector<GplSection> sections;
 };
 
-// Loads a GPL file via the logical filesystem
+// Loads the raw paired section table via the logical filesystem. Supports the
+// observed layout with distinct section starts followed by terminated names;
+// section spans exclude names. This does not enable multi-section drawing.
+// Clears previous output ownership before loading, including on failure.
 bool gpl_load_from_file(const char* logical_path, GplFile* out_gpl);
 
 // Frees the underlying raw memory

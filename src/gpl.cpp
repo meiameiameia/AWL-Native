@@ -13,7 +13,7 @@ namespace awl {
 namespace {
 
 constexpr uint32_t kGplMagic = 0x005BBC61;
-constexpr uint32_t kMaxSectionCount = 65536;
+constexpr uint32_t kMaxSectionCount = 65535;
 constexpr size_t kGplBaseHeaderSize = 20;
 constexpr size_t kGplSectionHeaderSize = 20;
 constexpr size_t kGplSubOffsetCount = 5;
@@ -566,7 +566,7 @@ bool gpl_load_from_file(const char* logical_path, GplFile* out_gpl) {
     parsed.header.unknown1 = read_be32(buffer + 4);
     parsed.header.unknown2 = read_be32(buffer + 8);
     parsed.header.section_count = read_be32(buffer + 12);
-    parsed.header.constant = read_be32(buffer + 16);
+    parsed.header.section_table_offset = read_be32(buffer + 16);
 
     if (parsed.header.magic != kGplMagic) {
         AWL_LOG_ERROR("GPL: Invalid magic number 0x%08X in %s", parsed.header.magic,
@@ -580,64 +580,80 @@ bool gpl_load_from_file(const char* logical_path, GplFile* out_gpl) {
         return fail();
     }
 
-    constexpr size_t section_offset_size = sizeof(uint32_t);
-    if (parsed.header.section_count >
-        (file_size - kGplBaseHeaderSize) / section_offset_size) {
-        AWL_LOG_ERROR("GPL: Section offset table is out of bounds in %s", logical_path);
+    // GYWEE9 FUN_801A3DB8, 801A3E54..801A3E8C: root +0x10 is a
+    // file-relative table, with resource/name pairs at (u16 index)*8.
+    constexpr size_t section_entry_size = 8;
+    const size_t table = parsed.header.section_table_offset;
+    const size_t table_size =
+        static_cast<size_t>(parsed.header.section_count) * section_entry_size;
+    if (file_size > std::numeric_limits<uint32_t>::max() ||
+        table < kGplBaseHeaderSize || table % 4 != 0 ||
+        !checked_range(table, table_size, file_size)) {
+        AWL_LOG_ERROR("GPL: Section pair table is invalid in %s", logical_path);
         return fail();
     }
 
     try {
         parsed.header.section_offsets.resize(parsed.header.section_count);
         parsed.sections.resize(parsed.header.section_count);
+        size_t names_start = file_size;
+        for (uint32_t i = 0; i < parsed.header.section_count; ++i) {
+            const size_t entry = table + static_cast<size_t>(i) * section_entry_size;
+            const uint32_t offset = read_be32(buffer + entry);
+            const uint32_t name = read_be32(buffer + entry + 4);
+            if (offset < table + table_size || offset % 4 != 0 ||
+                !checked_range(offset, kGplSectionHeaderSize, file_size) ||
+                name < table + table_size || !checked_range(name, 1, file_size) ||
+                buffer[name] == 0 ||
+                std::memchr(buffer + name, 0, file_size - name) == nullptr) {
+                AWL_LOG_ERROR("GPL: Section %u resource/name pair is invalid", i);
+                return fail();
+            }
+            parsed.header.section_offsets[i] = offset;
+            parsed.sections[i].name_offset = name;
+            names_start = (std::min)(names_start, static_cast<size_t>(name));
+        }
+
+        // Span bounds are native validation for the observed trailing-name
+        // layout, not sizes stored by the DOL. Preserve serialized group order.
+        auto starts = parsed.header.section_offsets;
+        std::sort(starts.begin(), starts.end());
+        if (starts.back() >= names_start ||
+            std::adjacent_find(starts.begin(), starts.end()) != starts.end()) {
+            AWL_LOG_ERROR("GPL: Aliased sections or interleaved names are unsupported");
+            return fail();
+        }
+        for (uint32_t i = 0; i < parsed.header.section_count; ++i) {
+            const uint32_t section_offset = parsed.header.section_offsets[i];
+            const auto next = std::upper_bound(starts.begin(), starts.end(), section_offset);
+            const size_t section_end = next == starts.end() ? names_start : *next;
+            const size_t section_size = section_end - section_offset;
+            if (section_size < kGplSectionHeaderSize) {
+                AWL_LOG_ERROR("GPL: Section %u header overlaps the next range", i);
+                return fail();
+            }
+            GplSection& section = parsed.sections[i];
+            section.offset = section_offset;
+            section.raw_size = static_cast<uint32_t>(section_size);
+            section.raw_data = buffer + section_offset;
+            section.sub_offsets.resize(kGplSubOffsetCount);
+            for (size_t j = 0; j < kGplSubOffsetCount; ++j) {
+                section.sub_offsets[j] =
+                    read_be32(buffer + section_offset + j * sizeof(uint32_t));
+                if (section.sub_offsets[j] != 0 &&
+                    (section.sub_offsets[j] < kGplSectionHeaderSize ||
+                     section.sub_offsets[j] >= section.raw_size)) {
+                    AWL_LOG_ERROR("GPL: Section %u sub-offset %zu is out of bounds", i, j);
+                    return fail();
+                }
+            }
+        }
     } catch (const std::bad_alloc&) {
         AWL_LOG_ERROR("GPL: Unable to allocate section metadata for %s", logical_path);
         return fail();
     } catch (const std::length_error&) {
         AWL_LOG_ERROR("GPL: Invalid section count in %s", logical_path);
         return fail();
-    }
-
-    for (uint32_t i = 0; i < parsed.header.section_count; ++i) {
-        const size_t table_entry =
-            kGplBaseHeaderSize + static_cast<size_t>(i) * section_offset_size;
-        parsed.header.section_offsets[i] = read_be32(buffer + table_entry);
-    }
-
-    for (uint32_t i = 0; i < parsed.header.section_count; ++i) {
-        const uint32_t section_offset = parsed.header.section_offsets[i];
-        if (!checked_range(section_offset, kGplSectionHeaderSize, file_size)) {
-            AWL_LOG_ERROR("GPL: Section %u header is out of bounds", i);
-            return fail();
-        }
-
-        size_t section_end = file_size;
-        for (uint32_t j = 0; j < parsed.header.section_count; ++j) {
-            const size_t candidate = parsed.header.section_offsets[j];
-            if (candidate > section_offset && candidate < section_end) {
-                section_end = candidate;
-            }
-        }
-        const size_t section_size = section_end - section_offset;
-        if (section_size > std::numeric_limits<uint32_t>::max()) {
-            AWL_LOG_ERROR("GPL: Section %u is too large", i);
-            return fail();
-        }
-
-        GplSection& section = parsed.sections[i];
-        section.offset = section_offset;
-        section.raw_size = static_cast<uint32_t>(section_size);
-        section.raw_data = buffer + section_offset;
-        section.sub_offsets.resize(kGplSubOffsetCount);
-        for (size_t j = 0; j < kGplSubOffsetCount; ++j) {
-            section.sub_offsets[j] =
-                read_be32(buffer + section_offset + j * sizeof(uint32_t));
-            if (section.sub_offsets[j] != 0 &&
-                section.sub_offsets[j] >= section.raw_size) {
-                AWL_LOG_ERROR("GPL: Section %u sub-offset %zu is out of bounds", i, j);
-                return fail();
-            }
-        }
     }
 
     *out_gpl = std::move(parsed);
@@ -670,12 +686,12 @@ bool gpl_dump_metadata(const GplFile& gpl) {
     AWL_LOG_INFO("  Unknown 1: 0x%08X", gpl.header.unknown1);
     AWL_LOG_INFO("  Unknown 2: 0x%08X", gpl.header.unknown2);
     AWL_LOG_INFO("  Section Count: %u", gpl.header.section_count);
-    AWL_LOG_INFO("  Constant: 0x%08X", gpl.header.constant);
+    AWL_LOG_INFO("  Section Table: 0x%08X", gpl.header.section_table_offset);
 
     for (size_t i = 0; i < gpl.sections.size(); ++i) {
         const GplSection& section = gpl.sections[i];
-        AWL_LOG_INFO("  Section %zu: offset=0x%08X size=%u", i, section.offset,
-                     section.raw_size);
+        AWL_LOG_INFO("  Section %zu: offset=0x%08X name=0x%08X size=%u", i,
+                     section.offset, section.name_offset, section.raw_size);
         for (size_t j = 0; j < section.sub_offsets.size(); ++j) {
             AWL_LOG_INFO("    Sub[%zu]: relative=0x%08X", j, section.sub_offsets[j]);
         }

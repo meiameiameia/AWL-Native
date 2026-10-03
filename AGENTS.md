@@ -46,6 +46,7 @@ certutil -hashfile rom\main.dol SHA1
 ```
 
 - Run focused checks during iteration; completed code increments require clean MSVC Debug/Release builds at `/W4` and relevant tests. Guidance-only edits require guidance/diff checks, not product builds or launches.
+- Coordinate a safe time with the owner before any validation that opens a game/DX11 window; these tests can steal focus and minimize a fullscreen game. Builds and console tests can run normally.
 - For asset/rendering changes, check bounds/topology and the relevant bounded DX11 smoke with local assets when available. Synthetic expectations must be independently justified, not copies of the implementation.
 - The executable currently mounts `disc/` relative to the working directory; run it from the root. Smoke success requires ten actually presented frames. Occlusion, cancellation, timeout, early closure, or parse/upload/draw failure must fail; fallback geometry cannot satisfy target acceptance.
 - `--scene-smoke` is a fixed adjacent-ground integration fixture, not translated scene selection. Read the ground research note before expanding material or scene coverage.
