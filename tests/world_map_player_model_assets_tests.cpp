@@ -2,6 +2,7 @@
 #include "awl/world_map_player_model_auxiliary.h"
 #include "awl/world_map_player_model_setup.h"
 #include "awl/world_map_player_draw_commands.h"
+#include "awl/world_map_player_skin_work.h"
 #include "awl/filesystem.h"
 
 #include <chrono>
@@ -442,6 +443,107 @@ void draw_checks(){
 #endif
 }
 
+std::vector<uint8_t> work_skin(){
+    std::vector<uint8_t> b(768);word(b,0,0x00010001);word(b,4,0x00010d00);
+    word(b,8,64);word(b,12,128);word(b,16,244);word(b,20,40);word(b,24,16);word(b,28,512);word(b,32,3);
+    word(b,64+48,320);word(b,64+52,0);word(b,64+56,0x00010002);b[64+60]=4;
+    word(b,128+96,352);word(b,128+100,384);word(b,128+104,32);word(b,128+108,0x00000002);word(b,128+112,0x00020800);
+    word(b,244+48,416);word(b,244+52,448);word(b,244+56,0);word(b,244+60,480);word(b,244+64,0x00020002);
+    word(b,448,0x00010002);word(b,512,0x00000002);word(b,516,0x00020000);
+    for(size_t row:{size_t(64),size_t(128),size_t(176),size_t(244)})for(size_t i:{size_t(0),size_t(5),size_t(10)})word(b,row+i*4,0x3f800000);
+    return b;
+}
+void hash_skin_work(uint64_t&,uint32_t,const awl::WorldMapPlayerSkinWork&);
+void skin_work_checks(){
+    using S=awl::WorldMapPlayerSkinWorkStatus;using Owner=awl::WorldMapPlayerSkinWork;
+    Fixture fixture;auto payloads=files();payloads[0]=setup_model();payloads[1]=draw_gpl();for(size_t at:{size_t(64),size_t(512)}){word(payloads[1],at+24,32);word(payloads[1],at+288,38);}
+    payloads[2]=work_skin();
+    std::shared_ptr<const Assets> assets;std::unique_ptr<Owner> owner;
+    auto load=[&](){assets.reset();fixture.write("boy_0.arc",archive(payloads));expect(awl::load_world_map_player_model_assets(0,&assets)==Status::Loaded,"skin work providers load");};
+    expect(awl::prepare_world_map_player_skin_work(nullptr,nullptr)==S::InvalidInput,"null skin work output rejects first");
+    expect(awl::prepare_world_map_player_skin_work(nullptr,&owner)==S::RequiresAssets && !owner,"skin work requires providers");
+    load();expect(awl::prepare_world_map_player_skin_work(assets,&owner)==S::PreparedWork && owner,"three bounded skin job classes prepare CPU ownership");
+    if(!owner)return;
+    uint64_t fixture_digest=14695981039346656037ull;hash_skin_work(fixture_digest,9,*owner);
+    expect(fixture_digest==0x39c4e772fa3e4cd3ull,"invented three-job schedule matches independently executed original control flow");
+    expect(owner->jobs().size()==3 && owner->initial_output().size()==64 && (reinterpret_cast<uintptr_t>(owner->workspace())&31u)==0 &&
+        Owner::banks==std::array<uint32_t,4>{0,4096,8192,12288} && Owner::triplets[1]==std::array<uint32_t,3>{8192,12288,14336},"aligned private workspace preserves original bank and alternate-triplet offsets");
+    expect(owner->weight_quantization()==0x08040804 && owner->vertex_quantization()==0x0d070d07 &&
+        owner->clear_before_accumulation() && owner->clear_before_accumulation()->offset==32 && owner->clear_before_accumulation()->size==32 &&
+        owner->flush_indices()==std::vector<uint16_t>{0,2,2},"quantization, cache-line clear and duplicate flush indices prepare without execution");
+    const auto& rigid=owner->jobs()[0];const auto& two=owner->jobs()[1];const auto& accumulated=owner->jobs()[2];
+    expect(rigid.record_offset==64 && rigid.matrix_indices==std::vector<uint16_t>{1} && rigid.vertex_count==2 && rigid.prefix==4 &&
+        rigid.source.offset==320 && rigid.source.size==32 && rigid.output.offset==0 && rigid.output.size==32 && !rigid.weights && !rigid.indices,"rigid job retains rounded block and matrix selection");
+    expect(two.matrix_indices==std::vector<uint16_t>{0,2} && two.prefix==8 && two.source.offset==352 &&
+        two.weights && two.weights->offset==384 && two.weights->size==32 && two.output.offset==32 && two.output.size==32,"two-matrix job retains weight transfer and output block");
+    expect(accumulated.indices && accumulated.indices->offset==448 && accumulated.weights && accumulated.weights->offset==480 &&
+        accumulated.scatter_indices==std::vector<uint16_t>{1,2} && accumulated.output.size==0,"additive job retains ordered scatter targets");
+    const auto& selection=owner->drawing().setup().selection();const auto& target=*owner->drawing().setup().auxiliary().skin_target();
+    expect(std::memcmp(owner->initial_output().data(),selection.gpl.data+target.data.offset-selection.gpl.reference.offset,target.size)==0,
+        "private initial output exactly retains source bytes rather than prematurely clearing or skinning");
+    expect(awl::prepare_world_map_player_skin_work(owner->drawing().setup().selection().assets,&owner)==S::PreparedWork,"retained asset input aliases atomic skin replacement safely");
+    for(unsigned kind=0;kind<21;++kind){payloads[2]=work_skin();S wanted=S::UnsupportedLayout;
+        if(kind==0)word(payloads[2],64+56,0x00010001); // count-1 loop with count one.
+        if(kind==1)word(payloads[2],64+56,0x00030002); // palette index == count.
+        if(kind==2)word(payloads[2],128+108,0x00000003);
+        if(kind==3)word(payloads[2],244+64,0x00020000);
+        if(kind==4)word(payloads[2],64+48,736); // Rounded block then padding crosses end when count increases.
+        if(kind==4)word(payloads[2],64+56,0x00010003);
+        if(kind==5)word(payloads[2],128+100,752); // Weight DMA needs a complete 32-byte block.
+        if(kind==6)word(payloads[2],244+52,752);
+        if(kind==7)word(payloads[2],448,0xffff0002);
+        if(kind==8)word(payloads[2],512,0xffff0002);
+        if(kind==9)word(payloads[2],24,UINT32_MAX);
+        if(kind==10)word(payloads[2],64+52,32); // Two records fit only before rounded end.
+        if(kind==10)word(payloads[2],64+56,0x00010003);
+        if(kind==11)word(payloads[2],64+48,128); // Source overlaps writable matrix table.
+        if(kind==12)word(payloads[2],8,32),wanted=S::RequiresDrawingPreparation; // Table overlaps the reached 36-byte root.
+        if(kind==13)payloads[2][6]=32;
+        if(kind==14)payloads[2][64+60]=3;
+        if(kind==15)word(payloads[2],128+100,386);
+        if(kind==16)word(payloads[2],244+60,482);
+        if(kind==17)word(payloads[2],32,UINT32_MAX);
+        if(kind==18)word(payloads[2],244+48,420);
+        if(kind==19)word(payloads[2],64+56,0x00010157); // Transfer exceeds one 4-KB bank.
+        if(kind==20)word(payloads[2],64+52,4); // Untranslated unaligned block output.
+        load();const auto* prior=owner.get();const auto status=awl::prepare_world_map_player_skin_work(assets,&owner);
+        expect(status==wanted && owner.get()==prior,"unsafe skin job payloads preserve prior complete ownership");
+    }
+    payloads[2]=work_skin();word(payloads[2],128,0x7fc00000);load();
+    expect(awl::prepare_world_map_player_skin_work(assets,&owner)==S::PreparedWork,"initial SKN matrix scratch may be nonfinite because original overwrites it before use");
+    awl::WorldMapModelMatrix frame{0,1,2,3,4,5,6,7,8,9,10,11},reordered{};
+    expect(awl::reorder_world_map_player_skin_matrix(frame,&reordered) && reordered==awl::WorldMapModelMatrix{0,4,8,1,5,9,2,6,10,3,7,11},
+        "frame matrix permutation matches raw paired-single helper");
+    expect(awl::reorder_world_map_player_skin_matrix(frame,&frame) && frame==reordered,"matrix input/output alias reorders safely");
+    uint32_t invalid_bits=0x7fc00000;std::memcpy(&frame[0],&invalid_bits,4);const auto unchanged=reordered;
+    expect(!awl::reorder_world_map_player_skin_matrix(frame,&reordered) && reordered==unchanged && !awl::reorder_world_map_player_skin_matrix(unchanged,nullptr),
+        "nonfinite frame matrices and null output reject without partial result");
+    payloads[2]=work_skin();payloads[1][512+31]=3;payloads[1][64+31]=3;load();
+    const auto* stopped=owner.get();expect(awl::prepare_world_map_player_skin_work(assets,&owner)==S::RequiresSkinTarget && owner.get()==stopped,"missing component-six target preserves prior buffers");
+    payloads[1][512+31]=6;payloads[1][64+31]=6;word(payloads[1],512+132+16+4,2);load();
+    expect(awl::prepare_world_map_player_skin_work(assets,&owner)==S::RequiresDrawingPreparation && owner.get()==stopped,"untranslated drawing configuration preserves prior skin work");
+    word(payloads[1],512+132+16+4,1);
+    payloads[2]=work_skin();word(payloads[2],0,0);word(payloads[2],4,0x00000d00);load();
+    expect(awl::prepare_world_map_player_skin_work(assets,&owner)==S::PreparedWork && owner->jobs().empty() && !owner->clear_before_accumulation() && owner->flush_indices().empty(),
+        "empty job tables skip additive root effects while retaining workspace and quantization setup");
+    payloads[2]=work_skin();word(payloads[2],24,0);word(payloads[2],32,0);load();
+    expect(awl::prepare_world_map_player_skin_work(assets,&owner)==S::PreparedWork && !owner->clear_before_accumulation() && owner->flush_indices().empty(),
+        "zero root clear/flush fields bypass only their conditional operations");
+    payloads[2]=work_skin();word(payloads[2],244+64,0x00020001);word(payloads[2],448,0x00020002);load();
+    expect(awl::prepare_world_map_player_skin_work(assets,&owner)==S::PreparedWork && owner->jobs()[2].vertex_count==1,"additive direct-count loop admits one vertex");
+    std::weak_ptr<const Assets> lifetime=owner->drawing().setup().selection().assets;assets.reset();expect(!lifetime.expired(),"skin work retains all source providers");
+    owner.reset();expect(lifetime.expired(),"discarding last skin work releases retained providers");
+    payloads[2]=work_skin();load();expect(awl::prepare_world_map_player_skin_work(assets,&owner)==S::PreparedWork,"skin allocation baseline prepares");
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    const auto* prior=owner.get();const auto live=allocation_probe::live;size_t rejected=0;bool prepared=false;
+    for(size_t fail=0;fail<256;++fail){allocation_probe::remaining=fail;allocation_probe::enabled=true;
+        const auto status=awl::prepare_world_map_player_skin_work(assets,&owner);allocation_probe::enabled=false;
+        if(status==S::PreparedWork){prepared=true;break;}++rejected;
+        expect(status==S::AllocationFailure && owner.get()==prior && allocation_probe::live==live,"failed skin ownership preparation preserves prior buffers and releases staging");}
+    expect(prepared && rejected>106,"allocation sweep reaches complete skin work publication");std::cout<<"PLAYER_SKIN_WORK_ALLOCATION_FAILURES "<<rejected<<'\n';
+#endif
+}
+
 void synthetic(){
     Fixture fixture;std::shared_ptr<const Assets> assets;awl::WorldMapPlayerModelSelection selection;
     selection.gpl.size=123;
@@ -618,9 +720,22 @@ void hash_draw(uint64_t& h,uint32_t phase,const awl::WorldMapPlayerDrawCommands&
         }
     }
 }
+void hash_skin_work(uint64_t& h,uint32_t phase,const awl::WorldMapPlayerSkinWork& work){
+    hash(h,phase);hash(h,uint32_t(work.initial_output().size()));hash(h,work.workspace_size);hash(h,work.weight_quantization());hash(h,work.vertex_quantization());
+    hash(h,work.clear_before_accumulation().has_value());if(work.clear_before_accumulation()){hash(h,work.clear_before_accumulation()->offset);hash(h,work.clear_before_accumulation()->size);}
+    hash(h,uint32_t(work.flush_indices().size()));for(auto index:work.flush_indices())hash(h,index);
+    hash(h,uint32_t(work.jobs().size()));
+    for(const auto& j:work.jobs()){
+        hash(h,uint32_t(j.kind));hash(h,j.record_offset);hash(h,j.vertex_count);hash(h,j.prefix);hash(h,uint32_t(j.matrix_indices.size()));for(auto index:j.matrix_indices)hash(h,index);
+
+        hash(h,j.source.offset);hash(h,j.source.size);
+        for(const auto& span:{j.weights,j.indices}){hash(h,span.has_value());if(span){hash(h,span->offset);hash(h,span->size);}}
+        hash(h,j.output.offset);hash(h,j.output.size);hash(h,uint32_t(j.scatter_indices.size()));for(auto index:j.scatter_indices)hash(h,index);
+    }
+}
 void local(const char* disc){
     expect(awl::filesystem_mount("/",disc),"local disc mounts");
-    uint64_t digest=14695981039346656037ull,auxiliary_digest=digest,setup_digest=digest,draw_digest=digest;
+    uint64_t digest=14695981039346656037ull,auxiliary_digest=digest,setup_digest=digest,draw_digest=digest,skin_work_digest=digest;
     std::shared_ptr<const Assets> assets;size_t selections=0,relocations=0;
     for(uint32_t phase=0;phase<6;++phase){
         expect(awl::load_world_map_player_model_assets(phase,&assets)==Status::Loaded && assets,"phase-selected local model archive loads");
@@ -669,6 +784,14 @@ void local(const char* disc){
         expect(arrays.size()==3 && arrays[0].count==1831 && arrays[0].bounded_size==21966 && arrays[1].count==1102 && arrays[1].bounded_size==4408 &&
             arrays[2].count==1831 && arrays[2].bounded_size==21966,"actual interleaved array bounds include the last XYZ/normal and UV element");
         hash_draw(draw_digest,phase,*draw);
+        std::unique_ptr<awl::WorldMapPlayerSkinWork> skin_work;
+        const auto work_status=awl::prepare_world_map_player_skin_work(assets,&skin_work);
+        expect(work_status==awl::WorldMapPlayerSkinWorkStatus::PreparedWork && skin_work,"all local skin jobs prepare owned CPU storage");
+        if(!skin_work){std::cerr<<"SKIN_WORK_STOP "<<int(work_status)<<'\n';return;}
+        expect(skin_work->jobs().size()==124 && skin_work->initial_output().size()==21984 && skin_work->clear_before_accumulation() &&
+            skin_work->clear_before_accumulation()->offset==21664 && skin_work->clear_before_accumulation()->size==320 && skin_work->flush_indices().size()==137,
+            "actual skin job counts, rounded clear and cache flush targets match original schedule");
+        hash_skin_work(skin_work_digest,phase,*skin_work);
     }
     std::cout<<"LOCAL_PLAYER_MODEL_SELECTIONS "<<selections<<" metadata "<<std::hex<<digest<<std::dec<<'\n';
     expect(selections==6,"all six phase selections reach the explicit dependency boundary");
@@ -677,6 +800,8 @@ void local(const char* disc){
     std::cout<<"LOCAL_PLAYER_AUXILIARY_METADATA "<<selections<<" relocations "<<relocations<<" digest "<<std::hex<<auxiliary_digest<<std::dec<<'\n';
     expect(relocations==2310 && auxiliary_digest==0x432873f8104e8d5cull,
         "all six GPL/SKN bindings and skin fixup spaces/order match independently executed DOL instructions");
+    expect(skin_work_digest==0x5c08e5c6ab1c096aull,"all six skin work schedules match executed original preparation/control flow");
+    std::cout<<"LOCAL_PLAYER_SKIN_WORK "<<selections<<" digest "<<std::hex<<skin_work_digest<<std::dec<<'\n';
     expect(draw_digest==0xef4c5a9a9aa08adaull,"all six CPU drawing parameter sets match independently executed original routines");
     std::cout<<"LOCAL_PLAYER_DRAW_PARAMETERS "<<selections<<" digest "<<std::hex<<draw_digest<<std::dec<<'\n';
     std::cout<<"LOCAL_PLAYER_SETUP_PLANS "<<selections<<" digest "<<std::hex<<setup_digest<<std::dec<<'\n';
@@ -690,7 +815,7 @@ int main(int argc,char** argv){
         _CrtSetReportMode(kind,_CRTDBG_MODE_FILE);_CrtSetReportFile(kind,_CRTDBG_FILE_STDERR);
     }
 #endif
-    embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
+    embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
     if(argc==3 && std::string(argv[1])=="--player-model-local")local(argv[2]);
     else if(argc!=1)expect(false,"usage: --player-model-local <disc>");
     awl::filesystem_shutdown();return failures?1:0;
