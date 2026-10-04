@@ -1,5 +1,6 @@
 #include "awl/tpl.h"
 #include "awl/filesystem.h"
+#include "awl/memory.h"
 #include "awl/platform.h"
 
 #include <algorithm>
@@ -404,24 +405,10 @@ TplFile& TplFile::operator=(TplFile&& other) noexcept {
     return *this;
 }
 
-bool tpl_load_from_file(const char* logical_path, TplFile* out_tpl) {
-    if (!logical_path || !out_tpl) {
-        return false;
-    }
-
-    tpl_free(out_tpl);
-
-    void* file_data = nullptr;
-    size_t file_size = 0;
-    if (!filesystem_read_entire_file(logical_path, &file_data, &file_size)) {
-        AWL_LOG_ERROR("TPL: Failed to read file %s", logical_path);
-        return false;
-    }
-
-    TplFile parsed;
-    parsed.raw_file_data = file_data;
-    parsed.raw_file_size = file_size;
-
+namespace {
+bool parse_owned_tpl(TplFile parsed, const char* logical_path, TplFile* out_tpl) {
+    const void* file_data = parsed.raw_file_data;
+    const size_t file_size = parsed.raw_file_size;
     const auto fail = [&parsed]() {
         tpl_free(&parsed);
         return false;
@@ -574,6 +561,30 @@ bool tpl_load_from_file(const char* logical_path, TplFile* out_tpl) {
     parsed.raw_file_data = nullptr;
     parsed.raw_file_size = 0;
     return true;
+}
+} // namespace
+
+bool tpl_load_from_file(const char* logical_path, TplFile* out_tpl) {
+    if (!logical_path || !out_tpl) return false;
+    tpl_free(out_tpl);
+    TplFile parsed;
+    if (!filesystem_read_entire_file(logical_path, &parsed.raw_file_data, &parsed.raw_file_size)) {
+        AWL_LOG_ERROR("TPL: Failed to read file %s", logical_path);
+        return false;
+    }
+    return parse_owned_tpl(std::move(parsed), logical_path, out_tpl);
+}
+
+bool tpl_load_from_memory(const uint8_t* data, size_t size, TplFile* out_tpl) {
+    if (!data || !out_tpl) return false;
+    if (size == 0 || size > UINT32_MAX) { tpl_free(out_tpl); return false; }
+    TplFile parsed;
+    parsed.raw_file_data = awl_malloc(static_cast<uint32_t>(size));
+    if (!parsed.raw_file_data) { tpl_free(out_tpl); return false; }
+    parsed.raw_file_size = size;
+    std::memcpy(parsed.raw_file_data, data, size);
+    tpl_free(out_tpl); // Copy first: data may belong to the previous output.
+    return parse_owned_tpl(std::move(parsed), "embedded archive TPL", out_tpl);
 }
 
 void tpl_free(TplFile* tpl) {

@@ -95,6 +95,12 @@ struct TplFile {
 // Loads a TPL file from a logical path using the filesystem layer
 bool tpl_load_from_file(const char* logical_path, TplFile* out_tpl);
 
+// Copies an embedded TPL into private storage, using the same descriptor,
+// format and mip bounds as file loading. The caller's bytes may be released
+// after return. Clears previous output ownership on valid arguments, also
+// on parse/allocation failure; null arguments preserve output.
+bool tpl_load_from_memory(const uint8_t* data, size_t size, TplFile* out_tpl);
+
 // Frees the resources associated with a TPL file
 void tpl_free(TplFile* tpl);
 
