@@ -1,5 +1,6 @@
 #include "awl/world_map_player_model_assets.h"
 #include "awl/world_map_player_model_auxiliary.h"
+#include "awl/world_map_player_model_setup.h"
 #include "awl/filesystem.h"
 
 #include <chrono>
@@ -230,6 +231,116 @@ void auxiliary_checks(){
 #endif
 }
 
+// Invented hierarchy with repeated priorities and a reversed GPL section
+// table. These bytes exercise layout decisions; no game payload is embedded.
+std::vector<uint8_t> setup_model(bool extended=true){
+    std::vector<uint8_t> b(320);word(b,0,0x007b7960);word(b,4,3);word(b,12,32);
+    word(b,20,extended?0u:0xffff0000u);
+    for(uint32_t i=0;i<3;++i){
+        const uint32_t at=32+i*28;word(b,at,128+i*52);
+        word(b,at+20,(i==1?1u:0u)<<16);word(b,at+24,(i==0?5u:2u)<<16);
+    }
+    word(b,48,60);word(b,68,88); // Child, then the child's sibling.
+    return b;
+}
+std::vector<uint8_t> setup_gpl(){
+    std::vector<uint8_t> b(1024);word(b,0,0x005bbc61);word(b,12,2);word(b,16,20);
+    word(b,20,512);word(b,24,1008);word(b,28,64);word(b,32,1016);
+    constexpr uint8_t types[]={1,3,2,1,1,1},channels[]={2,0,0,0,255,1};
+    for(size_t at:{size_t(64),size_t(512)}){
+        word(b,at,24);word(b,at+16,120);word(b,at+24,40);word(b,at+28,0x00030006);
+        word(b,at+124,132);b[at+129]=6;
+        for(size_t i=0;i<6;++i){const size_t p=at+132+i*16;
+            b[p]=types[i];b[p+1]=channels[i];word(b,p+4,uint32_t(5+i));
+            if(i==2){word(b,p+8,256);word(b,p+12,16);}
+        }
+    }
+    std::memcpy(b.data()+1008,"first",6);std::memcpy(b.data()+1016,"second",7);return b;
+}
+void setup_checks(){
+    using S=awl::WorldMapPlayerModelSetupStatus;using Plan=awl::WorldMapPlayerModelSetupPlan;
+    Fixture fixture;auto payloads=files();payloads[0]=setup_model();payloads[1]=setup_gpl();payloads[2]=skin();
+    std::shared_ptr<const Assets> assets;std::unique_ptr<Plan> plan;
+    expect(awl::prepare_world_map_player_model_setup(nullptr,nullptr)==S::InvalidInput,"setup null output rejects first");
+    expect(awl::prepare_world_map_player_model_setup(nullptr,&plan)==S::RequiresAssets && !plan,"setup requires retained providers");
+    auto load=[&](){assets.reset();fixture.write("boy_0.arc",archive(payloads));
+        expect(awl::load_world_map_player_model_assets(0,&assets)==Status::Loaded,"setup provider loads");};
+    load();expect(awl::prepare_world_map_player_model_setup(assets,&plan)==S::PreparedPlan && plan,"complete primary setup plan prepares");
+    if(!plan)return;
+    expect(plan->command_sections().size()==2 && plan->command_packets_offset()==288 && plan->command_allocation_size()==1184,
+        "4078 reserves all tables before one alignment and per-section packet budgets");
+    for(size_t i=0;i<2;++i){const auto& section=plan->command_sections()[i];
+        expect(section.table_offset==8+i*16 && section.commands_offset==40+i*120 && section.packet_budget==448 && section.commands.size()==6,
+            "serialized section order and twenty-byte command records stay intact");
+        for(size_t j=0;j<section.commands.size();++j){const auto& command=section.commands[j];
+            expect(command.table_offset==section.commands_offset+j*20 && command.packet_budget==(j==2?32u:64u),"command budget preserves type-two distinction");
+            if(j==2)expect(command.display_list && command.display_list_size==16 && !command.texture,"bounded display-list reference remains opaque and untextured");
+        }
+        expect(section.commands[0].texture && section.commands[0].texture->bank==Bank::Body && section.commands[0].texture->index==1 &&
+            section.commands[3].texture && section.commands[3].texture->bank==Bank::Eyes &&
+            section.commands[4].texture && section.commands[4].texture->bank==Bank::Body && section.commands[4].texture->index==0 &&
+            section.commands[5].texture && section.commands[5].texture->bank==Bank::Mouth && !section.commands[1].texture,
+            "FF selects only FF; all four texture routes resolve their own command records");
+    }
+    constexpr uint32_t write_commands[]={4,4,3,3,5,5,0,0};
+    expect(plan->texture_writes().size()==8,"duplicate channel matches retain every ordered selection");
+    for(size_t i=0;i<plan->texture_writes().size() && i<8;++i)expect(plan->texture_writes()[i].section==i%2 && plan->texture_writes()[i].command==write_commands[i],
+        "texture routes precede serialized section and command scans");
+    expect(plan->features().size()==4 && !plan->features()[0].node && plan->feature_storage_size()==320 &&
+        plan->feature_node_order()==std::vector<uint32_t>{1,2,0},"root and three node features preserve stable equal-priority ordering");
+    expect(plan->model_allocation_size()==1120 && plan->preallocated_size()==1184 &&
+        plan->storage_requests().back().offset==944 && plan->storage_requests().back().size==32,
+        "nonnull auxiliary feature size is included; D064 adds the separate skin buffer");
+    for(size_t i=0;i<plan->features().size();++i){const auto& f=plan->features()[i];
+        expect(f.storage_offset==624+i*80 && f.cache_offset==944 && f.group==(i==2?1:0),"all features use one final four-slot cache and the selected GPL group");
+        expect(f.matrix==awl::WorldMapModelMatrix{1,0,0,0,0,1,0,0,0,0,1,0} && f.buffer_34==0 && f.flags_38==0 && f.enabled_3c==1 && f.byte_3d==0,
+            "arena-backed feature constructor preserves matrix/buffer/flag/byte initialization");}
+    expect(plan->cache_channels()==std::optional<std::array<uint32_t,4>>({UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX}),
+        "shared cache initializes channels without inventing payload values");
+    expect(plan->core_before_features().feature_14==0 && plan->core_before_features().auxiliary_c==0,
+        "setup plan cannot fabricate live model/auxiliary pointer identities");
+    expect(awl::prepare_world_map_player_model_setup(plan->selection().assets,&plan)==S::PreparedPlan && plan->selection().assets==assets,
+        "provider stored inside replaced plan safely aliases input");
+    payloads[0]=setup_model(false);load();
+    expect(awl::prepare_world_map_player_model_setup(assets,&plan)==S::PreparedPlan && plan->features().size()==3 &&
+        plan->model_allocation_size()==752 && plan->preallocated_size()==832,"null root-feature path preserves distinct CF3C and D064 alignment");
+    for(uint32_t i=0;i<3;++i)word(payloads[0],32+i*28+20,0xffff0000);load();
+    expect(awl::prepare_world_map_player_model_setup(assets,&plan)==S::PreparedPlan && plan->features().empty() &&
+        plan->feature_node_order().empty() && !plan->cache_channels() && plan->feature_storage_size()==0,
+        "no features leaves final cache bytes unknown rather than fabricating initialization");
+    for(unsigned kind=0;kind<7;++kind){payloads[0]=setup_model();payloads[1]=setup_gpl();
+        if(kind==0)word(payloads[1],512+132+32+8,496); // At the first section's name boundary.
+        if(kind==1)word(payloads[1],512+132+32+12,UINT32_MAX);
+        if(kind==2)word(payloads[1],512+132+32+8,0); // Null pointer/nonempty list.
+        if(kind==3)word(payloads[0],20,2u<<16); // Missing root group.
+        if(kind==4)word(payloads[0],32+20,2u<<16); // Missing node group.
+        if(kind==5)word(payloads[0],48,32); // Cyclic hierarchy.
+        if(kind==6)payloads[1][512+132]=128; // Unsupported command type.
+        load();const auto* old=plan.get();
+        expect(awl::prepare_world_map_player_model_setup(assets,&plan)==S::UnsupportedLayout && plan.get()==old,
+            "unsafe list/group/hierarchy/command layouts preserve prior complete plan");
+    }
+    payloads[0]=setup_model();payloads[1]=setup_gpl();word(payloads[0],128,0x02000000);word(payloads[0],128+16,0x3f800000);load();
+    const auto* old=plan.get();
+    expect(awl::prepare_world_map_player_model_setup(assets,&plan)==S::RequiresResourcePreparation && plan.get()==old,"untranslated Euler pose preserves setup plan");
+    payloads[0]=setup_model();word(payloads[0],128,0x01000000);load();
+    expect(awl::prepare_world_map_player_model_setup(assets,&plan)==S::SingularMatrix && plan.get()==old,"singular skin matrix stops before publication");
+    std::weak_ptr<const Assets> lifetime=plan->selection().assets;assets.reset();
+    expect(!lifetime.expired() && plan->auxiliary().assets()==plan->selection().assets,"plan retains all resource and texture providers");
+    plan.reset();expect(lifetime.expired(),"discarding last setup owner releases its provider");
+    payloads[0]=setup_model();payloads[1]=setup_gpl();load();
+    expect(awl::prepare_world_map_player_model_setup(assets,&plan)==S::PreparedPlan,"setup allocation baseline prepares");
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    old=plan.get();const auto live=allocation_probe::live;size_t rejected=0;bool prepared=false;
+    for(size_t fail=0;fail<256;++fail){allocation_probe::remaining=fail;allocation_probe::enabled=true;
+        const auto status=awl::prepare_world_map_player_model_setup(assets,&plan);allocation_probe::enabled=false;
+        if(status==S::PreparedPlan){prepared=true;break;}++rejected;
+        expect(status==S::AllocationFailure && plan.get()==old && allocation_probe::live==live,"failed setup releases staging and preserves prior plan");
+    }
+    expect(prepared && rejected>40,"allocation sweep reaches complete setup publication");std::cout<<"PLAYER_SETUP_ALLOCATION_FAILURES "<<rejected<<'\n';
+#endif
+}
+
 void synthetic(){
     Fixture fixture;std::shared_ptr<const Assets> assets;awl::WorldMapPlayerModelSelection selection;
     selection.gpl.size=123;
@@ -364,9 +475,28 @@ void hash_auxiliary(uint64_t& h,uint32_t phase,const awl::WorldMapPlayerModelAux
         hash(h,auxiliary.skin_target()->section_index);hash(h,auxiliary.skin_target()->data.offset);hash(h,auxiliary.skin_target()->size);
     }
 }
+void hash_setup(uint64_t& h,uint32_t phase,const awl::WorldMapPlayerModelSetupPlan& plan){
+    const auto base=plan.selection().gpl.reference.offset;
+    auto texture=[&](const awl::WorldMapPlayerModelTextureBinding& t){hash(h,t.channel);hash(h,uint32_t(t.bank));hash(h,t.index);};
+    hash(h,phase);hash(h,plan.selection().assets->variant());hash(h,uint32_t(plan.command_sections().size()));
+    for(const auto& section:plan.command_sections()){
+        hash(h,section.table_offset);hash(h,section.commands_offset);hash(h,section.packet_budget);hash(h,uint32_t(section.commands.size()));
+        for(const auto& c:section.commands){hash(h,c.header.offset-base);hash(h,c.type);hash(h,c.channel);hash(h,c.word_4);
+            hash(h,c.display_list?c.display_list->offset-base:UINT32_MAX);hash(h,c.display_list_size);hash(h,c.table_offset);hash(h,c.packet_budget);}
+    }
+    hash(h,plan.command_packets_offset());hash(h,plan.command_allocation_size());
+    hash(h,plan.core_before_features().resource.count_6);hash(h,uint32_t(plan.features().size()));hash(h,plan.feature_storage_size());
+    hash(h,plan.model_allocation_size());hash(h,plan.preallocated_size());hash(h,uint32_t(plan.storage_requests().size()));
+    for(const auto& s:plan.storage_requests()){hash(h,s.offset);hash(h,s.size);}
+    hash(h,uint32_t(plan.features().size()));
+    for(const auto& f:plan.features()){hash(h,f.node.value_or(UINT32_MAX));hash(h,f.group);hash(h,f.storage_offset);hash(h,f.resource.offset-base);hash(h,f.cache_offset);}
+    hash(h,uint32_t(plan.feature_node_order().size()));for(auto i:plan.feature_node_order())hash(h,i);
+    hash(h,uint32_t(plan.texture_writes().size()));for(const auto& w:plan.texture_writes()){hash(h,w.section);hash(h,w.command);texture(w.texture);}
+    for(const auto& s:plan.command_sections())for(const auto& c:s.commands){hash(h,c.texture.has_value());if(c.texture)texture(*c.texture);}
+}
 void local(const char* disc){
     expect(awl::filesystem_mount("/",disc),"local disc mounts");
-    uint64_t digest=14695981039346656037ull,auxiliary_digest=digest;
+    uint64_t digest=14695981039346656037ull,auxiliary_digest=digest,setup_digest=digest;
     std::shared_ptr<const Assets> assets;size_t selections=0,relocations=0;
     for(uint32_t phase=0;phase<6;++phase){
         expect(awl::load_world_map_player_model_assets(phase,&assets)==Status::Loaded && assets,"phase-selected local model archive loads");
@@ -399,6 +529,15 @@ void local(const char* disc){
             "all actual player GPL/SKN pairs prepare bounded auxiliary metadata");
         if(!auxiliary)return;
         relocations+=auxiliary->skin().relocations.size();hash_auxiliary(auxiliary_digest,phase,*auxiliary);
+        std::unique_ptr<awl::WorldMapPlayerModelSetupPlan> plan;
+        expect(awl::prepare_world_map_player_model_setup(assets,&plan)==awl::WorldMapPlayerModelSetupStatus::PreparedPlan && plan,
+            "each local phase prepares the required nonnull-auxiliary setup plan");
+        if(!plan)return;
+        expect(plan->core_before_features().nodes.size()==55 && plan->features().size()==1 && !plan->features()[0].node &&
+            plan->feature_storage_size()==80 && plan->model_allocation_size()==7120 && plan->preallocated_size()==29120 &&
+            plan->storage_requests().back().offset==4448 && plan->command_allocation_size()==608 && plan->texture_writes().size()==4,
+            "actual primary archives preserve distinct allocation/cursor sizes, root feature and four command bindings");
+        hash_setup(setup_digest,phase,*plan);
     }
     std::cout<<"LOCAL_PLAYER_MODEL_SELECTIONS "<<selections<<" metadata "<<std::hex<<digest<<std::dec<<'\n';
     expect(selections==6,"all six phase selections reach the explicit dependency boundary");
@@ -407,6 +546,9 @@ void local(const char* disc){
     std::cout<<"LOCAL_PLAYER_AUXILIARY_METADATA "<<selections<<" relocations "<<relocations<<" digest "<<std::hex<<auxiliary_digest<<std::dec<<'\n';
     expect(relocations==2310 && auxiliary_digest==0x432873f8104e8d5cull,
         "all six GPL/SKN bindings and skin fixup spaces/order match independently executed DOL instructions");
+    std::cout<<"LOCAL_PLAYER_SETUP_PLANS "<<selections<<" digest "<<std::hex<<setup_digest<<std::dec<<'\n';
+    expect(setup_digest==0xd9d84507566b1a0cull,
+        "all six setup tables/budgets, features/sizes/shared caches and texture selections match mapped original instructions");
 }
 } // namespace
 int main(int argc,char** argv){
@@ -415,7 +557,7 @@ int main(int argc,char** argv){
         _CrtSetReportMode(kind,_CRTDBG_MODE_FILE);_CrtSetReportFile(kind,_CRTDBG_FILE_STDERR);
     }
 #endif
-    embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
+    embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
     if(argc==3 && std::string(argv[1])=="--player-model-local")local(argv[2]);
     else if(argc!=1)expect(false,"usage: --player-model-local <disc>");
     awl::filesystem_shutdown();return failures?1:0;
