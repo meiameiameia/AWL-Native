@@ -48,6 +48,7 @@ set(SOURCES
     src/world_map_skin_metadata.cpp
     src/world_map_player_model_auxiliary.cpp
     src/world_map_player_model_setup.cpp
+    src/world_map_player_draw_commands.cpp
     src/world_map_player_animation_assets.cpp
     src/world_map_player_model_assets.cpp
     src/world_map_camera.cpp
@@ -106,6 +107,7 @@ set(HEADERS
     include/awl/world_map_skin_metadata.h
     include/awl/world_map_player_model_auxiliary.h
     include/awl/world_map_player_model_setup.h
+    include/awl/world_map_player_draw_commands.h
     include/awl/world_map_player_animation_assets.h
     include/awl/world_map_player_model_assets.h
     src/world_map_flat_archive.h
@@ -550,6 +552,7 @@ add_executable(world_map_player_model_assets_tests
     src/world_map_player_model_assets.cpp
     src/world_map_player_model_auxiliary.cpp
     src/world_map_player_model_setup.cpp
+    src/world_map_player_draw_commands.cpp
     src/world_map_model_initialization.cpp
     src/world_map_animation_initializer.cpp
     src/world_map_animation_channel.cpp

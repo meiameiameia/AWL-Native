@@ -1,6 +1,7 @@
 #include "awl/world_map_player_model_assets.h"
 #include "awl/world_map_player_model_auxiliary.h"
 #include "awl/world_map_player_model_setup.h"
+#include "awl/world_map_player_draw_commands.h"
 #include "awl/filesystem.h"
 
 #include <chrono>
@@ -341,6 +342,106 @@ void setup_checks(){
 #endif
 }
 
+std::vector<uint8_t> draw_gpl(uint8_t uv_count=1){
+    auto b=setup_gpl();
+    for(size_t at:{size_t(64),size_t(512)}){
+        word(b,at+4,280);word(b,at+8,304);word(b,at+12,288);b[at+20]=uv_count;
+        word(b,at+28,0x00033d06); // Three interleaved signed16 XYZ/normal records.
+        word(b,at+280,80);word(b,at+284,0x00010003);word(b,at+80,0x1234abcd);
+        word(b,at+288,46);word(b,at+292,0x00033d06);
+        for(uint8_t i=0;i<uv_count && i<8;++i){word(b,at+304+size_t(i)*16,96);word(b,at+308+size_t(i)*16,0x00023e02);}
+        word(b,at+132+16+4,1);word(b,at+132+32+4,0xc3c);
+        word(b,at+132+4,(7u<<13)|8191); // Explicit descriptor overrides low13 image index.
+    }
+    return b;
+}
+void draw_checks(){
+    using S=awl::WorldMapPlayerDrawStatus;using Owner=awl::WorldMapPlayerDrawCommands;
+    Fixture fixture;auto payloads=files();payloads[0]=setup_model();payloads[1]=draw_gpl();payloads[2]=skin();
+    std::shared_ptr<const Assets> assets;std::unique_ptr<Owner> owner;
+    auto load=[&](){assets.reset();fixture.write("boy_0.arc",archive(payloads));expect(awl::load_world_map_player_model_assets(0,&assets)==Status::Loaded,"drawing providers load");};
+    expect(awl::prepare_world_map_player_draw_commands(nullptr,nullptr)==S::InvalidInput,"null drawing output rejects first");
+    expect(awl::prepare_world_map_player_draw_commands(nullptr,&owner)==S::RequiresAssets && !owner,"drawing requires assets");
+    load();expect(awl::prepare_world_map_player_draw_commands(assets,&owner)==S::PreparedParameters && owner,"CPU drawing parameters prepare");
+    if(!owner)return;
+    for(const auto& section:owner->sections()){
+        expect(section.arrays.size()==3 && section.arrays[0].attribute==9 && section.arrays[0].stride==12 && section.arrays[0].bounded_size==30 &&
+            section.arrays[1].attribute==13 && section.arrays[1].stride==4 && section.arrays[1].bounded_size==8 &&
+            section.arrays[2].attribute==10 && section.arrays[2].stride==12 && section.arrays[2].bounded_size==30,"interleaved arrays preserve call order and last-element extents");
+        expect(section.vat_words==std::array<uint32_t,3>{0x5cf76cd7,0xc8241209,0x04824120} &&
+            section.matrix_indices==std::array<uint8_t,9>{0,60,60,60,60,60,60,60,60},"VAT and matrix operands match mapped original routines");
+        expect(section.constant_color==std::optional<std::array<uint8_t,4>>({16,69,165,255}),"RGB565 constant excludes color array format");
+        const auto& texture=std::get<awl::WorldMapPlayerTextureParameters>(section.commands[0]);
+        expect(texture.unit==7 && texture.binding.bank==Bank::Body && texture.binding.index==1 && !texture.mipmap && !texture.bias_clamp && texture.anisotropy==0,
+            "explicit selected descriptor ignores embedded image index and preserves sampler defaults");
+        const auto& d=std::get<std::vector<awl::WorldMapPlayerVertexDescriptor>>(section.commands[2]);
+        expect(d.size()==3 && d[0].attribute==9 && d[0].mode==3 && d[1].attribute==10 && d[2].attribute==13,"VCD signed16 player profile decodes index16 descriptors");
+        const auto& tev=std::get<awl::WorldMapPlayerTevParameters>(section.commands[1]);
+        expect(tev.color_inputs==std::array<uint8_t,4>{15,8,10,15} && tev.alpha_inputs==std::array<uint8_t,4>{7,4,5,7} &&
+            tev.texgen_source==4 && tev.post_matrix==125 && tev.raster_channel==4 && tev.texgens==1 && tev.color_channels==1 && tev.stages==1,
+            "word-one TEV operands match original SDK boundary calls");
+    }
+    expect(awl::prepare_world_map_player_draw_commands(owner->setup().selection().assets,&owner)==S::PreparedParameters,"retained provider input safely aliases replaced drawing owner");
+    constexpr std::array<uint8_t,4> colors[]={{16,69,165,255},{18,52,171,255},{18,52,171,255},{17,34,51,68},{0,4,32,211},{18,52,171,205}};
+    for(uint8_t type=0;type<6;++type){payloads[1]=draw_gpl();payloads[1][512+286]=uint8_t(type<<4);load();
+        expect(awl::prepare_world_map_player_draw_commands(assets,&owner)==S::PreparedParameters && owner->sections()[0].constant_color==colors[type],"all six constant-color branches match raw instruction samples");}
+    payloads[1]=draw_gpl(8);word(payloads[1],512+284,0x00020003);word(payloads[1],512+292,0x00033d02);
+    word(payloads[1],512+132+32+4,0x0bffffff);load();
+    expect(awl::prepare_world_map_player_draw_commands(assets,&owner)==S::PreparedParameters,"eight UV arrays, RGB array, NBT3 and broad VCD prepare");
+    if(owner->sections()[0].arrays.size()==11){const auto& section=owner->sections()[0];
+        expect(section.arrays[1].attribute==11 && section.arrays[1].stride==2 && section.arrays.back().attribute==25 && section.arrays.back().stride==6 &&
+            section.arrays.back().bounded_size==18 && section.vat_words==std::array<uint32_t,3>{0xdcf60ed7,0xbb9dcee7,0x73b9dcee},"NBT3 uses three-scalar stride and VAT bit31");
+        const auto& d=std::get<std::vector<awl::WorldMapPlayerVertexDescriptor>>(section.commands[2]);
+        expect(d.size()==14 && d[0].attribute==0 && d[0].mode==3 && d[1].attribute==25 && d[1].mode==2 && d.back().attribute==20,"matrix/NBT3 descriptors precede twelve attribute modes");
+    }else expect(false,"eleven bindings survive broad setup");
+    for(uint8_t type=0;type<6;++type){payloads[1]=draw_gpl();word(payloads[1],512+284,uint32_t(0x00020003)|(uint32_t(type)<<12));load();
+        expect(awl::prepare_world_map_player_draw_commands(assets,&owner)==S::PreparedParameters && owner->sections()[0].arrays[1].stride==(type%3==0?2:type%3==1?3:4),"color arrays preserve original packed widths");}
+    for(uint8_t type=0;type<5;++type){payloads[1]=draw_gpl();payloads[1][512+30]=uint8_t((type<<4)|7);load();
+        expect(awl::prepare_world_map_player_draw_commands(assets,&owner)==S::PreparedParameters && owner->sections()[0].arrays[0].stride==(type<2?6:type<4?12:24),"all supported scalar widths preserve interleaved position stride");}
+    payloads[1]=draw_gpl();auto sampler=tpl(2);const size_t headers=28,data=100;sampler.resize(data+256);
+    for(size_t i=0;i<2;++i){const size_t at=headers+i*36;word(sampler,at+8,uint32_t(data+i*128));word(sampler,at+12,1);word(sampler,at+16,2);
+        word(sampler,at+20,4);word(sampler,at+24,1);word(sampler,at+28,0x3e800000);sampler[at+32]=1;sampler[at+33]=1;sampler[at+34]=3;}
+    payloads[3]=sampler;load();expect(awl::prepare_world_map_player_draw_commands(assets,&owner)==S::PreparedParameters,"mip sampler provider prepares");
+    const auto& sampler_state=std::get<awl::WorldMapPlayerTextureParameters>(owner->sections()[0].commands[0]);
+    expect(sampler_state.wrap_s==1 && sampler_state.wrap_t==2 && sampler_state.min_filter==4 && sampler_state.mag_filter==1 && sampler_state.mipmap &&
+        sampler_state.edge_lod==1 && sampler_state.min_lod==1.0f && sampler_state.max_lod==3.0f && sampler_state.lod_bias==0.25f,"selected sampler preserves wrap/filter, LOD byte conversion, bias and mip flag");
+    payloads[3]=tpl(2);
+    for(unsigned kind=0;kind<15;++kind){payloads[1]=draw_gpl();S wanted=S::UnsupportedLayout;
+        if(kind==0)word(payloads[1],512+24,495),wanted=S::RequiresModelSetup; // Last position would cross trailing names.
+        if(kind==1)word(payloads[1],512+24,120),wanted=S::RequiresModelSetup; // Payload aliases writable material.
+        if(kind==2)payloads[1][512+30]=0x5d;
+        if(kind==3)word(payloads[1],512+288,0),wanted=S::RequiresNormalFallback;
+        if(kind==4)payloads[1][512+295]=4;
+        if(kind==5)word(payloads[1],512+304,UINT32_MAX);
+        if(kind==6)payloads[1][512+20]=9;
+        if(kind==7)word(payloads[1],512+132+16+4,2);
+        if(kind==8)payloads[1][512+133]=3,wanted=S::RequiresTexture;
+        if(kind==9)word(payloads[1],512+280,0);
+        if(kind==10)payloads[1][512+286]=0x60;
+        if(kind==11)word(payloads[1],512+308,0x00003e02);
+        if(kind==12)word(payloads[1],512+288,495);
+        if(kind==13)word(payloads[1],512+280,120);
+        if(kind==14)word(payloads[1],512+308,0xffff3e02);
+        load();const auto* prior=owner.get();
+        const auto status=awl::prepare_world_map_player_draw_commands(assets,&owner);
+        expect(status==wanted && owner.get()==prior,"unsupported reached drawing structures preserve complete owner");
+    }
+    payloads[1]=draw_gpl();word(payloads[1],512+4,0);word(payloads[1],512+288,0);load();
+    expect(awl::prepare_world_map_player_draw_commands(assets,&owner)==S::PreparedParameters && owner->sections()[0].arrays.size()==2 && !owner->sections()[0].constant_color,
+        "absent color bypasses normal fallback exactly as original branch");
+    std::weak_ptr<const Assets> lifetime=owner->setup().selection().assets;assets.reset();
+    expect(!lifetime.expired(),"drawing owner retains array and texture providers");owner.reset();expect(lifetime.expired(),"last drawing owner releases providers");
+    payloads[1]=draw_gpl();load();expect(awl::prepare_world_map_player_draw_commands(assets,&owner)==S::PreparedParameters,"drawing allocation baseline prepares");
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    const auto* prior=owner.get();const auto live=allocation_probe::live;size_t rejected=0;bool prepared=false;
+    for(size_t fail=0;fail<256;++fail){allocation_probe::remaining=fail;allocation_probe::enabled=true;
+        const auto status=awl::prepare_world_map_player_draw_commands(assets,&owner);allocation_probe::enabled=false;
+        if(status==S::PreparedParameters){prepared=true;break;}++rejected;
+        expect(status==S::AllocationFailure && owner.get()==prior && allocation_probe::live==live,"drawing allocation failure releases staging and preserves prior owner");}
+    expect(prepared && rejected>69,"allocation sweep reaches drawing publication");std::cout<<"PLAYER_DRAW_ALLOCATION_FAILURES "<<rejected<<'\n';
+#endif
+}
+
 void synthetic(){
     Fixture fixture;std::shared_ptr<const Assets> assets;awl::WorldMapPlayerModelSelection selection;
     selection.gpl.size=123;
@@ -494,9 +595,32 @@ void hash_setup(uint64_t& h,uint32_t phase,const awl::WorldMapPlayerModelSetupPl
     hash(h,uint32_t(plan.texture_writes().size()));for(const auto& w:plan.texture_writes()){hash(h,w.section);hash(h,w.command);texture(w.texture);}
     for(const auto& s:plan.command_sections())for(const auto& c:s.commands){hash(h,c.texture.has_value());if(c.texture)texture(*c.texture);}
 }
+void hash_draw(uint64_t& h,uint32_t phase,const awl::WorldMapPlayerDrawCommands& owner){
+    hash(h,phase);hash(h,uint32_t(owner.sections().size()));
+    for(const auto& section:owner.sections()){
+        hash(h,uint32_t(section.arrays.size()));for(const auto& a:section.arrays){hash(h,a.attribute);hash(h,a.data.offset-owner.setup().selection().gpl.reference.offset);hash(h,a.stride);}
+        hash(h,uint32_t(section.formats.size()));for(const auto& f:section.formats){hash(h,f.attribute);hash(h,f.components);hash(h,f.type);hash(h,f.fraction);}
+        hash(h,section.constant_color.has_value());if(section.constant_color)for(auto c:*section.constant_color)hash(h,c);
+        for(auto v:section.vat_words)hash(h,v);for(auto v:section.matrix_indices)hash(h,v);
+        hash(h,uint32_t(section.commands.size()));
+        for(const auto& state:section.commands){hash(h,uint32_t(state.index()));
+            if(const auto* texture=std::get_if<awl::WorldMapPlayerTextureParameters>(&state)){
+                for(auto v:{uint32_t(texture->binding.channel),uint32_t(texture->binding.bank),uint32_t(texture->binding.index),uint32_t(texture->unit),
+                    texture->wrap_s,texture->wrap_t,texture->min_filter,texture->mag_filter,texture->anisotropy,uint32_t(texture->mipmap),uint32_t(texture->bias_clamp),uint32_t(texture->edge_lod)})hash(h,v);
+                for(float v:{texture->min_lod,texture->max_lod,texture->lod_bias}){uint32_t bits;std::memcpy(&bits,&v,4);hash(h,bits);}
+            }else if(const auto* descriptors=std::get_if<std::vector<awl::WorldMapPlayerVertexDescriptor>>(&state)){
+                hash(h,uint32_t(descriptors->size()));for(const auto& d:*descriptors){hash(h,d.attribute);hash(h,d.mode);}
+            }else{const auto& t=std::get<awl::WorldMapPlayerTevParameters>(state);
+                for(auto v:t.color_inputs)hash(h,v);for(auto v:t.alpha_inputs)hash(h,v);
+                for(auto v:{t.operation,t.bias,t.scale,t.clamp,t.output_register,t.stage,t.coordinate,t.map,t.raster_channel,t.texgen,t.texgen_type,t.texgen_source,
+                    t.normalize,t.post_matrix,t.texgens,t.color_channels,t.stages})hash(h,v);
+            }
+        }
+    }
+}
 void local(const char* disc){
     expect(awl::filesystem_mount("/",disc),"local disc mounts");
-    uint64_t digest=14695981039346656037ull,auxiliary_digest=digest,setup_digest=digest;
+    uint64_t digest=14695981039346656037ull,auxiliary_digest=digest,setup_digest=digest,draw_digest=digest;
     std::shared_ptr<const Assets> assets;size_t selections=0,relocations=0;
     for(uint32_t phase=0;phase<6;++phase){
         expect(awl::load_world_map_player_model_assets(phase,&assets)==Status::Loaded && assets,"phase-selected local model archive loads");
@@ -538,6 +662,13 @@ void local(const char* disc){
             plan->storage_requests().back().offset==4448 && plan->command_allocation_size()==608 && plan->texture_writes().size()==4,
             "actual primary archives preserve distinct allocation/cursor sizes, root feature and four command bindings");
         hash_setup(setup_digest,phase,*plan);
+        std::unique_ptr<awl::WorldMapPlayerDrawCommands> draw;
+        expect(awl::prepare_world_map_player_draw_commands(assets,&draw)==awl::WorldMapPlayerDrawStatus::PreparedParameters && draw,"all local player phases prepare CPU drawing parameters");
+        if(!draw)return;
+        const auto& arrays=draw->sections()[0].arrays;
+        expect(arrays.size()==3 && arrays[0].count==1831 && arrays[0].bounded_size==21966 && arrays[1].count==1102 && arrays[1].bounded_size==4408 &&
+            arrays[2].count==1831 && arrays[2].bounded_size==21966,"actual interleaved array bounds include the last XYZ/normal and UV element");
+        hash_draw(draw_digest,phase,*draw);
     }
     std::cout<<"LOCAL_PLAYER_MODEL_SELECTIONS "<<selections<<" metadata "<<std::hex<<digest<<std::dec<<'\n';
     expect(selections==6,"all six phase selections reach the explicit dependency boundary");
@@ -546,6 +677,8 @@ void local(const char* disc){
     std::cout<<"LOCAL_PLAYER_AUXILIARY_METADATA "<<selections<<" relocations "<<relocations<<" digest "<<std::hex<<auxiliary_digest<<std::dec<<'\n';
     expect(relocations==2310 && auxiliary_digest==0x432873f8104e8d5cull,
         "all six GPL/SKN bindings and skin fixup spaces/order match independently executed DOL instructions");
+    expect(draw_digest==0xef4c5a9a9aa08adaull,"all six CPU drawing parameter sets match independently executed original routines");
+    std::cout<<"LOCAL_PLAYER_DRAW_PARAMETERS "<<selections<<" digest "<<std::hex<<draw_digest<<std::dec<<'\n';
     std::cout<<"LOCAL_PLAYER_SETUP_PLANS "<<selections<<" digest "<<std::hex<<setup_digest<<std::dec<<'\n';
     expect(setup_digest==0xd9d84507566b1a0cull,
         "all six setup tables/budgets, features/sizes/shared caches and texture selections match mapped original instructions");
@@ -557,7 +690,7 @@ int main(int argc,char** argv){
         _CrtSetReportMode(kind,_CRTDBG_MODE_FILE);_CrtSetReportFile(kind,_CRTDBG_FILE_STDERR);
     }
 #endif
-    embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
+    embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
     if(argc==3 && std::string(argv[1])=="--player-model-local")local(argv[2]);
     else if(argc!=1)expect(false,"usage: --player-model-local <disc>");
     awl::filesystem_shutdown();return failures?1:0;
