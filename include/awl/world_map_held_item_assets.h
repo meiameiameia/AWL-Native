@@ -1,6 +1,7 @@
 #pragma once
 
 #include "awl/world_map_model_feature.h"
+#include "awl/world_map_gpl_metadata.h"
 #include "awl/tpl.h"
 
 namespace awl {
@@ -8,13 +9,8 @@ enum class WorldMapHeldItemAssetsStatus {
     Prepared, Loaded, ReadFailure, TextureFailure, UnsupportedLayout,
     RequiresSkin, InvalidInput, AllocationFailure,
 };
-struct WorldMapHeldItemGplSection {
-    uint32_t offset = 0, name_offset = 0, material_offset = 0;
-    std::vector<WorldMapModelFeatureCommand> commands;
-};
-struct WorldMapHeldItemGplMetadata {
-    std::vector<WorldMapHeldItemGplSection> sections;
-};
+using WorldMapHeldItemGplSection = WorldMapGplSectionMetadata;
+using WorldMapHeldItemGplMetadata = WorldMapGplMetadata;
 // 3DB8/4078's eight-byte section pairs and retained serialized command
 // headers. Immutable metadata only: no GPL relocation, command compilation,
 // GX state, geometry, skinning, or drawing. Only types 1/2/3 are supported.

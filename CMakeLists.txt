@@ -44,6 +44,9 @@ set(SOURCES
     src/world_map_model_initialization.cpp
     src/world_map_model_feature.cpp
     src/world_map_held_item_assets.cpp
+    src/world_map_gpl_metadata.cpp
+    src/world_map_skin_metadata.cpp
+    src/world_map_player_model_auxiliary.cpp
     src/world_map_player_animation_assets.cpp
     src/world_map_player_model_assets.cpp
     src/world_map_camera.cpp
@@ -98,6 +101,9 @@ set(HEADERS
     include/awl/world_map_model_initialization.h
     include/awl/world_map_model_feature.h
     include/awl/world_map_held_item_assets.h
+    include/awl/world_map_gpl_metadata.h
+    include/awl/world_map_skin_metadata.h
+    include/awl/world_map_player_model_auxiliary.h
     include/awl/world_map_player_animation_assets.h
     include/awl/world_map_player_model_assets.h
     src/world_map_flat_archive.h
@@ -489,6 +495,7 @@ add_test(NAME world_map_model_feature_tests COMMAND world_map_model_feature_test
 add_executable(world_map_held_item_assets_tests
     tests/world_map_held_item_assets_tests.cpp
     src/world_map_held_item_assets.cpp
+    src/world_map_gpl_metadata.cpp
     src/world_map_model_feature.cpp
     src/tpl.cpp
     src/filesystem.cpp
@@ -539,6 +546,9 @@ add_test(NAME world_map_player_animation_assets_tests COMMAND world_map_player_a
 add_executable(world_map_player_model_assets_tests
     tests/world_map_player_model_assets_tests.cpp
     src/world_map_player_model_assets.cpp
+    src/world_map_player_model_auxiliary.cpp
+    src/world_map_gpl_metadata.cpp
+    src/world_map_skin_metadata.cpp
     src/world_map_secondary_model.cpp
     src/tpl.cpp
     src/filesystem.cpp
