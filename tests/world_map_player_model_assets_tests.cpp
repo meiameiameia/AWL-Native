@@ -3,6 +3,7 @@
 #include "awl/world_map_player_model_setup.h"
 #include "awl/world_map_player_draw_commands.h"
 #include "awl/world_map_player_skin_work.h"
+#include "awl/world_map_player_frame.h"
 #include "awl/filesystem.h"
 
 #include <chrono>
@@ -470,6 +471,97 @@ std::vector<uint8_t> execution_skin(uint32_t seed){
         state=state*1664525u+1013904223u;skin[start+i]=uint8_t(state>>24);}
     return skin;
 }
+std::array<uint32_t,13> explicit_pose(const awl::WorldMapModelMatrix& matrix){
+    std::array<uint32_t,13> result{};result[0]=0x10000000;
+    for(size_t i=0;i<12;++i)std::memcpy(&result[i+1],&matrix[i],4);
+    return result;
+}
+awl::WorldMapPlayerFrameInput frame_input(uint32_t seed,size_t count){
+    awl::WorldMapPlayerFrameInput result;result.root_pose=explicit_pose(skin_palette(seed+512,1)[0]);
+    result.evaluate_nodes=(seed&2)!=0;result.request_skin=(seed&1)!=0;result.nodes.resize(count);
+    const auto sampled=skin_palette(seed,count),post=skin_palette(seed+1024,count);
+    for(size_t i=0;i<count;++i){if((seed+i)%3)result.nodes[i].sampled_pose=explicit_pose(sampled[i]);
+        if((seed+i)%4==0)result.nodes[i].post_transform=post[i];}
+    return result;
+}
+void hash_frame(uint64_t& digest,const awl::WorldMapPlayerFrame& frame){
+    auto matrix=[&](const awl::WorldMapModelMatrix& m){for(float value:m){uint32_t raw=0;if(value!=0)std::memcpy(&raw,&value,4);hash(digest,raw);}};
+    matrix(frame.root_matrix);hash(digest,frame.skin_executed?1:0);hash(digest,uint32_t(frame.node_matrices.size()));
+    for(const auto& m:frame.node_matrices)matrix(m);hash(digest,uint32_t(frame.skin_palette.size()));
+    for(const auto& m:frame.skin_palette)matrix(m);hash(digest,uint32_t(frame.feature_matrix_writes.size()));
+    for(const auto& m:frame.feature_matrix_writes){hash(digest,m?1:0);if(m)matrix(*m);}
+    hash(digest,uint32_t(frame.feature_write_order.size()));for(uint32_t index:frame.feature_write_order)hash(digest,index);
+    hash(digest,uint32_t(frame.vertex_output.size()));for(uint8_t byte:frame.vertex_output)hash(digest,byte);
+}
+void frame_checks(){
+    using S=awl::WorldMapPlayerFrameStatus;
+    Fixture fixture;auto payloads=files();payloads[1]=draw_gpl();
+    for(size_t at:{size_t(64),size_t(512)}){word(payloads[1],at+24,32);word(payloads[1],at+288,38);}
+    std::shared_ptr<const Assets> assets;std::unique_ptr<awl::WorldMapPlayerSkinWork> work;
+    auto prepare=[&](){assets.reset();fixture.write("boy_0.arc",archive(payloads));
+        expect(awl::load_world_map_player_model_assets(0,&assets)==Status::Loaded,"frame providers load");
+        expect(awl::prepare_world_map_player_skin_work(assets,&work)==awl::WorldMapPlayerSkinWorkStatus::PreparedWork,"frame setup prepares");};
+    uint64_t digest=14695981039346656037ull;awl::WorldMapPlayerFrame frame;
+    for(uint32_t seed=0;seed<256;++seed){payloads[0]=setup_model();payloads[2]=execution_skin(seed);
+        for(uint32_t i=0;i<3;++i)word(payloads[0],32+i*28+24,((seed+i)%3)<<24|((i==0?5u:2u)<<16));prepare();if(!work)return;
+        frame.vertex_output.resize(64);for(size_t i=0;i<64;++i)frame.vertex_output[i]=uint8_t(i*7+seed);
+        for(uint32_t pass=0;pass<2;++pass){const auto input=frame_input(seed+pass*256,3);
+            expect(awl::evaluate_world_map_player_frame(*work,input,frame.vertex_output,&frame)==S::Evaluated,"complete supplied frame publishes atomically with prior-output alias");
+            hash(digest,seed);hash(digest,pass);hash_frame(digest,frame);}
+    }
+    expect(digest==0xa22d86a6d7a4a50dull,"512 frame matrices, ordered feature writes and vertex outputs match mapped E438/C080 instructions");
+    std::cout<<"PLAYER_FRAME_EVALUATION 512 digest "<<std::hex<<digest<<std::dec<<'\n';
+    auto input=frame_input(3,3);const auto before=frame;uint64_t before_hash=14695981039346656037ull;hash_frame(before_hash,before);
+    auto preserved=[&](){uint64_t h=14695981039346656037ull;hash_frame(h,frame);return h==before_hash;};
+    expect(awl::evaluate_world_map_player_frame(*work,input,frame.vertex_output,nullptr)==S::InvalidInput,"null frame output rejects");
+    input.nodes.pop_back();expect(awl::evaluate_world_map_player_frame(*work,input,frame.vertex_output,&frame)==S::InvalidInput && preserved(),"missing node observation preserves previous frame");
+    input=frame_input(3,3);auto short_output=frame.vertex_output;short_output.pop_back();
+    expect(awl::evaluate_world_map_player_frame(*work,input,short_output,&frame)==S::InvalidInput && preserved(),"wrong prior extent preserves frame");
+    input.root_pose={};input.root_pose[0]=0x02000000;input.root_pose[4]=0x3f800000;
+    expect(awl::evaluate_world_map_player_frame(*work,input,frame.vertex_output,&frame)==S::RequiresPoseConversion && preserved(),"unsupported root Euler stops without publication");
+    input=frame_input(3,3);input.nodes[2].sampled_pose=std::array<uint32_t,13>{};(*input.nodes[2].sampled_pose)[0]=0x02000000;(*input.nodes[2].sampled_pose)[4]=0x3f800000;
+    expect(awl::evaluate_world_map_player_frame(*work,input,frame.vertex_output,&frame)==S::RequiresPoseConversion && preserved(),"unsupported late node Euler rolls back preceding transforms");
+    input=frame_input(3,3);input.nodes[2].sampled_pose=input.root_pose;(*input.nodes[2].sampled_pose)[4]=0x7fc00000;
+    expect(awl::evaluate_world_map_player_frame(*work,input,frame.vertex_output,&frame)==S::UnsupportedNumerics && preserved(),"late nonfinite node pose rolls back matrices and skin output");
+    input=frame_input(3,3);input.nodes[2].post_transform=skin_palette(7,1)[0];(*input.nodes[2].post_transform)[0]=std::numeric_limits<float>::denorm_min();
+    expect(awl::evaluate_world_map_player_frame(*work,input,frame.vertex_output,&frame)==S::UnsupportedNumerics && preserved(),"subnormal supplied node transform preserves frame");
+    input=frame_input(3,3);input.nodes[2].sampled_pose=explicit_pose({2,0,0,0,0,2,0,0,0,0,2,0});
+    input.nodes[2].post_transform=awl::WorldMapModelMatrix{std::numeric_limits<float>::max(),0,0,0,0,1,0,0,0,0,1,0};
+    expect(awl::evaluate_world_map_player_frame(*work,input,frame.vertex_output,&frame)==S::UnsupportedNumerics && preserved(),"late matrix arithmetic overflow preserves complete frame");
+    input=frame_input(3,3);const int rounding=std::fegetround();expect(std::fesetround(FE_UPWARD)==0,"frame test selects unsupported rounding");
+    const auto rounding_status=awl::evaluate_world_map_player_frame(*work,input,frame.vertex_output,&frame);
+    expect(std::fesetround(rounding)==0 && rounding_status==S::UnsupportedNumerics && preserved(),"frame preserves output and caller rounding mode at unsupported stop");
+    input=frame_input(1,0);input.root_pose={};
+    expect(awl::evaluate_world_map_player_frame(*work,input,frame.vertex_output,&frame)==S::Evaluated && !frame.skin_executed && frame.node_matrices.empty() &&
+        frame.skin_palette.empty() && frame.vertex_output==before.vertex_output && frame.feature_matrix_writes[0] && !frame.feature_matrix_writes[1],
+        "node-off path ignores node observations and updates only root feature while retaining vertices");
+    input=frame_input(3,3);
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    const auto old=frame;const auto live=allocation_probe::live;uint64_t old_hash=14695981039346656037ull;hash_frame(old_hash,old);
+    size_t rejected=0;bool reached=false;
+    for(size_t fail=0;fail<32;++fail){allocation_probe::remaining=fail;allocation_probe::enabled=true;
+        const auto status=awl::evaluate_world_map_player_frame(*work,input,frame.vertex_output,&frame);allocation_probe::enabled=false;
+        if(status==S::Evaluated){reached=true;break;}++rejected;uint64_t h=14695981039346656037ull;hash_frame(h,frame);
+        expect(status==S::AllocationFailure && h==old_hash && allocation_probe::live==live,"frame allocation failure releases staging and preserves matrices/vertices");}
+    expect(reached && rejected==5,"frame sweep reaches node/palette/feature writes/order/vertex staging");std::cout<<"PLAYER_FRAME_ALLOCATION_FAILURES "<<rejected<<'\n';
+#endif
+    input={};input.nodes.resize(3);input.root_pose=explicit_pose({1,0,0,100,0,1,0,200,0,0,1,300});
+    input.nodes[0].sampled_pose=explicit_pose({1,0,0,10,0,1,0,20,0,0,1,30});
+    input.nodes[1].sampled_pose=explicit_pose({0,-1,0,2,1,0,0,3,0,0,1,4});
+    input.nodes[1].post_transform=awl::WorldMapModelMatrix{1,0,0,1,0,1,0,2,0,0,1,3};
+    input.nodes[2].sampled_pose=explicit_pose({1,0,0,-1,0,1,0,-2,0,0,1,-3});
+    expect(awl::evaluate_world_map_player_frame(*work,input,frame.vertex_output,&frame)==S::Evaluated &&
+        frame.node_matrices[1]==awl::WorldMapModelMatrix{0,-1,0,10,1,0,0,24,0,0,1,37} && frame.skin_palette[1]==frame.node_matrices[1] &&
+        frame.node_matrices[2]==awl::WorldMapModelMatrix{1,0,0,-1,0,1,0,-2,0,0,1,-3} &&
+        frame.feature_matrix_writes[2]==awl::WorldMapModelMatrix{0,-1,0,110,1,0,0,224,0,0,1,337} && frame.feature_write_order==std::vector<uint32_t>{1,2,3,0},
+        "post transform precedes type-one parent composition; root affects feature world matrices, not skin palette; other types skip parent");
+    const auto vertices=frame.vertex_output;input.root_pose={};
+    expect(awl::evaluate_world_map_player_frame(*work,input,work->initial_output(),&frame)==S::Evaluated && frame.vertex_output==vertices,
+        "changing root placement alone does not transform skin vertices twice");
+    const auto saved=frame.vertex_output;payloads[0]=setup_model(false);prepare();
+    expect(awl::evaluate_world_map_player_frame(*work,input,frame.vertex_output,&frame)==S::UnsupportedLayout && frame.vertex_output==saved,
+        "nonnull skin path rejects missing root feature instead of following original null dereference");
+}
 void skin_execution_checks(){
     using S=awl::WorldMapPlayerSkinExecutionStatus;
     Fixture fixture;auto payloads=files();payloads[0]=setup_model();payloads[1]=draw_gpl();
@@ -817,9 +909,11 @@ void hash_skin_work(uint64_t& h,uint32_t phase,const awl::WorldMapPlayerSkinWork
         hash(h,j.output.offset);hash(h,j.output.size);hash(h,uint32_t(j.scatter_indices.size()));for(auto index:j.scatter_indices)hash(h,index);
     }
 }
-void local(const char* disc){
+void local(const char* disc,bool frame_evidence=false){
     expect(awl::filesystem_mount("/",disc),"local disc mounts");
     uint64_t digest=14695981039346656037ull,auxiliary_digest=digest,setup_digest=digest,draw_digest=digest,skin_work_digest=digest,skin_execution_digest=digest;
+    uint64_t frame_digest=digest;std::ofstream frame_inputs;
+    if(frame_evidence){frame_inputs.open("build/terrain-trace/player-frame-native-inputs.txt");expect(bool(frame_inputs),"ignored local frame input evidence opens");}
     std::shared_ptr<const Assets> assets;size_t selections=0,relocations=0;
     for(uint32_t phase=0;phase<6;++phase){
         expect(awl::load_world_map_player_model_assets(phase,&assets)==Status::Loaded && assets,"phase-selected local model archive loads");
@@ -882,6 +976,18 @@ void local(const char* disc){
                 "all local jobs execute with supplied diagnostic frame matrices");
             hash(skin_execution_digest,phase);hash(skin_execution_digest,frame);for(uint8_t byte:skinned)hash(skin_execution_digest,byte);
         }
+        const auto& setup=skin_work->drawing().setup();const auto& core=setup.core_before_features();
+        if(frame_evidence)for(size_t node=0;node<core.nodes.size();++node){frame_inputs<<phase<<' '<<node;
+            for(const auto& m:{*setup.selection().model.records[core.nodes[node].source_record_index].matrix,core.inverse_initial_matrices[node]})
+                for(float value:m){uint32_t raw;std::memcpy(&raw,&value,4);frame_inputs<<' '<<std::hex<<raw<<std::dec;}frame_inputs<<'\n';}
+        awl::WorldMapPlayerFrame evaluated;evaluated.vertex_output=skin_work->initial_output();
+        for(uint32_t pass=0;pass<2;++pass){auto input=frame_input(phase+pass*256,55);input.evaluate_nodes=true;input.request_skin=true;
+            if(pass==0){input.nodes.assign(55,{});input.root_pose=explicit_pose({1,0,0,3,0,1,0,9,0,0,1,-2});}
+            expect(awl::evaluate_world_map_player_frame(*skin_work,input,evaluated.vertex_output,&evaluated)==awl::WorldMapPlayerFrameStatus::Evaluated &&
+                evaluated.skin_executed && evaluated.node_matrices.size()==55 && evaluated.skin_palette.size()==55 && evaluated.feature_matrix_writes.size()==1,
+                "local retained hierarchy/default/inverse matrices feed CPU skinning with supplied frame poses");
+            hash(frame_digest,phase);hash(frame_digest,pass);hash_frame(frame_digest,evaluated);
+        }
     }
     std::cout<<"LOCAL_PLAYER_MODEL_SELECTIONS "<<selections<<" metadata "<<std::hex<<digest<<std::dec<<'\n';
     expect(selections==6,"all six phase selections reach the explicit dependency boundary");
@@ -894,6 +1000,8 @@ void local(const char* disc){
     std::cout<<"LOCAL_PLAYER_SKIN_WORK "<<selections<<" digest "<<std::hex<<skin_work_digest<<std::dec<<'\n';
     expect(skin_execution_digest==0xc3015abf20bed0efull,"all local vertex output bytes match original instructions for two supplied frames across six phases");
     std::cout<<"LOCAL_PLAYER_SKIN_EXECUTION "<<selections*2<<" digest "<<std::hex<<skin_execution_digest<<std::dec<<'\n';
+    std::cout<<"LOCAL_PLAYER_FRAME_EVALUATION "<<selections*2<<" digest "<<std::hex<<frame_digest<<std::dec<<'\n';
+    expect(frame_digest==0xd46f30d9043eee3cull,"all local frame matrices and vertices match mapped instructions with supplied native default/inverse matrices");
     expect(draw_digest==0xef4c5a9a9aa08adaull,"all six CPU drawing parameter sets match independently executed original routines");
     std::cout<<"LOCAL_PLAYER_DRAW_PARAMETERS "<<selections<<" digest "<<std::hex<<draw_digest<<std::dec<<'\n';
     std::cout<<"LOCAL_PLAYER_SETUP_PLANS "<<selections<<" digest "<<std::hex<<setup_digest<<std::dec<<'\n';
@@ -907,8 +1015,9 @@ int main(int argc,char** argv){
         _CrtSetReportMode(kind,_CRTDBG_MODE_FILE);_CrtSetReportFile(kind,_CRTDBG_FILE_STDERR);
     }
 #endif
-    embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();skin_execution_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
+    embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();skin_execution_checks();awl::filesystem_shutdown();frame_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
     if(argc==3 && std::string(argv[1])=="--player-model-local")local(argv[2]);
-    else if(argc!=1)expect(false,"usage: --player-model-local <disc>");
+    else if(argc==3 && std::string(argv[1])=="--player-frame-local")local(argv[2],true);
+    else if(argc!=1)expect(false,"usage: --player-model-local <disc> or --player-frame-local <disc>");
     awl::filesystem_shutdown();return failures?1:0;
 }
