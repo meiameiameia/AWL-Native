@@ -42,7 +42,7 @@ State initial() {
     state.animation.default_duration_c = 13; state.animation.deadline_10 = 23;
     state.animation.count_18 = 5; state.animation.completed_count_1c = 6;
     state.animation.flag_21 = 1; state.animation.speed_8 = 2;
-    state.primary = {1,2,2,3,4,-3,1}; state.records = records();
+    state.primary = {1,2,2,3,4,-3.0f,1}; state.records = records();
     state.has_optional_bindings = true; return state;
 }
 constexpr uint32_t absent = 63u | (127u<<11) | (255u<<19);
@@ -343,6 +343,17 @@ void test_partial_settings() {
     using CStatus=awl::WorldMapAnimationChannelStatus;
     std::vector<awl::WorldMapAnimationPartialPlaybackRecord> pool;
     for(const auto& record:records())pool.push_back({record.identity,awl::partial_world_map_animation_playback(record.state)});
+    {
+        const Channel unknown{1,2,2,3,4,std::nullopt,2};awl::WorldMapAnimationPartialChannelStep step;
+        expect(awl::prepare_world_map_partial_animation_channel_settings(unknown,pool,100,
+            awl::WorldMapAnimationModelBinding{100,1},1,1,&step)==CStatus::RequiresChannelFields && step.required_fields==1 &&
+            !step.after.blend_14 && step.records_after[0].state.position_0==10,
+            "reached unknown channel blend stops and rolls back staged copies/settings");
+        auto missing=pool;missing.pop_back();
+        expect(awl::prepare_world_map_partial_animation_channel_settings(unknown,missing,100,
+            awl::WorldMapAnimationModelBinding{100,1},1,1,&step)==CStatus::RequiresPlaybackRecord && step.required_record==4,
+            "older-record evidence is required before the later unknown channel blend read");
+    }
     Channel channel{1,2,2,3,4,0.25f,1};awl::WorldMapAnimationPartialChannelStep step;
     const awl::WorldMapAnimationModelBinding model{100,1};
     pool[1].state.limit_c.reset();pool[2].state.word_8.reset();pool[2].state.value_18.reset();

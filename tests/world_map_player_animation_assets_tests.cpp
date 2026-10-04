@@ -1,4 +1,5 @@
 #include "awl/world_map_player_animation_assets.h"
+#include "awl/world_map_animation_channel_owner.h"
 #include "awl/world_map_model_initialization.h"
 #include "awl/filesystem.h"
 
@@ -143,6 +144,62 @@ void synthetic(){
 #endif
 }
 
+void channel_constructor(){
+    using Owner=awl::WorldMapNativeAnimationChannel;
+    using CStatus=awl::WorldMapAnimationChannelConstructionStatus;
+    std::unique_ptr<Owner> owner,other;
+    expect(awl::construct_world_map_animation_channel(nullptr)==CStatus::InvalidInput,"null channel construction output rejects");
+    expect(awl::construct_world_map_animation_channel(&owner)==CStatus::Constructed && owner,"channel owns its three records");
+    if(!owner)return;
+    const auto& state=owner->state();const auto& records=owner->records();
+    expect(records.size()==3 && state.elapsed_0==0 && state.duration_4==0 && state.mode_18==0 && !state.blend_14,
+        "verified clock/mode writes preserve unknown original blend");
+    if(records.size()!=3)return;
+    expect(state.older_10==records[0].identity && state.previous_c==records[1].identity && state.target_8==records[2].identity,
+        "record creation preserves older/previous/target allocation order");
+    for(const auto& record:records)expect(record.identity!=0 && record.state.position_0==0 && record.state.rate_4==1 &&
+        !record.state.clip_10 && record.state.link_14==0 && !record.state.word_8 && !record.state.limit_c && !record.state.value_18,
+        "FDE8 initializes only reached playback fields without neutral fabricated values");
+    expect(awl::construct_world_map_animation_channel(&other)==CStatus::Constructed,"second independent channel constructs");
+    if(other)for(const auto& a:records)for(const auto& b:other->records())expect(a.identity!=b.identity,"independent owners have disjoint stable keys");
+    const auto* address=owner.get();const auto target=state.target_8;other.reset();
+    expect(owner.get()==address && owner->state().target_8==target,"other owner release preserves live channel keys");
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    const auto live=allocation_probe::live;size_t rejected=0;bool constructed=false;
+    for(size_t fail=0;fail<16;++fail){
+        allocation_probe::remaining=fail;allocation_probe::enabled=true;
+        const auto status=awl::construct_world_map_animation_channel(&owner);allocation_probe::enabled=false;
+        if(status==CStatus::Constructed){constructed=true;break;}++rejected;
+        expect(status==CStatus::AllocationFailure && owner.get()==address && owner->state().target_8==target && allocation_probe::live==live,
+            "failed channel replacement releases pending records and preserves the old owner/keys");
+    }
+    expect(constructed && rejected==2,"native channel construction reaches both catchable allocation stages");
+    std::cout<<"CHANNEL_CONSTRUCTION_ALLOCATION_FAILURES "<<rejected<<'\n';
+#endif
+}
+
+void hash_channel(uint64_t& digest,uint32_t index,uint32_t round,const awl::WorldMapNativeAnimationChannel& owner,
+    const awl::WorldMapNativeModel& model,const awl::WorldMapAnimationPartialChannelStep& step){
+    const auto& channel=owner.state();
+    auto key=[&](uint64_t identity){
+        if(identity==0)return 0u;
+        for(size_t i=0;i<owner.records().size();++i)if(owner.records()[i].identity==identity)return uint32_t(i+1);
+        if(identity==model.binding().playback_178)return 4u;
+        expect(false,"channel digest encounters no unsupported borrowed key");return UINT32_MAX;
+    };
+    expect(step.branch.has_value(),"completed setup records an observed branch");
+    for(uint32_t word:{index,round,step.branch?uint32_t(*step.branch):UINT32_MAX,channel.elapsed_0,channel.duration_4,
+        key(channel.target_8),key(channel.previous_c),key(channel.older_10),uint32_t(channel.blend_14.has_value()),
+        channel.blend_14?bits(*channel.blend_14):0u,channel.mode_18})hash(digest,word);
+    auto playback=[&](uint32_t identity,const awl::WorldMapAnimationPartialPlayback& p){
+        const uint32_t known=uint32_t(p.word_8.has_value())|(uint32_t(p.limit_c.has_value())<<1)|(uint32_t(p.value_18.has_value())<<2);
+        for(uint32_t word:{identity,bits(p.position_0),bits(p.rate_4),known,p.word_8.value_or(0),p.limit_c?bits(*p.limit_c):0u,
+            uint32_t(p.clip_10.has_value()),p.clip_10?p.clip_10->offset:0u,key(p.link_14),p.value_18?bits(*p.value_18):0u})hash(digest,word);
+    };
+    for(size_t i=0;i<owner.records().size();++i)playback(uint32_t(i+1),owner.records()[i].state);
+    playback(4,model.partial_playback());
+}
+
 bool read(const char* path,std::vector<uint8_t>* out){
     void* data=nullptr;size_t size=0;if(!awl::filesystem_read_entire_file(path,&data,&size))return false;
     const std::unique_ptr<void,void(*)(void*)> guard(data,awl::filesystem_free_file_data);
@@ -167,10 +224,21 @@ void local(const char* disc){
     awl::WorldMapSecondarySetupStep primary_setup;
     expect(awl::prepare_world_map_secondary_model_setup(1,111,&primary_bank,0,{}, {},uint64_t{0},&primary_setup)==
         awl::WorldMapSecondarySetupStatus::RequiresConstruction,"diagnostic primary construction prepares");
+    // Declare channels before their models: model blend links borrow record keys.
+    std::unique_ptr<awl::WorldMapNativeAnimationChannel> primary_channel;
+    expect(awl::construct_world_map_animation_channel(&primary_channel)==awl::WorldMapAnimationChannelConstructionStatus::Constructed,
+        "diagnostic primary channel constructs from verified initialization");if(!primary_channel)return;
     std::unique_ptr<awl::WorldMapNativeModel> primary;
     expect(awl::construct_world_map_secondary_model(primary_bank,1,primary_setup,&primary).status==
         awl::WorldMapModelConstructionStatus::Constructed,"diagnostic primary owner constructs");if(!primary)return;
-    size_t constructed=0,attached=0;
+    awl::WorldMapAnimationPartialChannelStep primary_step;
+    const awl::WorldMapActorAnimationSetup initial{primary->binding().model_identity,group.primary.bank_identity,0,10,0,0};
+    expect(primary_channel->setup(primary.get(),initial,&assets->primary_animations(),&primary_step)==awl::WorldMapAnimationChannelStatus::Advanced &&
+        primary_step.branch==awl::WorldMapAnimationChannelBranch::NoClip && !primary_channel->state().blend_14,
+        "supplied initial primary clip setup preserves unobserved blend");
+    expect(primary_channel->apply_settings(primary.get(),1,1,&primary_step)==awl::WorldMapAnimationChannelStatus::Advanced && primary->playback(),
+        "supplied initial primary settings establish complete model playback without inventing record fields");
+    size_t constructed=0,attached=0,channel_cases=0;uint64_t channel_digest=14695981039346656037ull;
     for(uint32_t index=1;index<=96;++index){
         awl::WorldMapModelResource r;awl::WorldMapAnimationClip c;uint16_t attachment=0;
         const bool ok=assets->secondary_models().resolve(index,&r) && assets->secondary_models().resolve_attachment_index(r.reference,&attachment) &&
@@ -180,24 +248,35 @@ void local(const char* disc){
         awl::WorldMapSecondarySetupStep setup;
         expect(awl::prepare_world_map_secondary_model_setup(index,group.secondary.model_bank_identity,&assets->secondary_models(),0,{}, {},
             uint64_t{0},&setup)==awl::WorldMapSecondarySetupStatus::RequiresConstruction,"selected actual secondary ACT prepares construction");
+        std::unique_ptr<awl::WorldMapNativeAnimationChannel> channel;
+        expect(awl::construct_world_map_animation_channel(&channel)==awl::WorldMapAnimationChannelConstructionStatus::Constructed,
+            "every actual secondary uses owned constructor records");if(!channel)return;
         std::unique_ptr<awl::WorldMapNativeModel> model;
         const auto result=awl::construct_world_map_secondary_model(assets->secondary_models(),index,setup,&model);
         expect(result.status==awl::WorldMapModelConstructionStatus::Constructed,"selected actual secondary ACT constructs");if(!model)return;++constructed;
-        awl::WorldMapAnimationChannelState channel;std::vector<awl::WorldMapAnimationPartialPlaybackRecord> pool;
         awl::WorldMapAnimationPartialChannelStep channel_step;
-        if(index==1)expect(awl::advance_world_map_native_secondary_channel(model.get(),&channel,&pool,(index<<11)|(31u<<6),
-            group.secondary_animation_bank_identity,&assets->secondary_animations(),&channel_step)==awl::WorldMapAnimationChannelStatus::InvalidInput &&
-            !model->partial_playback().clip_10,"missing channel playback identities reject without inventing records");
-        // Explicit diagnostic records, not translated embedded-channel construction.
-        channel.target_8=2;channel.previous_c=3;channel.older_10=4;
-        for(uint64_t key:{2ull,3ull,4ull})pool.push_back({key,awl::partial_world_map_animation_playback({0,1,0,0,std::nullopt,0,0})});
-        expect(awl::advance_world_map_native_secondary_channel(model.get(),&channel,&pool,(index<<11)|(31u<<6),
-            group.secondary_animation_bank_identity,&assets->secondary_animations(),&channel_step)==awl::WorldMapAnimationChannelStatus::Advanced,
-            "descriptor index selects matching owned secondary clip with default blend");
-        expect(awl::apply_world_map_native_animation_channel_settings(model.get(),&channel,&pool,1,1,&channel_step)==
-            awl::WorldMapAnimationChannelStatus::Advanced && model->playback() && model->playback()->clip_10 &&
-            model->playback()->clip_10->offset==c.reference.offset,
-            "supported settings copy actual selected clip metadata into native playback");
+        if(index==1){
+            awl::WorldMapAnimationChannelState empty;
+            std::vector<awl::WorldMapAnimationPartialPlaybackRecord> missing_records;
+            expect(awl::advance_world_map_native_secondary_channel(model.get(),&empty,&missing_records,(index<<11)|(31u<<6),
+                group.secondary_animation_bank_identity,&assets->secondary_animations(),&channel_step)==awl::WorldMapAnimationChannelStatus::InvalidInput &&
+                !model->partial_playback().clip_10,"empty supplied channel still rejects without inventing playback records");
+            const auto target=channel->state().target_8;
+            expect(channel->setup_secondary(model.get(),(index<<11)|(31u<<6),group.secondary_animation_bank_identity,nullptr,&channel_step)==
+                awl::WorldMapAnimationChannelStatus::RequiresBank && !model->partial_playback().clip_10 && channel->state().target_8==target &&
+                !channel->records()[2].state.word_8,"missing reached bank preserves both owners and unknown records");
+        }
+        for(uint32_t round=0;round<3;++round){
+            const auto status=channel->setup_secondary(model.get(),(index<<11)|(31u<<6),group.secondary_animation_bank_identity,
+                round==0?&assets->secondary_animations():nullptr,&channel_step);
+            expect(status==awl::WorldMapAnimationChannelStatus::Advanced && channel_step.branch==
+                (round==0?awl::WorldMapAnimationChannelBranch::NoClip:round==1?awl::WorldMapAnimationChannelBranch::First:
+                    awl::WorldMapAnimationChannelBranch::Interrupted),"reselection reaches no-clip, first and interrupted branches with owned records");
+            expect(channel->apply_settings(model.get(),1,1,&channel_step)==awl::WorldMapAnimationChannelStatus::Advanced && model->playback() &&
+                model->playback()->clip_10 && model->playback()->clip_10->offset==c.reference.offset,
+                "settings copy selected real clip and preserve reached blend graph metadata");
+            hash_channel(channel_digest,index,round,*channel,*model,channel_step);++channel_cases;
+        }
         const uint64_t p=primary->binding().model_identity,s=model->binding().model_identity;
         awl::WorldMapModelAttachmentStep step;
         const auto attachment_status=awl::apply_world_map_native_model_attachments({primary.get(),model.get()},{p,s,42,0},&step);
@@ -214,6 +293,9 @@ void local(const char* disc){
     std::cout<<"LOCAL_PLAYER_GROUP_METADATA "<<std::hex<<digest<<std::dec<<" models "<<constructed<<" attachments "<<attached<<'\n';
     expect(digest==0x43131709f1de94c9ull,"all selected archive metadata agrees with independent DOL sizing/fixup/section lookup");
     expect(constructed==96 && attached==96,"all actual selected secondary paths complete the bounded native checks");
+    std::cout<<"LOCAL_OWNED_CHANNEL_SEQUENCE "<<channel_cases<<' '<<std::hex<<channel_digest<<std::dec<<'\n';
+    expect(channel_cases==288 && channel_digest==0x3ef5a54351d90cf9ull,
+        "all owned constructor/setup/settings sequences match independent original-instruction state comparisons");
 }
 } // namespace
 int main(int argc,char** argv){
@@ -222,7 +304,7 @@ int main(int argc,char** argv){
         _CrtSetReportMode(kind,_CRTDBG_MODE_FILE);_CrtSetReportFile(kind,_CRTDBG_FILE_STDERR);
     }
 #endif
-    synthetic();awl::filesystem_shutdown();
+    synthetic();channel_constructor();awl::filesystem_shutdown();
     if(argc==3 && std::string(argv[1])=="--player-banks-local")local(argv[2]);
     else if(argc!=1)expect(false,"usage: --player-banks-local <disc>");
     awl::filesystem_shutdown();return failures?1:0;

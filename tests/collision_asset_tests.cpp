@@ -6672,7 +6672,7 @@ bool check_local_event_conditions(const char* disc_root) {
                     // A supplied model binding and owned bank now prepare the
                     // complete first channel helper. Remaining initializer
                     // effects still prevent descriptor/presentation acceptance.
-                    awl::WorldMapAnimationChannelState channel{7, 9, 2, 0, 0, 3, 2};
+                    awl::WorldMapAnimationChannelState channel{7, 9, 2, 0, 0, 3.0f, 2};
                     awl::WorldMapAnimationPlayback target;
                     target.rate_4 = 5; target.link_14 = 6; target.value_18 = 7;
                     const std::vector<awl::WorldMapAnimationPlaybackRecord> playback{{1, {}}, {2, target}};
@@ -6782,7 +6782,7 @@ bool check_local_event_conditions(const char* disc_root) {
                             !initializer.records[1].state.clip_10 &&
                             actor_presentation.phase == awl::WorldMapPresentationPhase::Reading;
                         if (valid_script) {
-                            awl::WorldMapAnimationChannelState secondary_channel{0,0,301,302,303,-3,99};
+                            awl::WorldMapAnimationChannelState secondary_channel{0,0,301,302,303,-3.0f,99};
                             std::vector<awl::WorldMapAnimationPartialPlaybackRecord> records{
                                 {301,awl::partial_world_map_animation_playback(initializer.records[0].state)},
                                 {302,awl::partial_world_map_animation_playback(initializer.records[0].state)},

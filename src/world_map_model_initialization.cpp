@@ -219,23 +219,17 @@ WorldMapModelConstructionResult construct_world_map_secondary_model(
         return {Status::AllocationFailure};
     }
 }
-WorldMapAnimationChannelStatus advance_world_map_native_secondary_channel(
+WorldMapAnimationChannelStatus advance_world_map_native_animation_channel(
     WorldMapNativeModel* model,WorldMapAnimationChannelState* channel,
     std::vector<WorldMapAnimationPartialPlaybackRecord>* records,
-    uint32_t descriptor_word,uint64_t bank_identity,const WorldMapAnimationBank* bank,
+    const WorldMapActorAnimationSetup& setup,const WorldMapAnimationBank* bank,
     WorldMapAnimationPartialChannelStep* out) {
     using Status=WorldMapAnimationChannelStatus;
     if(model==nullptr || channel==nullptr || records==nullptr || out==nullptr ||
-        channel==&out->after || records==&out->records_after || bank_identity==0)return Status::InvalidInput;
-    const uint32_t index=(descriptor_word>>11)&127u;
-    if(index==127)return Status::InvalidInput; // Absent-secondary caller uses release, not this call.
-    WorldMapModelResource resource;
-    if(!model->bank().resolve(index,&resource) || resource.reference.offset!=model->core_.resource.reference.offset)
-        return Status::InvalidInput;
+        channel==&out->after || records==&out->records_after || setup.bank_identity==0)return Status::InvalidInput;
+    const uint64_t bank_identity=setup.bank_identity;
     const auto binding=model->binding();
     for(const auto& record:*records)if(record.identity==binding.playback_178)return Status::InvalidInput;
-    uint32_t blend=(descriptor_word>>6)&31u;if(blend==31)blend=10;
-    const WorldMapActorAnimationSetup setup{binding.model_identity,bank_identity,(index-1u)&0xffffu,blend,0,0.0f};
     try {
         const auto* retained=model->animation_bank(bank_identity);
         const auto* selected_bank=bank?bank:retained;
@@ -259,6 +253,23 @@ WorldMapAnimationChannelStatus advance_world_map_native_secondary_channel(
     } catch(const std::bad_alloc&) {
         return Status::AllocationFailure;
     }
+}
+WorldMapAnimationChannelStatus advance_world_map_native_secondary_channel(
+    WorldMapNativeModel* model,WorldMapAnimationChannelState* channel,
+    std::vector<WorldMapAnimationPartialPlaybackRecord>* records,
+    uint32_t descriptor_word,uint64_t bank_identity,const WorldMapAnimationBank* bank,
+    WorldMapAnimationPartialChannelStep* out) {
+    using Status=WorldMapAnimationChannelStatus;
+    if(model==nullptr || channel==nullptr || records==nullptr || out==nullptr ||
+        channel==&out->after || records==&out->records_after || bank_identity==0)return Status::InvalidInput;
+    const uint32_t index=(descriptor_word>>11)&127u;
+    if(index==127)return Status::InvalidInput;
+    WorldMapModelResource resource;
+    if(!model->bank().resolve(index,&resource) || resource.reference.offset!=model->core().resource.reference.offset)
+        return Status::InvalidInput;
+    uint32_t blend=(descriptor_word>>6)&31u;if(blend==31)blend=10;
+    const WorldMapActorAnimationSetup setup{model->binding().model_identity,bank_identity,(index-1u)&0xffffu,blend,0,0.0f};
+    return advance_world_map_native_animation_channel(model,channel,records,setup,bank,out);
 }
 WorldMapAnimationChannelStatus apply_world_map_native_animation_channel_settings(
     WorldMapNativeModel* model,WorldMapAnimationChannelState* channel,

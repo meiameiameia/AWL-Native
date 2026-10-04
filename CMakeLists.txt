@@ -37,6 +37,7 @@ set(SOURCES
     src/world_map_presentation_actor.cpp
     src/world_map_actor_animation.cpp
     src/world_map_animation_channel.cpp
+    src/world_map_animation_channel_owner.cpp
     src/world_map_animation_initializer.cpp
     src/world_map_model_links.cpp
     src/world_map_secondary_model.cpp
@@ -89,6 +90,7 @@ set(HEADERS
     include/awl/world_map_presentation_actor.h
     include/awl/world_map_actor_animation.h
     include/awl/world_map_animation_channel.h
+    include/awl/world_map_animation_channel_owner.h
     include/awl/world_map_animation_initializer.h
     include/awl/world_map_model_links.h
     include/awl/world_map_secondary_model.h
@@ -511,6 +513,7 @@ add_executable(world_map_player_animation_assets_tests
     src/world_map_model_feature.cpp
     src/world_map_secondary_model.cpp
     src/world_map_animation_channel.cpp
+    src/world_map_animation_channel_owner.cpp
     src/world_map_animation_initializer.cpp
     src/world_map_actor_animation.cpp
     src/world_map_model_links.cpp

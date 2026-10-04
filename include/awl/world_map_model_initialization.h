@@ -86,6 +86,16 @@ class WorldMapNativeModel;
 [[nodiscard]] WorldMapModelConstructionResult construct_world_map_secondary_model(
     const WorldMapModelBank& bank, uint32_t index, const WorldMapSecondarySetupStep& setup,
     std::unique_ptr<WorldMapNativeModel>* out);
+// FUN_801A6878 on a supplied native model and owned/retained animation bank.
+// Atomically advances partial records and retains the selected bank; the
+// authoritative model record appears only in out.records_after. Does not
+// select a descriptor, apply settings or accept an enclosing initializer.
+[[nodiscard]] WorldMapAnimationChannelStatus advance_world_map_native_animation_channel(
+    WorldMapNativeModel* model, WorldMapAnimationChannelState* channel,
+    std::vector<WorldMapAnimationPartialPlaybackRecord>* records,
+    const WorldMapActorAnimationSetup& setup, const WorldMapAnimationBank* bank,
+    WorldMapAnimationPartialChannelStep* out);
+
 // Caller 8017DCF4..DD2C: descriptor secondary index, (index-1)&FFFF,
 // blend bits with 31->10, r6=0 and start=+0. Advances a native owner's
 // supplied channel and external partial records atomically, retaining the
@@ -165,9 +175,9 @@ private:
     friend WorldMapModelConstructionResult construct_world_map_secondary_model(
         const WorldMapModelBank&, uint32_t, const WorldMapSecondarySetupStep&,
         std::unique_ptr<WorldMapNativeModel>*);
-    friend WorldMapAnimationChannelStatus advance_world_map_native_secondary_channel(
+    friend WorldMapAnimationChannelStatus advance_world_map_native_animation_channel(
         WorldMapNativeModel*, WorldMapAnimationChannelState*,
-        std::vector<WorldMapAnimationPartialPlaybackRecord>*, uint32_t, uint64_t,
+        std::vector<WorldMapAnimationPartialPlaybackRecord>*, const WorldMapActorAnimationSetup&,
         const WorldMapAnimationBank*, WorldMapAnimationPartialChannelStep*);
     friend WorldMapAnimationChannelStatus apply_world_map_native_animation_channel_settings(
         WorldMapNativeModel*, WorldMapAnimationChannelState*,

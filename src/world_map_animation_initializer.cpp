@@ -121,11 +121,14 @@ WorldMapAnimationChannelStatus prepare_world_map_partial_animation_channel_setti
             }
         } else {
             step.branch = WorldMapAnimationChannelBranch::Interrupted;
-            if (!std::isfinite(channel.blend_14)) return Status::InvalidInput;
             status = copy(channel.older_10, model->playback_178);
             if (status == Status::Prepared) {
+                if (!channel.blend_14) {
+                    step.required_fields = 1; return stop(Status::RequiresChannelFields);
+                }
+                if (!std::isfinite(*channel.blend_14)) return Status::InvalidInput;
                 auto* playback = find(model->playback_178);
-                playback->link_14 = channel.previous_c; playback->value_18 = channel.blend_14;
+                playback->link_14 = channel.previous_c; playback->value_18 = *channel.blend_14;
                 auto* previous = find(channel.previous_c);
                 if (channel.previous_c == 0) return Status::InvalidInput;
                 if (!previous) return stop(Status::RequiresPlaybackRecord, channel.previous_c);

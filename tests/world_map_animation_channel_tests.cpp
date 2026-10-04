@@ -109,7 +109,7 @@ void test_channel() {
     Bank bank; expect(bank.parse(200, raw()), "synthetic bank loads");
     const Setup setup{100, 200, 99, 10, 123, -0.0f}; // r6 is unused in this helper.
     const Binding model{100, 1};
-    Channel channel{1, 2, 2, 3, 4, -3, 1};
+    Channel channel{1, 2, 2, 3, 4, -3.0f, 1};
     auto pool = records(); Step step;
     expect(awl::prepare_world_map_animation_channel(channel, pool, setup, model, &bank, &step) == Status::Prepared &&
         step.branch == Branch::Interrupted && step.after.mode_18 == 2 && step.after.blend_14 == 0.5f &&
@@ -123,19 +123,19 @@ void test_channel() {
     expect(awl::advance_world_map_animation_channel(&channel, &pool, setup, model, &bank, &step) == Status::Advanced &&
         channel.mode_18 == 2 && pool[1].state.clip_10->bank_identity == 200, "complete helper advances supplied snapshots");
     for (uint32_t mode : {0u, 1u, 99u}) {
-        channel = {2, 2, 2, 3, 0, -3, mode}; pool = records();
+        channel = {2, 2, 2, 3, 0, -3.0f, mode}; pool = records();
         expect(awl::prepare_world_map_animation_channel(channel, pool, setup, model, &bank, &step) == Status::Prepared &&
             step.branch == Branch::Completed && step.after.mode_18 == 1 && step.after.blend_14 == -3 &&
             step.records_after[2].state.position_0 == 10, "unsigned completed gate precedes prior mode and does not read unused older record");
     }
-    channel = {0, 2, 2, 3, 0, -3, 0};
+    channel = {0, 2, 2, 3, 0, -3.0f, 0};
     expect(awl::prepare_world_map_animation_channel(channel, pool, setup, model, &bank, &step) == Status::Prepared &&
         step.branch == Branch::First && step.after.blend_14 == -3, "first transition copies model and preserves blend scalar");
-    pool = records(false); channel = {0, 0, 2, 0, 0, -3, 99};
+    pool = records(false); channel = {0, 0, 2, 0, 0, -3.0f, 99};
     expect(awl::prepare_world_map_animation_channel(channel, pool, setup, model, &bank, &step) == Status::Prepared &&
         step.branch == Branch::NoClip && step.after.mode_18 == 0 && step.after.blend_14 == -3 &&
         same(step.records_after[2].state, pool[2].state), "no model clip skips clock gates and all copies, preserving unused records");
-    channel = {1, 2, 2, 3, 4, -3, 1}; pool = records();
+    channel = {1, 2, 2, 3, 4, -3.0f, 1}; pool = records();
     expect(awl::advance_world_map_animation_channel(&channel, &pool, setup, std::nullopt, &bank, &step) == Status::RequiresModelBinding &&
         channel.elapsed_0 == 1 && same(pool[1].state, playback(20)), "unknown model binding cannot advance supplied state");
     expect(awl::advance_world_map_animation_channel(&channel, &pool, setup, model, nullptr, &step) == Status::RequiresBank &&
@@ -202,7 +202,7 @@ void test_partial_channel() {
     auto partial=pool(false);awl::WorldMapAnimationPartialChannelStep step;
     partial[0].state.word_8.reset();partial[0].state.limit_c.reset();partial[0].state.value_18.reset();
     partial[1].state.word_8.reset();partial[1].state.limit_c.reset();partial[1].state.value_18.reset();
-    const Channel no_clip{0,0,2,0,0,-3,99};
+    const Channel no_clip{0,0,2,0,0,-3.0f,99};
     expect(awl::prepare_world_map_partial_animation_channel(no_clip,partial,setup,binding,&bank,&step)==Status::Prepared &&
         step.branch==Branch::NoClip && !step.records_after[0].state.word_8 && !step.records_after[0].state.limit_c &&
         step.records_after[1].state.word_8==0u && step.records_after[1].state.limit_c==-2 &&
@@ -210,7 +210,7 @@ void test_partial_channel() {
         !step.records_after[1].state.value_18 && !step.records_after[1].state.complete(),
         "no-clip reads no unknown model fields; target initialization preserves unknown weight and known rate/link");
     partial=pool(true);partial[0].state.word_8.reset();partial[0].state.limit_c.reset();
-    const Channel completed{0,0,2,3,4,-3,2};
+    const Channel completed{0,0,2,3,4,-3.0f,2};
     expect(awl::prepare_world_map_partial_animation_channel(completed,partial,setup,binding,&bank,&step)==Status::RequiresPlaybackFields &&
         step.required_record==1 && step.required_fields==1 && step.after.elapsed_0==0 &&
         step.records_after[2].state.position_0==30,"first reached unknown source word blocks before limit and preserves copies");
@@ -218,7 +218,7 @@ void test_partial_channel() {
     expect(awl::prepare_world_map_partial_animation_channel(completed,partial,setup,binding,&bank,&step)==Status::RequiresPlaybackFields &&
         step.required_record==1 && step.required_fields==2,"known source word exposes the later unknown source limit");
     partial=pool(true);partial[1].state.word_8.reset();
-    const Channel interrupted{1,2,2,3,4,-3,1};
+    const Channel interrupted{1,2,2,3,4,-3.0f,1};
     expect(awl::prepare_world_map_partial_animation_channel(interrupted,partial,setup,binding,&bank,&step)==Status::RequiresPlaybackFields &&
         step.required_record==2 && step.required_fields==1 && step.records_after[3].state.position_0==40 &&
         step.after.blend_14==-3,"late unknown copy source rolls back the earlier previous-to-older copy");
@@ -228,7 +228,7 @@ void test_partial_channel() {
         !step.records_after[1].state.value_18 && step.records_after[2].state.complete(),
         "FECC resets unknown source weights without reading them while FE08 retains target unknown weight");
     partial=pool(true);partial[0].state.value_18.reset();
-    const Channel all_alias{0,0,1,1,1,-3,2};
+    const Channel all_alias{0,0,1,1,1,-3.0f,2};
     expect(awl::prepare_world_map_partial_animation_channel(all_alias,partial,setup,binding,&bank,&step)==Status::Prepared &&
         step.records_after[0].state.complete() && step.records_after[0].state.value_18==0 &&
         step.records_after[0].state.link_14==0 && step.records_after[0].state.limit_c==-2,
@@ -247,14 +247,14 @@ void test_matrix() {
     for (uint32_t active : {0u,1u}) for (const auto& clock : clocks) for (uint32_t mode : {0u,1u,2u,UINT32_MAX}) {
         for (const auto& layout : layouts) for (uint32_t blend : {0u,1u,10u,UINT32_MAX}) {
             const auto pool = records(active != 0);
-            const Channel channel{clock[0],clock[1],layout[1],layout[2],layout[3],-3,mode};
+            const Channel channel{clock[0],clock[1],layout[1],layout[2],layout[3],-3.0f,mode};
             const Setup setup{100,200,UINT32_MAX,blend,0,-0.0f}; Step step;
             const auto status = awl::prepare_world_map_animation_channel(channel,pool,setup,Binding{100,layout[0]},&bank,&step);
             expect(status == Status::Prepared && step.branch && same(pool[0].state,playback(10,active != 0)), "matrix preparation preserves input");
             if (status != Status::Prepared || !step.branch) continue;
             for (uint32_t word : {active,clock[0],clock[1],mode,static_cast<uint32_t>(layout[1]),
                 static_cast<uint32_t>(layout[2]),static_cast<uint32_t>(layout[3]),blend,static_cast<uint32_t>(*step.branch),
-                step.after.elapsed_0,step.after.duration_4,bits(step.after.blend_14),step.after.mode_18}) hash(digest,word);
+                step.after.elapsed_0,step.after.duration_4,bits(*step.after.blend_14),step.after.mode_18}) hash(digest,word);
             for (const auto& record : step.records_after) hash_playback(digest,record);
             ++cases;
         }

@@ -334,7 +334,7 @@ bool same_partial(const Partial& a,const Partial& b){
 void test_native_channel(){
     auto owner=channel_owner(0);if(!owner)return;
     const auto key=owner->binding().playback_178;auto pool=partial_records();ChannelStep step;
-    Channel channel{1,2,key,3,4,-3,99};awl::WorldMapAnimationBank bank;
+    Channel channel{1,2,key,3,4,-3.0f,99};awl::WorldMapAnimationBank bank;
     expect(bank.parse(200,animation_fixture()),"native channel bank loads");const uint32_t word=(1u<<11)|(31u<<6);
     expect(awl::advance_world_map_native_secondary_channel(owner.get(),&channel,&pool,word,200,&bank,&step)==ChannelStatus::Advanced &&
         channel.mode_18==0 && channel.duration_4==10 && channel.elapsed_0==0 && !owner->playback() &&
@@ -342,7 +342,7 @@ void test_native_channel(){
         !owner->partial_playback().value_18 && owner->partial_playback().rate_4==1 && owner->animation_bank(200) &&
         pool.size()==3 && step.records_after.size()==4,
         "fresh native model receives four target writes while retaining unknown weight and owning the selected bank");
-    channel={0,0,key,key,4,-3,2};bank.clear();
+    channel={0,0,key,key,4,-3.0f,2};bank.clear();
     expect(awl::advance_world_map_native_secondary_channel(owner.get(),&channel,&pool,word,200,nullptr,&step)==ChannelStatus::Advanced &&
         owner->playback() && owner->playback()->value_18==0 && owner->playback()->link_14==0 &&
         owner->playback()->rate_4==1,"next aliased self-copy establishes weight without reading it, using the retained bank after source clear");
@@ -351,7 +351,7 @@ void test_native_channel(){
     expect(awl::advance_world_map_native_secondary_channel(owner.get(),&channel,&pool,word,200,&bank,&step)==ChannelStatus::InvalidInput &&
         same_partial(owner->partial_playback(),before) && channel.duration_4==old_channel.duration_4 &&
         same_partial(pool[0].state,old_pool[0].state),"retained bank identity cannot silently change generation or publish proposed copies");
-    expect(bank.parse(201,animation_fixture(5)),"different native bank identity loads");channel={0,0,key,3,4,-3,2};
+    expect(bank.parse(201,animation_fixture(5)),"different native bank identity loads");channel={0,0,key,3,4,-3.0f,2};
     expect(awl::advance_world_map_native_secondary_channel(owner.get(),&channel,&pool,word,201,&bank,&step)==ChannelStatus::Advanced &&
         owner->partial_playback().clip_10->bank_identity==201 && owner->animation_bank(200) && owner->animation_bank(201) &&
         pool[1].state.clip_10->bank_identity==200,"bank switch retains old bank for copied playback while binding the new model target");
@@ -359,7 +359,7 @@ void test_native_channel(){
     expect(owner->animation_bank(200)->resolve(0,&clip) && clip.parameter_zero==-2 &&
         owner->animation_bank(201)->resolve(0,&clip) && clip.parameter_zero==5,
         "both generations retain real immutable bytes after source-bank clear");
-    channel={1,2,2,3,4,-3,1};pool=partial_records(1);const auto unchanged=owner->partial_playback();
+    channel={1,2,2,3,4,-3.0f,1};pool=partial_records(1);const auto unchanged=owner->partial_playback();
     expect(awl::advance_world_map_native_secondary_channel(owner.get(),&channel,&pool,word,201,nullptr,&step)==ChannelStatus::RequiresPlaybackFields &&
         step.required_record==3 && step.required_fields==1 && channel.elapsed_0==1 &&
         same_partial(owner->partial_playback(),unchanged) && pool[2].state.position_0==40,
@@ -374,7 +374,7 @@ void test_native_channel(){
     pool.push_back({key,owner->partial_playback()});
     expect(awl::advance_world_map_native_secondary_channel(owner.get(),&channel,&pool,word,201,nullptr,&step)==ChannelStatus::InvalidInput,
         "caller cannot duplicate the authoritative native playback key");
-    auto fresh=channel_owner(0);pool=partial_records();channel={0,0,2,3,4,-3,2};
+    auto fresh=channel_owner(0);pool=partial_records();channel={0,0,2,3,4,-3.0f,2};
     expect(awl::advance_world_map_native_secondary_channel(fresh.get(),&channel,&pool,word,202,nullptr,&step)==ChannelStatus::RequiresBank &&
         !fresh->animation_bank(202) && channel.mode_18==2 && !fresh->partial_playback().word_8,
         "unknown unretained bank rolls back even the no-clip branch");
@@ -405,13 +405,13 @@ void native_channel_digest(){
         for(uint32_t mode:{0u,1u,2u})for(const auto& layout:layouts)for(uint32_t mask:{0u,1u,2u,4u,7u})for(uint32_t blend:{30u,31u}){
             auto owner=channel_owner(kind);if(!owner)continue;const auto key=owner->binding().playback_178;
             auto resolve=[&](uint64_t id){return id==1?key:id;};auto pool=partial_records(mask);
-            Channel channel{clock[0],clock[1],resolve(layout[0]),resolve(layout[1]),resolve(layout[2]),-3,mode};
+            Channel channel{clock[0],clock[1],resolve(layout[0]),resolve(layout[1]),resolve(layout[2]),-3.0f,mode};
             awl::WorldMapAnimationBank bank;expect(bank.parse(200,animation_fixture()),"native matrix bank loads");ChannelStep step;
             const auto status=awl::advance_world_map_native_secondary_channel(owner.get(),&channel,&pool,(1u<<11)|(blend<<6),200,&bank,&step);
             expect(status==ChannelStatus::Advanced || status==ChannelStatus::RequiresPlaybackFields,"native matrix advances or stops at traced unknown field");
             for(uint32_t w:{kind,clock[0],clock[1],mode,uint32_t(layout[0]),uint32_t(layout[1]),uint32_t(layout[2]),mask,blend,
                 uint32_t(status),step.required_record==key?1u:uint32_t(step.required_record),step.required_fields,
-                uint32_t(*step.branch),channel.elapsed_0,channel.duration_4,bits(channel.blend_14),channel.mode_18})hash(w);
+                uint32_t(*step.branch),channel.elapsed_0,channel.duration_4,bits(*channel.blend_14),channel.mode_18})hash(w);
             auto hash_state=[&](uint32_t id,const Partial& p){
                 for(uint32_t w:{id,bits(p.position_0),bits(p.rate_4),uint32_t((p.word_8?1:0)|(p.limit_c?2:0)|(p.value_18?4:0)),
                     p.word_8.value_or(0),p.limit_c?bits(*p.limit_c):0,p.clip_10?uint32_t(p.clip_10->bank_identity):0,
@@ -451,7 +451,7 @@ void secondary_caller_digest(){
             "every supported secondary caller node constructs its corresponding native resource");
         if(!owner)continue;
         for(uint32_t blend=0;blend<32;++blend){
-            auto pool=partial_records();Channel channel{9,7,2,3,4,-3,99};ChannelStep step;
+            auto pool=partial_records();Channel channel{9,7,2,3,4,-3.0f,99};ChannelStep step;
             const auto status=awl::advance_world_map_native_secondary_channel(owner.get(),&channel,&pool,
                 0xa400003f|(index<<11)|(blend<<6),200,&animation_bank,&step);
             expect(status==ChannelStatus::Advanced && step.clip && step.clip->reference.offset==1824+(index-1)*24 &&
@@ -468,7 +468,7 @@ void secondary_caller_digest(){
 }
 void test_native_settings(){
     auto owner=channel_owner(0);if(!owner)return;
-    auto pool=partial_records(4);Channel channel{0,0,2,3,4,-3,99};ChannelStep step;
+    auto pool=partial_records(4);Channel channel{0,0,2,3,4,-3.0f,99};ChannelStep step;
     awl::WorldMapAnimationBank bank;expect(bank.parse(200,animation_fixture()),"settings integration bank parses");
     expect(awl::advance_world_map_native_secondary_channel(owner.get(),&channel,&pool,(1u<<11)|(31u<<6),200,&bank,&step)==
         ChannelStatus::Advanced && !owner->playback(),"fresh channel setup retains unknown owner fields before settings");
@@ -480,12 +480,12 @@ void test_native_settings(){
         channel.elapsed_0==0 && channel.duration_4==10 && channel.mode_18==0 && owner->animation_bank(200)==retained,
         "setup then reverse settings completes fresh native playback through observed writes/copy while retaining bank/clock");
     const auto key=owner->binding().playback_178;
-    channel={1,2,key,key,key,-3,2};
+    channel={1,2,key,key,key,-3.0f,2};
     expect(awl::apply_world_map_native_animation_channel_settings(owner.get(),&channel,&pool,256,-0.0f,&step)==ChannelStatus::Advanced &&
         owner->playback() && bits(owner->playback()->position_0)==0 && bits(owner->playback()->rate_4)==0x80000000u &&
         owner->playback()->word_8==0 && owner->playback()->link_14==key && owner->playback()->value_18==0.5f,
         "all-alias interrupted settings preserve copy/link order, low byte and signed zero");
-    channel={1,2,2,3,4,-3,2};pool=partial_records();pool.erase(pool.begin()+1);
+    channel={1,2,2,3,4,-3.0f,2};pool=partial_records();pool.erase(pool.begin()+1);
     const auto model_before=owner->partial_playback();
     expect(awl::apply_world_map_native_animation_channel_settings(owner.get(),&channel,&pool,1,1,&step)==ChannelStatus::RequiresPlaybackRecord &&
         step.required_record==3 && same_partial(owner->partial_playback(),model_before) && pool[0].state.position_0==20 &&
@@ -498,7 +498,7 @@ void test_native_settings(){
     expect(awl::apply_world_map_native_animation_channel_settings(owner.get(),&channel,&pool,1,1,&step)==ChannelStatus::InvalidInput,
         "native settings rejects duplicate authoritative playback key");
     pool=partial_records();auto fresh=channel_owner(0);const auto fresh_before=fresh->partial_playback();
-    channel={1,2,2,fresh->binding().playback_178,4,-3,1};
+    channel={1,2,2,fresh->binding().playback_178,4,-3.0f,1};
     expect(awl::apply_world_map_native_animation_channel_settings(fresh.get(),&channel,&pool,1,1,&step)==ChannelStatus::RequiresPlaybackFields &&
         step.required_fields==1 && step.required_record==fresh->binding().playback_178 && !fresh->playback() &&
         same_partial(fresh->partial_playback(),fresh_before) && pool[0].state.rate_4==21,
@@ -508,7 +508,7 @@ void test_native_settings(){
         awl::apply_world_map_native_animation_channel_settings(fresh.get(),&channel,&step.records_after,1,1,&step)==ChannelStatus::InvalidInput,
         "native settings null owner and proposal aliases reject");
 #if !defined(_MSC_VER) || !defined(_DEBUG)
-    channel={1,2,2,3,4,-3,2};pool=partial_records();const auto live=allocation_probe::live;size_t rejected=0;bool advanced=false;
+    channel={1,2,2,3,4,-3.0f,2};pool=partial_records();const auto live=allocation_probe::live;size_t rejected=0;bool advanced=false;
     for(size_t fail_at=0;fail_at<128;++fail_at){
         allocation_probe::remaining=fail_at;allocation_probe::enabled=true;
         const auto status=awl::apply_world_map_native_animation_channel_settings(owner.get(),&channel,&pool,1,-1,&step);
@@ -531,7 +531,7 @@ void native_settings_digest(){
             for(float rate:{0.0f,-0.0f,1.0f,-1.0f,2.5f,-2.5f}){
                 auto owner=channel_owner(kind);if(!owner)continue;const auto key=owner->binding().playback_178;
                 auto resolve=[&](uint64_t id){return id==1?key:id;};auto pool=partial_records(mask);
-                Channel channel{clock[0],clock[1],resolve(layout[0]),resolve(layout[1]),resolve(layout[2]),-3,mode};ChannelStep step;
+                Channel channel{clock[0],clock[1],resolve(layout[0]),resolve(layout[1]),resolve(layout[2]),-3.0f,mode};ChannelStep step;
                 const auto status=awl::apply_world_map_native_animation_channel_settings(owner.get(),&channel,&pool,257,rate,&step);
                 expect(status==ChannelStatus::Advanced || status==ChannelStatus::RequiresPlaybackFields,"native settings matrix advances or reports reached unknown fields");
                 expect(channel.elapsed_0==clock[0] && channel.duration_4==clock[1] && channel.target_8==resolve(layout[0]) &&
@@ -559,7 +559,7 @@ void secondary_settings_caller_digest(){
             const uint32_t loop=mode==0?0u:mode==3?((count?count:defaults)>1?1u:0u):1u;
             float rate=(flags&4)?-1.0f:1.0f;if(flags&1)rate*=speed;
             auto owner=channel_owner(0);if(!owner)continue;auto pool=partial_records(4);pool[0].state.limit_c=8.0f;
-            Channel channel{0,10,2,3,4,-3,0};ChannelStep step;
+            Channel channel{0,10,2,3,4,-3.0f,0};ChannelStep step;
             expect(awl::apply_world_map_native_animation_channel_settings(owner.get(),&channel,&pool,loop,rate,&step)==ChannelStatus::Advanced &&
                 owner->playback(),"caller secondary controls establish complete owner playback without reading fresh fields");
             if(!owner->playback())continue;const auto p=owner->partial_playback();
@@ -931,7 +931,7 @@ void local_core(const std::filesystem::path& disc,const std::filesystem::path& c
     std::ifstream animation_input(disc/"files"/"boy_0.anm.arc",std::ios::binary);
     std::vector<uint8_t> animation_bytes((std::istreambuf_iterator<char>(animation_input)),{});awl::WorldMapAnimationBank animation_bank;
     expect(animation_bank.parse(200,std::move(animation_bytes)),"local secondary diagnostic animation bank parses");
-    Channel channel{0,0,2,3,4,-3,99};auto pool=partial_records();ChannelStep channel_step;
+    Channel channel{0,0,2,3,4,-3.0f,99};auto pool=partial_records();ChannelStep channel_step;
     expect(owner && awl::advance_world_map_native_secondary_channel(owner.get(),&channel,&pool,(1u<<11)|(31u<<6),200,
         &animation_bank,&channel_step)==ChannelStatus::Advanced && channel_step.clip && channel.duration_4==10 &&
         pool[0].state.clip_10->offset==channel_step.clip->reference.offset && owner->animation_bank(200),

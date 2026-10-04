@@ -86,7 +86,8 @@ struct WorldMapAnimationChannelState {
     uint64_t target_8 = 0;
     uint64_t previous_c = 0;
     uint64_t older_10 = 0;
-    float blend_14 = 0;
+    // FUN_801A67A8 leaves this unwritten; supplied snapshots may establish it.
+    std::optional<float> blend_14 = 0.0f;
     uint32_t mode_18 = 0;
 };
 struct WorldMapAnimationModelBinding {
@@ -96,7 +97,7 @@ struct WorldMapAnimationModelBinding {
 enum class WorldMapAnimationChannelBranch { NoClip, Completed, First, Interrupted };
 enum class WorldMapAnimationChannelStatus {
     Prepared, Advanced, RequiresModelBinding, RequiresPlaybackRecord, RequiresBank, InvalidInput,
-    RequiresPlaybackFields, AllocationFailure,
+    RequiresPlaybackFields, AllocationFailure, RequiresChannelFields,
 };
 struct WorldMapAnimationPartialChannelStep {
     WorldMapAnimationChannelState after;
@@ -104,7 +105,8 @@ struct WorldMapAnimationPartialChannelStep {
     std::optional<WorldMapAnimationChannelBranch> branch;
     std::optional<WorldMapAnimationClip> clip;
     uint64_t required_record = 0;
-    uint32_t required_fields = 0; // 1: first reached unknown +8; 2: unknown +C.
+    // RequiresPlaybackFields: 1 is +8, 2 is +C. RequiresChannelFields: 1 is +14.
+    uint32_t required_fields = 0;
 };
 // The same ordered 6878 helper with explicit unwritten playback fields.
 // FECC requires source +8/+C, but resets +14/+18 without reading them.
