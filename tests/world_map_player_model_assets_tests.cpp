@@ -6,6 +6,8 @@
 #include "awl/filesystem.h"
 
 #include <chrono>
+#include <cfenv>
+#include <limits>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -454,6 +456,88 @@ std::vector<uint8_t> work_skin(){
     return b;
 }
 void hash_skin_work(uint64_t&,uint32_t,const awl::WorldMapPlayerSkinWork&);
+std::vector<awl::WorldMapModelMatrix> skin_palette(uint32_t seed,size_t count){
+    std::vector<awl::WorldMapModelMatrix> palette(count);uint32_t state=seed+1;
+    for(auto& matrix:palette)for(size_t i=0;i<12;++i){state=state*1664525u+1013904223u;
+        matrix[i]=float(int((state>>16)%2049)-1024)/float(i%4==3?4096:256);}
+    return palette;
+}
+std::vector<uint8_t> execution_skin(uint32_t seed){
+    auto skin=work_skin();constexpr uint8_t scales[]{0,13,31};skin[6]=scales[seed%3];
+    if(seed&1)word(skin,448,0x00020002);if(seed&2)word(skin,24,0);
+    uint32_t state=seed+123;
+    for(size_t start:{size_t(320),size_t(352),size_t(384),size_t(416),size_t(480)})for(size_t i=0;i<32;++i){
+        state=state*1664525u+1013904223u;skin[start+i]=uint8_t(state>>24);}
+    return skin;
+}
+void skin_execution_checks(){
+    using S=awl::WorldMapPlayerSkinExecutionStatus;
+    Fixture fixture;auto payloads=files();payloads[0]=setup_model();payloads[1]=draw_gpl();
+    for(size_t at:{size_t(64),size_t(512)}){word(payloads[1],at+24,32);word(payloads[1],at+288,38);}
+    std::shared_ptr<const Assets> assets;std::unique_ptr<awl::WorldMapPlayerSkinWork> work;
+    auto prepare=[&](){assets.reset();fixture.write("boy_0.arc",archive(payloads));
+        expect(awl::load_world_map_player_model_assets(0,&assets)==Status::Loaded,"execution providers load");
+        expect(awl::prepare_world_map_player_skin_work(assets,&work)==awl::WorldMapPlayerSkinWorkStatus::PreparedWork,"execution jobs prepare");};
+    uint64_t digest=14695981039346656037ull;std::vector<uint8_t> output;
+    for(uint32_t seed=0;seed<256;++seed){payloads[2]=execution_skin(seed);prepare();if(!work)return;
+        output.resize(64);for(size_t i=0;i<64;++i)output[i]=uint8_t(i*7+seed);
+        for(uint32_t frame=0;frame<2;++frame){const auto palette=skin_palette(seed+frame*256,3);
+            const auto status=awl::execute_world_map_player_skin_work(*work,palette,output,&output);
+            expect(status==S::Executed,"three job classes execute two aliased frames");
+            hash(digest,seed);hash(digest,frame);for(uint8_t byte:output)hash(digest,byte);}
+    }
+    expect(digest==0xd62abf643c3f21bbull,"512 complete outputs match original instruction execution with independent rational rounding");
+    std::cout<<"PLAYER_SKIN_EXECUTION 512 digest "<<std::hex<<digest<<std::dec<<'\n';
+    const auto prior=output;auto palette=skin_palette(255,3);
+    expect(awl::execute_world_map_player_skin_work(*work,palette,output,nullptr)==S::InvalidInput,"null execution output rejects");
+    auto truncated=prior;truncated.pop_back();
+    expect(awl::execute_world_map_player_skin_work(*work,palette,truncated,&output)==S::InvalidInput && output==prior,"wrong output extent preserves result");
+    auto short_palette=palette;short_palette.pop_back();
+    expect(awl::execute_world_map_player_skin_work(*work,short_palette,output,&output)==S::InvalidInput && output==prior,"missing frame matrix preserves result");
+    auto extra_palette=palette;extra_palette.push_back(palette[0]);
+    expect(awl::execute_world_map_player_skin_work(*work,extra_palette,output,&output)==S::InvalidInput && output==prior,"extra frame matrix rejects incompatible palette");
+    for(float invalid:{std::numeric_limits<float>::quiet_NaN(),std::numeric_limits<float>::infinity(),std::numeric_limits<float>::denorm_min()}){
+        palette[2][11]=invalid;
+        expect(awl::execute_world_map_player_skin_work(*work,palette,output,&output)==S::UnsupportedNumerics && output==prior,"unsupported palette numerics preserve complete previous frame");}
+    palette=skin_palette(255,3);palette[2][0]=std::numeric_limits<float>::max();
+    expect(awl::execute_world_map_player_skin_work(*work,palette,output,&output)==S::UnsupportedNumerics && output==prior,"late arithmetic overflow rolls back earlier rigid writes");
+    palette=skin_palette(255,3);const int rounding=std::fegetround();
+    expect(std::fesetround(FE_DOWNWARD)==0,"test selects unsupported rounding");
+    const auto rounding_status=awl::execute_world_map_player_skin_work(*work,palette,output,&output);
+    expect(std::fesetround(rounding)==0,"test restores rounding");
+    expect(rounding_status==S::UnsupportedNumerics && output==prior,"unsupported rounding preserves result and does not alter caller mode");
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    const auto before=allocation_probe::live;allocation_probe::remaining=0;allocation_probe::enabled=true;
+    const auto allocation_status=awl::execute_world_map_player_skin_work(*work,palette,output,&output);allocation_probe::enabled=false;
+    expect(allocation_status==S::AllocationFailure && output==prior && allocation_probe::live==before,"frame staging allocation failure preserves output without leaking");
+#endif
+    // Empty schedules retain caller-owned prior bytes instead of resetting GPL.
+    payloads[2]=work_skin();word(payloads[2],0,0);word(payloads[2],4,0x00000d00);prepare();
+    expect(awl::execute_world_map_player_skin_work(*work,palette,output,&output)==S::Executed && output==prior,"empty frame preserves all prior bytes");
+    // Two half-weight contributions of raw 3 truncate separately: 0 -> 1 -> 2,
+    // not a single summed 3. The next frame starts at 2 and reaches 4.
+    payloads[2]=work_skin();word(payloads[2],0,0);word(payloads[2],24,0);word(payloads[2],32,0);word(payloads[2],448,0);
+    for(size_t i=0;i<12;++i){payloads[2][416+i*2]=0;payloads[2][417+i*2]=3;}
+    payloads[2][480]=128;payloads[2][481]=128;prepare();
+    palette.assign(3,awl::WorldMapModelMatrix{1,0,0,0,0,1,0,0,0,0,1,0});output.assign(64,0xa5);std::memset(output.data(),0,12);
+    for(unsigned frame=1;frame<=2;++frame){expect(awl::execute_world_map_player_skin_work(*work,palette,output,&output)==S::Executed,"additive-only frame executes");
+        bool ordered=true;for(size_t i=0;i<6;++i)ordered=ordered && output[i*2]==0 && output[i*2+1]==frame*2;
+        for(size_t i=12;i<64;++i)ordered=ordered && output[i]==0xa5;
+        expect(ordered,"duplicate scatter quantizes after each write and carries prior frame without touching unrelated bytes");}
+    payloads[2]=work_skin();word(payloads[2],0,0x00010000);word(payloads[2],4,0x00000d00);
+    for(size_t vertex=0;vertex<2;++vertex){const size_t at=324+vertex*12;word(payloads[2],at,0x1fff0000);word(payloads[2],at+4,0);word(payloads[2],at+8,0);}
+    prepare();palette.assign(3,awl::WorldMapModelMatrix{1,0,0,0,0,1,0,0,0,0,1,0});
+    // Exact product is below the quantization boundary. A separate rounded
+    // multiply/add would store 1 here instead of the fused result 0.
+    uint32_t coefficient=0x3f800001,translation=0xbf7ff002;
+    std::memcpy(&palette[1][0],&coefficient,4);std::memcpy(&palette[1][3],&translation,4);
+    expect(awl::execute_world_map_player_skin_work(*work,palette,work->initial_output(),&output)==S::Executed && output[4]==0 && output[5]==0,
+        "fused multiply-add preserves the integer-boundary cancellation result");
+    palette[1][3]=5;palette[1][7]=-5;palette[1][11]=0.5f/8192;
+    expect(awl::execute_world_map_player_skin_work(*work,palette,work->initial_output(),&output)==S::Executed &&
+        output[4]==0x7f && output[5]==0xff && output[6]==0x80 && output[7]==0 && output[8]==0 && output[9]==0 && output[10]==0 && output[11]==0,
+        "signed stores saturate both limits, truncate fractions and do not translate normals");
+}
 void skin_work_checks(){
     using S=awl::WorldMapPlayerSkinWorkStatus;using Owner=awl::WorldMapPlayerSkinWork;
     Fixture fixture;auto payloads=files();payloads[0]=setup_model();payloads[1]=draw_gpl();for(size_t at:{size_t(64),size_t(512)}){word(payloads[1],at+24,32);word(payloads[1],at+288,38);}
@@ -735,7 +819,7 @@ void hash_skin_work(uint64_t& h,uint32_t phase,const awl::WorldMapPlayerSkinWork
 }
 void local(const char* disc){
     expect(awl::filesystem_mount("/",disc),"local disc mounts");
-    uint64_t digest=14695981039346656037ull,auxiliary_digest=digest,setup_digest=digest,draw_digest=digest,skin_work_digest=digest;
+    uint64_t digest=14695981039346656037ull,auxiliary_digest=digest,setup_digest=digest,draw_digest=digest,skin_work_digest=digest,skin_execution_digest=digest;
     std::shared_ptr<const Assets> assets;size_t selections=0,relocations=0;
     for(uint32_t phase=0;phase<6;++phase){
         expect(awl::load_world_map_player_model_assets(phase,&assets)==Status::Loaded && assets,"phase-selected local model archive loads");
@@ -792,6 +876,12 @@ void local(const char* disc){
             skin_work->clear_before_accumulation()->offset==21664 && skin_work->clear_before_accumulation()->size==320 && skin_work->flush_indices().size()==137,
             "actual skin job counts, rounded clear and cache flush targets match original schedule");
         hash_skin_work(skin_work_digest,phase,*skin_work);
+        std::vector<uint8_t> skinned=skin_work->initial_output();
+        for(uint32_t frame=0;frame<2;++frame){
+            expect(awl::execute_world_map_player_skin_work(*skin_work,skin_palette(phase+frame*256,55),skinned,&skinned)==awl::WorldMapPlayerSkinExecutionStatus::Executed,
+                "all local jobs execute with supplied diagnostic frame matrices");
+            hash(skin_execution_digest,phase);hash(skin_execution_digest,frame);for(uint8_t byte:skinned)hash(skin_execution_digest,byte);
+        }
     }
     std::cout<<"LOCAL_PLAYER_MODEL_SELECTIONS "<<selections<<" metadata "<<std::hex<<digest<<std::dec<<'\n';
     expect(selections==6,"all six phase selections reach the explicit dependency boundary");
@@ -802,6 +892,8 @@ void local(const char* disc){
         "all six GPL/SKN bindings and skin fixup spaces/order match independently executed DOL instructions");
     expect(skin_work_digest==0x5c08e5c6ab1c096aull,"all six skin work schedules match executed original preparation/control flow");
     std::cout<<"LOCAL_PLAYER_SKIN_WORK "<<selections<<" digest "<<std::hex<<skin_work_digest<<std::dec<<'\n';
+    expect(skin_execution_digest==0xc3015abf20bed0efull,"all local vertex output bytes match original instructions for two supplied frames across six phases");
+    std::cout<<"LOCAL_PLAYER_SKIN_EXECUTION "<<selections*2<<" digest "<<std::hex<<skin_execution_digest<<std::dec<<'\n';
     expect(draw_digest==0xef4c5a9a9aa08adaull,"all six CPU drawing parameter sets match independently executed original routines");
     std::cout<<"LOCAL_PLAYER_DRAW_PARAMETERS "<<selections<<" digest "<<std::hex<<draw_digest<<std::dec<<'\n';
     std::cout<<"LOCAL_PLAYER_SETUP_PLANS "<<selections<<" digest "<<std::hex<<setup_digest<<std::dec<<'\n';
@@ -815,7 +907,7 @@ int main(int argc,char** argv){
         _CrtSetReportMode(kind,_CRTDBG_MODE_FILE);_CrtSetReportFile(kind,_CRTDBG_FILE_STDERR);
     }
 #endif
-    embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
+    embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();skin_execution_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
     if(argc==3 && std::string(argv[1])=="--player-model-local")local(argv[2]);
     else if(argc!=1)expect(false,"usage: --player-model-local <disc>");
     awl::filesystem_shutdown();return failures?1:0;

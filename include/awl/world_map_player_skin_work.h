@@ -26,8 +26,8 @@ enum class WorldMapPlayerSkinWorkStatus {
     UnsupportedLayout, InvalidInput, AllocationFailure,
 };
 // Owns private CPU workspace and initial output bytes plus bounded skin jobs.
-// No locked cache/OS emulation, per-frame matrices, skin execution, vertex
-// writes, live model or accepted rendering. Initial output is copied from the
+// No locked cache/OS emulation, frame palette evaluation, live model or accepted
+// rendering. Initial output is copied from the
 // selected retained GPL array; workspace initialization is a native safety choice.
 class WorldMapPlayerSkinWork {
 public:
@@ -62,4 +62,17 @@ private:
 // Unsafe/unsupported input or allocation failures preserve the previous owner.
 [[nodiscard]] WorldMapPlayerSkinWorkStatus prepare_world_map_player_skin_work(
     const std::shared_ptr<const WorldMapPlayerModelAssets>& assets,std::unique_ptr<WorldMapPlayerSkinWork>* out);
+
+enum class WorldMapPlayerSkinExecutionStatus {
+    Executed, InvalidInput, UnsupportedNumerics, AllocationFailure,
+};
+// C080/C734/C840/CA60 CPU writes with an explicitly supplied row-major frame
+// palette (one matrix per core node). First frame uses initial_output(); later
+// frames pass the previous result, preserving bytes the original does not write.
+// S16 vertex scale comes from SKN; U8 weights divide by 256, never normalize.
+// Round-to-nearest and finite normal/zero arithmetic are the supported boundary.
+// Failure preserves out; prior_output may alias out. No skeleton/GPU execution.
+[[nodiscard]] WorldMapPlayerSkinExecutionStatus execute_world_map_player_skin_work(
+    const WorldMapPlayerSkinWork& work,const std::vector<WorldMapModelMatrix>& frame_palette,
+    const std::vector<uint8_t>& prior_output,std::vector<uint8_t>* out);
 } // namespace awl

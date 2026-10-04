@@ -1,6 +1,7 @@
 #include "awl/world_map_player_skin_work.h"
 #include "world_map_flat_archive.h"
 #include <cmath>
+#include <cfenv>
 #include <cstring>
 #include <new>
 #include <utility>
@@ -10,6 +11,41 @@ namespace {
 uint16_t be16(const uint8_t* p) { return uint16_t((uint16_t(p[0])<<8)|p[1]); }
 uint32_t round32(uint32_t size) { return (size+31u)&~31u; }
 bool overlap(uint64_t a,uint64_t size,uint64_t b,uint64_t length) { return size && length && a<b+length && b<a+size; }
+bool supported(float value) { return std::isfinite(value) && std::fpclassify(value)!=FP_SUBNORMAL; }
+float vertex_component(const uint8_t* p,int scale) {
+    const uint16_t raw=be16(p);
+    return std::ldexp(float(raw<0x8000?int(raw):int(raw)-0x10000),-scale);
+}
+// Each ps_madd rounds once to single precision; separating multiply/add changes
+// quantized results. Only the six stored lanes are evaluated on the CPU.
+bool transform(const WorldMapModelMatrix& matrix,const std::array<float,6>& input,std::array<float,6>* result) {
+    for (size_t axis=0;axis<3;++axis) {
+        const size_t row=axis*4;
+        float position=std::fma(matrix[row],input[0],matrix[row+3]);
+        float normal=matrix[row]*input[3];
+        if (!supported(position) || !supported(normal)) return false;
+        position=std::fma(matrix[row+1],input[1],position);
+        normal=std::fma(matrix[row+1],input[4],normal);
+        if (!supported(position) || !supported(normal)) return false;
+        position=std::fma(matrix[row+2],input[2],position);
+        normal=std::fma(matrix[row+2],input[5],normal);
+        if (!supported(position) || !supported(normal)) return false;
+        (*result)[axis]=position; (*result)[axis+3]=normal;
+    }
+    return true;
+}
+bool store_vertex(uint8_t* destination,const std::array<float,6>& value,int scale) {
+    for (size_t i=0;i<6;++i) {
+        if (!supported(value[i])) return false;
+        // Power-of-two scaling is exact unless it overflows; saturation handles
+        // that case before integer conversion. Integer conversion truncates.
+        const double scaled=std::ldexp(double(value[i]),scale);
+        const int encoded=scaled>=32767?32767:scaled<=-32768?-32768:int(scaled);
+        const uint16_t raw=uint16_t(encoded);
+        destination[i*2]=uint8_t(raw>>8); destination[i*2+1]=uint8_t(raw);
+    }
+    return true;
+}
 } // namespace
 bool reorder_world_map_player_skin_matrix(const WorldMapModelMatrix& frame_matrix,WorldMapModelMatrix* out) {
     if (!out) return false;
@@ -122,6 +158,58 @@ WorldMapPlayerSkinWorkStatus prepare_world_map_player_skin_work(
         work->workspace_.resize(WorldMapPlayerSkinWork::workspace_size+31u);
         work->workspace_offset_=(32u-(reinterpret_cast<uintptr_t>(work->workspace_.data())&31u))&31u;
         *out=std::move(work); return Status::PreparedWork;
+    } catch (const std::bad_alloc&) { return Status::AllocationFailure; }
+}
+WorldMapPlayerSkinExecutionStatus execute_world_map_player_skin_work(
+    const WorldMapPlayerSkinWork& work,const std::vector<WorldMapModelMatrix>& frame_palette,
+    const std::vector<uint8_t>& prior_output,std::vector<uint8_t>* out) {
+    using Status=WorldMapPlayerSkinExecutionStatus;
+    if (!out || prior_output.size()!=work.initial_output().size() ||
+        frame_palette.size()!=work.drawing().setup().core_before_features().nodes.size()) return Status::InvalidInput;
+    if (std::fegetround()!=FE_TONEAREST) return Status::UnsupportedNumerics;
+    for (const auto& matrix:frame_palette) for (float value:matrix) if (!supported(value)) return Status::UnsupportedNumerics;
+    try {
+        auto staged=prior_output;
+        std::array<uint8_t,0x1000> block{};
+        const int scale=int((work.vertex_quantization()>>8)&31u);
+        const auto* skin=work.drawing().setup().selection().skin.data;
+        bool additive_started=false;
+        for (const auto& job:work.jobs()) {
+            if (job.kind==WorldMapPlayerSkinJobKind::Accumulate && !additive_started) {
+                additive_started=true;
+                if (work.clear_before_accumulation()) {
+                    const auto clear=*work.clear_before_accumulation();
+                    std::memset(staged.data()+clear.offset,0,clear.size);
+                }
+            }
+            // Preserve the original rounded copy's prefix and padding bytes.
+            std::memcpy(block.data(),skin+job.source.offset,job.source.size);
+            for (size_t vertex=0;vertex<job.vertex_count;++vertex) {
+                std::array<float,6> input{},value{},second{};
+                const size_t offset=job.prefix+vertex*12;
+                for (size_t i=0;i<6;++i) input[i]=vertex_component(block.data()+offset+i*2,scale);
+                if (!transform(frame_palette[job.matrix_indices[0]],input,&value)) return Status::UnsupportedNumerics;
+                uint8_t* destination=block.data()+offset;
+                if (job.kind==WorldMapPlayerSkinJobKind::BlendTwo) {
+                    if (!transform(frame_palette[job.matrix_indices[1]],input,&second)) return Status::UnsupportedNumerics;
+                    const float first_weight=float(skin[job.weights->offset+vertex*2])/256.0f;
+                    const float second_weight=float(skin[job.weights->offset+vertex*2+1])/256.0f;
+                    for (size_t i=0;i<6;++i) {
+                        const float weighted=value[i]*first_weight;
+                        if (!supported(weighted)) return Status::UnsupportedNumerics;
+                        value[i]=std::fma(second[i],second_weight,weighted);
+                    }
+                } else if (job.kind==WorldMapPlayerSkinJobKind::Accumulate) {
+                    destination=staged.data()+job.output.offset+size_t(job.scatter_indices[vertex])*12;
+                    const float weight=float(skin[job.weights->offset+vertex])/256.0f;
+                    for (size_t i=0;i<6;++i) value[i]=std::fma(value[i],weight,vertex_component(destination+i*2,scale));
+                }
+                if (!store_vertex(destination,value,scale)) return Status::UnsupportedNumerics;
+            }
+            if (job.kind!=WorldMapPlayerSkinJobKind::Accumulate)
+                std::memcpy(staged.data()+job.output.offset,block.data(),job.output.size);
+        }
+        *out=std::move(staged); return Status::Executed;
     } catch (const std::bad_alloc&) { return Status::AllocationFailure; }
 }
 } // namespace awl
