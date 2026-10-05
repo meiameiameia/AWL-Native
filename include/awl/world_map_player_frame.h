@@ -94,4 +94,57 @@ struct WorldMapPlayerAnimationFrameResult {
     const std::vector<WorldMapAnimationPlaybackRecord>& records,
     const std::vector<const WorldMapAnimationBank*>& banks,
     const std::vector<uint8_t>& previous_output,WorldMapPlayerFrame* out);
+
+// E438 with known null +C (no skin). Resource/core are supplied prepared node
+// layout snapshots; links/playback come exclusively from input, not core's
+// constructor/link fields. Feature indices in the returned frame are CORE NODE
+// indices, whose +8 keys identify the borrowed feature. No root +14 write,
+// inverse-bind read, skin execution or vertex-buffer requirement occurs.
+[[nodiscard]] WorldMapPlayerAnimationFrameResult evaluate_world_map_model_animation_frame(
+    const WorldMapPreparedModelResource& resource,const WorldMapModelCore& core,
+    const WorldMapPlayerAnimationFrameInput& input,
+    const std::vector<WorldMapAnimationPlaybackRecord>& records,
+    const std::vector<const WorldMapAnimationBank*>& banks,
+    const std::vector<uint8_t>& previous_output,WorldMapPlayerFrame* out);
+
+struct WorldMapModelFrameSource {
+    // Exactly one primary work OR both prepared no-skin resource/core views.
+    // Borrowed for this call; identities never dereference host/PPC pointers.
+    const WorldMapPlayerSkinWork* primary = nullptr;
+    const WorldMapPreparedModelResource* resource = nullptr;
+    const WorldMapModelCore* core = nullptr;
+    WorldMapPlayerAnimationFrameInput input; // links.identity is this record's key.
+    WorldMapPlayerFrame previous_frame;
+};
+struct WorldMapModelFrameState {
+    uint64_t identity = 0;
+    WorldMapAnimationPose root_pose{};
+    WorldMapPlayerInheritedRoot inherited;
+    WorldMapPlayerFrame frame; // Retained previous frame if never evaluated.
+};
+struct WorldMapModelHierarchyFrame {
+    std::vector<WorldMapModelFrameState> models; // Supplied source order.
+    std::vector<uint64_t> evaluation_order; // Ordered depth-first visits, including aliases.
+};
+enum class WorldMapModelHierarchyFrameStatus {
+    Evaluated, InvalidInput, RequiresModel, FrameFailure, Cycle, EvaluationLimit, AllocationFailure,
+};
+struct WorldMapModelHierarchyFrameResult {
+    WorldMapModelHierarchyFrameStatus status = WorldMapModelHierarchyFrameStatus::InvalidInput;
+    uint64_t required_model = 0; // Missing/failing/blocked stable key when known.
+    std::optional<WorldMapPlayerAnimationFrameResult> frame_failure;
+};
+// Complete E438 child evaluation on supplied snapshots. Apply every parent's
+// slot propagation before its first child visit; bit 0x01 gates recursion only.
+// Root flag mutations and repeated skin output are retained between alias visits.
+// Unreached source payloads remain opaque. Duplicate/zero keys reject; missing
+// reached children, active-path cycles or the caller's visit bound fail atomically.
+// The two root controls propagate unchanged to every child. No clocks, owner
+// mutation/registry, GPU drawing or actor acceptance. Every failure preserves
+// *out; sources, records and banks remain immutable.
+[[nodiscard]] WorldMapModelHierarchyFrameResult evaluate_world_map_model_hierarchy_frame(
+    const std::vector<WorldMapModelFrameSource>& sources,uint64_t root,
+    const std::vector<WorldMapAnimationPlaybackRecord>& records,
+    const std::vector<const WorldMapAnimationBank*>& banks,
+    size_t maximum_evaluations,WorldMapModelHierarchyFrame* out);
 } // namespace awl

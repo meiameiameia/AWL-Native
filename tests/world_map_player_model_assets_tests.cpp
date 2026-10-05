@@ -773,6 +773,141 @@ void attachment_frame_checks() {
     std::cout<<"PLAYER_ATTACHMENT_FRAME_ALLOCATION_FAILURES "<<rejected<<'\n';
 #endif
 }
+void hash_hierarchy(uint64_t& digest,const awl::WorldMapModelHierarchyFrame& result) {
+    hash(digest,uint32_t(result.models.size()));
+    for(const auto& model:result.models) {
+        hash(digest,uint32_t(model.identity));for(uint32_t word_value:model.root_pose)hash(digest,word_value);
+        hash(digest,uint32_t(model.inherited.parent));hash(digest,uint32_t(model.inherited.producer));
+        hash(digest,model.inherited.flags?1:0);if(model.inherited.flags)hash(digest,*model.inherited.flags);
+        for(float v:model.inherited.matrix){uint32_t raw=0;if(v!=0)std::memcpy(&raw,&v,4);hash(digest,raw);}
+        hash_frame(digest,model.frame);hash_frame_links(digest,model.frame);
+    }
+    hash(digest,uint32_t(result.evaluation_order.size()));for(uint64_t key:result.evaluation_order)hash(digest,uint32_t(key));
+}
+void hierarchy_frame_checks() {
+    using S=awl::WorldMapModelHierarchyFrameStatus;using F=awl::WorldMapPlayerFrameStatus;
+    Fixture fixture;auto payloads=files();payloads[1]=draw_gpl();
+    for(size_t at:{size_t(64),size_t(512)}){word(payloads[1],at+24,32);word(payloads[1],at+288,38);}
+    std::shared_ptr<const Assets> assets;std::unique_ptr<awl::WorldMapPlayerSkinWork> work;
+    std::array<awl::WorldMapModelCore,4> cores;std::array<awl::WorldMapAnimationBank,4> clips;
+    std::vector<const awl::WorldMapAnimationBank*> banks;for(const auto& clip:clips)banks.push_back(&clip);
+    auto key=[](uint32_t j){return uint64_t(0x800000+j*0x1000);};
+    std::vector<awl::WorldMapModelFrameSource> sources(4);awl::WorldMapModelHierarchyFrame frame;
+    uint64_t digest=14695981039346656037ull;
+    for(uint32_t seed=0;seed<256;++seed) {
+        payloads[0]=setup_model();payloads[2]=execution_skin(seed);
+        for(uint32_t i=0;i<3;++i)word(payloads[0],32+i*28+24,((seed+i)%3)<<24|((i==0?5u:2u)<<16));
+        assets.reset();fixture.write("boy_0.arc",archive(payloads));
+        expect(awl::load_world_map_player_model_assets(0,&assets)==Status::Loaded,"hierarchy primary providers load");
+        expect(awl::prepare_world_map_player_skin_work(assets,&work)==awl::WorldMapPlayerSkinWorkStatus::PreparedWork,"hierarchy primary prepares");if(!work)return;
+        for(uint32_t j=0;j<4;++j) {
+            sources[j]={};auto& source=sources[j];auto& input=source.input;
+            cores[j]=work->drawing().setup().core_before_features();cores[j].auxiliary_c=0;cores[j].feature_14=0x123456;
+            for(uint32_t i=0;i<3;++i){cores[j].nodes[i].type_0=uint8_t((seed+j+i)%3);
+                cores[j].nodes[i].feature_8=(seed+j+i)%3?0x900000+(j*4+i)*0x100:0;}
+            // Null +C means every inverse bind is unread, even with skin requested.
+            for(auto& matrix:cores[j].inverse_initial_matrices)matrix.fill(std::numeric_limits<float>::quiet_NaN());
+            if(j==0)source.primary=work.get();
+            else {source.resource=&work->drawing().setup().selection().model;source.core=&cores[j];}
+            input.links.identity=key(j);input.links.inherited.parent=j==3?key(1):j?key(0):0;
+            input.links.inherited.flags=j==2?0u:((seed+j)&2)?9u:1u;
+            input.links.inherited.matrix={1,0,0,0,0,1,0,0,0,0,1,0};
+            input.root_pose=explicit_pose(skin_palette(seed+j*4096+512,1)[0]);
+            if(j){input.root_pose[0]=0x1f345678;
+                const float scales[]{float(seed%7+1)/4,float(seed%5+1)/8,float(seed%3+1)/2};
+                for(size_t i=0;i<3;++i)std::memcpy(&input.root_pose[i+1],&scales[i],4);}
+            input.evaluate_nodes=(seed&8)!=0;input.request_skin=(seed&4)!=0;input.node_post_transforms.resize(3);
+            const auto posts=skin_palette(seed+j*4096+1024,3);
+            for(uint32_t i=0;i<3;++i)if((seed+j+i)%4==0)input.node_post_transforms[i]=posts[i];
+            expect(clips[j].parse(200+j,animation_frame_fixture(seed,j)),"hierarchy invented animation bank parses");
+            if(seed%8)input.playback.clip_10=awl::WorldMapAnimationClipReference{200+j,0};
+            input.playback.position_0=1.25f+float(j);
+        }
+        // Null input flags are resolved from reached child snapshots.
+        for(uint32_t slot=0;slot<3;++slot)sources[0].input.links.children[slot]={key(slot<2?1:2),uint16_t((seed+slot)%3),std::nullopt};
+        sources[1].input.links.children[3]={key(3),uint16_t(seed%3),std::nullopt};
+        // Child 2 is propagated but never evaluated; its source is deliberately unsupported.
+        sources[2].core=nullptr;sources[2].resource=nullptr;
+        sources[0].previous_frame.vertex_output.resize(64);
+        for(size_t i=0;i<64;++i)sources[0].previous_frame.vertex_output[i]=uint8_t(i*7+seed);
+        const auto result=awl::evaluate_world_map_model_hierarchy_frame(sources,key(0),{},banks,32,&frame);
+        expect(result.status==S::Evaluated && frame.evaluation_order==std::vector<uint64_t>{key(0),key(1),key(3),key(1),key(3)},
+            "complete sampler/primary/no-skin hierarchy keeps ordered alias visits and skips disabled child payload");
+        hash(digest,seed);hash_hierarchy(digest,frame);
+    }
+    std::cout<<"PLAYER_RECURSIVE_ANIMATION_HIERARCHIES 256 visits 1280 digest "<<std::hex<<digest<<std::dec<<'\n';
+    // Filled from complete verified E438 recursion, without child/sampler/pose hooks.
+    expect(digest==0x97f664057afaa176ull,"complete original hierarchy state/frames/flags/skin/visit order match");
+    uint64_t prior_hash=14695981039346656037ull;hash_hierarchy(prior_hash,frame);
+    auto preserved=[&](){uint64_t h=14695981039346656037ull;hash_hierarchy(h,frame);return h==prior_hash;};
+    auto check=[&](S wanted,uint64_t model,const char* why,size_t bound=32) {
+        const auto result=awl::evaluate_world_map_model_hierarchy_frame(sources,key(0),{},banks,bound,&frame);
+        expect(result.status==wanted && result.required_model==model && preserved(),why);return result;
+    };
+    check(S::EvaluationLimit,key(1),"visit bound rolls back prior root/child/grandchild work",3);
+    sources[3].input.links.children[0]={key(0),0,std::nullopt};
+    check(S::Cycle,key(0),"active-path cycle rolls back propagated root state instead of recursive stack overflow");
+    sources[3].input.links.children={};sources[1].input.links.children[3].child=123;
+    check(S::RequiresModel,123,"missing reached grandchild rolls back primary skin and all earlier propagation");
+    sources[1].input.links.children[3].child=key(3);sources[3].input.links.inherited.parent=key(2);
+    auto result=check(S::FrameFailure,key(3),"inconsistent grandchild parent acknowledgement blocks atomically");
+    expect(result.frame_failure && result.frame_failure->status==F::UnsupportedLayout,"hierarchy carries inherited frame failure");
+    sources[3].input.links.inherited.parent=key(1);sources[0].input.links.children[2].child_flags=1;
+    check(S::InvalidInput,key(2),"child snapshot flags cannot contradict its parent slot observation");
+    sources[0].input.links.children[2].child_flags.reset();sources[1].input.playback.clip_10=awl::WorldMapAnimationClipReference{999,0};
+    result=check(S::FrameFailure,key(1),"late missing animation bank preserves complete previous hierarchy");
+    expect(result.frame_failure && result.frame_failure->failed_node==0u && result.frame_failure->sampling_status==awl::WorldMapAnimationPoseStatus::RequiresBank,
+        "hierarchy reports failing child and exact node/sampler reason");
+    sources[1].input.playback.clip_10=awl::WorldMapAnimationClipReference{201,0};cores[1].auxiliary_c=1;
+    result=check(S::FrameFailure,key(1),"no-skin secondary frame explicitly rejects a nonnull auxiliary layout");
+    expect(result.frame_failure && result.frame_failure->status==F::UnsupportedLayout,"unsupported auxiliary is a frame layout failure");cores[1].auxiliary_c=0;
+    const auto old_key=sources[2].input.links.identity;sources[2].input.links.identity=key(1);
+    check(S::InvalidInput,0,"duplicate stable model keys preserve hierarchy");sources[2].input.links.identity=old_key;
+    expect(awl::evaluate_world_map_model_hierarchy_frame(sources,123,{},banks,32,&frame).status==S::RequiresModel && preserved(),"missing root blocks without replacing previous result");
+    expect(awl::evaluate_world_map_model_hierarchy_frame(sources,key(0),{},banks,0,&frame).status==S::InvalidInput && preserved(),"zero visit bound is invalid");
+    expect(awl::evaluate_world_map_model_hierarchy_frame(sources,key(0),{},banks,32,nullptr).status==S::InvalidInput,"null hierarchy output is invalid");
+    // Explicitly test a disabled recursive cycle: placement still updates, but
+    // bit 0x01 off must not traverse or inspect that source's bad payload.
+    sources[3].input.links.children[0]={key(2),0,std::nullopt};
+    sources[2].input.links.children[0]={key(0),0,std::nullopt};
+    expect(awl::evaluate_world_map_model_hierarchy_frame(sources,key(0),{},banks,32,&frame).status==S::Evaluated && frame.models[2].inherited.producer==key(3),
+        "nonrecursive child links retain ordered propagation even when their unused graph has a cycle");
+    sources[3].input.links.children={};sources[2].input.links.children={};
+    // Controls come from root arguments, not the child's stored preferences.
+    sources[0].input.evaluate_nodes=false;sources[1].input.evaluate_nodes=true;sources[3].input.evaluate_nodes=true;
+    expect(awl::evaluate_world_map_model_hierarchy_frame(sources,key(0),{},banks,32,&frame).status==S::Evaluated &&
+        frame.models[1].frame.node_matrices.empty() && frame.models[3].frame.node_matrices.empty() && !frame.models[0].frame.skin_executed,
+        "node-off control propagates to every child, while reached ancestry still samples");
+    // Previous vertices can be supplied from the result being replaced.
+    for(size_t i=0;i<sources.size();++i){sources[i].previous_frame=frame.models[i].frame;
+        sources[i].input.root_pose=frame.models[i].root_pose;sources[i].input.links.inherited=frame.models[i].inherited;}
+    expect(awl::evaluate_world_map_model_hierarchy_frame(sources,key(0),{},banks,32,&frame).status==S::Evaluated,
+        "complete prior frame/state snapshots support a successive atomic hierarchy update");
+    std::vector<awl::WorldMapModelFrameSource> deep(128);
+    for(size_t i=0;i<deep.size();++i){auto& source=deep[i];source.resource=sources[1].resource;source.core=sources[1].core;
+        source.input.links.identity=i+1;source.input.links.inherited.parent=i;
+        source.input.links.inherited.flags=9;source.input.node_post_transforms.resize(3);
+        if(i+1<deep.size())source.input.links.children[3]={i+2,0,std::nullopt};}
+    awl::WorldMapModelHierarchyFrame deep_frame;
+    expect(awl::evaluate_world_map_model_hierarchy_frame(deep,1,{}, {},128,&deep_frame).status==S::Evaluated &&
+        deep_frame.evaluation_order.size()==128 && deep_frame.evaluation_order.front()==1 && deep_frame.evaluation_order.back()==128,
+        "128-model chain uses iterative traversal and keeps ordered inherited state through stack growth");
+    uint64_t deep_hash=14695981039346656037ull;hash_hierarchy(deep_hash,deep_frame);
+    const auto deep_result=awl::evaluate_world_map_model_hierarchy_frame(deep,1,{}, {},127,&deep_frame);
+    uint64_t deep_after_hash=14695981039346656037ull;hash_hierarchy(deep_after_hash,deep_frame);
+    expect(deep_result.status==S::EvaluationLimit && deep_result.required_model==128 && deep_hash==deep_after_hash,
+        "deep visit bound preserves all prior frames instead of publishing a partial chain");
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    sources[0].input.evaluate_nodes=true;prior_hash=14695981039346656037ull;hash_hierarchy(prior_hash,frame);
+    const auto live=allocation_probe::live;size_t rejected=0;bool reached=false;
+    for(size_t fail=0;fail<128;++fail){allocation_probe::remaining=fail;allocation_probe::enabled=true;
+        const auto step=awl::evaluate_world_map_model_hierarchy_frame(sources,key(0),{},banks,32,&frame);allocation_probe::enabled=false;
+        if(step.status==S::Evaluated){reached=true;break;}++rejected;
+        expect(step.status==S::AllocationFailure && preserved() && allocation_probe::live==live,"every hierarchy allocation failure frees staging and preserves root flags, all child frames and propagated state");}
+    expect(reached && rejected>20,"allocation sweep reaches complete recursive hierarchy publication");
+    std::cout<<"PLAYER_HIERARCHY_ALLOCATION_FAILURES "<<rejected<<'\n';
+#endif
+}
 void skin_execution_checks(){
     using S=awl::WorldMapPlayerSkinExecutionStatus;
     Fixture fixture;auto payloads=files();payloads[0]=setup_model();payloads[1]=draw_gpl();
@@ -1256,7 +1391,7 @@ int main(int argc,char** argv){
         _CrtSetReportMode(kind,_CRTDBG_MODE_FILE);_CrtSetReportFile(kind,_CRTDBG_FILE_STDERR);
     }
 #endif
-    embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();skin_execution_checks();awl::filesystem_shutdown();frame_checks();awl::filesystem_shutdown();animation_frame_checks();awl::filesystem_shutdown();attachment_frame_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
+    embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();skin_execution_checks();awl::filesystem_shutdown();frame_checks();awl::filesystem_shutdown();animation_frame_checks();awl::filesystem_shutdown();attachment_frame_checks();awl::filesystem_shutdown();hierarchy_frame_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
     if(argc==3 && std::string(argv[1])=="--player-model-local")local(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-frame-local")local(argv[2],true);
     else if(argc!=1)expect(false,"usage: --player-model-local <disc> or --player-frame-local <disc>");

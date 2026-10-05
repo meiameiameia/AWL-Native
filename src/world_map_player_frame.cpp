@@ -35,29 +35,21 @@ WorldMapPlayerFrameStatus pose(const std::array<uint32_t,13>& input,WorldMapMode
     if (status!=WorldMapModelPreparationStatus::Prepared || !supported(*out)) return WorldMapPlayerFrameStatus::UnsupportedNumerics;
     return WorldMapPlayerFrameStatus::Evaluated;
 }
-template<class Sample, class PostTransform>
+template<class Sample, class PostTransform, class FeatureAtNode, class ExecuteSkin>
 WorldMapPlayerFrameStatus evaluate_frame(
-    const WorldMapPlayerSkinWork& work,const WorldMapAnimationPose& root_pose,
+    const WorldMapModelCore& core,const WorldMapPreparedModelResource& resource,
+    size_t feature_count,std::optional<uint32_t> root_feature,bool has_skin,
+    FeatureAtNode&& feature_at_node,ExecuteSkin&& execute_skin,const WorldMapAnimationPose& root_pose,
     bool evaluate_nodes,bool request_skin,size_t node_count,const WorldMapPlayerFrameLinks& links,
     Sample&& sample,PostTransform&& post_transform,
     const std::vector<uint8_t>& previous_output,WorldMapPlayerFrame* out) {
     using Status=WorldMapPlayerFrameStatus;
-    const auto& setup=work.drawing().setup();const auto& core=setup.core_before_features();
     bool has_children=false;
     for (const auto& child:links.children) if (child.child) has_children=true;
-    if (!out || previous_output.size()!=work.initial_output().size() ||
+    if (!out ||
         ((evaluate_nodes || has_children) && node_count!=core.nodes.size()) ||
         (has_children && !links.identity)) return Status::InvalidInput;
     if (std::fegetround()!=FE_TONEAREST) return Status::UnsupportedNumerics;
-    if (core.parent_150 || core.word_154) return Status::UnsupportedLayout;
-    for (auto child:core.children_15c) if (child) return Status::UnsupportedLayout;
-    std::optional<uint32_t> root_feature;
-    for (uint32_t i=0;i<setup.features().size();++i) if (!setup.features()[i].node) {
-        if (root_feature) return Status::UnsupportedLayout;
-        root_feature=i;
-    }
-    // The retained nonnull SKN makes E6D0 unconditionally dereference +14.
-    if (!root_feature) return Status::UnsupportedLayout;
     try {
         WorldMapPlayerFrame staged;
         staged.root_pose_after=root_pose;
@@ -90,8 +82,8 @@ WorldMapPlayerFrameStatus evaluate_frame(
                 const auto status=pose(*sampled_pose,matrix);
                 if (status!=Status::Evaluated) return status;
             } else {
-                if (node.source_record_index>=setup.selection().model.records.size()) return Status::UnsupportedLayout;
-                const auto& record=setup.selection().model.records[node.source_record_index];
+                if (node.source_record_index>=resource.records.size()) return Status::UnsupportedLayout;
+                const auto& record=resource.records[node.source_record_index];
                 if (!node.pose_c || !record.matrix) return Status::UnsupportedLayout;
                 *matrix=*record.matrix;
                 if (!supported(*matrix)) return Status::UnsupportedNumerics;
@@ -100,12 +92,12 @@ WorldMapPlayerFrameStatus evaluate_frame(
             if (post && !concatenate(*matrix,*post,matrix)) return Status::UnsupportedNumerics;
             return Status::Evaluated;
         };
-        staged.feature_matrix_writes.resize(setup.features().size());
-        staged.feature_write_order.reserve(setup.features().size());
+        staged.feature_matrix_writes.resize(feature_count);
+        staged.feature_write_order.reserve(feature_count);
         if (evaluate_nodes) {
-            if (request_skin && core.inverse_initial_matrices.size()!=core.nodes.size()) return Status::UnsupportedLayout;
+            if (has_skin && request_skin && core.inverse_initial_matrices.size()!=core.nodes.size()) return Status::UnsupportedLayout;
             staged.node_matrices.reserve(core.nodes.size());
-            if (request_skin) staged.skin_palette.reserve(core.nodes.size());
+            if (has_skin && request_skin) staged.skin_palette.reserve(core.nodes.size());
             for (size_t i=0;i<core.nodes.size();++i) {
                 const auto& node=core.nodes[i];WorldMapModelMatrix matrix;
                 const auto status=local_matrix(i,&matrix);
@@ -115,28 +107,30 @@ WorldMapPlayerFrameStatus evaluate_frame(
                     if (!concatenate(staged.node_matrices[node.parent_2],matrix,&matrix)) return Status::UnsupportedNumerics;
                 }
                 staged.node_matrices.push_back(matrix);
-                for (uint32_t feature=0;feature<setup.features().size();++feature) if (setup.features()[feature].node==i) {
+                for (uint32_t feature=0;feature<feature_count;++feature) if (feature_at_node(feature,i)) {
                     WorldMapModelMatrix world;
                     if (!concatenate(staged.root_matrix,matrix,&world)) return Status::UnsupportedNumerics;
                     staged.feature_matrix_writes[feature]=world;
                     staged.feature_write_order.push_back(feature);
                 }
-                if (request_skin) {
+                if (has_skin && request_skin) {
                     WorldMapModelMatrix skin;
                     if (!concatenate(matrix,core.inverse_initial_matrices[i],&skin)) return Status::UnsupportedNumerics;
                     staged.skin_palette.push_back(skin);
                 }
             }
         }
-        if (evaluate_nodes && request_skin) {
-            const auto status=execute_world_map_player_skin_work(work,staged.skin_palette,previous_output,&staged.vertex_output);
+        if (has_skin && evaluate_nodes && request_skin) {
+            const auto status=execute_skin(staged.skin_palette,previous_output,&staged.vertex_output);
             if (status==WorldMapPlayerSkinExecutionStatus::AllocationFailure) return Status::AllocationFailure;
             if (status==WorldMapPlayerSkinExecutionStatus::UnsupportedNumerics) return Status::UnsupportedNumerics;
             if (status!=WorldMapPlayerSkinExecutionStatus::Executed) return Status::InvalidInput;
             staged.skin_executed=true;
         } else staged.vertex_output=previous_output;
-        staged.feature_matrix_writes[*root_feature]=staged.root_matrix;
-        staged.feature_write_order.push_back(*root_feature);
+        if (root_feature) {
+            staged.feature_matrix_writes[*root_feature]=staged.root_matrix;
+            staged.feature_write_order.push_back(*root_feature);
+        }
         for (size_t slot=0;slot<links.children.size();++slot) {
             const auto& child=links.children[slot];
             if (!child.child) continue;
@@ -177,11 +171,56 @@ WorldMapPlayerFrameStatus evaluate_frame(
         *out=std::move(staged);return Status::Evaluated;
     } catch (const std::bad_alloc&) { return Status::AllocationFailure; }
 }
+template<class Sample,class PostTransform>
+WorldMapPlayerFrameStatus evaluate_primary(
+    const WorldMapPlayerSkinWork& work,const WorldMapAnimationPose& root_pose,
+    bool evaluate_nodes,bool request_skin,size_t node_count,const WorldMapPlayerFrameLinks& links,
+    Sample&& sample,PostTransform&& post_transform,
+    const std::vector<uint8_t>& previous_output,WorldMapPlayerFrame* out) {
+    using Status=WorldMapPlayerFrameStatus;
+    const auto& setup=work.drawing().setup();const auto& core=setup.core_before_features();
+    bool has_children=false;
+    for (const auto& child:links.children) if (child.child) has_children=true;
+    if (!out || previous_output.size()!=work.initial_output().size() ||
+        ((evaluate_nodes || has_children) && node_count!=core.nodes.size()) ||
+        (has_children && !links.identity)) return Status::InvalidInput;
+    if (std::fegetround()!=FE_TONEAREST) return Status::UnsupportedNumerics;
+    if (core.parent_150 || core.word_154) return Status::UnsupportedLayout;
+    for (auto child:core.children_15c) if (child) return Status::UnsupportedLayout;
+    std::optional<uint32_t> root_feature;
+    for (uint32_t i=0;i<setup.features().size();++i) if (!setup.features()[i].node) {
+        if (root_feature) return Status::UnsupportedLayout;
+        root_feature=i;
+    }
+    if (!root_feature) return Status::UnsupportedLayout; // E6D0 nonnull SKN root dereference.
+    return evaluate_frame(core,setup.selection().model,setup.features().size(),root_feature,true,
+        [&](uint32_t feature,size_t node) {return setup.features()[feature].node==node;},
+        [&](const auto& palette,const auto& previous,auto* output) {
+            return execute_world_map_player_skin_work(work,palette,previous,output);
+        },root_pose,evaluate_nodes,request_skin,node_count,links,
+        std::forward<Sample>(sample),std::forward<PostTransform>(post_transform),previous_output,out);
+}
+template<class Evaluate>
+WorldMapPlayerAnimationFrameResult animation_frame(
+    const WorldMapPlayerAnimationFrameInput& input,
+    const std::vector<WorldMapAnimationPlaybackRecord>& records,
+    const std::vector<const WorldMapAnimationBank*>& banks,Evaluate&& evaluate) {
+    WorldMapPlayerAnimationFrameResult result;
+    result.status=evaluate([&](size_t i,std::optional<WorldMapAnimationPose>* sampled) {
+        WorldMapAnimationPose value{},prior{};
+        const auto status=sample_world_map_blended_animation_pose(input.playback,uint32_t(i),records,banks,input.settings,prior,&value);
+        if (status==WorldMapAnimationPoseStatus::NoPose) {sampled->reset();return WorldMapPlayerFrameStatus::Evaluated;}
+        if (status==WorldMapAnimationPoseStatus::Sampled) {*sampled=value;return WorldMapPlayerFrameStatus::Evaluated;}
+        result.failed_node=uint32_t(i);result.sampling_status=status;
+        return WorldMapPlayerFrameStatus::RequiresAnimationSampling;
+    });
+    return result;
+}
 } // namespace
 WorldMapPlayerFrameStatus evaluate_world_map_player_frame(
     const WorldMapPlayerSkinWork& work,const WorldMapPlayerFrameInput& input,
     const std::vector<uint8_t>& previous_output,WorldMapPlayerFrame* out) {
-    return evaluate_frame(work,input.root_pose,input.evaluate_nodes,input.request_skin,input.nodes.size(),input.links,
+    return evaluate_primary(work,input.root_pose,input.evaluate_nodes,input.request_skin,input.nodes.size(),input.links,
         [&](size_t i,std::optional<WorldMapAnimationPose>* sampled) {
             *sampled=input.nodes[i].sampled_pose; return WorldMapPlayerFrameStatus::Evaluated;
         },[&](size_t i)->const std::optional<WorldMapModelMatrix>& {return input.nodes[i].post_transform;},
@@ -192,17 +231,94 @@ WorldMapPlayerAnimationFrameResult evaluate_world_map_player_animation_frame(
     const std::vector<WorldMapAnimationPlaybackRecord>& records,
     const std::vector<const WorldMapAnimationBank*>& banks,
     const std::vector<uint8_t>& previous_output,WorldMapPlayerFrame* out) {
-    WorldMapPlayerAnimationFrameResult result;
-    result.status=evaluate_frame(work,input.root_pose,input.evaluate_nodes,input.request_skin,input.node_post_transforms.size(),input.links,
-        [&](size_t i,std::optional<WorldMapAnimationPose>* sampled) {
-            WorldMapAnimationPose value{},prior{}; // Unwritten scratch words are not used by pose conversion.
-            const auto status=sample_world_map_blended_animation_pose(input.playback,uint32_t(i),records,banks,input.settings,prior,&value);
-            if (status==WorldMapAnimationPoseStatus::NoPose) {sampled->reset();return WorldMapPlayerFrameStatus::Evaluated;}
-            if (status==WorldMapAnimationPoseStatus::Sampled) {*sampled=value;return WorldMapPlayerFrameStatus::Evaluated;}
-            result.failed_node=uint32_t(i);result.sampling_status=status;
-            return WorldMapPlayerFrameStatus::RequiresAnimationSampling;
-        },[&](size_t i)->const std::optional<WorldMapModelMatrix>& {return input.node_post_transforms[i];},
-        previous_output,out);
-    return result;
+    return animation_frame(input,records,banks,[&](auto&& sample) {
+        return evaluate_primary(work,input.root_pose,input.evaluate_nodes,input.request_skin,input.node_post_transforms.size(),input.links,
+            sample,[&](size_t i)->const std::optional<WorldMapModelMatrix>& {return input.node_post_transforms[i];},previous_output,out);
+    });
+}
+WorldMapPlayerAnimationFrameResult evaluate_world_map_model_animation_frame(
+    const WorldMapPreparedModelResource& resource,const WorldMapModelCore& core,
+    const WorldMapPlayerAnimationFrameInput& input,
+    const std::vector<WorldMapAnimationPlaybackRecord>& records,
+    const std::vector<const WorldMapAnimationBank*>& banks,
+    const std::vector<uint8_t>& previous_output,WorldMapPlayerFrame* out) {
+    if (core.nodes.size()!=resource.metadata.count_6 ||
+        core.resource.reference.bank_identity!=resource.metadata.reference.bank_identity ||
+        core.resource.reference.offset!=resource.metadata.reference.offset || core.auxiliary_c)
+        return {WorldMapPlayerFrameStatus::UnsupportedLayout}; // This API requires known null +C.
+    return animation_frame(input,records,banks,[&](auto&& sample) {
+        return evaluate_frame(core,resource,core.nodes.size(),std::nullopt,false,
+            [&](uint32_t feature,size_t node) {return feature==node && core.nodes[node].feature_8!=0;},
+            [](const auto&,const auto&,auto*) {return WorldMapPlayerSkinExecutionStatus::InvalidInput;},
+            input.root_pose,input.evaluate_nodes,input.request_skin,input.node_post_transforms.size(),input.links,
+            sample,[&](size_t i)->const std::optional<WorldMapModelMatrix>& {return input.node_post_transforms[i];},previous_output,out);
+    });
+}
+WorldMapModelHierarchyFrameResult evaluate_world_map_model_hierarchy_frame(
+    const std::vector<WorldMapModelFrameSource>& sources,uint64_t root,
+    const std::vector<WorldMapAnimationPlaybackRecord>& records,
+    const std::vector<const WorldMapAnimationBank*>& banks,
+    size_t maximum_evaluations,WorldMapModelHierarchyFrame* out) {
+    using Status=WorldMapModelHierarchyFrameStatus;
+    if (!out || !root || !maximum_evaluations) return {};
+    auto find=[&](uint64_t key) {
+        for (size_t i=0;i<sources.size();++i) if (sources[i].input.links.identity==key) return i;
+        return sources.size();
+    };
+    for (size_t i=0;i<sources.size();++i) {
+        const auto key=sources[i].input.links.identity;
+        if (!key || find(key)!=i) return {};
+    }
+    const size_t root_index=find(root);
+    if (root_index==sources.size()) return {Status::RequiresModel,root};
+    try {
+        WorldMapModelHierarchyFrame staged;staged.models.reserve(sources.size());
+        for (const auto& source:sources) staged.models.push_back({source.input.links.identity,
+            source.input.root_pose,source.input.links.inherited,source.previous_frame});
+        struct Visit {size_t model=0,next_slot=0;};
+        std::vector<Visit> stack;
+        auto enter=[&](size_t index)->WorldMapModelHierarchyFrameResult {
+            const auto& source=sources[index];auto& state=staged.models[index];
+            for (const auto& active:stack) if (active.model==index) return {Status::Cycle,state.identity};
+            if (staged.evaluation_order.size()>=maximum_evaluations) return {Status::EvaluationLimit,state.identity};
+            if ((source.primary && (source.resource || source.core)) || (!source.primary && (!source.resource || !source.core)))
+                return {Status::InvalidInput,state.identity};
+            auto input=source.input;input.root_pose=state.root_pose;input.links.inherited=state.inherited;
+            input.evaluate_nodes=sources[root_index].input.evaluate_nodes;
+            input.request_skin=sources[root_index].input.request_skin;
+            // Resolve reached children even when recursion is off: every nonnull
+            // slot receives +120/+154. Flags come from the child's actual snapshot.
+            for (auto& child:input.links.children) if (child.child) {
+                const size_t target=find(child.child);
+                if (target==sources.size()) return {Status::RequiresModel,child.child};
+                const auto flags=staged.models[target].inherited.flags;
+                if (child.child_flags && child.child_flags!=flags) return {Status::InvalidInput,child.child};
+                child.child_flags=flags;
+            }
+            const auto result=source.primary?
+                evaluate_world_map_player_animation_frame(*source.primary,input,records,banks,state.frame.vertex_output,&state.frame):
+                evaluate_world_map_model_animation_frame(*source.resource,*source.core,input,records,banks,state.frame.vertex_output,&state.frame);
+            if (result.status==WorldMapPlayerFrameStatus::AllocationFailure) return {Status::AllocationFailure,state.identity};
+            if (result.status!=WorldMapPlayerFrameStatus::Evaluated) return {Status::FrameFailure,state.identity,result};
+            state.root_pose=state.frame.root_pose_after;
+            for (const auto& write:state.frame.attachment_writes) if (write) {
+                auto& child=staged.models[find(write->child)];
+                child.inherited.matrix=write->matrix;child.inherited.producer=state.identity;
+            }
+            staged.evaluation_order.push_back(state.identity);stack.push_back({index,0});
+            return {Status::Evaluated};
+        };
+        auto result=enter(root_index);
+        if (result.status!=Status::Evaluated) return result;
+        while (!stack.empty()) {
+            auto& visit=stack.back();
+            if (visit.next_slot==4) {stack.pop_back();continue;}
+            const auto& write=staged.models[visit.model].frame.attachment_writes[visit.next_slot++];
+            if (!write || !write->evaluate_child) continue;
+            result=enter(find(write->child));
+            if (result.status!=Status::Evaluated) return result;
+        }
+        *out=std::move(staged);return {Status::Evaluated};
+    } catch (const std::bad_alloc&) {return {Status::AllocationFailure};}
 }
 } // namespace awl
