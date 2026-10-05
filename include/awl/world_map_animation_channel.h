@@ -25,6 +25,7 @@ using WorldMapAnimationPose = std::array<uint32_t, 13>;
 enum class WorldMapAnimationPoseStatus {
     Sampled, NoPose, RequiresBank, RequiresKeyedTracks, RequiresBlend,
     UnsupportedLayout, UnsupportedNumerics, InvalidInput, RequiresInterpolation,
+    RequiresPlaybackRecord, CyclicBlend,
 };
 enum class WorldMapAnimationKeyStatus {
     Selected, NoKeys, NoPose, UnsupportedLayout, UnsupportedNumerics, InvalidInput,
@@ -116,6 +117,23 @@ struct WorldMapAnimationPlaybackRecord {
     uint64_t identity = 0;
     WorldMapAnimationPlayback state;
 };
+// 23A0 component blend: missing flagged components use scale (1,1,1),
+// quaternion (0,0,0,1), translation (0,0,0). Weight is not clamped.
+// Only flags 1/4/8 participate; unselected words/padding retain prior bytes.
+// Failure preserves output; either input and prior may alias output.
+[[nodiscard]] WorldMapAnimationPoseStatus blend_world_map_animation_poses(
+    const WorldMapAnimationPose* first, const WorldMapAnimationPose* second,
+    float weight, const WorldMapAnimationPose& prior, WorldMapAnimationPose* out) noexcept;
+// 01F8/FF8C ordered chain evaluation using supplied immutable bank/record
+// snapshots. A missing linked node stops successfully; missing bank/record,
+// ambiguous identities, unsupported sampling/numerics and cycles publish
+// nothing. No records, clocks, model ownership or bank bytes are mutated.
+[[nodiscard]] WorldMapAnimationPoseStatus sample_world_map_blended_animation_pose(
+    const WorldMapAnimationPlayback& playback, uint32_t node,
+    const std::vector<WorldMapAnimationPlaybackRecord>& records,
+    const std::vector<const WorldMapAnimationBank*>& banks,
+    const WorldMapAnimationPoseSettings& settings,
+    const WorldMapAnimationPose& prior, WorldMapAnimationPose* out) noexcept;
 // FDE8 initializes only position/rate/clip/link. FE08 can subsequently write
 // word/limit while leaving weight unknown. Absence means unwritten, not zero.
 struct WorldMapAnimationPartialPlayback {

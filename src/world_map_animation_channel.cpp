@@ -361,6 +361,98 @@ WorldMapAnimationPoseStatus sample_world_map_animation_pose(
     return Status::Sampled;
 }
 
+WorldMapAnimationPoseStatus blend_world_map_animation_poses(
+    const WorldMapAnimationPose* first, const WorldMapAnimationPose* second,
+    float weight, const WorldMapAnimationPose& prior, WorldMapAnimationPose* out) noexcept {
+    using Status = WorldMapAnimationPoseStatus;
+    if (out == nullptr) return Status::InvalidInput;
+    const uint32_t first_flags = first == nullptr ? 0u : (*first)[0] >> 24;
+    const uint32_t second_flags = second == nullptr ? 0u : (*second)[0] >> 24;
+    const uint32_t flags = (first_flags | second_flags) & 13u;
+    auto pose = prior; pose[0] &= 0x00ffffffu;
+    // 23A0 skips unused components, including weight arithmetic.
+    if (flags != 0 && (!supported_float(weight) || std::fegetround() != FE_TONEAREST))
+        return Status::UnsupportedNumerics;
+    for (uint32_t flag : {1u,4u,8u}) {
+        if (!(flags & flag)) continue;
+        const unsigned at = flag == 1 ? 1u : flag == 4 ? 4u : 8u;
+        const unsigned n = flag == 4 ? 4u : 3u;
+        float a[4]{}, b[4]{}, values[4]{};
+        if (flag == 1) { std::fill(a,a+3,1.0f); std::fill(b,b+3,1.0f); }
+        if (flag == 4) a[3] = b[3] = 1.0f;
+        for (unsigned i = 0; i < n; ++i) {
+            if (first_flags & flag) a[i] = as_float((*first)[at+i]);
+            if (second_flags & flag) b[i] = as_float((*second)[at+i]);
+            if (!supported_float(a[i]) || !supported_float(b[i])) return Status::UnsupportedNumerics;
+        }
+        if (flag == 4) {
+            if (!spherical_mix(a,b,weight,values)) return Status::UnsupportedNumerics;
+        } else {
+            const float complement = 1.0f - weight;
+            if (!supported_float(complement)) return Status::UnsupportedNumerics;
+            for (unsigned i = 0; i < n; ++i) {
+                const float left = a[i] * complement, right = b[i] * weight;
+                if (!supported_float(left) || !supported_float(right)) return Status::UnsupportedNumerics;
+                values[i] = left + right;
+                if (!supported_float(values[i])) return Status::UnsupportedNumerics;
+            }
+        }
+        pose[0] |= flag << 24;
+        for (unsigned i = 0; i < n; ++i) std::memcpy(&pose[at+i],values+i,4);
+    }
+    *out = pose;
+    return Status::Sampled;
+}
+
+WorldMapAnimationPoseStatus sample_world_map_blended_animation_pose(
+    const WorldMapAnimationPlayback& playback, uint32_t node,
+    const std::vector<WorldMapAnimationPlaybackRecord>& records,
+    const std::vector<const WorldMapAnimationBank*>& banks,
+    const WorldMapAnimationPoseSettings& settings,
+    const WorldMapAnimationPose& prior, WorldMapAnimationPose* out) noexcept {
+    using Status = WorldMapAnimationPoseStatus;
+    if (out == nullptr) return Status::InvalidInput;
+    auto sample = [&](const WorldMapAnimationPlayback& p, const WorldMapAnimationPose& input,
+        WorldMapAnimationPose* result) {
+        if (!p.clip_10) return Status::NoPose;
+        const WorldMapAnimationBank* bank = nullptr;
+        for (const auto* candidate : banks) {
+            if (candidate != nullptr && candidate->loaded() && candidate->identity() == p.clip_10->bank_identity) {
+                if (bank != nullptr) return Status::InvalidInput; // Ambiguous owner identity.
+                bank = candidate;
+            }
+        }
+        if (bank == nullptr) return Status::RequiresBank;
+        return bank->sample_pose(*p.clip_10,node,p.position_0,settings,input,result);
+    };
+    WorldMapAnimationPose pose;
+    auto status = sample(playback,prior,&pose);
+    if (status != Status::Sampled) return status;
+    const auto* current = &playback;
+    size_t visited = 0;
+    while (current->link_14 != 0) {
+        // Any walk visiting more records than supplied must repeat one.
+        // The DOL recursively unrolls nine records per FF8C call; iteration
+        // preserves that order without risking an unbounded native stack.
+        const WorldMapAnimationPlayback* next = nullptr;
+        for (const auto& record : records) if (record.identity == current->link_14) {
+            if (next != nullptr) return Status::InvalidInput;
+            next = &record.state;
+        }
+        if (next == nullptr) return Status::RequiresPlaybackRecord;
+        if (visited++ >= records.size()) return Status::CyclicBlend;
+        WorldMapAnimationPose sampled{}; // Unwritten scratch words are not read by 23A0.
+        status = sample(*next,sampled,&sampled);
+        if (status == Status::NoPose) break; // FF8C stops before blending/following that record.
+        if (status != Status::Sampled) return status;
+        status = blend_world_map_animation_poses(&pose,&sampled,current->value_18,pose,&pose);
+        if (status != Status::Sampled) return status;
+        current = next;
+    }
+    *out = pose;
+    return Status::Sampled;
+}
+
 std::optional<WorldMapAnimationPlayback> WorldMapAnimationPartialPlayback::complete() const noexcept {
     if(!word_8 || !limit_c || !value_18)return std::nullopt;
     return WorldMapAnimationPlayback{position_0,rate_4,*word_8,*limit_c,clip_10,link_14,*value_18};

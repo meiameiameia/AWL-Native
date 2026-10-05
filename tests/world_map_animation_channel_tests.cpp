@@ -3,6 +3,7 @@
 #include <array>
 #include <algorithm>
 #include <cfenv>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -654,6 +655,104 @@ void test_keyed_quaternions() {
     expect(bank.sample_pose({200,0},7,2,settings,prior,&pose)==PoseStatus::Sampled && pose[4]==bits(1.0f),
         "negative unit dot uses shortest-sign linear fallback");
 }
+awl::WorldMapAnimationPose blend_fixture(uint32_t seed,unsigned side) {
+    const uint32_t flags=(side==0?(seed&15):((seed>>4)&15))|((seed&32)?16u:0u);
+    uint32_t state=seed+1+side*991; awl::WorldMapAnimationPose pose{}; pose[0]=(flags<<24)|0x00551234;
+    for(unsigned i=1;i<13;++i) {
+        state=state*1664525u+1013904223u;
+        pose[i]=bits(static_cast<float>(int32_t((state>>16)%2049)-1024)/1024.0f);
+    }
+    return pose;
+}
+std::vector<uint8_t> blend_translation_fixture(int value,uint16_t node=7) {
+    std::vector<uint8_t> bytes(128); put(bytes,4,0x10000); put(bytes,12,64);
+    bytes[18]=uint8_t(node>>8); bytes[19]=uint8_t(node); bytes[20]=0x30; bytes[23]=1;
+    unsigned i=0;
+    for(int v:{value,value+1,value-1}) {
+        const uint16_t word=uint16_t(v); bytes[64+i*2]=uint8_t(word>>8); bytes[65+i*2]=uint8_t(word); ++i;
+    }
+    return bytes;
+}
+void test_pose_blends() {
+    using PoseStatus=awl::WorldMapAnimationPoseStatus;
+    const auto prior=prior_pose(); uint64_t digest=14695981039346656037ull; unsigned cases=0;
+    for(uint32_t seed=0;seed<256;++seed)for(unsigned mode=0;mode<4;++mode)
+        for(float weight:{-0.5f,0.0f,0.125f,0.5f,0.875f,1.0f,1.5f}) {
+            auto a=blend_fixture(seed,0), b=blend_fixture(seed,1), pose=prior;
+            auto* out=mode==1?&a:mode==2?&b:&pose;
+            const unsigned mask=mode==3?(seed/64)%4:3;
+            const auto status=awl::blend_world_map_animation_poses((mask&1)?&a:nullptr,(mask&2)?&b:nullptr,weight,*out,out);
+            expect(status==PoseStatus::Sampled,"all supported component/null/alias/weight blends sample");
+            for(uint32_t w:{seed,mode,bits(weight)})hash(digest,w); for(auto w:*out)hash(digest,w); ++cases;
+        }
+    std::cout<<"COMPONENT_BLENDS_NATIVE_LIBM "<<cases<<' '<<std::hex<<digest<<std::dec<<'\n';
+    expect(cases==7168 && digest==0xc2c474accbeaecdduLL,"component blends match mapped instructions with native math hooks");
+    auto a=blend_fixture(0,0), b=a, pose=prior;
+    expect(awl::blend_world_map_animation_poses(nullptr,nullptr,std::numeric_limits<float>::quiet_NaN(),prior,&pose)==PoseStatus::Sampled &&
+        pose[0]==(prior[0]&0xffffffu) && pose[1]==prior[1],"empty blend clears only flags without reading unused weight or pose words");
+    a[0]=1u<<24; a[1]=bits(3); a[2]=bits(5); a[3]=bits(7);
+    expect(awl::blend_world_map_animation_poses(&a,nullptr,0.5f,prior,&pose)==PoseStatus::Sampled &&
+        pose[1]==bits(2) && pose[2]==bits(3) && pose[3]==bits(4),"missing scale uses independently known unit default");
+    auto rotation=a; rotation[0]=4u<<24; rotation[4]=bits(1); rotation[5]=rotation[6]=rotation[7]=0;
+    expect(awl::blend_world_map_animation_poses(nullptr,&rotation,0.5f,prior,&pose)==PoseStatus::Sampled,
+        "missing first rotation uses the unit quaternion default");
+    float x,w; std::memcpy(&x,&pose[4],4); std::memcpy(&w,&pose[7],4);
+    expect(std::fabs(x-std::sqrt(0.5f))<0.000001f && std::fabs(w-std::sqrt(0.5f))<0.000001f,
+        "default-to-X rotation midpoint has independently known geometry");
+    auto translation=a; translation[0]=8u<<24; translation[8]=bits(8); translation[9]=bits(-4); translation[10]=bits(2);
+    expect(awl::blend_world_map_animation_poses(nullptr,&translation,0.25f,prior,&pose)==PoseStatus::Sampled &&
+        pose[8]==bits(2) && pose[9]==bits(-1) && pose[10]==bits(0.5f),"missing translation uses independently known zero default");
+    pose=prior; b=a; b[0]|=8u<<24; b[8]=bits(std::numeric_limits<float>::infinity());
+    expect(awl::blend_world_map_animation_poses(&a,&b,0.5f,prior,&pose)==PoseStatus::UnsupportedNumerics && pose==prior,
+        "late nonfinite translation preserves output after scale staging");
+    expect(awl::blend_world_map_animation_poses(&a,&a,std::numeric_limits<float>::quiet_NaN(),prior,&pose)==PoseStatus::UnsupportedNumerics && pose==prior,
+        "reached nonfinite blend weight rejects atomically");
+    expect(awl::blend_world_map_animation_poses(&a,&a,0.5f,prior,nullptr)==PoseStatus::InvalidInput,"null blend output rejects");
+    std::fesetround(FE_DOWNWARD);
+    expect(awl::blend_world_map_animation_poses(&a,&a,0.5f,prior,&pose)==PoseStatus::UnsupportedNumerics && pose==prior,
+        "blend arithmetic requires verified rounding"); std::fesetround(FE_TONEAREST);
+}
+void test_blend_chains() {
+    using PoseStatus=awl::WorldMapAnimationPoseStatus;
+    const auto prior=prior_pose(); const awl::WorldMapAnimationPoseSettings settings;
+    uint64_t digest=14695981039346656037ull; unsigned cases=0;
+    for(uint32_t seed=0;seed<32;++seed)for(unsigned length:{1u,2u,3u,9u,10u,12u})for(int stop:{-1,0,int(length/2)}) {
+        std::vector<Bank> owners(length); std::vector<const Bank*> banks; std::vector<Record> records;
+        for(unsigned i=0;i<length;++i) {
+            expect(owners[i].parse(200+i,blend_translation_fixture(int((seed*7+i*13)%100)-50,int(i)==stop?8:7)),"chain clip parses");
+            banks.push_back(&owners[i]); Playback p; p.clip_10=awl::WorldMapAnimationClipReference{200+i,0};
+            p.link_14=i+1<length?i+2:0; p.value_18=static_cast<float>(int((seed+i)%9)-2)/8;
+            records.push_back({i+1,p});
+        }
+        auto pose=prior;
+        const auto status=awl::sample_world_map_blended_animation_pose(records[0].state,7,records,banks,settings,prior,&pose);
+        expect(status==(stop==0?PoseStatus::NoPose:PoseStatus::Sampled),"ordered chains stop only at null link or missing node");
+        auto alias=prior;
+        expect(awl::sample_world_map_blended_animation_pose(records[0].state,7,records,banks,settings,alias,&alias)==status && alias==pose,
+            "chain publication preserves prior/output aliases");
+        for(uint32_t w:{seed,length,uint32_t(stop)})hash(digest,w); for(auto w:pose)hash(digest,w); ++cases;
+    }
+    std::cout<<"BLEND_CHAINS "<<cases<<' '<<std::hex<<digest<<std::dec<<'\n';
+    expect(cases==576 && digest==0xa5c2ed1df8292474ull,"deep chain order and missing-node stops match full mapped FF8C execution");
+    Bank bank; expect(bank.parse(200,blend_translation_fixture(10)),"chain rejection fixture parses");
+    std::vector<const Bank*> banks{&bank}; Playback p; p.clip_10=awl::WorldMapAnimationClipReference{200,0}; p.link_14=2; p.value_18=0.5f;
+    auto q=p; q.link_14=0; std::vector<Record> records{{2,q}}; auto pose=prior;
+    auto check=[&](PoseStatus expected,const char* message) {
+        pose=prior; expect(awl::sample_world_map_blended_animation_pose(p,7,records,banks,settings,prior,&pose)==expected && pose==prior,message);
+    };
+    records.clear(); check(PoseStatus::RequiresPlaybackRecord,"missing first linked record preserves output");
+    q.link_14=3; records={{2,q}}; check(PoseStatus::RequiresPlaybackRecord,"missing late record preserves earlier staged blends");
+    q.link_14=2; records={{2,q}}; check(PoseStatus::CyclicBlend,"self-cycle cannot publish or recurse forever");
+    auto r=q; r.link_14=2; q.link_14=3; records={{2,q},{3,r}}; check(PoseStatus::CyclicBlend,"multi-record cycle rejects atomically");
+    q.link_14=0; records={{2,q},{2,q}}; check(PoseStatus::InvalidInput,"reached ambiguous record identity rejects");
+    records={{2,q}}; banks.push_back(&bank); check(PoseStatus::InvalidInput,"reached ambiguous bank identity rejects"); banks.pop_back();
+    records[0].state.clip_10=awl::WorldMapAnimationClipReference{201,0}; check(PoseStatus::RequiresBank,"missing late bank preserves output");
+    records[0].state=q; p.value_18=std::numeric_limits<float>::infinity(); check(PoseStatus::UnsupportedNumerics,"reached nonfinite chain weight rejects");
+    records[0].state.clip_10.reset(); records[0].state.link_14=999;
+    expect(awl::sample_world_map_blended_animation_pose(p,7,records,banks,settings,prior,&pose)==PoseStatus::Sampled,
+        "missing linked clip stops before its next link and unused weight arithmetic");
+    p.clip_10.reset(); banks.clear(); records.clear(); check(PoseStatus::NoPose,"missing root clip bypasses records and banks");
+}
 void local_bank(const std::filesystem::path& disc) {
     std::ifstream input(disc / "files" / "boy_0.anm.arc", std::ios::binary);
     std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(input)), {});
@@ -735,12 +834,31 @@ void local_bank(const std::filesystem::path& disc) {
     std::cout<<"LOCAL_KEYED_VECTOR_POSES "<<vectors<<" curved "<<curved<<' '<<std::hex<<vector_digest<<std::dec<<'\n';
     std::cout<<"LOCAL_KEYED_POSES_NATIVE_LIBM "<<intervals<<' '<<std::hex<<all_digest<<std::dec<<'\n';
     expect(all_digest==0x0f01d614ed424032ull,"all local keyed poses match mapped instructions with native math hooks");
+    uint64_t blend_digest=14695981039346656037ull; unsigned blends=0;
+    const std::vector<const Bank*> banks{&bank};
+    for(uint32_t i=0;i<bank.clip_count();++i) {
+        awl::WorldMapAnimationClip first,second;
+        if(!bank.resolve(i,&first) || !bank.resolve((i+1)%uint32_t(bank.clip_count()),&second))continue;
+        Playback playback; playback.clip_10=first.reference; playback.position_0=1.25f; playback.link_14=2; playback.value_18=0.375f;
+        Playback next; next.clip_10=second.reference; next.position_0=1.25f;
+        const std::vector<Record> records{{2,next}}; const size_t base=first.reference.offset;
+        const unsigned count=(unsigned(bytes[base+4])<<8)|bytes[base+5];
+        for(unsigned j=0;j<count;++j) {
+            const size_t record=base+8+size_t(j)*16;
+            const uint32_t node=(uint32_t(bytes[record+10])<<8)|bytes[record+11]; auto pose=prior;
+            expect(awl::sample_world_map_blended_animation_pose(playback,node,records,banks,settings,prior,&pose)==PoseStatus::Sampled,
+                "every primary node blends with the next supplied clip, including constant/keyed mixtures");
+            hash(blend_digest,i); hash(blend_digest,node); for(auto word:pose)hash(blend_digest,word); ++blends;
+        }
+    }
+    std::cout<<"LOCAL_BLEND_POSES_NATIVE_LIBM "<<blends<<' '<<std::hex<<blend_digest<<std::dec<<'\n';
+    expect(blends==6936 && blend_digest==0x84670915f821f620ull,"all supplied neighboring primary clip blends match mapped instructions with native math hooks");
     expect(intervals==9861 && key_digest==0x7c0e84bbf890f1b8ull,"all primary key intervals match instruction comparison");
     expect(vectors==105 && curved==9756 && vector_digest==0x48b912b47b4e3016ull,"local keyed vector poses match instruction comparison");
 }
 } // namespace
 int main(int argc, char** argv) {
-    test_bank(); test_channel(); test_partial_channel(); test_matrix(); test_constant_poses(); test_key_layouts(); test_keyed_vectors(); test_keyed_quaternions();
+    test_bank(); test_channel(); test_partial_channel(); test_matrix(); test_constant_poses(); test_key_layouts(); test_keyed_vectors(); test_keyed_quaternions(); test_pose_blends(); test_blend_chains();
     if (argc == 3 && std::string(argv[1]) == "--animation-bank-local") local_bank(argv[2]);
     else if (argc != 1) expect(false, "usage: --animation-bank-local <disc>");
     return failures == 0 ? 0 : 1;
