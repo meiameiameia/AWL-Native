@@ -24,7 +24,15 @@ struct WorldMapAnimationClip {
 using WorldMapAnimationPose = std::array<uint32_t, 13>;
 enum class WorldMapAnimationPoseStatus {
     Sampled, NoPose, RequiresBank, RequiresKeyedTracks, RequiresBlend,
-    UnsupportedLayout, UnsupportedNumerics, InvalidInput,
+    UnsupportedLayout, UnsupportedNumerics, InvalidInput, RequiresInterpolation,
+};
+enum class WorldMapAnimationKeyStatus {
+    Selected, NoKeys, NoPose, UnsupportedLayout, UnsupportedNumerics, InvalidInput,
+};
+struct WorldMapAnimationKeyInterval {
+    uint16_t first = 0, second = 0;
+    uint32_t first_offset = 0, second_offset = 0, stride = 0;
+    float fraction = 0;
 };
 // Supplied snapshot of the quaternion globals at 803489F8 / 803489F0.
 // Defaults are their verified DOL initial values, not live global ownership.
@@ -35,7 +43,7 @@ struct WorldMapAnimationPoseSettings {
 
 // Owns a raw clip or a flat U8 bank. Only node extents, the bounded 16-byte
 // section table and first section ID zero's scalar are supported. Constant
-// node components can be sampled separately; keyed tracks remain unsupported.
+// node components and bounded step/linear vector tracks can be sampled.
 class WorldMapAnimationBank {
 public:
     [[nodiscard]] bool parse(uint64_t identity, std::vector<uint8_t> bytes);
@@ -57,6 +65,18 @@ public:
         WorldMapAnimationClipReference clip, uint32_t node,
         const WorldMapAnimationPoseSettings& settings,
         const WorldMapAnimationPose& prior, WorldMapAnimationPose* out) const noexcept;
+    // 0DDC/0B34 key layout and ordered pair selection, then 1CEC clamped
+    // fraction. Offsets are clip-relative. Payload values remain opaque;
+    // selection does not establish interpolation support or advance time.
+    [[nodiscard]] WorldMapAnimationKeyStatus select_key_interval(
+        WorldMapAnimationClipReference clip, uint32_t node, float time,
+        WorldMapAnimationKeyInterval* out) const noexcept;
+    // Constant components plus keyed scale/translation modes 0/1. Reached
+    // quaternion interpolation, Euler/matrix tracks and vector curves stop.
+    [[nodiscard]] WorldMapAnimationPoseStatus sample_pose(
+        WorldMapAnimationClipReference clip, uint32_t node, float time,
+        const WorldMapAnimationPoseSettings& settings,
+        const WorldMapAnimationPose& prior, WorldMapAnimationPose* out) const noexcept;
     // Retained native bank identities cannot silently acquire new bytes.
     [[nodiscard]] bool same_contents(const WorldMapAnimationBank& other) const {
         return identity_ == other.identity_ && bytes_ == other.bytes_;
@@ -67,6 +87,10 @@ private:
     bool archive_ = false;
     std::vector<uint8_t> bytes_;
     std::vector<Entry> entries_;
+    [[nodiscard]] WorldMapAnimationPoseStatus sample_pose_impl(
+        WorldMapAnimationClipReference clip, uint32_t node, std::optional<float> time,
+        const WorldMapAnimationPoseSettings& settings,
+        const WorldMapAnimationPose& prior, WorldMapAnimationPose* out) const noexcept;
 };
 
 // Semantic snapshots, not serialized layouts. Optional clip replaces the
@@ -80,9 +104,9 @@ struct WorldMapAnimationPlayback {
     uint64_t link_14 = 0; // Stable identity for the blend-record pointer.
     float value_18 = 0;
 };
-// Bounded 01F8/0264: null clip/missing node returns NoPose. Reached keyed
-// tracks or a blend link stop explicitly. Constant poses do not use time,
-// loop, rate, limit or weight; no clock or live model is advanced.
+// Bounded 01F8/0264: null clip/missing node returns NoPose. Unsupported
+// interpolation or a blend link stops explicitly. Supplied time is used
+// only for reached keys; no looping, clock or live model is advanced.
 [[nodiscard]] WorldMapAnimationPoseStatus sample_world_map_animation_pose(
     const WorldMapAnimationPlayback& playback, uint32_t node,
     const WorldMapAnimationBank* bank, const WorldMapAnimationPoseSettings& settings,

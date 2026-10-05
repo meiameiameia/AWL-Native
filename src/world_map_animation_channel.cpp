@@ -17,6 +17,61 @@ bool bounded(size_t size, uint64_t offset, uint64_t length) {
     return offset <= size && length <= size - offset;
 }
 float as_float(uint32_t word) { float f; std::memcpy(&f, &word, sizeof(f)); return f; }
+bool supported_float(float f) { return std::isfinite(f) && (f == 0 || std::isnormal(f)); }
+int32_t signed_half(const uint8_t* p) { const int32_t v = be16(p); return v >= 32768 ? v - 65536 : v; }
+WorldMapAnimationKeyStatus select_keys(const uint8_t* data, uint32_t size,
+    const uint8_t* section, uint64_t table_end, float time, WorldMapAnimationKeyInterval* out) noexcept {
+    using Status = WorldMapAnimationKeyStatus;
+    const uint32_t count = be16(section + 8);
+    if (count < 2) return Status::NoKeys; // 0DDC does not read layout/time here.
+    const uint8_t encoding = section[12] >> 4, flags = section[13], modes = section[14], components = section[15];
+    if (encoding > 4) return Status::UnsupportedLayout;
+    const uint32_t width = encoding < 2 ? 1u : encoding < 4 ? 2u : 4u;
+    const uint32_t vector_size = width * 3;
+    const uint32_t quaternion_size = (4u - unsigned((flags >> 5) & 1) - unsigned((flags >> 6) & 1) - unsigned((flags >> 7) & 1)) * 2;
+    uint64_t start = be32(section + 4);
+    if (start < table_end) return Status::UnsupportedLayout;
+    if (components & 1) start += vector_size;
+    if (components & 2) start += vector_size;
+    if (components & 8) start += quaternion_size;
+    else if (components & 4) start += vector_size;
+    if (components & 16) start += width * 12u;
+    uint32_t stride = 2;
+    auto vector_track = [&](uint8_t mode) {
+        stride += vector_size;
+        if (mode == 2 || mode == 3) stride += vector_size * 2;
+        if (mode == 3) stride += 4;
+    };
+    if (flags & 1) vector_track(modes & 3);
+    if (flags & 2) vector_track((modes >> 2) & 3);
+    if (flags & 8) {
+        stride += quaternion_size;
+        const unsigned mode = (modes >> 4) & 7;
+        // 0B34 uses section width for controls but fixed S16-size base
+        // quaternion values. They coincide only for two-byte encodings.
+        const uint32_t controls_size = (quaternion_size / 2) * width;
+        if (mode == 4 || mode == 5) stride += controls_size * 2;
+        if (mode == 5) stride += 4;
+        if (mode == 7) stride += controls_size;
+    } else if (flags & 4) vector_track((modes >> 4) & 7);
+    if (flags & 16) stride += width * 12u;
+    if (start % 2 != 0 || stride % 2 != 0 || !bounded(size,start,uint64_t(count)*stride)) return Status::UnsupportedLayout;
+    if (!supported_float(time) || std::fegetround() != FE_TONEAREST) return Status::UnsupportedNumerics;
+    uint32_t first = 0;
+    for (; first + 2 < count; ++first) {
+        const auto* next = data + size_t(start) + size_t(first + 1) * stride;
+        if (time <= static_cast<float>(signed_half(next))) break;
+    }
+    const uint32_t first_offset = uint32_t(start) + first * stride, second_offset = first_offset + stride;
+    const float duration = static_cast<float>(signed_half(data + second_offset)) - static_cast<float>(signed_half(data + first_offset));
+    const float elapsed = time - static_cast<float>(signed_half(data + first_offset));
+    if (!supported_float(elapsed)) return Status::UnsupportedNumerics;
+    float fraction = 0;
+    if (duration > 0 && elapsed > 0) fraction = elapsed >= duration ? 1.0f : elapsed / duration;
+    if (!supported_float(fraction)) return Status::UnsupportedNumerics;
+    *out = {uint16_t(first),uint16_t(first + 1),first_offset,second_offset,stride,fraction};
+    return Status::Selected;
+}
 } // namespace
 
 void WorldMapAnimationBank::clear() {
@@ -65,6 +120,35 @@ WorldMapAnimationPoseStatus WorldMapAnimationBank::sample_constant_pose(
     WorldMapAnimationClipReference clip, uint32_t node,
     const WorldMapAnimationPoseSettings& settings,
     const WorldMapAnimationPose& prior, WorldMapAnimationPose* out) const noexcept {
+    return sample_pose_impl(clip,node,std::nullopt,settings,prior,out);
+}
+WorldMapAnimationPoseStatus WorldMapAnimationBank::sample_pose(
+    WorldMapAnimationClipReference clip, uint32_t node, float time,
+    const WorldMapAnimationPoseSettings& settings,
+    const WorldMapAnimationPose& prior, WorldMapAnimationPose* out) const noexcept {
+    return sample_pose_impl(clip,node,time,settings,prior,out);
+}
+WorldMapAnimationKeyStatus WorldMapAnimationBank::select_key_interval(
+    WorldMapAnimationClipReference clip, uint32_t node, float time, WorldMapAnimationKeyInterval* out) const noexcept {
+    using Status = WorldMapAnimationKeyStatus;
+    if (out == nullptr || !loaded() || clip.bank_identity != identity_) return Status::InvalidInput;
+    const Entry* entry = nullptr;
+    for (const auto& candidate : entries_) if (candidate.offset == clip.offset) { entry = &candidate; break; }
+    if (entry == nullptr) return Status::InvalidInput;
+    const auto* data = bytes_.data() + entry->offset;
+    if (entry->size < 8) return Status::UnsupportedLayout;
+    const uint32_t count = be16(data + 4);
+    if (!bounded(entry->size,8,uint64_t(count)*16)) return Status::UnsupportedLayout;
+    for (uint32_t i = 0; i < count; ++i) {
+        const auto* section = data + 8 + size_t(i)*16;
+        if (be16(section+10) == (node & 0xffffu)) return select_keys(data,entry->size,section,8+uint64_t(count)*16,time,out);
+    }
+    return Status::NoPose;
+}
+WorldMapAnimationPoseStatus WorldMapAnimationBank::sample_pose_impl(
+    WorldMapAnimationClipReference clip, uint32_t node, std::optional<float> time,
+    const WorldMapAnimationPoseSettings& settings,
+    const WorldMapAnimationPose& prior, WorldMapAnimationPose* out) const noexcept {
     using Status = WorldMapAnimationPoseStatus;
     if (out == nullptr || !loaded() || clip.bank_identity != identity_) return Status::InvalidInput;
     const Entry* entry = nullptr;
@@ -82,17 +166,17 @@ WorldMapAnimationPoseStatus WorldMapAnimationBank::sample_constant_pose(
     }
     if (section == nullptr) return Status::NoPose;
     const uint8_t flags = section[13], components = section[15];
-    if ((flags & 31) != 0) return Status::RequiresKeyedTracks;
+    if ((flags & 31) != 0 && !time) return Status::RequiresKeyedTracks;
+    if (flags & 0x14) return Status::RequiresKeyedTracks; // Euler/matrix paths.
     auto pose = prior;
     pose[0] &= 0x00ffffffu; // 0264's single-byte clear, not a whole word clear.
     uint64_t cursor = be32(section + 4); // 0734 relocates relative to clip base.
-    auto acceptable = [](float f) { return std::isfinite(f) && (f == 0 || std::isnormal(f)); };
     auto decode = [&](uint8_t encoding, float scale, unsigned n, float* values) {
         if (encoding > 4) return Status::UnsupportedLayout;
         const unsigned width = encoding < 2 ? 1u : encoding < 4 ? 2u : 4u;
         if (cursor < table_end || (cursor % width) != 0 || !bounded(entry->size, cursor, uint64_t(n) * width))
             return Status::UnsupportedLayout;
-        if (std::fegetround() != FE_TONEAREST || (encoding != 4 && !acceptable(scale)))
+        if (std::fegetround() != FE_TONEAREST || (encoding != 4 && !supported_float(scale)))
             return Status::UnsupportedNumerics;
         for (unsigned i = 0; i < n; ++i) {
             const auto* p = data + size_t(cursor) + i * width;
@@ -103,7 +187,7 @@ WorldMapAnimationPoseStatus WorldMapAnimationBank::sample_constant_pose(
                 if (encoding == 3 && value >= 32768) value -= 65536;
                 values[i] = static_cast<float>(value) * scale;
             }
-            if (!acceptable(values[i])) return Status::UnsupportedNumerics;
+            if (!supported_float(values[i])) return Status::UnsupportedNumerics;
         }
         cursor += uint64_t(n) * width;
         return Status::Sampled;
@@ -115,12 +199,12 @@ WorldMapAnimationPoseStatus WorldMapAnimationBank::sample_constant_pose(
     const uint8_t encoding = section[12] >> 4;
     const float scale = std::ldexp(1.0f, -int(section[12] & 15));
     float values[4]{};
-    if (components & 2) {
+    if ((components & 2) && !(flags & 2)) {
         const auto status = decode(encoding, scale, 3, values);
         if (status != Status::Sampled) return status;
         store(1, values, 3, 1);
     }
-    if (components & 8) {
+    if ((components & 8) && !(flags & 8)) {
         // 1C1C omits XYZ lanes flagged by bits 5/6/7, but always reads W.
         const unsigned n = 4u - unsigned((flags >> 5) & 1) - unsigned((flags >> 6) & 1) - unsigned((flags >> 7) & 1);
         const uint64_t start = cursor;
@@ -135,10 +219,48 @@ WorldMapAnimationPoseStatus WorldMapAnimationBank::sample_constant_pose(
         // this cursor rule even for supplied globals other than default S16.
         cursor = start + n * 2u;
     }
-    if (components & 1) {
+    if ((components & 1) && !(flags & 1)) {
         const auto status = decode(encoding, scale, 3, values);
         if (status != Status::Sampled) return status;
         store(8, values, 3, 8);
+    }
+    if (flags & 31) {
+        WorldMapAnimationKeyInterval interval;
+        const auto selected = select_keys(data,entry->size,section,table_end,*time,&interval);
+        using KeyStatus = WorldMapAnimationKeyStatus;
+        if (selected == KeyStatus::UnsupportedLayout) return Status::UnsupportedLayout;
+        if (selected == KeyStatus::UnsupportedNumerics) return Status::UnsupportedNumerics;
+        if (selected == KeyStatus::Selected) {
+            // 0F5C advances key value cursors in scale/quaternion/translation
+            // order. Curve and quaternion modes are a separate boundary.
+            if (flags & 8) return Status::RequiresInterpolation;
+            uint64_t first = uint64_t(interval.first_offset)+2, second = uint64_t(interval.second_offset)+2;
+            auto vector = [&](unsigned at, uint32_t flag, uint8_t mode) {
+                if (mode > 1) return Status::RequiresInterpolation;
+                float a[3]{}, b[3]{};
+                cursor = first; auto status = decode(encoding,scale,3,a); first = cursor;
+                if (status != Status::Sampled) return status;
+                cursor = second; status = decode(encoding,scale,3,b); second = cursor;
+                if (status != Status::Sampled) return status;
+                if (mode == 1) {
+                    const float complement = 1.0f - interval.fraction;
+                    for (unsigned i = 0; i < 3; ++i) {
+                        // 1D88 has two separately rounded products, then add.
+                        const float right = interval.fraction * b[i], left = complement * a[i];
+                        if (!supported_float(right) || !supported_float(left)) return Status::UnsupportedNumerics;
+                        a[i] = right + left;
+                        if (!supported_float(a[i])) return Status::UnsupportedNumerics;
+                    }
+                }
+                store(at,a,3,flag); return Status::Sampled;
+            };
+            if (flags & 2) {
+                const auto status = vector(1,1,(section[14]>>2)&3); if (status != Status::Sampled) return status;
+            }
+            if (flags & 1) {
+                const auto status = vector(8,8,section[14]&3); if (status != Status::Sampled) return status;
+            }
+        }
     }
     *out = pose;
     return Status::Sampled;
@@ -153,7 +275,7 @@ WorldMapAnimationPoseStatus sample_world_map_animation_pose(
     if (!playback.clip_10) return Status::NoPose;
     if (bank == nullptr || !bank->loaded()) return Status::RequiresBank;
     WorldMapAnimationPose pose;
-    const auto status = bank->sample_constant_pose(*playback.clip_10, node, settings, prior, &pose);
+    const auto status = bank->sample_pose(*playback.clip_10, node, playback.position_0, settings, prior, &pose);
     if (status != Status::Sampled) return status;
     if (playback.link_14 != 0) return Status::RequiresBlend;
     *out = pose;

@@ -334,7 +334,7 @@ void test_constant_poses() {
     expect(awl::sample_world_map_animation_pose(playback,7,&bank,settings,prior,&pose) == PoseStatus::Sampled,
         "constant components do not evaluate copied time");
     bytes[21] |= 8; expect(bank.parse(200,bytes), "keyed fixture parses"); pose = prior;
-    expect(awl::sample_world_map_animation_pose(playback,7,&bank,settings,prior,&pose) == PoseStatus::RequiresKeyedTracks && pose == prior,
+    expect(bank.sample_constant_pose(*playback.clip_10,7,settings,prior,&pose) == PoseStatus::RequiresKeyedTracks && pose == prior,
         "keyed tracks stop explicitly before partial constant publication");
     for (unsigned fault = 0; fault < 7; ++fault) {
         bytes = constant_fixture(844); // Float32 scale/translation and S16 quaternion.
@@ -396,6 +396,152 @@ void test_constant_poses() {
     expect(bank.sample_constant_pose({200,96},7,settings,prior,&pose)==PoseStatus::UnsupportedLayout && pose==prior,
         "malformed selected archive table rejects before node lookup");
 }
+std::vector<uint8_t> keyed_vector_fixture(uint32_t seed) {
+    const uint8_t encoding=uint8_t(seed%4), tracks=uint8_t(1+(seed/4)%3), has_quat=uint8_t((seed/12)%2);
+    const uint8_t modes=uint8_t((seed/24)%4), omitted=uint8_t((seed/96)%8);
+    std::vector<uint8_t> bytes(256); put(bytes,4,0x00010000); put(bytes,12,64);
+    put(bytes,16,0x00030007); bytes[20]=uint8_t((encoding<<4)|7); bytes[21]=uint8_t((omitted<<5)|tracks);
+    bytes[22]=uint8_t((modes&1)|((modes&2)<<1)); bytes[23]=has_quat?8:0;
+    size_t cursor=64; uint32_t state=seed+1;
+    auto value=[&](uint8_t kind) {
+        state=state*1664525u+1013904223u; const unsigned width=kind<2?1u:2u;
+        const uint32_t word=state>>(32-width*8);
+        for(unsigned i=0;i<width;++i)bytes[cursor++]=uint8_t(word>>((width-i-1)*8));
+    };
+    if(has_quat)for(unsigned i=0;i<4;++i)if(i==3 || !(omitted&(1u<<i)))value(3);
+    for(int time:{-3,2,9}) {
+        bytes[cursor++]=uint8_t(uint32_t(time)>>8); bytes[cursor++]=uint8_t(time);
+        if(tracks&2)for(unsigned i=0;i<3;++i)value(encoding);
+        if(tracks&1)for(unsigned i=0;i<3;++i)value(encoding);
+    }
+    return bytes;
+}
+std::vector<uint8_t> key_layout_fixture(uint32_t seed, bool* supported) {
+    // Invented layout matrix; expectations come from raw 0DDC/0B34/1CEC
+    // execution, independently of these fixture construction calculations.
+    const uint8_t encoding=uint8_t((seed/31)%5), flags=uint8_t(1+seed%31), omitted=uint8_t((seed/155)%8);
+    const uint8_t modes=uint8_t((omitted<<4)|(seed%4)|(((seed/4)%4)<<2)), components=uint8_t((seed/31)%32);
+    const uint32_t width=encoding<2?1u:encoding<4?2u:4u, v=width*3;
+    const uint32_t q=(4u-unsigned(omitted&1)-unsigned((omitted>>1)&1)-unsigned((omitted>>2)&1))*2;
+    const uint32_t prefix=(components&1?v:0)+(components&2?v:0)+(components&8?q:components&4?v:0)+(components&16?width*12:0);
+    uint32_t stride=2;
+    auto vector=[&](uint8_t mode){stride+=v+(mode==2 || mode==3?2*v:0)+(mode==3?4:0);};
+    if(flags&1)vector(modes&3); if(flags&2)vector((modes>>2)&3);
+    if(flags&8)stride+=q+(omitted==4 || omitted==5?width*q:omitted==7?width*(q/2):0)+(omitted==5?4:0);
+    else if(flags&4)vector((modes>>4)&7);
+    if(flags&16)stride+=width*12;
+    const uint32_t start=64+(prefix%2); *supported=stride%2==0;
+    std::vector<uint8_t> bytes(1024); put(bytes,4,0x00010000); put(bytes,12,start); put(bytes,16,0x00030007);
+    bytes[20]=uint8_t(encoding<<4); bytes[21]=uint8_t((omitted<<5)|flags); bytes[22]=modes; bytes[23]=components;
+    unsigned i=0;
+    for(int time:{-6,0,5}) {
+        const size_t at=start+prefix+i++*stride;
+        bytes[at]=uint8_t(uint32_t(time)>>8); bytes[at+1]=uint8_t(time);
+    }
+    return bytes;
+}
+void test_key_layouts() {
+    using KeyStatus=awl::WorldMapAnimationKeyStatus;
+    Bank bank; uint64_t digest=14695981039346656037ull; unsigned selected=0,rejected=0;
+    for(uint32_t seed=0;seed<1240;++seed) {
+        bool supported=false; expect(bank.parse(200,key_layout_fixture(seed,&supported)),"key layout fixture parses");
+        for(float time:{-10.0f,0.0f,3.125f,9.0f}) {
+            awl::WorldMapAnimationKeyInterval interval{99,100,101,102,103,0.5f};
+            const auto status=bank.select_key_interval({200,0},0x10007,time,&interval);
+            if(!supported) {
+                expect(status==KeyStatus::UnsupportedLayout && interval.first==99,"odd key layout rejects atomically"); ++rejected; continue;
+            }
+            expect(status==KeyStatus::Selected,"all supported vector/quaternion/Euler/matrix key strides select bounded pairs");
+            for(uint32_t w:{seed,bits(time),uint32_t(interval.first),uint32_t(interval.second),interval.first_offset,
+                interval.second_offset,interval.stride,bits(interval.fraction)})hash(digest,w);
+            ++selected;
+        }
+    }
+    std::cout<<"KEY_LAYOUT_MATRIX "<<selected<<" rejected "<<rejected<<' '<<std::hex<<digest<<std::dec<<'\n';
+    expect(selected==3936 && rejected==1024 && digest==0xf8480f4acbdca5bdull,"key stride/selection/fraction matrix matches instruction comparison");
+}
+void test_keyed_vectors() {
+    using PoseStatus=awl::WorldMapAnimationPoseStatus; using KeyStatus=awl::WorldMapAnimationKeyStatus;
+    const auto prior=prior_pose(); const awl::WorldMapAnimationPoseSettings settings;
+    Bank bank; Playback playback; playback.clip_10=awl::WorldMapAnimationClipReference{200,0};
+    uint64_t digest=14695981039346656037ull; unsigned sampled=0,unaligned=0;
+    for(uint32_t seed=0;seed<768;++seed) {
+        expect(bank.parse(200,keyed_vector_fixture(seed)),"keyed vector fixture parses");
+        for(float time:{-20.0f,-3.0f,0.0f,2.0f,4.25f,9.0f,20.0f}) {
+            auto pose=prior; playback.position_0=time;
+            const auto status=awl::sample_world_map_animation_pose(playback,0x10007,&bank,settings,prior,&pose);
+            if(seed%4<2 && 1+(seed/4)%3!=3) {
+                expect(status==PoseStatus::UnsupportedLayout && pose==prior,"odd key stride rejects before partial publication");
+                ++unaligned; continue;
+            }
+            expect(status==PoseStatus::Sampled,"step/linear vectors compose with optional constant compressed quaternion");
+            hash(digest,seed); hash(digest,bits(time)); for(auto w:pose)hash(digest,w); ++sampled;
+            auto alias=prior;
+            expect(awl::sample_world_map_animation_pose(playback,7,&bank,settings,alias,&alias)==status && alias==pose,
+                "keyed pose prior/output alias remains atomic");
+            awl::WorldMapAnimationKeyInterval interval;
+            expect(bank.select_key_interval({200,0},7,time,&interval)==KeyStatus::Selected &&
+                interval.first==(time<=2?0:1) && interval.second==interval.first+1 &&
+                interval.fraction>=0 && interval.fraction<=1,"key selection retains inclusive next-time boundary and clamping");
+        }
+    }
+    std::cout<<"KEYED_VECTOR_POSES "<<sampled<<' '<<std::hex<<digest<<std::dec<<'\n';
+    expect(sampled==3584 && unaligned==1792 && digest==0x0faff6afd8e73afbull,"keyed vectors match independently executed DOL bodies");
+    auto bytes=keyed_vector_fixture(2); // S16 translation, mode zero, no constants.
+    expect(bank.parse(200,bytes),"readable key boundary fixture parses"); auto pose=prior;
+    expect(bank.sample_pose({200,0},7,2,settings,prior,&pose)==PoseStatus::Sampled,"step at exact second key samples");
+    const auto at_boundary=pose;
+    expect(bank.sample_pose({200,0},7,2.25f,settings,prior,&pose)==PoseStatus::Sampled && pose!=at_boundary,
+        "step changes only after passing the next key time");
+    awl::WorldMapAnimationKeyInterval interval{99,100,101,102,103,0.5f};
+    for(unsigned fault=0;fault<7;++fault) {
+        bytes=keyed_vector_fixture(2);
+        switch(fault) {
+        case 0: put(bytes,12,UINT32_MAX); break;
+        case 1: put(bytes,12,8); break;
+        case 2: bytes.resize(87); break; // Three eight-byte keys require 88.
+        case 3: bytes[20]=0x50; break;
+        case 4: put(bytes,12,65); break;
+        case 5: bytes[16]=0xff; bytes[17]=0xff; break;
+        case 6: bytes[22]=2; break;
+        }
+        expect(bank.parse(200,bytes),"malformed keys stay opaque at bank parse"); pose=prior;
+        const auto status=bank.sample_pose({200,0},7,0,settings,prior,&pose);
+        expect(status==(fault==6?PoseStatus::RequiresInterpolation:PoseStatus::UnsupportedLayout) && pose==prior,
+            "truncated/header/foreign/unaligned key extents and unsupported vector curve preserve destination");
+        if(fault!=6)expect(bank.select_key_interval({200,0},7,0,&interval)==KeyStatus::UnsupportedLayout && interval.first==99,
+            "failed interval preparation preserves output");
+    }
+    bytes=keyed_vector_fixture(2); expect(bank.parse(200,bytes),"numeric key fixture parses"); pose=prior;
+    for(float time:{std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN(),std::numeric_limits<float>::denorm_min()})
+        expect(bank.sample_pose({200,0},7,time,settings,prior,&pose)==PoseStatus::UnsupportedNumerics && pose==prior,
+            "reached unsupported time leaves prior pose");
+    const int rounding=std::fegetround(); std::fesetround(FE_DOWNWARD);
+    const auto rounding_status=bank.select_key_interval({200,0},7,1,&interval); std::fesetround(rounding);
+    expect(rounding_status==KeyStatus::UnsupportedNumerics && interval.first==99,"unsupported interval rounding is atomic");
+    // Fewer than two keys exits before reading time/layout; constants are
+    // still retained and success clears only the flag byte, like 0F5C.
+    bytes[16]=0; bytes[17]=1; put(bytes,12,UINT32_MAX); expect(bank.parse(200,bytes),"short key-count fixture parses");
+    expect(bank.select_key_interval({200,0},7,std::numeric_limits<float>::quiet_NaN(),&interval)==KeyStatus::NoKeys && interval.first==99,
+        "no interval avoids invalid layout and time reads");
+    expect(bank.sample_pose({200,0},7,std::numeric_limits<float>::quiet_NaN(),settings,prior,&pose)==PoseStatus::Sampled &&
+        pose[0]==(prior[0]&0xffffffu) && std::equal(pose.begin()+1,pose.end(),prior.begin()+1),
+        "no selected keys publishes only reached writes, not invented components");
+    bytes=keyed_vector_fixture(2); bytes[64]=0; bytes[65]=5; bytes[72]=0; bytes[73]=1;
+    expect(bank.parse(200,bytes),"descending key-time fixture parses");
+    expect(bank.select_key_interval({200,0},7,0,&interval)==KeyStatus::Selected && interval.fraction==0,
+        "nonpositive selected duration uses zero rather than dividing");
+    expect(bank.select_key_interval({201,0},7,0,&interval)==KeyStatus::InvalidInput &&
+        bank.select_key_interval({200,1},7,0,&interval)==KeyStatus::InvalidInput &&
+        bank.select_key_interval({200,0},8,0,&interval)==KeyStatus::NoPose &&
+        bank.select_key_interval({200,0},7,0,nullptr)==KeyStatus::InvalidInput,"interval references and missing-node paths remain bounded");
+    playback.link_14=1; playback.position_0=1.25f; pose=prior;
+    expect(awl::sample_world_map_animation_pose(playback,7,&bank,settings,prior,&pose)==PoseStatus::RequiresBlend && pose==prior,
+        "successful keyed sampling does not publish before an unsupported blend");
+    bytes=keyed_vector_fixture(22); bytes[22]=2; expect(bank.parse(200,bytes),"late curve fixture parses"); pose=prior;
+    expect(bank.sample_pose({200,0},7,0,settings,prior,&pose)==PoseStatus::RequiresInterpolation && pose==prior,
+        "late translation curve preserves output after staging constant quaternion and keyed scale");
+}
 void local_bank(const std::filesystem::path& disc) {
     std::ifstream input(disc / "files" / "boy_0.anm.arc", std::ios::binary);
     std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(input)), {});
@@ -429,7 +575,7 @@ void local_bank(const std::filesystem::path& disc) {
             const size_t record = base+8+size_t(j)*16;
             const uint32_t node = (uint32_t(bytes[record+10])<<8)|bytes[record+11];
             auto pose = prior;
-            const auto status = awl::sample_world_map_animation_pose(p,node,&bank,settings,prior,&pose);
+            const auto status = bank.sample_constant_pose(*p.clip_10,node,settings,prior,&pose);
             if (bytes[record+13]&31) {
                 expect(status == PoseStatus::RequiresKeyedTracks && pose == prior,"every keyed local node stops explicitly"); ++keyed;
             } else {
@@ -441,10 +587,44 @@ void local_bank(const std::filesystem::path& disc) {
     std::cout << "LOCAL_CONSTANT_POSES " << sampled << " keyed " << keyed << ' ' << std::hex << pose_digest << std::dec << '\n';
     expect(sampled == 3649 && keyed == 3287 && pose_digest == 0x78df62f236ac030eull,
         "all primary constant poses match independently executed DOL bodies; keyed coverage remains explicit");
+    using KeyStatus=awl::WorldMapAnimationKeyStatus;
+    uint64_t key_digest=14695981039346656037ull, vector_digest=14695981039346656037ull;
+    unsigned intervals=0,vectors=0,curved=0;
+    for(uint32_t i=0;i<bank.clip_count();++i) {
+        awl::WorldMapAnimationClip clip; if(!bank.resolve(i,&clip))continue;
+        const size_t base=clip.reference.offset;
+        const unsigned count=(unsigned(bytes[base+4])<<8)|bytes[base+5];
+        for(unsigned j=0;j<count;++j) {
+            const size_t record=base+8+size_t(j)*16; const uint8_t flags=bytes[record+13];
+            if(!(flags&31))continue;
+            const uint32_t node=(uint32_t(bytes[record+10])<<8)|bytes[record+11];
+            Playback playback; playback.clip_10=clip.reference;
+            for(float time:{-5.0f,1.25f,10000.0f}) {
+                awl::WorldMapAnimationKeyInterval interval;
+                const auto key_status=bank.select_key_interval(clip.reference,node,time,&interval);
+                expect(key_status==KeyStatus::Selected,"every local primary keyed section selects a bounded pair");
+                if(key_status!=KeyStatus::Selected)continue;
+                for(uint32_t w:{i,node,bits(time),uint32_t(interval.first),uint32_t(interval.second),
+                    interval.first_offset,interval.second_offset,interval.stride,bits(interval.fraction)})hash(key_digest,w);
+                ++intervals; auto pose=prior; playback.position_0=time;
+                const auto status=awl::sample_world_map_animation_pose(playback,node,&bank,settings,prior,&pose);
+                if((flags&31)==1) {
+                    expect(status==PoseStatus::Sampled,"all local translation-only keyed poses sample with their constant components");
+                    hash(vector_digest,i); hash(vector_digest,node); hash(vector_digest,bits(time)); for(auto w:pose)hash(vector_digest,w); ++vectors;
+                } else {
+                    expect(status==PoseStatus::RequiresInterpolation && pose==prior,"curved rotation tracks preserve explicit unsupported boundary"); ++curved;
+                }
+            }
+        }
+    }
+    std::cout<<"LOCAL_KEY_INTERVALS "<<intervals<<' '<<std::hex<<key_digest<<std::dec<<'\n';
+    std::cout<<"LOCAL_KEYED_VECTOR_POSES "<<vectors<<" curved "<<curved<<' '<<std::hex<<vector_digest<<std::dec<<'\n';
+    expect(intervals==9861 && key_digest==0x7c0e84bbf890f1b8ull,"all primary key intervals match instruction comparison");
+    expect(vectors==105 && curved==9756 && vector_digest==0x48b912b47b4e3016ull,"local keyed vector poses match instruction comparison");
 }
 } // namespace
 int main(int argc, char** argv) {
-    test_bank(); test_channel(); test_partial_channel(); test_matrix(); test_constant_poses();
+    test_bank(); test_channel(); test_partial_channel(); test_matrix(); test_constant_poses(); test_key_layouts(); test_keyed_vectors();
     if (argc == 3 && std::string(argv[1]) == "--animation-bank-local") local_bank(argv[2]);
     else if (argc != 1) expect(false, "usage: --animation-bank-local <disc>");
     return failures == 0 ? 0 : 1;
