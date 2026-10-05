@@ -1,5 +1,6 @@
 #pragma once
 #include "awl/world_map_player_skin_work.h"
+#include "awl/world_map_animation_channel.h"
 
 namespace awl {
 struct WorldMapPlayerNodeFrameInput {
@@ -26,6 +27,7 @@ struct WorldMapPlayerFrame {
 enum class WorldMapPlayerFrameStatus {
     Evaluated, RequiresPoseConversion, UnsupportedLayout, UnsupportedNumerics,
     InvalidInput, AllocationFailure,
+    RequiresAnimationSampling,
 };
 // E438 unparented primary matrix path, per-node pose/post/parent composition,
 // inverse-bind palette and feature matrices, followed by checked C080 execution.
@@ -35,5 +37,29 @@ enum class WorldMapPlayerFrameStatus {
 // Previous output may be out->vertex_output. Every failure preserves the frame.
 [[nodiscard]] WorldMapPlayerFrameStatus evaluate_world_map_player_frame(
     const WorldMapPlayerSkinWork& work,const WorldMapPlayerFrameInput& input,
+    const std::vector<uint8_t>& previous_output,WorldMapPlayerFrame* out);
+
+struct WorldMapPlayerAnimationFrameInput {
+    WorldMapAnimationPose root_pose{}; // Unparented model +1C; not sampled from a clip.
+    bool evaluate_nodes = true, request_skin = true;
+    WorldMapAnimationPlayback playback; // Supplied model +178 snapshot.
+    WorldMapAnimationPoseSettings settings;
+    // Core traversal order; one known optional node +10 observation per node.
+    std::vector<std::optional<WorldMapModelMatrix>> node_post_transforms;
+};
+struct WorldMapPlayerAnimationFrameResult {
+    WorldMapPlayerFrameStatus status = WorldMapPlayerFrameStatus::InvalidInput;
+    // Populated only at RequiresAnimationSampling, before this node's conversion.
+    std::optional<uint32_t> failed_node;
+    std::optional<WorldMapAnimationPoseStatus> sampling_status;
+};
+// E438 -> 01F8/FF8C -> pose/post/parent matrices -> C080 in one atomic frame.
+// Missing node poses use retained defaults. Node-off ignores playback, banks,
+// records, settings and post observations. Inputs remain immutable; no time
+// advancement, inherited/attached-model recursion, GPU or live ownership.
+[[nodiscard]] WorldMapPlayerAnimationFrameResult evaluate_world_map_player_animation_frame(
+    const WorldMapPlayerSkinWork& work,const WorldMapPlayerAnimationFrameInput& input,
+    const std::vector<WorldMapAnimationPlaybackRecord>& records,
+    const std::vector<const WorldMapAnimationBank*>& banks,
     const std::vector<uint8_t>& previous_output,WorldMapPlayerFrame* out);
 } // namespace awl

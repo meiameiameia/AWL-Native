@@ -35,14 +35,16 @@ WorldMapPlayerFrameStatus pose(const std::array<uint32_t,13>& input,WorldMapMode
     if (status!=WorldMapModelPreparationStatus::Prepared || !supported(*out)) return WorldMapPlayerFrameStatus::UnsupportedNumerics;
     return WorldMapPlayerFrameStatus::Evaluated;
 }
-} // namespace
-WorldMapPlayerFrameStatus evaluate_world_map_player_frame(
-    const WorldMapPlayerSkinWork& work,const WorldMapPlayerFrameInput& input,
+template<class Sample, class PostTransform>
+WorldMapPlayerFrameStatus evaluate_frame(
+    const WorldMapPlayerSkinWork& work,const WorldMapAnimationPose& root_pose,
+    bool evaluate_nodes,bool request_skin,size_t node_count,
+    Sample&& sample,PostTransform&& post_transform,
     const std::vector<uint8_t>& previous_output,WorldMapPlayerFrame* out) {
     using Status=WorldMapPlayerFrameStatus;
     const auto& setup=work.drawing().setup();const auto& core=setup.core_before_features();
     if (!out || previous_output.size()!=work.initial_output().size() ||
-        (input.evaluate_nodes && input.nodes.size()!=core.nodes.size())) return Status::InvalidInput;
+        (evaluate_nodes && node_count!=core.nodes.size())) return Status::InvalidInput;
     if (std::fegetround()!=FE_TONEAREST) return Status::UnsupportedNumerics;
     if (core.parent_150 || core.word_154) return Status::UnsupportedLayout;
     for (auto child:core.children_15c) if (child) return Status::UnsupportedLayout;
@@ -55,18 +57,21 @@ WorldMapPlayerFrameStatus evaluate_world_map_player_frame(
     if (!root_feature) return Status::UnsupportedLayout;
     try {
         WorldMapPlayerFrame staged;
-        const auto root_status=pose(input.root_pose,&staged.root_matrix);
+        const auto root_status=pose(root_pose,&staged.root_matrix);
         if (root_status!=Status::Evaluated) return root_status;
         staged.feature_matrix_writes.resize(setup.features().size());
         staged.feature_write_order.reserve(setup.features().size());
-        if (input.evaluate_nodes) {
-            if (input.request_skin && core.inverse_initial_matrices.size()!=core.nodes.size()) return Status::UnsupportedLayout;
+        if (evaluate_nodes) {
+            if (request_skin && core.inverse_initial_matrices.size()!=core.nodes.size()) return Status::UnsupportedLayout;
             staged.node_matrices.reserve(core.nodes.size());
-            if (input.request_skin) staged.skin_palette.reserve(core.nodes.size());
+            if (request_skin) staged.skin_palette.reserve(core.nodes.size());
             for (size_t i=0;i<core.nodes.size();++i) {
-                const auto& node=core.nodes[i];const auto& observation=input.nodes[i];WorldMapModelMatrix matrix;
-                if (observation.sampled_pose) {
-                    const auto status=pose(*observation.sampled_pose,&matrix);
+                const auto& node=core.nodes[i];WorldMapModelMatrix matrix;
+                std::optional<WorldMapAnimationPose> sampled_pose;
+                const auto sample_status=sample(i,&sampled_pose);
+                if (sample_status!=Status::Evaluated) return sample_status;
+                if (sampled_pose) {
+                    const auto status=pose(*sampled_pose,&matrix);
                     if (status!=Status::Evaluated) return status;
                 } else {
                     if (node.source_record_index>=setup.selection().model.records.size()) return Status::UnsupportedLayout;
@@ -75,7 +80,8 @@ WorldMapPlayerFrameStatus evaluate_world_map_player_frame(
                     matrix=*record.matrix;
                     if (!supported(matrix)) return Status::UnsupportedNumerics;
                 }
-                if (observation.post_transform && !concatenate(matrix,*observation.post_transform,&matrix)) return Status::UnsupportedNumerics;
+                const auto& post=post_transform(i);
+                if (post && !concatenate(matrix,*post,&matrix)) return Status::UnsupportedNumerics;
                 if (node.type_0==1 && node.parent_2!=0xffff) {
                     if (node.parent_2>=i) return Status::UnsupportedLayout;
                     if (!concatenate(staged.node_matrices[node.parent_2],matrix,&matrix)) return Status::UnsupportedNumerics;
@@ -87,14 +93,14 @@ WorldMapPlayerFrameStatus evaluate_world_map_player_frame(
                     staged.feature_matrix_writes[feature]=world;
                     staged.feature_write_order.push_back(feature);
                 }
-                if (input.request_skin) {
+                if (request_skin) {
                     WorldMapModelMatrix skin;
                     if (!concatenate(matrix,core.inverse_initial_matrices[i],&skin)) return Status::UnsupportedNumerics;
                     staged.skin_palette.push_back(skin);
                 }
             }
         }
-        if (input.evaluate_nodes && input.request_skin) {
+        if (evaluate_nodes && request_skin) {
             const auto status=execute_world_map_player_skin_work(work,staged.skin_palette,previous_output,&staged.vertex_output);
             if (status==WorldMapPlayerSkinExecutionStatus::AllocationFailure) return Status::AllocationFailure;
             if (status==WorldMapPlayerSkinExecutionStatus::UnsupportedNumerics) return Status::UnsupportedNumerics;
@@ -105,5 +111,33 @@ WorldMapPlayerFrameStatus evaluate_world_map_player_frame(
         staged.feature_write_order.push_back(*root_feature);
         *out=std::move(staged);return Status::Evaluated;
     } catch (const std::bad_alloc&) { return Status::AllocationFailure; }
+}
+} // namespace
+WorldMapPlayerFrameStatus evaluate_world_map_player_frame(
+    const WorldMapPlayerSkinWork& work,const WorldMapPlayerFrameInput& input,
+    const std::vector<uint8_t>& previous_output,WorldMapPlayerFrame* out) {
+    return evaluate_frame(work,input.root_pose,input.evaluate_nodes,input.request_skin,input.nodes.size(),
+        [&](size_t i,std::optional<WorldMapAnimationPose>* sampled) {
+            *sampled=input.nodes[i].sampled_pose; return WorldMapPlayerFrameStatus::Evaluated;
+        },[&](size_t i)->const std::optional<WorldMapModelMatrix>& {return input.nodes[i].post_transform;},
+        previous_output,out);
+}
+WorldMapPlayerAnimationFrameResult evaluate_world_map_player_animation_frame(
+    const WorldMapPlayerSkinWork& work,const WorldMapPlayerAnimationFrameInput& input,
+    const std::vector<WorldMapAnimationPlaybackRecord>& records,
+    const std::vector<const WorldMapAnimationBank*>& banks,
+    const std::vector<uint8_t>& previous_output,WorldMapPlayerFrame* out) {
+    WorldMapPlayerAnimationFrameResult result;
+    result.status=evaluate_frame(work,input.root_pose,input.evaluate_nodes,input.request_skin,input.node_post_transforms.size(),
+        [&](size_t i,std::optional<WorldMapAnimationPose>* sampled) {
+            WorldMapAnimationPose value{},prior{}; // Unwritten scratch words are not used by pose conversion.
+            const auto status=sample_world_map_blended_animation_pose(input.playback,uint32_t(i),records,banks,input.settings,prior,&value);
+            if (status==WorldMapAnimationPoseStatus::NoPose) {sampled->reset();return WorldMapPlayerFrameStatus::Evaluated;}
+            if (status==WorldMapAnimationPoseStatus::Sampled) {*sampled=value;return WorldMapPlayerFrameStatus::Evaluated;}
+            result.failed_node=uint32_t(i);result.sampling_status=status;
+            return WorldMapPlayerFrameStatus::RequiresAnimationSampling;
+        },[&](size_t i)->const std::optional<WorldMapModelMatrix>& {return input.node_post_transforms[i];},
+        previous_output,out);
+    return result;
 }
 } // namespace awl

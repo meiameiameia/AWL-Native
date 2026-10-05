@@ -493,6 +493,100 @@ void hash_frame(uint64_t& digest,const awl::WorldMapPlayerFrame& frame){
     hash(digest,uint32_t(frame.feature_write_order.size()));for(uint32_t index:frame.feature_write_order)hash(digest,index);
     hash(digest,uint32_t(frame.vertex_output.size()));for(uint8_t byte:frame.vertex_output)hash(digest,byte);
 }
+std::vector<uint8_t> animation_frame_fixture(uint32_t seed,uint32_t side) {
+    std::vector<uint8_t> bytes(512);word(bytes,4,0x30000);
+    for(uint32_t node=0;node<3;++node) {
+        const size_t record=8+node*16;size_t cursor=64+node*128;
+        const uint8_t tracks[]={0,1,3};const uint8_t flags=tracks[(seed+node)%3];
+        const uint8_t components=flags==0?3:flags==1?2:0;
+        word(bytes,record+4,uint32_t(cursor));bytes[record+9]=flags?3:0;
+        const uint16_t id=uint16_t((seed+node+side)%4==0?node+7:node);bytes[record+10]=uint8_t(id>>8);bytes[record+11]=uint8_t(id);
+        bytes[record+12]=0x37;bytes[record+13]=flags;bytes[record+14]=5;bytes[record+15]=components;
+        uint32_t state=seed+1+side*991+node*17;
+        auto value=[&](){state=state*1664525u+1013904223u;const uint16_t v=uint16_t(int((state>>16)%257)-128);
+            bytes[cursor++]=uint8_t(v>>8);bytes[cursor++]=uint8_t(v);};
+        if(components&2)for(unsigned i=0;i<3;++i)value();
+        if(components&1)for(unsigned i=0;i<3;++i)value();
+        if(flags)for(int time:{-3,2,9}) {
+            const uint16_t t=uint16_t(time);bytes[cursor++]=uint8_t(t>>8);bytes[cursor++]=uint8_t(t);
+            if(flags&2)for(unsigned i=0;i<3;++i)value();
+            if(flags&1)for(unsigned i=0;i<3;++i)value();
+        }
+    }
+    return bytes;
+}
+void animation_frame_checks() {
+    using S=awl::WorldMapPlayerFrameStatus;using P=awl::WorldMapAnimationPoseStatus;
+    Fixture fixture;auto payloads=files();payloads[1]=draw_gpl();
+    for(size_t at:{size_t(64),size_t(512)}){word(payloads[1],at+24,32);word(payloads[1],at+288,38);}
+    std::shared_ptr<const Assets> assets;std::unique_ptr<awl::WorldMapPlayerSkinWork> work;
+    awl::WorldMapPlayerFrame frame;awl::WorldMapPlayerAnimationFrameInput input;
+    awl::WorldMapAnimationBank first,second;std::vector<const awl::WorldMapAnimationBank*> banks{&first,&second};
+    std::vector<awl::WorldMapAnimationPlaybackRecord> records;
+    uint64_t digest=14695981039346656037ull;
+    for(uint32_t seed=0;seed<256;++seed) {
+        payloads[0]=setup_model();payloads[2]=execution_skin(seed);
+        for(uint32_t i=0;i<3;++i)word(payloads[0],32+i*28+24,((seed+i)%3)<<24|((i==0?5u:2u)<<16));
+        assets.reset();fixture.write("boy_0.arc",archive(payloads));
+        expect(awl::load_world_map_player_model_assets(0,&assets)==Status::Loaded,"animated frame providers load");
+        expect(awl::prepare_world_map_player_skin_work(assets,&work)==awl::WorldMapPlayerSkinWorkStatus::PreparedWork,"animated frame work prepares");if(!work)return;
+        expect(first.parse(200,animation_frame_fixture(seed,0)) && second.parse(201,animation_frame_fixture(seed,1)),"invented frame clips parse");
+        frame.vertex_output.resize(64);for(size_t i=0;i<64;++i)frame.vertex_output[i]=uint8_t(i*7+seed);
+        for(uint32_t pass=0;pass<2;++pass) {
+            const auto supplied=frame_input(seed+pass*256,3);input={};input.root_pose=supplied.root_pose;
+            input.evaluate_nodes=supplied.evaluate_nodes;input.request_skin=supplied.request_skin;
+            for(const auto& node:supplied.nodes)input.node_post_transforms.push_back(node.post_transform);
+            if(seed%8)input.playback.clip_10=awl::WorldMapAnimationClipReference{200,0};
+            input.playback.position_0=pass?4.25f:0.0f;input.playback.link_14=seed%4?2:0;
+            input.playback.value_18=float(int(seed%9)-2)/8;
+            awl::WorldMapAnimationPlayback linked;linked.clip_10=awl::WorldMapAnimationClipReference{201,0};linked.position_0=pass?9.0f:1.25f;
+            records={{2,linked}};
+            const auto result=awl::evaluate_world_map_player_animation_frame(*work,input,records,banks,frame.vertex_output,&frame);
+            expect(result.status==S::Evaluated && !result.failed_node && !result.sampling_status,"sampled/blended animation feeds complete frame with atomic prior alias");
+            hash(digest,seed);hash(digest,pass);hash_frame(digest,frame);
+        }
+    }
+    std::cout<<"PLAYER_ANIMATION_FRAME_EVALUATION 512 digest "<<std::hex<<digest<<std::dec<<'\n';
+    expect(digest==0x23d7642c567b9eb5ull,"complete sampler/frame/skin instructions match for invented scale/translation clips");
+    const auto before=frame;uint64_t before_hash=14695981039346656037ull;hash_frame(before_hash,before);
+    auto preserved=[&](){uint64_t h=14695981039346656037ull;hash_frame(h,frame);return h==before_hash;};
+    input={};input.node_post_transforms.resize(3);input.playback.clip_10=awl::WorldMapAnimationClipReference{200,0};
+    auto damaged=animation_frame_fixture(255,0);word(damaged,8+2*16+4,UINT32_MAX);
+    expect(first.parse(200,damaged),"late bad track remains opaque at parse");
+    auto result=awl::evaluate_world_map_player_animation_frame(*work,input,records,banks,frame.vertex_output,&frame);
+    expect(result.status==S::RequiresAnimationSampling && result.failed_node==2u && result.sampling_status==P::UnsupportedLayout && preserved(),
+        "late track failure reports exact node/reason and preserves matrices, features and vertices");
+    input.root_pose[0]=0x02000000;input.root_pose[4]=0x3f800000;
+    result=awl::evaluate_world_map_player_animation_frame(*work,input,records,banks,frame.vertex_output,&frame);
+    expect(result.status==S::RequiresPoseConversion && !result.failed_node && preserved(),"root conversion precedes node sampling failures");
+    input.root_pose={};expect(first.parse(200,animation_frame_fixture(255,0)),"valid frame clip restores");
+    input.playback.link_14=9;
+    result=awl::evaluate_world_map_player_animation_frame(*work,input,records,banks,frame.vertex_output,&frame);
+    expect(result.status==S::RequiresAnimationSampling && result.failed_node==0u && result.sampling_status==P::RequiresPlaybackRecord && preserved(),
+        "reached missing blend record preserves complete frame");
+    input.node_post_transforms.pop_back();
+    expect(awl::evaluate_world_map_player_animation_frame(*work,input,records,banks,frame.vertex_output,&frame).status==S::InvalidInput && preserved(),
+        "missing post observation rejects before sampling");
+    input.node_post_transforms.resize(3);input.playback.link_14=0;
+    expect(awl::evaluate_world_map_player_animation_frame(*work,input,records,banks,frame.vertex_output,nullptr).status==S::InvalidInput,"null animated frame output rejects");
+    input.playback.clip_10.reset();input.playback.link_14=999;input.settings.quaternion_scale=std::numeric_limits<float>::quiet_NaN();
+    expect(awl::evaluate_world_map_player_animation_frame(*work,input,{}, {},frame.vertex_output,&frame).status==S::Evaluated && frame.skin_executed,
+        "null root clip reaches retained defaults without bank/link/settings evidence");
+    input.evaluate_nodes=false;input.node_post_transforms.clear();input.playback.clip_10=awl::WorldMapAnimationClipReference{999,0};
+    expect(awl::evaluate_world_map_player_animation_frame(*work,input,{}, {},frame.vertex_output,&frame).status==S::Evaluated && !frame.skin_executed && frame.node_matrices.empty(),
+        "node-off skips all animation evidence and skinning");
+    input={};input.node_post_transforms.resize(3);input.playback.clip_10=awl::WorldMapAnimationClipReference{200,0};
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    const auto saved=frame;uint64_t saved_hash=14695981039346656037ull;hash_frame(saved_hash,saved);const auto live=allocation_probe::live;
+    size_t rejected=0;bool reached=false;
+    for(size_t fail=0;fail<32;++fail){allocation_probe::remaining=fail;allocation_probe::enabled=true;
+        const auto step=awl::evaluate_world_map_player_animation_frame(*work,input,records,banks,frame.vertex_output,&frame);allocation_probe::enabled=false;
+        if(step.status==S::Evaluated){reached=true;break;}++rejected;uint64_t h=14695981039346656037ull;hash_frame(h,frame);
+        expect(step.status==S::AllocationFailure && h==saved_hash && allocation_probe::live==live,"animated-frame allocation failure releases staging and preserves output");}
+    expect(reached && rejected==5,"animated frame adds no allocation before sampling beyond existing frame staging");
+    std::cout<<"PLAYER_ANIMATION_FRAME_ALLOCATION_FAILURES "<<rejected<<'\n';
+#endif
+}
 void frame_checks(){
     using S=awl::WorldMapPlayerFrameStatus;
     Fixture fixture;auto payloads=files();payloads[1]=draw_gpl();
@@ -912,6 +1006,12 @@ void hash_skin_work(uint64_t& h,uint32_t phase,const awl::WorldMapPlayerSkinWork
 void local(const char* disc,bool frame_evidence=false){
     expect(awl::filesystem_mount("/",disc),"local disc mounts");
     uint64_t digest=14695981039346656037ull,auxiliary_digest=digest,setup_digest=digest,draw_digest=digest,skin_work_digest=digest,skin_execution_digest=digest;
+    uint64_t animation_frame_digest=digest;
+    std::ifstream animation_file(std::filesystem::path(disc)/"files"/"boy_0.anm.arc",std::ios::binary);
+    std::vector<uint8_t> animation_bytes((std::istreambuf_iterator<char>(animation_file)),{});
+    awl::WorldMapAnimationBank animation_bank;
+    expect(animation_bank.parse(200,std::move(animation_bytes)) && animation_bank.clip_count()==126,"local animated-frame bank loads");
+    if(!animation_bank.loaded())return;
     uint64_t frame_digest=digest;std::ofstream frame_inputs;
     if(frame_evidence){frame_inputs.open("build/terrain-trace/player-frame-native-inputs.txt");expect(bool(frame_inputs),"ignored local frame input evidence opens");}
     std::shared_ptr<const Assets> assets;size_t selections=0,relocations=0;
@@ -988,6 +1088,28 @@ void local(const char* disc,bool frame_evidence=false){
                 "local retained hierarchy/default/inverse matrices feed CPU skinning with supplied frame poses");
             hash(frame_digest,phase);hash(frame_digest,pass);hash_frame(frame_digest,evaluated);
         }
+        awl::WorldMapAnimationClip primary,linked;
+        expect(animation_bank.resolve(phase,&primary) && animation_bank.resolve(phase+1,&linked),"diagnostic local frame clips resolve");
+        awl::WorldMapPlayerAnimationFrameInput animated;
+        animated.root_pose=explicit_pose({1,0,0,3,0,1,0,9,0,0,1,-2});animated.node_post_transforms.resize(55);
+        animated.playback.clip_10=primary.reference;animated.playback.link_14=2;animated.playback.value_18=0.375f;
+        awl::WorldMapAnimationPlayback linked_playback;linked_playback.clip_10=linked.reference;
+        const std::vector<const awl::WorldMapAnimationBank*> banks{&animation_bank};
+        evaluated={};evaluated.vertex_output=skin_work->initial_output();
+        std::vector<uint8_t> first_vertices;bool changed=false;
+        uint32_t pass=0;
+        for(float time:{-5.0f,1.25f,10000.0f}) {
+            animated.playback.position_0=time;linked_playback.position_0=time;
+            const std::vector<awl::WorldMapAnimationPlaybackRecord> records{{2,linked_playback}};
+            const auto result=awl::evaluate_world_map_player_animation_frame(*skin_work,animated,records,banks,evaluated.vertex_output,&evaluated);
+            expect(result.status==awl::WorldMapPlayerFrameStatus::Evaluated && !result.failed_node && evaluated.skin_executed &&
+                evaluated.node_matrices.size()==55 && evaluated.skin_palette.size()==55 && evaluated.feature_write_order==std::vector<uint32_t>{0},
+                "local sampled/blended clips feed hierarchy, feature placement and quantized skinning");
+            hash(animation_frame_digest,phase);hash(animation_frame_digest,pass);hash_frame(animation_frame_digest,evaluated);
+            if(pass==0)first_vertices=evaluated.vertex_output;else if(evaluated.vertex_output!=first_vertices)changed=true;
+            ++pass;
+        }
+        expect(changed,"local sampled time changes produce different actual vertex bytes");
     }
     std::cout<<"LOCAL_PLAYER_MODEL_SELECTIONS "<<selections<<" metadata "<<std::hex<<digest<<std::dec<<'\n';
     expect(selections==6,"all six phase selections reach the explicit dependency boundary");
@@ -1002,6 +1124,8 @@ void local(const char* disc,bool frame_evidence=false){
     std::cout<<"LOCAL_PLAYER_SKIN_EXECUTION "<<selections*2<<" digest "<<std::hex<<skin_execution_digest<<std::dec<<'\n';
     std::cout<<"LOCAL_PLAYER_FRAME_EVALUATION "<<selections*2<<" digest "<<std::hex<<frame_digest<<std::dec<<'\n';
     expect(frame_digest==0xd46f30d9043eee3cull,"all local frame matrices and vertices match mapped instructions with supplied native default/inverse matrices");
+    std::cout<<"LOCAL_PLAYER_ANIMATION_FRAMES_NATIVE_NUMERICS 18 digest "<<std::hex<<animation_frame_digest<<std::dec<<'\n';
+    expect(animation_frame_digest==0x30d965797df91c84ull,"local complete animation frames match mapped instructions with native normalization factor/math and supplied prepared matrices");
     expect(draw_digest==0xef4c5a9a9aa08adaull,"all six CPU drawing parameter sets match independently executed original routines");
     std::cout<<"LOCAL_PLAYER_DRAW_PARAMETERS "<<selections<<" digest "<<std::hex<<draw_digest<<std::dec<<'\n';
     std::cout<<"LOCAL_PLAYER_SETUP_PLANS "<<selections<<" digest "<<std::hex<<setup_digest<<std::dec<<'\n';
@@ -1015,7 +1139,7 @@ int main(int argc,char** argv){
         _CrtSetReportMode(kind,_CRTDBG_MODE_FILE);_CrtSetReportFile(kind,_CRTDBG_FILE_STDERR);
     }
 #endif
-    embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();skin_execution_checks();awl::filesystem_shutdown();frame_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
+    embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();skin_execution_checks();awl::filesystem_shutdown();frame_checks();awl::filesystem_shutdown();animation_frame_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
     if(argc==3 && std::string(argv[1])=="--player-model-local")local(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-frame-local")local(argv[2],true);
     else if(argc!=1)expect(false,"usage: --player-model-local <disc> or --player-frame-local <disc>");
