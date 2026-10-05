@@ -54,7 +54,7 @@ struct WorldMapPlayerFrame {
 enum class WorldMapPlayerFrameStatus {
     Evaluated, RequiresPoseConversion, UnsupportedLayout, UnsupportedNumerics,
     InvalidInput, AllocationFailure,
-    RequiresAnimationSampling,
+    RequiresAnimationSampling, RequiresHierarchy,
 };
 // E438 primary root paths, per-node pose/post/parent composition,
 // inverse-bind palette and feature matrices, followed by checked C080 execution.
@@ -106,6 +106,60 @@ struct WorldMapPlayerAnimationFrameResult {
     const std::vector<WorldMapAnimationPlaybackRecord>& records,
     const std::vector<const WorldMapAnimationBank*>& banks,
     const std::vector<uint8_t>& previous_output,WorldMapPlayerFrame* out);
+
+struct WorldMapPlayerOwnedFrameInput {
+    // Absent reuses the owner's last successfully published root pose.
+    // Present is a supplied placement observation, not translated actor input.
+    std::optional<WorldMapAnimationPose> root_pose;
+    bool evaluate_nodes = true, request_skin = true;
+    WorldMapAnimationPartialPlayback playback;
+    WorldMapAnimationPoseSettings settings;
+    std::vector<std::optional<WorldMapModelMatrix>> node_post_transforms;
+    WorldMapPlayerFrameLinks links;
+};
+enum class WorldMapPlayerFrameOwnerStatus { PreparedCpuState, RequiresSkinWork, InvalidInput, AllocationFailure };
+struct WorldMapPlayerFrameOwnerResult {
+    WorldMapPlayerFrameOwnerStatus status = WorldMapPlayerFrameOwnerStatus::InvalidInput;
+    std::optional<WorldMapPlayerSkinWorkStatus> skin_work_status;
+};
+// Persistent primary CPU frame state. Owns checked skin work/providers,
+// last vertex bytes, supplied root pose and initialized feature matrices.
+// No compiled GX commands, original CD50 wrapper, holder, playback/channel
+// owner, live actor or GPU object is constructed by PreparedCpuState.
+class WorldMapPlayerFrameOwner {
+public:
+    WorldMapPlayerFrameOwner(const WorldMapPlayerFrameOwner&) = delete;
+    WorldMapPlayerFrameOwner& operator=(const WorldMapPlayerFrameOwner&) = delete;
+    const WorldMapPlayerSkinWork& work() const { return *work_; }
+    const WorldMapAnimationPose& root_pose() const { return root_pose_; }
+    const std::vector<WorldMapModelMatrix>& feature_matrices() const { return features_; }
+    // No frame is fabricated at preparation; node/palette matrices in the
+    // last frame are diagnostic temporary results, not persistent DOL fields.
+    const std::optional<WorldMapPlayerFrame>& frame() const { return frame_; }
+    const std::vector<uint8_t>& vertex_output() const { return frame_?frame_->vertex_output:work_->initial_output(); }
+    // E438's sampled primary CPU work followed by persistent feature/skin
+    // publication. Unwritten features and skipped skin bytes stay unchanged.
+    // Every failure preserves the complete owner; unknown partial fields
+    // remain unknown. Records/banks/settings/links are borrowed observations.
+    // Nonnull child slots require a complete hierarchy transaction and return
+    // RequiresHierarchy before any publication. No child effect is accepted.
+    [[nodiscard]] WorldMapPlayerAnimationFrameResult advance(
+        const WorldMapPlayerOwnedFrameInput& input,
+        const std::vector<WorldMapAnimationPartialPlaybackRecord>& records,
+        const std::vector<const WorldMapAnimationBank*>& banks);
+private:
+    WorldMapPlayerFrameOwner(std::unique_ptr<WorldMapPlayerSkinWork> work,std::vector<WorldMapModelMatrix> features);
+    friend WorldMapPlayerFrameOwnerResult prepare_world_map_player_frame_owner(
+        const std::shared_ptr<const WorldMapPlayerModelAssets>&,std::unique_ptr<WorldMapPlayerFrameOwner>*);
+    std::unique_ptr<WorldMapPlayerSkinWork> work_;
+    WorldMapAnimationPose root_pose_{}; // D330 initializes flag byte only; other zero scratch words are unread until supplied.
+    std::vector<WorldMapModelMatrix> features_;
+    std::optional<WorldMapPlayerFrame> frame_;
+};
+// Keeps immutable selected providers live. Failure preserves the previous
+// owner/output. Successful replacement destroys only that prior CPU owner.
+[[nodiscard]] WorldMapPlayerFrameOwnerResult prepare_world_map_player_frame_owner(
+    const std::shared_ptr<const WorldMapPlayerModelAssets>& assets,std::unique_ptr<WorldMapPlayerFrameOwner>* out);
 
 struct WorldMapModelFrameSource {
     // Exactly one primary work OR prepared no-skin resource/core views OR

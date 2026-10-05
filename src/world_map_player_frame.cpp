@@ -268,6 +268,57 @@ WorldMapPlayerAnimationFrameResult evaluate_world_map_model_animation_frame(
         return evaluate_model(resource,core,input,sample,previous_output,out);
     });
 }
+WorldMapPlayerFrameOwner::WorldMapPlayerFrameOwner(
+    std::unique_ptr<WorldMapPlayerSkinWork> work,std::vector<WorldMapModelMatrix> features)
+    :work_(std::move(work)),features_(std::move(features)) {}
+WorldMapPlayerFrameOwnerResult prepare_world_map_player_frame_owner(
+    const std::shared_ptr<const WorldMapPlayerModelAssets>& assets,std::unique_ptr<WorldMapPlayerFrameOwner>* out) {
+    using Status=WorldMapPlayerFrameOwnerStatus;
+    if (!out) return {};
+    try {
+        std::unique_ptr<WorldMapPlayerSkinWork> work;
+        const auto result=prepare_world_map_player_skin_work(assets,&work);
+        if (result==WorldMapPlayerSkinWorkStatus::AllocationFailure) return {Status::AllocationFailure,result};
+        if (result!=WorldMapPlayerSkinWorkStatus::PreparedWork) return {Status::RequiresSkinWork,result};
+        std::vector<WorldMapModelMatrix> features;
+        features.reserve(work->drawing().setup().features().size());
+        for (const auto& feature:work->drawing().setup().features()) features.push_back(feature.matrix);
+        auto owner=std::unique_ptr<WorldMapPlayerFrameOwner>(new WorldMapPlayerFrameOwner(std::move(work),std::move(features)));
+        *out=std::move(owner);return {Status::PreparedCpuState};
+    } catch (const std::bad_alloc&) { return {Status::AllocationFailure}; }
+}
+WorldMapPlayerAnimationFrameResult WorldMapPlayerFrameOwner::advance(
+    const WorldMapPlayerOwnedFrameInput& input,
+    const std::vector<WorldMapAnimationPartialPlaybackRecord>& records,
+    const std::vector<const WorldMapAnimationBank*>& banks) {
+    using Status=WorldMapPlayerFrameStatus;
+    // Publishing a primary prefix would accept only part of E438 recursion.
+    for (const auto& child:input.links.children) if (child.child) return {Status::RequiresHierarchy};
+    try {
+        const auto& root=input.root_pose?*input.root_pose:root_pose_;
+        WorldMapPlayerFrame staged;
+        auto result=sampled_animation_frame([&](uint32_t node,const auto& prior,auto* output) {
+            return sample_world_map_partial_blended_animation_pose(input.playback,node,records,banks,input.settings,prior,output);
+        },[&](auto&& sample) {
+            return evaluate_primary(*work_,root,input.evaluate_nodes,input.request_skin,input.node_post_transforms.size(),input.links,sample,
+                [&](size_t i)->const std::optional<WorldMapModelMatrix>& { return input.node_post_transforms[i]; },vertex_output(),&staged);
+        });
+        if (result.status!=Status::Evaluated) return result;
+        // 2B48 feature writes persist. E438's matrices/palette are temporary;
+        // an unwritten feature must retain its preceding constructor/frame value.
+        auto features_after=features_;
+        for (uint32_t index:staged.feature_write_order) {
+            if (index>=features_after.size() || index>=staged.feature_matrix_writes.size() || !staged.feature_matrix_writes[index])
+                return {Status::UnsupportedLayout};
+            features_after[index]=*staged.feature_matrix_writes[index];
+        }
+        // All allocation/conversion/sampling/skin work completed. These moves
+        // cannot throw and publish the pose, features and vertices together.
+        root_pose_=staged.root_pose_after;
+        features_.swap(features_after);frame_.emplace(std::move(staged));
+        return result;
+    } catch (const std::bad_alloc&) { return {Status::AllocationFailure}; }
+}
 WorldMapModelHierarchyFrameResult evaluate_world_map_model_hierarchy_frame(
     const std::vector<WorldMapModelFrameSource>& sources,uint64_t root,
     const std::vector<WorldMapAnimationPlaybackRecord>& records,

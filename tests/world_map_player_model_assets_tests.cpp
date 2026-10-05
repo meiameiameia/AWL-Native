@@ -1062,6 +1062,96 @@ void owned_hierarchy_frame_checks() {
             "supplied primary skinning and authoritative owned secondary share retained banks and ordered attachment placement");}
     std::cout<<"PLAYER_OWNED_HIERARCHY graph/channel/bank/default/frame boundaries checked\n";
 }
+void primary_frame_owner_checks() {
+    using O=awl::WorldMapPlayerFrameOwnerStatus;using F=awl::WorldMapPlayerFrameStatus;using P=awl::WorldMapAnimationPoseStatus;
+    Fixture fixture;auto payloads=files();payloads[1]=draw_gpl();
+    for(size_t at:{size_t(64),size_t(512)}){word(payloads[1],at+24,32);word(payloads[1],at+288,38);}
+    std::shared_ptr<const Assets> assets;std::unique_ptr<awl::WorldMapPlayerFrameOwner> owner;
+    awl::WorldMapAnimationBank first,second;std::vector<const awl::WorldMapAnimationBank*> banks{&first,&second};size_t compared=0;
+    auto prepare=[&](){assets.reset();fixture.write("boy_0.arc",archive(payloads));
+        expect(awl::load_world_map_player_model_assets(0,&assets)==Status::Loaded &&
+            awl::prepare_world_map_player_frame_owner(assets,&owner).status==O::PreparedCpuState,"primary CPU frame owner retains checked providers and skin work");};
+    for(uint32_t seed=0;seed<256;++seed){payloads[0]=setup_model();payloads[2]=execution_skin(seed);
+        for(uint32_t i=0;i<3;++i)word(payloads[0],32+i*28+24,((seed+i)%3)<<24|((i==0?5u:2u)<<16));prepare();if(!owner)return;
+        expect(!owner->frame() && owner->root_pose()[0]==0 && owner->vertex_output()==owner->work().initial_output(),"preparation fabricates no evaluated frame and retains initial vertex bytes");
+        expect(first.parse(200,animation_frame_fixture(seed,0)) && second.parse(201,animation_frame_fixture(seed,1)),"primary owner comparison clips parse");
+        awl::WorldMapPlayerFrame expected;expected.vertex_output=owner->work().initial_output();
+        for(uint32_t pass=0;pass<2;++pass){const auto supplied=frame_input(seed+pass*256,3);awl::WorldMapPlayerAnimationFrameInput plain;
+            plain.root_pose=supplied.root_pose;plain.evaluate_nodes=supplied.evaluate_nodes;plain.request_skin=supplied.request_skin;
+            for(const auto& node:supplied.nodes)plain.node_post_transforms.push_back(node.post_transform);
+            if(seed%8)plain.playback.clip_10=awl::WorldMapAnimationClipReference{200,0};plain.playback.position_0=pass?4.25f:0.0f;
+            plain.playback.link_14=seed%4?2:0;plain.playback.value_18=float(int(seed%9)-2)/8;
+            auto linked=plain.playback;linked.clip_10=awl::WorldMapAnimationClipReference{201,0};linked.link_14=0;linked.position_0=pass?9.0f:1.25f;
+            const std::vector<awl::WorldMapAnimationPlaybackRecord> complete{{2,linked}};
+            const std::vector<awl::WorldMapAnimationPartialPlaybackRecord> partial{{2,awl::partial_world_map_animation_playback(linked)}};
+            awl::WorldMapPlayerOwnedFrameInput input;input.root_pose=plain.root_pose;input.evaluate_nodes=plain.evaluate_nodes;input.request_skin=plain.request_skin;
+            input.playback=awl::partial_world_map_animation_playback(plain.playback);input.playback.word_8.reset();input.playback.limit_c.reset();
+            input.node_post_transforms=plain.node_post_transforms;
+            expect(awl::evaluate_world_map_player_animation_frame(owner->work(),plain,complete,banks,expected.vertex_output,&expected).status==F::Evaluated &&
+                owner->advance(input,partial,banks).status==F::Evaluated && owner->frame(),"persistent primary frames compose the previously verified supplied animation path");
+            if(!owner->frame())return;uint64_t a=14695981039346656037ull,b=a;hash_frame(a,expected);hash_frame(b,*owner->frame());
+            expect(a==b && owner->root_pose()==expected.root_pose_after && !input.playback.complete(),"all frame matrices/features/skin bytes match while unused supplied playback fields remain unknown");++compared;
+        }}
+    expect(compared==512,"all persistent complete/partial primary frame comparisons run");std::cout<<"PLAYER_PRIMARY_OWNED_FRAME_PARITY "<<compared<<'\n';
+    payloads[0]=setup_model();payloads[2]=execution_skin(0);prepare();if(!owner)return;
+    const awl::WorldMapModelMatrix identity{1,0,0,0,0,1,0,0,0,0,1,0};
+    expect(owner->feature_matrices()==std::vector<awl::WorldMapModelMatrix>{identity,identity,identity,identity},"all four persistent features start with independently traced constructor identity matrices");
+    expect(first.parse(200,owner_frame_clip()) && second.parse(201,owner_frame_clip(4)),"persistent primary translation clips parse");
+    awl::WorldMapPlayerOwnedFrameInput input;input.root_pose=explicit_pose({1,0,0,10,0,1,0,20,0,0,1,30});
+    input.node_post_transforms.resize(3);input.playback.clip_10=awl::WorldMapAnimationClipReference{200,0};
+    expect(owner->advance(input,{},banks).status==F::Evaluated && owner->feature_matrices()==std::vector<awl::WorldMapModelMatrix>{
+        {1,0,0,10,0,1,0,20,0,0,1,30},{1,0,0,11,0,1,0,22,0,0,1,33},
+        {1,0,0,14,0,1,0,25,0,0,1,36},{1,0,0,17,0,1,0,28,0,0,1,39}},"reached root/node feature writes persist with independently known translations");
+    const auto vertices=owner->vertex_output();input.request_skin=false;input.root_pose.reset();input.playback.clip_10=awl::WorldMapAnimationClipReference{201,0};
+    expect(owner->advance(input,{},banks).status==F::Evaluated && owner->vertex_output()==vertices && !owner->frame()->skin_executed && owner->frame()->skin_palette.empty() &&
+        owner->feature_matrices()[1]==awl::WorldMapModelMatrix{1,0,0,15,0,1,0,26,0,0,1,37},"skin-off retains preceding vertex bytes while updated node animation still publishes feature matrices");
+    const auto feature=owner->feature_matrices()[1];
+    input.evaluate_nodes=false;input.root_pose=explicit_pose({1,0,0,40,0,1,0,50,0,0,1,60});input.node_post_transforms.clear();
+    input.playback.link_14=999;input.playback.value_18.reset();
+    expect(owner->advance(input,{},{}).status==F::Evaluated && owner->vertex_output()==vertices && owner->feature_matrices()[1]==feature &&
+        owner->feature_matrices()[0]==awl::WorldMapModelMatrix{1,0,0,40,0,1,0,50,0,0,1,60} && owner->frame()->node_matrices.empty(),
+        "node-off retains previously written node feature and skin bytes, updates root feature and ignores unavailable animation inputs");
+    input.root_pose.reset();
+    expect(owner->advance(input,{},{}).status==F::Evaluated && owner->root_pose()==explicit_pose({1,0,0,40,0,1,0,50,0,0,1,60}),"absent placement reuses the retained root pose across frames");
+    input.links.inherited={991,991,8u,{1,0,0,100,0,1,0,200,0,0,1,300}};
+    expect(owner->advance(input,{},{}).status==F::Evaluated && owner->root_pose()[0]==0 && owner->feature_matrices()[0]==input.links.inherited.matrix,
+        "inherited scale-only placement persists the original flag-byte mutation and root feature write");
+    auto fingerprint=[&](){uint64_t h=14695981039346656037ull;hash_frame(h,*owner->frame());
+        for(auto v:owner->root_pose())hash(h,v);for(const auto& m:owner->feature_matrices())for(float v:m){uint32_t raw;std::memcpy(&raw,&v,4);hash(h,raw);}return h;};
+    const auto before=fingerprint();auto preserved=[&](){return fingerprint()==before;};
+    input.links={};input.evaluate_nodes=true;input.request_skin=true;input.playback.clip_10=awl::WorldMapAnimationClipReference{200,0};
+    input.node_post_transforms.resize(3);input.root_pose=explicit_pose({1,0,0,9,0,1,0,8,0,0,1,7});
+    input.playback.link_14=2;awl::WorldMapAnimationPartialPlayback linked;linked.clip_10=awl::WorldMapAnimationClipReference{201,0};
+    const std::vector<awl::WorldMapAnimationPartialPlaybackRecord> records{{2,linked}};
+    auto result=owner->advance(input,records,banks);
+    expect(result.status==F::RequiresAnimationSampling && result.failed_node==0u && result.sampling_status==P::RequiresBlendWeight && preserved(),"reached unknown blend weight cannot replace any persistent placement/feature/frame/vertex state");
+    input.playback.link_14=0;auto malformed=owner_frame_clip();word(malformed,40+4,UINT32_MAX);expect(first.parse(200,malformed),"late persistent-frame malformed track remains opaque until reached");
+    result=owner->advance(input,{},banks);
+    expect(result.status==F::RequiresAnimationSampling && result.failed_node==2u && result.sampling_status==P::UnsupportedLayout && preserved(),"late node failure rolls back already prepared root/node features and skin inputs");
+    input.links.children[0]={123,0,1u};
+    expect(owner->advance(input,{},banks).status==F::RequiresHierarchy && preserved(),"attached child requires complete hierarchy publication before any primary state is accepted");input.links={};
+    expect(first.parse(200,owner_frame_clip()),"persistent-frame valid clip restores");input.node_post_transforms.pop_back();
+    expect(owner->advance(input,{},banks).status==F::InvalidInput && preserved(),"missing node observations preserve all persistent state");input.node_post_transforms.resize(3);
+    const auto* previous=owner.get();
+    const auto missing=awl::prepare_world_map_player_frame_owner({},&owner);
+    expect(missing.status==O::RequiresSkinWork && missing.skin_work_status==awl::WorldMapPlayerSkinWorkStatus::RequiresAssets && owner.get()==previous && preserved(),"missing providers cannot replace a working CPU frame owner");
+    expect(awl::prepare_world_map_player_frame_owner(assets,nullptr).status==O::InvalidInput,"null owner output rejects");
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    const auto live=allocation_probe::live;size_t rejected=0;bool reached=false;
+    for(size_t fail=0;fail<32;++fail){allocation_probe::remaining=fail;allocation_probe::enabled=true;const auto step=owner->advance(input,{},banks);allocation_probe::enabled=false;
+        if(step.status==F::Evaluated){reached=true;break;}++rejected;
+        expect(step.status==F::AllocationFailure && preserved() && allocation_probe::live==live,"every primary publication allocation failure preserves root/feature/skin/frame state and releases staging");}
+    expect(reached && rejected==6,"primary owner sweep includes feature-state publication after all five frame allocations");std::cout<<"PLAYER_PRIMARY_PUBLICATION_ALLOCATION_FAILURES "<<rejected<<'\n';
+    const auto* old=owner.get();const auto live_after=allocation_probe::live;rejected=0;reached=false;
+    for(size_t fail=0;fail<256;++fail){allocation_probe::remaining=fail;allocation_probe::enabled=true;const auto step=awl::prepare_world_map_player_frame_owner(assets,&owner);allocation_probe::enabled=false;
+        if(step.status==O::PreparedCpuState){reached=true;break;}++rejected;
+        expect(step.status==O::AllocationFailure && owner.get()==old && allocation_probe::live==live_after,"primary CPU owner replacement allocation failure preserves previous live owner and releases all providers/staging");}
+    expect(reached && rejected>121,"primary owner preparation sweep reaches private feature state and owner publication");std::cout<<"PLAYER_PRIMARY_OWNER_ALLOCATION_FAILURES "<<rejected<<'\n';
+#endif
+    std::weak_ptr<const Assets> lifetime=assets;assets.reset();
+    expect(!lifetime.expired() && owner->advance(input,{},banks).status==F::Evaluated,"persistent primary owner keeps selected providers live after caller release");
+    owner.reset();expect(lifetime.expired(),"destroying the last CPU owner releases retained asset providers");
+}
 void skin_execution_checks(){
     using S=awl::WorldMapPlayerSkinExecutionStatus;
     Fixture fixture;auto payloads=files();payloads[0]=setup_model();payloads[1]=draw_gpl();
@@ -1412,7 +1502,7 @@ void hash_skin_work(uint64_t& h,uint32_t phase,const awl::WorldMapPlayerSkinWork
 void local(const char* disc,bool frame_evidence=false){
     expect(awl::filesystem_mount("/",disc),"local disc mounts");
     uint64_t digest=14695981039346656037ull,auxiliary_digest=digest,setup_digest=digest,draw_digest=digest,skin_work_digest=digest,skin_execution_digest=digest;
-    uint64_t animation_frame_digest=digest;
+    uint64_t animation_frame_digest=digest,owned_primary_digest=digest;
     std::ifstream animation_file(std::filesystem::path(disc)/"files"/"boy_0.anm.arc",std::ios::binary);
     std::vector<uint8_t> animation_bytes((std::istreambuf_iterator<char>(animation_file)),{});
     awl::WorldMapAnimationBank animation_bank;
@@ -1503,6 +1593,9 @@ void local(const char* disc,bool frame_evidence=false){
         const std::vector<const awl::WorldMapAnimationBank*> banks{&animation_bank};
         evaluated={};evaluated.vertex_output=skin_work->initial_output();
         std::vector<uint8_t> first_vertices;bool changed=false;
+        std::unique_ptr<awl::WorldMapPlayerFrameOwner> primary_owner;
+        expect(awl::prepare_world_map_player_frame_owner(assets,&primary_owner).status==awl::WorldMapPlayerFrameOwnerStatus::PreparedCpuState,
+            "actual primary CPU frame owner prepares retained skin/output/feature state");if(!primary_owner)return;
         uint32_t pass=0;
         for(float time:{-5.0f,1.25f,10000.0f}) {
             animated.playback.position_0=time;linked_playback.position_0=time;
@@ -1512,6 +1605,17 @@ void local(const char* disc,bool frame_evidence=false){
                 evaluated.node_matrices.size()==55 && evaluated.skin_palette.size()==55 && evaluated.feature_write_order==std::vector<uint32_t>{0},
                 "local sampled/blended clips feed hierarchy, feature placement and quantized skinning");
             hash(animation_frame_digest,phase);hash(animation_frame_digest,pass);hash_frame(animation_frame_digest,evaluated);
+            awl::WorldMapPlayerOwnedFrameInput owned_input;
+            if(pass==0)owned_input.root_pose=animated.root_pose;
+            owned_input.playback=awl::partial_world_map_animation_playback(animated.playback);owned_input.playback.word_8.reset();owned_input.playback.limit_c.reset();
+            owned_input.node_post_transforms=animated.node_post_transforms;
+            auto owned_link=awl::partial_world_map_animation_playback(linked_playback);owned_link.value_18.reset();
+            const std::vector<awl::WorldMapAnimationPartialPlaybackRecord> owned_records{{2,owned_link}};
+            expect(primary_owner->advance(owned_input,owned_records,banks).status==awl::WorldMapPlayerFrameStatus::Evaluated && primary_owner->frame() &&
+                primary_owner->frame()->skin_executed && primary_owner->frame()->node_matrices.size()==55 && primary_owner->feature_matrices().size()==1 &&
+                primary_owner->feature_matrices()[0]==evaluated.root_matrix,"local sampled CPU frame publishes persistent primary root feature and quantized skin output");
+            if(!primary_owner->frame())return;
+            hash(owned_primary_digest,phase);hash(owned_primary_digest,pass);hash_frame(owned_primary_digest,*primary_owner->frame());
             if(pass==0)first_vertices=evaluated.vertex_output;else if(evaluated.vertex_output!=first_vertices)changed=true;
             ++pass;
         }
@@ -1567,6 +1671,8 @@ void local(const char* disc,bool frame_evidence=false){
     expect(frame_digest==0xd46f30d9043eee3cull,"all local frame matrices and vertices match mapped instructions with supplied native default/inverse matrices");
     std::cout<<"LOCAL_PLAYER_ANIMATION_FRAMES_NATIVE_NUMERICS 18 digest "<<std::hex<<animation_frame_digest<<std::dec<<'\n';
     expect(animation_frame_digest==0x30d965797df91c84ull,"local complete animation frames match mapped instructions with native normalization factor/math and supplied prepared matrices");
+    std::cout<<"LOCAL_PLAYER_PRIMARY_OWNED_FRAMES 18 digest "<<std::hex<<owned_primary_digest<<std::dec<<'\n';
+    expect(owned_primary_digest==0x30d965797df91c84ull,"persistent primary CPU frames match the existing local mapped-instruction digest under the same documented native numerical substitutions");
     expect(draw_digest==0xef4c5a9a9aa08adaull,"all six CPU drawing parameter sets match independently executed original routines");
     std::cout<<"LOCAL_PLAYER_DRAW_PARAMETERS "<<selections<<" digest "<<std::hex<<draw_digest<<std::dec<<'\n';
     std::cout<<"LOCAL_PLAYER_SETUP_PLANS "<<selections<<" digest "<<std::hex<<setup_digest<<std::dec<<'\n';
@@ -1580,7 +1686,7 @@ int main(int argc,char** argv){
         _CrtSetReportMode(kind,_CRTDBG_MODE_FILE);_CrtSetReportFile(kind,_CRTDBG_FILE_STDERR);
     }
 #endif
-    embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();skin_execution_checks();awl::filesystem_shutdown();frame_checks();awl::filesystem_shutdown();animation_frame_checks();awl::filesystem_shutdown();attachment_frame_checks();awl::filesystem_shutdown();hierarchy_frame_checks();awl::filesystem_shutdown();partial_frame_sampling_checks();owned_hierarchy_frame_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
+    embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();skin_execution_checks();awl::filesystem_shutdown();frame_checks();awl::filesystem_shutdown();animation_frame_checks();awl::filesystem_shutdown();attachment_frame_checks();awl::filesystem_shutdown();hierarchy_frame_checks();awl::filesystem_shutdown();partial_frame_sampling_checks();owned_hierarchy_frame_checks();awl::filesystem_shutdown();primary_frame_owner_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
     if(argc==3 && std::string(argv[1])=="--player-model-local")local(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-frame-local")local(argv[2],true);
     else if(argc!=1)expect(false,"usage: --player-model-local <disc> or --player-frame-local <disc>");
