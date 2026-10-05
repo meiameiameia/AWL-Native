@@ -656,6 +656,123 @@ void frame_checks(){
     expect(awl::evaluate_world_map_player_frame(*work,input,frame.vertex_output,&frame)==S::UnsupportedLayout && frame.vertex_output==saved,
         "nonnull skin path rejects missing root feature instead of following original null dereference");
 }
+void hash_frame_links(uint64_t& digest,const awl::WorldMapPlayerFrame& frame) {
+    for(uint32_t value:frame.root_pose_after)hash(digest,value);
+    for(const auto& write:frame.attachment_writes) {
+        hash(digest,write?1:0);if(!write)continue;
+        hash(digest,uint32_t(write->child));hash(digest,uint32_t(write->producer));hash(digest,write->evaluate_child?1:0);
+        for(float value:write->matrix){uint32_t raw=0;if(value!=0)std::memcpy(&raw,&value,4);hash(digest,raw);}
+    }
+}
+void attachment_frame_checks() {
+    using S=awl::WorldMapPlayerFrameStatus;
+    Fixture fixture;auto payloads=files();payloads[1]=draw_gpl();
+    for(size_t at:{size_t(64),size_t(512)}){word(payloads[1],at+24,32);word(payloads[1],at+288,38);}
+    std::shared_ptr<const Assets> assets;std::unique_ptr<awl::WorldMapPlayerSkinWork> work;
+    awl::WorldMapPlayerFrame frame;awl::WorldMapPlayerFrameInput input;
+    uint64_t digest=14695981039346656037ull;
+    for(uint32_t seed=0;seed<256;++seed) {
+        payloads[0]=setup_model();payloads[2]=execution_skin(seed);
+        for(uint32_t i=0;i<3;++i)word(payloads[0],32+i*28+24,((seed+i)%3)<<24|((i==0?5u:2u)<<16));
+        assets.reset();fixture.write("boy_0.arc",archive(payloads));
+        expect(awl::load_world_map_player_model_assets(0,&assets)==Status::Loaded,"attachment frame providers load");
+        expect(awl::prepare_world_map_player_skin_work(assets,&work)==awl::WorldMapPlayerSkinWorkStatus::PreparedWork,"attachment frame work prepares");if(!work)return;
+        input=frame_input(seed,3);input.evaluate_nodes=(seed&8)!=0;input.request_skin=(seed&4)!=0;
+        input.links.identity=0x800000;
+        auto& inherited=input.links.inherited;inherited.parent=seed%4?0xb30000:0;
+        inherited.producer=seed%4?0xb30000:0x123;inherited.flags=seed%4>=2?8u:0u;
+        inherited.matrix=skin_palette(seed+2048,1)[0];
+        if(seed%4>=2) {
+            input.root_pose[0]=(seed%4==2?0x1f000000:0x1e000000)|0x345678;
+            const float scales[]{float(seed%7+1)/4,float(seed%5+1)/8,float(seed%3+1)/2};
+            for(size_t i=0;i<3;++i)std::memcpy(&input.root_pose[i+1],&scales[i],4);
+        }
+        for(uint32_t slot=1;slot<4;++slot)input.links.children[slot]={slot<=2?0xb10000u:0xb20000u,uint16_t((seed+slot-1)%3),slot<=2?1u:0u};
+        frame.vertex_output.resize(64);for(size_t i=0;i<64;++i)frame.vertex_output[i]=uint8_t(i*7+seed);
+        expect(awl::evaluate_world_map_player_frame(*work,input,frame.vertex_output,&frame)==S::Evaluated,
+            "all inherited branches and node-on/off attachment propagation prepare atomically");
+        hash(digest,seed);hash_frame(digest,frame);hash_frame_links(digest,frame);
+    }
+    std::cout<<"PLAYER_ATTACHMENT_FRAME_EVALUATION 256 digest "<<std::hex<<digest<<std::dec<<'\n';
+    expect(digest==0x95429a4e627445d7ull,"mapped E438/EB80 matrix and flag writes match, including slot aliases and node types");
+    const auto before=frame;uint64_t before_hash=14695981039346656037ull;hash_frame(before_hash,before);hash_frame_links(before_hash,before);
+    auto preserved=[&](){uint64_t h=14695981039346656037ull;hash_frame(h,frame);hash_frame_links(h,frame);return h==before_hash;};
+    input.links.inherited.producer=0;
+    expect(awl::evaluate_world_map_player_frame(*work,input,frame.vertex_output,&frame)==S::UnsupportedLayout && preserved(),"missing inherited acknowledgement preserves complete frame");
+    input.links.inherited.producer=1;
+    expect(awl::evaluate_world_map_player_frame(*work,input,frame.vertex_output,&frame)==S::UnsupportedLayout && preserved(),"different inherited producer rejects original assertion state");
+    input.links.inherited.producer=input.links.inherited.parent;input.links.inherited.flags.reset();
+    expect(awl::evaluate_world_map_player_frame(*work,input,frame.vertex_output,&frame)==S::UnsupportedLayout && preserved(),"unknown reached inherited flags reject");
+    input.links.inherited.flags=0;input.links.children[3].node=0xffff;
+    expect(awl::evaluate_world_map_player_frame(*work,input,frame.vertex_output,&frame)==S::UnsupportedLayout && preserved(),"late invalid attachment rolls back skinning and earlier slot writes");
+    input.links.children[3].node=2;input.links.children[3].child_flags.reset();
+    expect(awl::evaluate_world_map_player_frame(*work,input,frame.vertex_output,&frame)==S::UnsupportedLayout && preserved(),"unknown child recursion flags roll back all propagation");
+    input.links.children[3].child_flags=0;input.links.children[2].child_flags=0;
+    expect(awl::evaluate_world_map_player_frame(*work,input,frame.vertex_output,&frame)==S::InvalidInput && preserved(),"shared child cannot have inconsistent flag snapshots");
+    input.links.children[2].child_flags=1;input.links.identity=0;
+    expect(awl::evaluate_world_map_player_frame(*work,input,frame.vertex_output,&frame)==S::InvalidInput && preserved(),"nonnull children require producer identity");
+    input={};input.evaluate_nodes=false;input.request_skin=false;
+    input.root_pose[0]=0x02000000;input.root_pose[4]=0x3f800000; // Unsupported Euler if actually read.
+    input.links.inherited={0x100000001ull,0x100000001ull,0u,{1,0,0,7,0,1,0,8,0,0,1,9}};
+    expect(awl::evaluate_world_map_player_frame(*work,input,frame.vertex_output,&frame)==S::Evaluated && frame.root_matrix==input.links.inherited.matrix &&
+        frame.root_pose_after==input.root_pose,"copy-inherited path skips unsupported root pose and keeps full native identities");
+    input.links.identity=0x100000002ull;input.links.children[1]={0x100000003ull,2,0u};input.nodes.resize(3);
+    const auto copied=frame;
+    expect(awl::evaluate_world_map_player_frame(*work,input,frame.vertex_output,&frame)==S::RequiresPoseConversion && frame.root_matrix==copied.root_matrix &&
+        frame.root_pose_after==copied.root_pose_after && !frame.attachment_writes[1],"node-off attachment EB80 reaches local root conversion even when main root copies inherited matrix");
+    input.root_pose=explicit_pose({1,0,0,5,0,1,0,6,0,0,1,7});
+    expect(awl::evaluate_world_map_player_frame(*work,input,frame.vertex_output,&frame)==S::Evaluated &&
+        frame.attachment_writes[1]->matrix==awl::WorldMapModelMatrix{1,0,0,12,0,1,0,14,0,0,1,16},
+        "node-off attachment multiplies inherited root by EB80 local root, keeping the original extra root contribution");
+    input.evaluate_nodes=true;
+    expect(awl::evaluate_world_map_player_frame(*work,input,frame.vertex_output,&frame)==S::Evaluated &&
+        frame.attachment_writes[1]->matrix==input.links.inherited.matrix,"node-on attachment uses evaluated node matrix without EB80 extra local root");
+    input.evaluate_nodes=false;
+    input.root_pose={};input.links.inherited.flags=8;input.root_pose[0]=0x1e123456;
+    for(size_t i=1;i<13;++i)input.root_pose[i]=0x7fc00000; // All suppressed by scale-only mask with no scale bit.
+    expect(awl::evaluate_world_map_player_frame(*work,input,frame.vertex_output,&frame)==S::Evaluated && frame.root_pose_after[0]==0x00123456 &&
+        frame.root_matrix==input.links.inherited.matrix && frame.attachment_writes[1]->producer==input.links.identity &&
+        frame.attachment_writes[1]->child==input.links.children[1].child,"scale-only inherited branch masks flag byte before EB80 while ignoring absent scale and invalid rotation/translation words");
+    input.links.inherited.parent=0;input.links.inherited.flags.reset();input.links.inherited.matrix[0]=std::numeric_limits<float>::quiet_NaN();
+    input.links.children={};input.nodes.clear();input.root_pose={};
+    expect(awl::evaluate_world_map_player_frame(*work,input,frame.vertex_output,&frame)==S::Evaluated && frame.root_matrix==awl::WorldMapModelMatrix{1,0,0,0,0,1,0,0,0,0,1,0},
+        "unparented branch ignores producer/flags/inherited matrix and null child slot metadata");
+    input.links.identity=1;input.links.children[3]={2,0,0u};
+    expect(awl::evaluate_world_map_player_frame(*work,input,frame.vertex_output,&frame)==S::InvalidInput,"node-off with attachments still requires node observations");
+    // Connect real sampler callback to EB80's child-to-parent traversal, then
+    // compare with independently supplied per-node sample observations.
+    awl::WorldMapAnimationBank bank;expect(bank.parse(200,animation_frame_fixture(255,0)),"attachment animation bank parses");
+    awl::WorldMapPlayerAnimationFrameInput animated;animated.evaluate_nodes=false;animated.node_post_transforms.resize(3);
+    animated.playback.clip_10=awl::WorldMapAnimationClipReference{200,0};animated.playback.position_0=1.25f;
+    animated.links.identity=0x800000;animated.links.children[0]={0xb10000,2,1u};input={};input.evaluate_nodes=false;input.nodes.resize(3);input.links=animated.links;
+    std::vector<const awl::WorldMapAnimationBank*> banks{&bank};
+    for(uint32_t i=0;i<3;++i){awl::WorldMapAnimationPose value{},prior{};
+        const auto status=awl::sample_world_map_blended_animation_pose(animated.playback,i,{},banks,animated.settings,prior,&value);
+        expect(status==awl::WorldMapAnimationPoseStatus::Sampled || status==awl::WorldMapAnimationPoseStatus::NoPose,"observed attachment pose prepares");
+        if(status==awl::WorldMapAnimationPoseStatus::Sampled)input.nodes[i].sampled_pose=value;}
+    awl::WorldMapPlayerFrame observed;
+    expect(awl::evaluate_world_map_player_frame(*work,input,frame.vertex_output,&observed)==S::Evaluated,"observed EB80 frame prepares");
+    auto result=awl::evaluate_world_map_player_animation_frame(*work,animated,{},banks,frame.vertex_output,&frame);
+    expect(result.status==S::Evaluated && frame.attachment_writes[0]->matrix==observed.attachment_writes[0]->matrix && !frame.skin_executed,
+        "node-off attachment reaches connected sampler and ancestry, without skinning");
+    uint64_t animated_hash=14695981039346656037ull;hash_frame(animated_hash,frame);hash_frame_links(animated_hash,frame);
+    animated.playback.clip_10=awl::WorldMapAnimationClipReference{999,0};
+    result=awl::evaluate_world_map_player_animation_frame(*work,animated,{},banks,frame.vertex_output,&frame);
+    uint64_t after_hash=14695981039346656037ull;hash_frame(after_hash,frame);hash_frame_links(after_hash,frame);
+    expect(result.status==S::RequiresAnimationSampling && result.failed_node==2u && result.sampling_status==awl::WorldMapAnimationPoseStatus::RequiresBank && animated_hash==after_hash,
+        "node-off attachment sampling failure reports requested descendant before ancestors and preserves frame");
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    input.evaluate_nodes=true;input.links.inherited={1,1,8u,{1,0,0,4,0,1,0,5,0,0,1,6}};
+    const auto live=allocation_probe::live;size_t rejected=0;bool reached=false;
+    for(size_t fail=0;fail<32;++fail){allocation_probe::remaining=fail;allocation_probe::enabled=true;
+        const auto status=awl::evaluate_world_map_player_frame(*work,input,frame.vertex_output,&frame);allocation_probe::enabled=false;
+        if(status==S::Evaluated){reached=true;break;}++rejected;
+        uint64_t h=14695981039346656037ull;hash_frame(h,frame);hash_frame_links(h,frame);
+        expect(status==S::AllocationFailure && h==animated_hash && allocation_probe::live==live,"attachment frame allocation failure preserves prior root flags/child writes/matrices/vertices and frees staging");}
+    expect(reached && rejected==5,"inherited root and four child slots add no allocations to complete frame staging");
+    std::cout<<"PLAYER_ATTACHMENT_FRAME_ALLOCATION_FAILURES "<<rejected<<'\n';
+#endif
+}
 void skin_execution_checks(){
     using S=awl::WorldMapPlayerSkinExecutionStatus;
     Fixture fixture;auto payloads=files();payloads[0]=setup_model();payloads[1]=draw_gpl();
@@ -1139,7 +1256,7 @@ int main(int argc,char** argv){
         _CrtSetReportMode(kind,_CRTDBG_MODE_FILE);_CrtSetReportFile(kind,_CRTDBG_FILE_STDERR);
     }
 #endif
-    embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();skin_execution_checks();awl::filesystem_shutdown();frame_checks();awl::filesystem_shutdown();animation_frame_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
+    embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();skin_execution_checks();awl::filesystem_shutdown();frame_checks();awl::filesystem_shutdown();animation_frame_checks();awl::filesystem_shutdown();attachment_frame_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
     if(argc==3 && std::string(argv[1])=="--player-model-local")local(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-frame-local")local(argv[2],true);
     else if(argc!=1)expect(false,"usage: --player-model-local <disc> or --player-frame-local <disc>");
