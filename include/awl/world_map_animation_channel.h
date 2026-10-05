@@ -3,6 +3,7 @@
 #include "awl/world_map_actor_animation.h"
 
 #include <cstddef>
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <vector>
@@ -20,9 +21,21 @@ struct WorldMapAnimationClip {
     float parameter_zero = 0;
 };
 
+using WorldMapAnimationPose = std::array<uint32_t, 13>;
+enum class WorldMapAnimationPoseStatus {
+    Sampled, NoPose, RequiresBank, RequiresKeyedTracks, RequiresBlend,
+    UnsupportedLayout, UnsupportedNumerics, InvalidInput,
+};
+// Supplied snapshot of the quaternion globals at 803489F8 / 803489F0.
+// Defaults are their verified DOL initial values, not live global ownership.
+struct WorldMapAnimationPoseSettings {
+    uint8_t quaternion_encoding = 3;
+    float quaternion_scale = 0x1p-14f;
+};
+
 // Owns a raw clip or a flat U8 bank. Only node extents, the bounded 16-byte
-// section table and first section ID zero's scalar are supported. Skeletal
-// tracks, data offsets, poses and animation evaluation are not decoded.
+// section table and first section ID zero's scalar are supported. Constant
+// node components can be sampled separately; keyed tracks remain unsupported.
 class WorldMapAnimationBank {
 public:
     [[nodiscard]] bool parse(uint64_t identity, std::vector<uint8_t> bytes);
@@ -36,6 +49,14 @@ public:
     // Missing/nonfinite scalar, out-of-range node and malformed table fail
     // without changing output. A successful lookup is not clip playback.
     [[nodiscard]] bool resolve(uint32_t index, WorldMapAnimationClip* out) const;
+    // Bounded 0AF4 -> 1194/0F5C constant-component path, before 01F8 blending.
+    // First matching low-halfword node ID wins. Unwritten pose words retain
+    // prior bytes; success clears only the high flag byte before setters.
+    // All non-Sampled results preserve output, including prior/output alias.
+    [[nodiscard]] WorldMapAnimationPoseStatus sample_constant_pose(
+        WorldMapAnimationClipReference clip, uint32_t node,
+        const WorldMapAnimationPoseSettings& settings,
+        const WorldMapAnimationPose& prior, WorldMapAnimationPose* out) const noexcept;
     // Retained native bank identities cannot silently acquire new bytes.
     [[nodiscard]] bool same_contents(const WorldMapAnimationBank& other) const {
         return identity_ == other.identity_ && bytes_ == other.bytes_;
@@ -59,6 +80,13 @@ struct WorldMapAnimationPlayback {
     uint64_t link_14 = 0; // Stable identity for the blend-record pointer.
     float value_18 = 0;
 };
+// Bounded 01F8/0264: null clip/missing node returns NoPose. Reached keyed
+// tracks or a blend link stop explicitly. Constant poses do not use time,
+// loop, rate, limit or weight; no clock or live model is advanced.
+[[nodiscard]] WorldMapAnimationPoseStatus sample_world_map_animation_pose(
+    const WorldMapAnimationPlayback& playback, uint32_t node,
+    const WorldMapAnimationBank* bank, const WorldMapAnimationPoseSettings& settings,
+    const WorldMapAnimationPose& prior, WorldMapAnimationPose* out) noexcept;
 struct WorldMapAnimationPlaybackRecord {
     uint64_t identity = 0;
     WorldMapAnimationPlayback state;

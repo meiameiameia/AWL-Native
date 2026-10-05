@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cfenv>
 #include <cstring>
 #include <utility>
 
@@ -58,6 +59,105 @@ bool WorldMapAnimationBank::resolve(uint32_t index, WorldMapAnimationClip* out) 
         }
     }
     return false;
+}
+
+WorldMapAnimationPoseStatus WorldMapAnimationBank::sample_constant_pose(
+    WorldMapAnimationClipReference clip, uint32_t node,
+    const WorldMapAnimationPoseSettings& settings,
+    const WorldMapAnimationPose& prior, WorldMapAnimationPose* out) const noexcept {
+    using Status = WorldMapAnimationPoseStatus;
+    if (out == nullptr || !loaded() || clip.bank_identity != identity_) return Status::InvalidInput;
+    const Entry* entry = nullptr;
+    for (const auto& candidate : entries_) if (candidate.offset == clip.offset) { entry = &candidate; break; }
+    if (entry == nullptr) return Status::InvalidInput;
+    const auto* data = bytes_.data() + entry->offset;
+    if (entry->size < 8) return Status::UnsupportedLayout;
+    const uint32_t count = be16(data + 4);
+    const uint64_t table_end = 8 + uint64_t(count) * 16;
+    if (!bounded(entry->size, 8, uint64_t(count) * 16)) return Status::UnsupportedLayout;
+    const uint8_t* section = nullptr;
+    for (uint32_t i = 0; i < count; ++i) {
+        const auto* candidate = data + 8 + size_t(i) * 16;
+        if (be16(candidate + 10) == (node & 0xffffu)) { section = candidate; break; }
+    }
+    if (section == nullptr) return Status::NoPose;
+    const uint8_t flags = section[13], components = section[15];
+    if ((flags & 31) != 0) return Status::RequiresKeyedTracks;
+    auto pose = prior;
+    pose[0] &= 0x00ffffffu; // 0264's single-byte clear, not a whole word clear.
+    uint64_t cursor = be32(section + 4); // 0734 relocates relative to clip base.
+    auto acceptable = [](float f) { return std::isfinite(f) && (f == 0 || std::isnormal(f)); };
+    auto decode = [&](uint8_t encoding, float scale, unsigned n, float* values) {
+        if (encoding > 4) return Status::UnsupportedLayout;
+        const unsigned width = encoding < 2 ? 1u : encoding < 4 ? 2u : 4u;
+        if (cursor < table_end || (cursor % width) != 0 || !bounded(entry->size, cursor, uint64_t(n) * width))
+            return Status::UnsupportedLayout;
+        if (std::fegetround() != FE_TONEAREST || (encoding != 4 && !acceptable(scale)))
+            return Status::UnsupportedNumerics;
+        for (unsigned i = 0; i < n; ++i) {
+            const auto* p = data + size_t(cursor) + i * width;
+            if (encoding == 4) values[i] = as_float(be32(p));
+            else {
+                int32_t value = width == 1 ? p[0] : be16(p);
+                if (encoding == 1 && value >= 128) value -= 256;
+                if (encoding == 3 && value >= 32768) value -= 65536;
+                values[i] = static_cast<float>(value) * scale;
+            }
+            if (!acceptable(values[i])) return Status::UnsupportedNumerics;
+        }
+        cursor += uint64_t(n) * width;
+        return Status::Sampled;
+    };
+    auto store = [&](unsigned at, const float* values, unsigned n, uint32_t flag) {
+        pose[0] |= flag << 24;
+        for (unsigned i = 0; i < n; ++i) std::memcpy(&pose[at + i], values + i, 4);
+    };
+    const uint8_t encoding = section[12] >> 4;
+    const float scale = std::ldexp(1.0f, -int(section[12] & 15));
+    float values[4]{};
+    if (components & 2) {
+        const auto status = decode(encoding, scale, 3, values);
+        if (status != Status::Sampled) return status;
+        store(1, values, 3, 1);
+    }
+    if (components & 8) {
+        // 1C1C omits XYZ lanes flagged by bits 5/6/7, but always reads W.
+        const unsigned n = 4u - unsigned((flags >> 5) & 1) - unsigned((flags >> 6) & 1) - unsigned((flags >> 7) & 1);
+        const uint64_t start = cursor;
+        const auto status = decode(settings.quaternion_encoding, settings.quaternion_scale, n, values);
+        if (status != Status::Sampled) return status;
+        float quaternion[4]{};
+        unsigned source = 0;
+        for (unsigned i = 0; i < 3; ++i) if ((flags & (32u << i)) == 0) quaternion[i] = values[source++];
+        quaternion[3] = values[source];
+        store(4, quaternion, 4, 4);
+        // The original helper returns count*2 regardless of encoding. Retain
+        // this cursor rule even for supplied globals other than default S16.
+        cursor = start + n * 2u;
+    }
+    if (components & 1) {
+        const auto status = decode(encoding, scale, 3, values);
+        if (status != Status::Sampled) return status;
+        store(8, values, 3, 8);
+    }
+    *out = pose;
+    return Status::Sampled;
+}
+
+WorldMapAnimationPoseStatus sample_world_map_animation_pose(
+    const WorldMapAnimationPlayback& playback, uint32_t node,
+    const WorldMapAnimationBank* bank, const WorldMapAnimationPoseSettings& settings,
+    const WorldMapAnimationPose& prior, WorldMapAnimationPose* out) noexcept {
+    using Status = WorldMapAnimationPoseStatus;
+    if (out == nullptr) return Status::InvalidInput;
+    if (!playback.clip_10) return Status::NoPose;
+    if (bank == nullptr || !bank->loaded()) return Status::RequiresBank;
+    WorldMapAnimationPose pose;
+    const auto status = bank->sample_constant_pose(*playback.clip_10, node, settings, prior, &pose);
+    if (status != Status::Sampled) return status;
+    if (playback.link_14 != 0) return Status::RequiresBlend;
+    *out = pose;
+    return Status::Sampled;
 }
 
 std::optional<WorldMapAnimationPlayback> WorldMapAnimationPartialPlayback::complete() const noexcept {

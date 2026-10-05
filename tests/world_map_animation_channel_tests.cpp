@@ -2,6 +2,7 @@
 
 #include <array>
 #include <algorithm>
+#include <cfenv>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -263,11 +264,143 @@ void test_matrix() {
     // Expected digest is independently obtained from the mapped DOL listing.
     expect(cases == 1536 && digest == 0xab9e66bb9f113eadull, "channel matrix matches independent instruction probe");
 }
+awl::WorldMapAnimationPose prior_pose() {
+    awl::WorldMapAnimationPose pose{};
+    for (uint32_t i = 0; i < pose.size(); ++i) pose[i] = 0xa5a50000u + i;
+    return pose;
+}
+std::vector<uint8_t> constant_fixture(uint32_t seed) {
+    // Invented values only. Each of the five numeric encodings, three
+    // exponents, eight omitted-axis masks and eight component sets is reached.
+    const uint8_t encoding = uint8_t(seed % 5), exponent = std::array<uint8_t,3>{0,7,15}[(seed / 5) % 3];
+    const uint8_t omitted = uint8_t((seed / 15) % 8), components = uint8_t((seed / 120) % 8);
+    size_t cursor = encoding < 2 && (components & 3) == 3 ? 65 : 64;
+    std::vector<uint8_t> bytes(256);
+    put(bytes, 4, 0x00010000); put(bytes, 12, uint32_t(cursor));
+    bytes[19] = 7; bytes[20] = uint8_t((encoding << 4) | exponent); bytes[21] = uint8_t(omitted << 5);
+    bytes[23] = uint8_t((components & 1 ? 2 : 0) | (components & 2 ? 8 : 0) | (components & 4 ? 1 : 0));
+    uint32_t state = seed + 1;
+    auto component = [&](uint8_t kind) {
+        state = state * 1664525u + 1013904223u;
+        const unsigned width = kind < 2 ? 1u : kind < 4 ? 2u : 4u;
+        const uint32_t value = kind < 4 ? state >> (32 - width * 8) :
+            bits(float(int32_t((state >> 16) % 2049) - 1024) / 64.0f);
+        for (unsigned i = 0; i < width; ++i) bytes[cursor++] = uint8_t(value >> ((width - i - 1) * 8));
+    };
+    if (components & 1) for (unsigned i = 0; i < 3; ++i) component(encoding);
+    if (components & 2) for (unsigned i = 0; i < 4; ++i) if (i == 3 || (omitted & (1u << i)) == 0) component(3);
+    if (components & 4) for (unsigned i = 0; i < 3; ++i) component(encoding);
+    return bytes;
+}
+void test_constant_poses() {
+    using PoseStatus = awl::WorldMapAnimationPoseStatus;
+    const auto prior = prior_pose(); const awl::WorldMapAnimationPoseSettings settings;
+    Bank bank; Playback playback; playback.clip_10 = awl::WorldMapAnimationClipReference{200,0};
+    uint64_t digest = 14695981039346656037ull; unsigned cases = 0, unaligned = 0;
+    for (uint32_t seed = 0; seed < 960; ++seed) {
+        expect(bank.parse(200, constant_fixture(seed)), "constant fixture parses");
+        auto pose = prior;
+        const auto status = awl::sample_world_map_animation_pose(playback,0x10007,&bank,settings,prior,&pose);
+        const uint32_t omitted = (seed / 15) % 8;
+        const unsigned quaternion_count = 4 - unsigned(omitted & 1) - unsigned((omitted >> 1) & 1) - unsigned((omitted >> 2) & 1);
+        if (seed % 5 == 4 && ((seed / 120) % 8 & 6) == 6 && quaternion_count % 2) {
+            expect(status == PoseStatus::UnsupportedLayout && pose == prior, "unaligned float payload rejects atomically");
+            ++unaligned; continue;
+        }
+        expect(status == PoseStatus::Sampled, "constant components sample with node low-halfword lookup");
+        hash(digest, seed); for (auto w : pose) hash(digest, w); ++cases;
+        auto alias = prior;
+        expect(awl::sample_world_map_animation_pose(playback,7,&bank,settings,alias,&alias) == status && alias == pose,
+            "prior/output alias preserves the same component writes");
+        expect((pose[0] & 0xffffffu) == (prior[0] & 0xffffffu) && pose[11] == prior[11] && pose[12] == prior[12],
+            "flag clear and reached setters preserve unused bytes and tail words");
+    }
+    std::cout << "CONSTANT_POSES " << cases << ' ' << std::hex << digest << std::dec << '\n';
+    expect(cases == 936 && unaligned == 24, "complete encoding/component matrix retains alignment boundary");
+    // Independently executed raw relocation/lookup/sampler/setter bodies.
+    expect(digest == 0x7ff3c94708598a27ull, "constant poses match instruction comparison");
+    auto bytes = constant_fixture(840); // All components, U8; quaternion is S16.
+    expect(bank.parse(200, bytes), "failure fixture parses"); auto pose = prior;
+    playback.clip_10.reset(); playback.link_14 = 99; playback.position_0 = std::numeric_limits<float>::quiet_NaN();
+    expect(awl::sample_world_map_animation_pose(playback,7,nullptr,settings,prior,&pose) == PoseStatus::NoPose && pose == prior,
+        "null clip does not reach bank, time, loop or blend");
+    playback.clip_10 = awl::WorldMapAnimationClipReference{200,0};
+    expect(awl::sample_world_map_animation_pose(playback,8,&bank,settings,prior,&pose) == PoseStatus::NoPose && pose == prior,
+        "missing node exits before blend");
+    expect(awl::sample_world_map_animation_pose(playback,7,nullptr,settings,prior,&pose) == PoseStatus::RequiresBank,
+        "reached clip needs a retained bank");
+    expect(awl::sample_world_map_animation_pose(playback,7,&bank,settings,prior,&pose) == PoseStatus::RequiresBlend && pose == prior,
+        "reached blend never publishes an unblended pose"); playback.link_14 = 0;
+    expect(awl::sample_world_map_animation_pose(playback,7,&bank,settings,prior,&pose) == PoseStatus::Sampled,
+        "constant components do not evaluate copied time");
+    bytes[21] |= 8; expect(bank.parse(200,bytes), "keyed fixture parses"); pose = prior;
+    expect(awl::sample_world_map_animation_pose(playback,7,&bank,settings,prior,&pose) == PoseStatus::RequiresKeyedTracks && pose == prior,
+        "keyed tracks stop explicitly before partial constant publication");
+    for (unsigned fault = 0; fault < 7; ++fault) {
+        bytes = constant_fixture(844); // Float32 scale/translation and S16 quaternion.
+        switch (fault) {
+        case 0: put(bytes,12,UINT32_MAX); break;
+        case 1: put(bytes,12,8); break;
+        case 2: bytes.resize(66); break;
+        case 3: bytes[20] = 0x50; break;
+        case 4: put(bytes,64,0x7fc00000); break;
+        case 5: put(bytes,64,1); break;
+        case 6: put(bytes,12,65); break;
+        }
+        expect(bank.parse(200,bytes), "malformed payload remains opaque at metadata parse"); pose = prior;
+        const auto status = bank.sample_constant_pose(*playback.clip_10,7,settings,prior,&pose);
+        expect(status == (fault == 4 || fault == 5 ? PoseStatus::UnsupportedNumerics : PoseStatus::UnsupportedLayout) && pose == prior,
+            "out-of-span/header/truncated/unknown/unaligned/nonfinite/subnormal reached payload rejects atomically");
+    }
+    bytes = constant_fixture(840); expect(bank.parse(200,bytes), "rounding fixture parses"); pose = prior;
+    const int rounding = std::fegetround(); std::fesetround(FE_DOWNWARD);
+    const auto rounding_status = bank.sample_constant_pose(*playback.clip_10,7,settings,prior,&pose);
+    std::fesetround(rounding);
+    expect(rounding_status == PoseStatus::UnsupportedNumerics && pose == prior, "unsupported rounding preserves output");
+    expect(bank.sample_constant_pose({201,0},7,settings,prior,&pose) == PoseStatus::InvalidInput &&
+        bank.sample_constant_pose({200,1},7,settings,prior,&pose) == PoseStatus::InvalidInput &&
+        bank.sample_constant_pose({200,0},7,settings,prior,nullptr) == PoseStatus::InvalidInput,
+        "foreign identity, interior clip pointer and null output reject");
+    // Duplicate IDs keep the first even if it has no components or invalid
+    // opaque payload. No scalar-zero lookup is required for pose sampling.
+    bytes = constant_fixture(840); put(bytes,4,0x00020000);
+    std::copy_n(bytes.begin()+8,16,bytes.begin()+24); bytes[23] = 0; put(bytes,12,UINT32_MAX);
+    expect(bank.parse(200,bytes), "duplicate fixture parses"); pose = prior;
+    expect(bank.sample_constant_pose({200,0},7,settings,prior,&pose) == PoseStatus::Sampled && pose[0] == (prior[0]&0xffffffu) &&
+        std::equal(pose.begin()+1,pose.end(),prior.begin()+1), "first matching empty section wins without reading payload");
+    bytes.assign(256,0); put(bytes,4,0x00010000); put(bytes,12,64);
+    bytes[19]=7; bytes[20]=0x3e; bytes[21]=0xe0; bytes[23]=9;
+    put(bytes,64,0x3f800000); put(bytes,68,0x0100ff00);
+    expect(bank.parse(200,bytes), "supplied quaternion globals fixture parses");
+    uint64_t settings_digest = 14695981039346656037ull;
+    for (uint8_t encoding = 0; encoding < 5; ++encoding) for (float scale : {0.0f,0x1p-14f,1.0f,-0x1p-7f,2.0f}) {
+        pose = prior;
+        expect(bank.sample_constant_pose({200,0},7,{encoding,scale},prior,&pose) == PoseStatus::Sampled,
+            "supplied quaternion globals preserve fixed count*2 cursor and omitted-axis zero writes");
+        hash(settings_digest,encoding); hash(settings_digest,bits(scale)); for (auto w : pose) hash(settings_digest,w);
+    }
+    std::cout << "QUATERNION_SETTINGS " << std::hex << settings_digest << std::dec << '\n';
+    expect(settings_digest == 0x54650a558df26b55ull,"supplied quaternion settings match independent instruction comparison");
+    pose=prior;
+    expect(bank.sample_constant_pose({200,0},7,{5,1},prior,&pose) == PoseStatus::UnsupportedLayout && pose==prior,
+        "unknown reached quaternion encoding preserves pose");
+    expect(bank.sample_constant_pose({200,0},7,{3,std::numeric_limits<float>::infinity()},prior,&pose) == PoseStatus::UnsupportedNumerics && pose==prior,
+        "nonfinite reached quaternion scale preserves pose");
+    expect(bank.sample_constant_pose({200,0},7,{4,std::numeric_limits<float>::infinity()},prior,&pose) == PoseStatus::Sampled,
+        "float quaternion decoding leaves unused scale opaque");
+    bytes=archive(); put(bytes,108,56); bytes[116]=0; bytes[117]=0; bytes[119]=2;
+    expect(bank.parse(200,bytes),"archive payload boundary fixture parses"); pose=prior;
+    expect(bank.sample_constant_pose({200,96},7,settings,prior,&pose)==PoseStatus::UnsupportedLayout && pose==prior,
+        "payload cannot cross selected archive entry into padding or another clip");
+    put(bytes,100,0xffff0000); expect(bank.parse(200,bytes),"archive section count stays opaque at parse");
+    expect(bank.sample_constant_pose({200,96},7,settings,prior,&pose)==PoseStatus::UnsupportedLayout && pose==prior,
+        "malformed selected archive table rejects before node lookup");
+}
 void local_bank(const std::filesystem::path& disc) {
     std::ifstream input(disc / "files" / "boy_0.anm.arc", std::ios::binary);
     std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(input)), {});
     Bank bank;
-    expect(bank.parse(200, std::move(bytes)) && bank.is_archive() && bank.clip_count() == 126,
+    expect(bank.parse(200, bytes) && bank.is_archive() && bank.clip_count() == 126,
         "local supplied boy animation bank validates as a flat archive");
     if (!bank.loaded()) return;
     uint64_t digest = 14695981039346656037ull;
@@ -279,10 +412,39 @@ void local_bank(const std::filesystem::path& disc) {
     }
     std::cout << "LOCAL_ANIMATION_BANK " << bank.clip_count() << ' ' << std::hex << digest << std::dec << '\n';
     expect(digest == 0xbd04bfab3a7b2993ull, "all local extents and section-zero scalars match independent metadata walk");
+    using PoseStatus = awl::WorldMapAnimationPoseStatus;
+    const auto prior = prior_pose(); const awl::WorldMapAnimationPoseSettings settings;
+    uint64_t pose_digest = 14695981039346656037ull; unsigned sampled = 0, keyed = 0;
+    for (uint32_t i = 0; i < bank.clip_count(); ++i) {
+        awl::WorldMapAnimationClip clip;
+        if (!bank.resolve(i,&clip)) { expect(false,"local pose clip resolves"); continue; }
+        const size_t base = clip.reference.offset;
+        if (base > bytes.size() || clip.size > bytes.size()-base || clip.size < 8) {
+            expect(false,"local clip span remains bounded"); continue;
+        }
+        const unsigned count = (unsigned(bytes[base+4])<<8)|bytes[base+5];
+        if (count > (clip.size-8)/16) { expect(false,"local section table bounded"); continue; }
+        Playback p; p.clip_10 = clip.reference;
+        for (unsigned j = 0; j < count; ++j) {
+            const size_t record = base+8+size_t(j)*16;
+            const uint32_t node = (uint32_t(bytes[record+10])<<8)|bytes[record+11];
+            auto pose = prior;
+            const auto status = awl::sample_world_map_animation_pose(p,node,&bank,settings,prior,&pose);
+            if (bytes[record+13]&31) {
+                expect(status == PoseStatus::RequiresKeyedTracks && pose == prior,"every keyed local node stops explicitly"); ++keyed;
+            } else {
+                expect(status == PoseStatus::Sampled,"every local constant node samples");
+                hash(pose_digest,i); hash(pose_digest,node); for (auto w : pose) hash(pose_digest,w); ++sampled;
+            }
+        }
+    }
+    std::cout << "LOCAL_CONSTANT_POSES " << sampled << " keyed " << keyed << ' ' << std::hex << pose_digest << std::dec << '\n';
+    expect(sampled == 3649 && keyed == 3287 && pose_digest == 0x78df62f236ac030eull,
+        "all primary constant poses match independently executed DOL bodies; keyed coverage remains explicit");
 }
 } // namespace
 int main(int argc, char** argv) {
-    test_bank(); test_channel(); test_partial_channel(); test_matrix();
+    test_bank(); test_channel(); test_partial_channel(); test_matrix(); test_constant_poses();
     if (argc == 3 && std::string(argv[1]) == "--animation-bank-local") local_bank(argv[2]);
     else if (argc != 1) expect(false, "usage: --animation-bank-local <disc>");
     return failures == 0 ? 0 : 1;
