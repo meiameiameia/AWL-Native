@@ -542,6 +542,118 @@ void test_keyed_vectors() {
     expect(bank.sample_pose({200,0},7,0,settings,prior,&pose)==PoseStatus::RequiresInterpolation && pose==prior,
         "late translation curve preserves output after staging constant quaternion and keyed scale");
 }
+std::vector<uint8_t> keyed_quaternion_fixture(uint32_t seed) {
+    const unsigned modes[]{0,4,6,7};
+    const unsigned mode=modes[seed%4], omit=(seed/4)%8, tracks=8|((seed/32)%4);
+    const unsigned components=((tracks&1)?0u:1u)|((tracks&2)?0u:2u);
+    std::vector<uint8_t> bytes(512); put(bytes,4,0x10000); put(bytes,12,64);
+    bytes[17]=3; bytes[19]=7; bytes[20]=0x3e; bytes[21]=uint8_t((omit<<5)|tracks);
+    bytes[22]=uint8_t((mode<<4)|5); bytes[23]=uint8_t(components);
+    size_t cursor=64; uint32_t state=seed+1;
+    auto value=[&]() {
+        state=state*1664525u+1013904223u;
+        const uint16_t word=uint16_t(int32_t((state>>16)%24577)-12288);
+        bytes[cursor++]=uint8_t(word>>8); bytes[cursor++]=uint8_t(word);
+    };
+    if(components&2)for(unsigned i=0;i<3;++i)value();
+    if(components&1)for(unsigned i=0;i<3;++i)value();
+    const unsigned n=4-unsigned(omit&1)-unsigned((omit>>1)&1)-unsigned((omit>>2)&1);
+    for(int time:{-3,2,9}) {
+        const uint16_t timestamp=uint16_t(time);
+        bytes[cursor++]=uint8_t(timestamp>>8); bytes[cursor++]=uint8_t(timestamp);
+        if(tracks&2)for(unsigned i=0;i<3;++i)value();
+        for(unsigned i=0;i<n;++i)value();
+        if(tracks&1)for(unsigned i=0;i<3;++i)value();
+        for(unsigned i=0;i<n*(mode==4?2u:mode==7?1u:0u);++i)value();
+    }
+    return bytes;
+}
+void test_keyed_quaternions() {
+    using PoseStatus=awl::WorldMapAnimationPoseStatus;
+    const auto prior=prior_pose(); const awl::WorldMapAnimationPoseSettings settings;
+    Bank bank; uint64_t digest=14695981039346656037ull; unsigned cases=0;
+    for(uint32_t seed=0;seed<512;++seed) {
+        expect(bank.parse(200,keyed_quaternion_fixture(seed)),"quaternion fixture parses");
+        for(float time:{-20.0f,-3.0f,0.0f,2.0f,4.25f,9.0f,20.0f}) {
+            auto pose=prior;
+            expect(bank.sample_pose({200,0},7,time,settings,prior,&pose)==PoseStatus::Sampled,
+                "quaternion modes 0/4/6/7 sample with constant and keyed scale/translation");
+            hash(digest,seed); hash(digest,bits(time)); for(auto w:pose)hash(digest,w); ++cases;
+            auto alias=prior;
+            expect(bank.sample_pose({200,0},7,time,settings,alias,&alias)==PoseStatus::Sampled && alias==pose,
+                "quaternion sampling preserves prior/output alias and ordered writes");
+            expect((pose[0]&0xffffffu)==(prior[0]&0xffffffu) && pose[11]==prior[11] && pose[12]==prior[12],
+                "quaternion setter preserves unrelated pose bytes");
+        }
+    }
+    std::cout<<"KEYED_QUATERNIONS_NATIVE_LIBM "<<cases<<' '<<std::hex<<digest<<std::dec<<'\n';
+    expect(cases==3584 && digest==0x4ff78ba6c6eb29f5ull,"mapped quaternion instructions with native math hooks match");
+    for(unsigned mode:{1u,2u,3u,5u}) {
+        auto bytes=keyed_quaternion_fixture(0); bytes[22]=uint8_t((mode<<4)|5);
+        expect(bank.parse(200,bytes),"unsupported quaternion mode fixture parses"); auto pose=prior;
+        expect(bank.sample_pose({200,0},7,0,settings,prior,&pose)==PoseStatus::RequiresInterpolation && pose==prior,
+            "unsupported modes/remapping preserve the whole destination");
+    }
+    auto bytes=keyed_quaternion_fixture(3); bytes.resize(121); // Three mode-7 keys need 130 bytes.
+    expect(bank.parse(200,bytes),"truncated controls remain opaque until sampling"); auto pose=prior;
+    expect(bank.sample_pose({200,0},7,0,settings,prior,&pose)==PoseStatus::UnsupportedLayout && pose==prior,
+        "truncated key/control extent rejects atomically after staged constants");
+    bytes=keyed_quaternion_fixture(3); expect(bank.parse(200,bytes),"numeric quaternion fixture parses");
+    auto bad=settings; bad.quaternion_scale=std::numeric_limits<float>::infinity();
+    expect(bank.sample_pose({200,0},7,0,bad,prior,&pose)==PoseStatus::UnsupportedNumerics && pose==prior,
+        "nonfinite supplied quaternion settings reject atomically");
+    bad=settings; bad.quaternion_scale=std::numeric_limits<float>::max()/32768.0f;
+    expect(bank.sample_pose({200,0},7,0,bad,prior,&pose)==PoseStatus::UnsupportedNumerics && pose==prior,
+        "finite decoded quaternions with overflowing spherical products reject atomically");
+    bad=settings; bad.quaternion_encoding=5;
+    expect(bank.sample_pose({200,0},7,0,bad,prior,&pose)==PoseStatus::UnsupportedLayout && pose==prior,
+        "unknown supplied quaternion encoding rejects atomically");
+    bytes=keyed_quaternion_fixture(99); bytes[22]|=2; // Keyed translation curve after successful rotation staging.
+    expect(bank.parse(200,bytes),"late translation curve with keyed rotation parses");
+    expect(bank.sample_pose({200,0},7,0,settings,prior,&pose)==PoseStatus::RequiresInterpolation && pose==prior,
+        "late unsupported translation preserves output after curved rotation staging");
+    bytes=keyed_quaternion_fixture(3); expect(bank.parse(200,bytes),"curved blend fixture parses");
+    Playback playback; playback.clip_10=awl::WorldMapAnimationClipReference{200,0}; playback.link_14=9;
+    expect(awl::sample_world_map_animation_pose(playback,7,&bank,settings,prior,&pose)==PoseStatus::RequiresBlend && pose==prior,
+        "curved pose cannot publish before required record blending");
+    std::fesetround(FE_DOWNWARD);
+    expect(bank.sample_pose({200,0},7,0,settings,prior,&pose)==PoseStatus::UnsupportedNumerics && pose==prior,
+        "quaternion sampling requires verified rounding mode"); std::fesetround(FE_TONEAREST);
+    // Independent geometric checks: a unit X quaternion and a unit W
+    // quaternion have dot zero. Their midpoint has both lanes sqrt(1/2).
+    bytes.assign(128,0); put(bytes,4,0x10000); put(bytes,12,64);
+    bytes[17]=2; bytes[19]=7; bytes[20]=0x3e; bytes[21]=8; bytes[22]=0x60;
+    bytes[66]=0x40; bytes[74]=0; bytes[75]=4; bytes[82]=0x40;
+    expect(bank.parse(200,bytes),"orthogonal unit quaternion fixture parses");
+    expect(bank.sample_pose({200,0},7,2,settings,prior,&pose)==PoseStatus::Sampled,"spherical midpoint samples");
+    float x,w; std::memcpy(&x,&pose[4],4); std::memcpy(&w,&pose[7],4);
+    expect(std::fabs(x-std::sqrt(0.5f))<0.000001f && std::fabs(w-std::sqrt(0.5f))<0.000001f && pose[5]==0 && pose[6]==0,
+        "spherical midpoint follows independently known unit geometry");
+    // Curve controls must influence the result even when endpoints agree.
+    // Mode 4 uses first outgoing control, skipping the first incoming one.
+    for(unsigned mode:{4u,7u}) {
+        bytes.assign(160,0); put(bytes,4,0x10000); put(bytes,12,64);
+        bytes[17]=2; bytes[19]=7; bytes[20]=0x3e; bytes[21]=8; bytes[22]=uint8_t(mode<<4);
+        const size_t stride=mode==4?26:18;
+        bytes[72]=0x40; bytes[64+stride+1]=4; bytes[64+stride+8]=0x40; // Endpoint W=1.
+        const size_t first_control=74+(mode==4?8:0), second_control=64+stride+10;
+        bytes[first_control]=0x40; bytes[second_control]=0x40; // Controls X=1.
+        expect(bank.parse(200,bytes),"independent curve-control fixture parses");
+        expect(bank.sample_pose({200,0},7,2,settings,prior,&pose)==PoseStatus::Sampled,"curve-control midpoint samples");
+        std::memcpy(&x,&pose[4],4); std::memcpy(&w,&pose[7],4);
+        expect(std::fabs(x-std::sqrt(0.5f))<0.000001f && std::fabs(w-std::sqrt(0.5f))<0.000001f,
+            "curve midpoint combines equal endpoints with distinct controls at one-half");
+    }
+    bytes.assign(128,0); put(bytes,4,0x10000); put(bytes,12,64);
+    bytes[17]=2; bytes[19]=7; bytes[20]=0x3e; bytes[21]=8; bytes[22]=0x60;
+    bytes[66]=0x40; bytes[75]=4; bytes[82]=0x40;
+    // Opposite signs denote the same orientation: shortest-sign fallback
+    // must keep +X rather than cancelling the two endpoints.
+    bytes[82]=0; bytes[76]=0xc0;
+    expect(bank.parse(200,bytes),"opposite-sign fixture parses");
+    expect(bank.sample_pose({200,0},7,2,settings,prior,&pose)==PoseStatus::Sampled && pose[4]==bits(1.0f),
+        "negative unit dot uses shortest-sign linear fallback");
+}
 void local_bank(const std::filesystem::path& disc) {
     std::ifstream input(disc / "files" / "boy_0.anm.arc", std::ios::binary);
     std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(input)), {});
@@ -590,6 +702,7 @@ void local_bank(const std::filesystem::path& disc) {
     using KeyStatus=awl::WorldMapAnimationKeyStatus;
     uint64_t key_digest=14695981039346656037ull, vector_digest=14695981039346656037ull;
     unsigned intervals=0,vectors=0,curved=0;
+    uint64_t all_digest=14695981039346656037ull;
     for(uint32_t i=0;i<bank.clip_count();++i) {
         awl::WorldMapAnimationClip clip; if(!bank.resolve(i,&clip))continue;
         const size_t base=clip.reference.offset;
@@ -608,23 +721,26 @@ void local_bank(const std::filesystem::path& disc) {
                     interval.first_offset,interval.second_offset,interval.stride,bits(interval.fraction)})hash(key_digest,w);
                 ++intervals; auto pose=prior; playback.position_0=time;
                 const auto status=awl::sample_world_map_animation_pose(playback,node,&bank,settings,prior,&pose);
+                hash(all_digest,i); hash(all_digest,node); hash(all_digest,bits(time)); for(auto w:pose)hash(all_digest,w);
                 if((flags&31)==1) {
                     expect(status==PoseStatus::Sampled,"all local translation-only keyed poses sample with their constant components");
                     hash(vector_digest,i); hash(vector_digest,node); hash(vector_digest,bits(time)); for(auto w:pose)hash(vector_digest,w); ++vectors;
                 } else {
-                    expect(status==PoseStatus::RequiresInterpolation && pose==prior,"curved rotation tracks preserve explicit unsupported boundary"); ++curved;
+                    expect(status==PoseStatus::Sampled,"all local curved rotation sections sample with their other components"); ++curved;
                 }
             }
         }
     }
     std::cout<<"LOCAL_KEY_INTERVALS "<<intervals<<' '<<std::hex<<key_digest<<std::dec<<'\n';
     std::cout<<"LOCAL_KEYED_VECTOR_POSES "<<vectors<<" curved "<<curved<<' '<<std::hex<<vector_digest<<std::dec<<'\n';
+    std::cout<<"LOCAL_KEYED_POSES_NATIVE_LIBM "<<intervals<<' '<<std::hex<<all_digest<<std::dec<<'\n';
+    expect(all_digest==0x0f01d614ed424032ull,"all local keyed poses match mapped instructions with native math hooks");
     expect(intervals==9861 && key_digest==0x7c0e84bbf890f1b8ull,"all primary key intervals match instruction comparison");
     expect(vectors==105 && curved==9756 && vector_digest==0x48b912b47b4e3016ull,"local keyed vector poses match instruction comparison");
 }
 } // namespace
 int main(int argc, char** argv) {
-    test_bank(); test_channel(); test_partial_channel(); test_matrix(); test_constant_poses(); test_key_layouts(); test_keyed_vectors();
+    test_bank(); test_channel(); test_partial_channel(); test_matrix(); test_constant_poses(); test_key_layouts(); test_keyed_vectors(); test_keyed_quaternions();
     if (argc == 3 && std::string(argv[1]) == "--animation-bank-local") local_bank(argv[2]);
     else if (argc != 1) expect(false, "usage: --animation-bank-local <disc>");
     return failures == 0 ? 0 : 1;

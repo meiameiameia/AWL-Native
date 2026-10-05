@@ -43,7 +43,8 @@ struct WorldMapAnimationPoseSettings {
 
 // Owns a raw clip or a flat U8 bank. Only node extents, the bounded 16-byte
 // section table and first section ID zero's scalar are supported. Constant
-// node components and bounded step/linear vector tracks can be sampled.
+// node components, step/linear vectors and quaternion modes 0/4/6/7 can
+// be sampled. Spherical math uses the native double acos/sin library.
 class WorldMapAnimationBank {
 public:
     [[nodiscard]] bool parse(uint64_t identity, std::vector<uint8_t> bytes);
@@ -71,8 +72,8 @@ public:
     [[nodiscard]] WorldMapAnimationKeyStatus select_key_interval(
         WorldMapAnimationClipReference clip, uint32_t node, float time,
         WorldMapAnimationKeyInterval* out) const noexcept;
-    // Constant components plus keyed scale/translation modes 0/1. Reached
-    // quaternion interpolation, Euler/matrix tracks and vector curves stop.
+    // Constant components, keyed scale/translation modes 0/1 and quaternion
+    // modes 0/4/6/7. Quaternion remap mode 5, Euler/matrix and vector curves stop.
     [[nodiscard]] WorldMapAnimationPoseStatus sample_pose(
         WorldMapAnimationClipReference clip, uint32_t node, float time,
         const WorldMapAnimationPoseSettings& settings,

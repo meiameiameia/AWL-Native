@@ -19,6 +19,48 @@ bool bounded(size_t size, uint64_t offset, uint64_t length) {
 float as_float(uint32_t word) { float f; std::memcpy(&f, &word, sizeof(f)); return f; }
 bool supported_float(float f) { return std::isfinite(f) && (f == 0 || std::isnormal(f)); }
 int32_t signed_half(const uint8_t* p) { const int32_t v = be16(p); return v >= 32768 ? v - 65536 : v; }
+// 801B8F0C: shortest-sign spherical mix, with separately rounded float
+// products/sums. Native double acos/sin replace the original math library;
+// they are not an instruction-equivalence claim for those library bodies.
+bool spherical_mix(const float* a, const float* b, float t, float* out) noexcept {
+    float products[4];
+    for (unsigned i = 0; i < 4; ++i) {
+        products[i] = a[i] * b[i];
+        if (!supported_float(products[i])) return false;
+    }
+    float dot = products[0] + products[1];
+    if (!supported_float(dot)) return false;
+    dot = products[2] + dot;
+    if (!supported_float(dot)) return false;
+    dot = products[3] + dot;
+    if (!supported_float(dot)) return false;
+    const float sign = dot < 0 ? -1.0f : 1.0f;
+    if (dot < 0) dot = -dot;
+    float left = 1.0f - t, right = sign * t;
+    // Exact float bits at 8034BEF0. Do not normalize or clamp the dot.
+    if (dot <= as_float(0x3f7fff58u)) {
+        const float angle = static_cast<float>(std::acos(static_cast<double>(dot)));
+        const float denominator = static_cast<float>(std::sin(static_cast<double>(angle)));
+        const float left_angle = left * angle, right_angle = t * angle;
+        if (!supported_float(angle) || !supported_float(denominator) || denominator == 0 ||
+            !supported_float(left_angle) || !supported_float(right_angle)) return false;
+        const float left_sine = static_cast<float>(std::sin(static_cast<double>(left_angle)));
+        const float right_sine = static_cast<float>(std::sin(static_cast<double>(right_angle)));
+        if (!supported_float(left_sine) || !supported_float(right_sine)) return false;
+        left = left_sine / denominator;
+        const float ratio = right_sine / denominator;
+        if (!supported_float(ratio)) return false;
+        right = sign * ratio;
+    }
+    if (!supported_float(left) || !supported_float(right)) return false;
+    for (unsigned i = 0; i < 4; ++i) {
+        const float lp = left * a[i], rp = right * b[i];
+        if (!supported_float(lp) || !supported_float(rp)) return false;
+        out[i] = lp + rp;
+        if (!supported_float(out[i])) return false;
+    }
+    return true;
+}
 WorldMapAnimationKeyStatus select_keys(const uint8_t* data, uint32_t size,
     const uint8_t* section, uint64_t table_end, float time, WorldMapAnimationKeyInterval* out) noexcept {
     using Status = WorldMapAnimationKeyStatus;
@@ -232,9 +274,13 @@ WorldMapAnimationPoseStatus WorldMapAnimationBank::sample_pose_impl(
         if (selected == KeyStatus::UnsupportedNumerics) return Status::UnsupportedNumerics;
         if (selected == KeyStatus::Selected) {
             // 0F5C advances key value cursors in scale/quaternion/translation
-            // order. Curve and quaternion modes are a separate boundary.
-            if (flags & 8) return Status::RequiresInterpolation;
+            // order. Controls begin after ALL keyed base components (0D0C).
             uint64_t first = uint64_t(interval.first_offset)+2, second = uint64_t(interval.second_offset)+2;
+            const unsigned width = encoding < 2 ? 1u : encoding < 4 ? 2u : 4u;
+            const unsigned quaternion_count = 4u - unsigned((flags >> 5) & 1) - unsigned((flags >> 6) & 1) - unsigned((flags >> 7) & 1);
+            const uint64_t base_size = ((flags & 1) ? width * 3u : 0u) +
+                ((flags & 2) ? width * 3u : 0u) + ((flags & 8) ? quaternion_count * 2u : 0u);
+            const uint64_t first_control = first + base_size, second_control = second + base_size;
             auto vector = [&](unsigned at, uint32_t flag, uint8_t mode) {
                 if (mode > 1) return Status::RequiresInterpolation;
                 float a[3]{}, b[3]{};
@@ -256,6 +302,39 @@ WorldMapAnimationPoseStatus WorldMapAnimationBank::sample_pose_impl(
             };
             if (flags & 2) {
                 const auto status = vector(1,1,(section[14]>>2)&3); if (status != Status::Sampled) return status;
+            }
+            if (flags & 8) {
+                float a[4]{}, b[4]{}, quaternion[4]{};
+                auto read_quaternion = [&](uint64_t start, float* q) {
+                    cursor = start; float compressed[4]{};
+                    const auto status = decode(settings.quaternion_encoding,settings.quaternion_scale,quaternion_count,compressed);
+                    if (status != Status::Sampled) return status;
+                    unsigned source = 0;
+                    for (unsigned i = 0; i < 3; ++i) q[i] = (flags & (32u << i)) ? 0.0f : compressed[source++];
+                    q[3] = compressed[source];
+                    return Status::Sampled;
+                };
+                auto status = read_quaternion(first,a); if (status != Status::Sampled) return status;
+                status = read_quaternion(second,b); if (status != Status::Sampled) return status;
+                first += quaternion_count * 2u; second += quaternion_count * 2u; // 1C1C return rule.
+                const unsigned mode = (section[14] >> 4) & 7;
+                if (mode == 0) std::copy(a,a+4,quaternion);
+                else if (mode == 6) {
+                    if (!spherical_mix(a,b,interval.fraction,quaternion)) return Status::UnsupportedNumerics;
+                } else if (mode == 4 || mode == 7) {
+                    float c0[4]{}, c1[4]{}, endpoints[4]{}, controls[4]{};
+                    status = read_quaternion(first_control + (mode == 4 ? quaternion_count * 2u : 0u),c0);
+                    if (status != Status::Sampled) return status;
+                    status = read_quaternion(second_control,c1); if (status != Status::Sampled) return status;
+                    // 801B90A4: mix endpoints and controls independently,
+                    // then mix those results at (2*t)*(1-t), without normalization.
+                    const float twice = 2.0f * interval.fraction, complement = 1.0f - interval.fraction;
+                    const float curve_fraction = twice * complement;
+                    if (!spherical_mix(a,b,interval.fraction,endpoints) ||
+                        !spherical_mix(c0,c1,interval.fraction,controls) ||
+                        !spherical_mix(endpoints,controls,curve_fraction,quaternion)) return Status::UnsupportedNumerics;
+                } else return Status::RequiresInterpolation; // Mode 5 needs its separate remap settings.
+                store(4,quaternion,4,4);
             }
             if (flags & 1) {
                 const auto status = vector(8,8,section[14]&3); if (status != Status::Sampled) return status;
