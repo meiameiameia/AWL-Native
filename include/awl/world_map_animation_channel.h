@@ -25,7 +25,7 @@ using WorldMapAnimationPose = std::array<uint32_t, 13>;
 enum class WorldMapAnimationPoseStatus {
     Sampled, NoPose, RequiresBank, RequiresKeyedTracks, RequiresBlend,
     UnsupportedLayout, UnsupportedNumerics, InvalidInput, RequiresInterpolation,
-    RequiresPlaybackRecord, CyclicBlend,
+    RequiresPlaybackRecord, CyclicBlend, RequiresBlendWeight,
 };
 enum class WorldMapAnimationKeyStatus {
     Selected, NoKeys, NoPose, UnsupportedLayout, UnsupportedNumerics, InvalidInput,
@@ -151,6 +151,16 @@ struct WorldMapAnimationPartialPlaybackRecord {
     uint64_t identity = 0;
     WorldMapAnimationPartialPlayback state;
 };
+// Same reached 01F8/FF8C sequence on partial owner records. Word +8, limit +C
+// and rate +4 are not sampler inputs. Unknown +18 blocks only a reached blend
+// with flagged components; null clips/missing nodes stop before that read.
+// No projection establishes a complete playback or writes unknown fields.
+[[nodiscard]] WorldMapAnimationPoseStatus sample_world_map_partial_blended_animation_pose(
+    const WorldMapAnimationPartialPlayback& playback,uint32_t node,
+    const std::vector<WorldMapAnimationPartialPlaybackRecord>& records,
+    const std::vector<const WorldMapAnimationBank*>& banks,
+    const WorldMapAnimationPoseSettings& settings,
+    const WorldMapAnimationPose& prior,WorldMapAnimationPose* out) noexcept;
 struct WorldMapAnimationChannelState {
     uint32_t elapsed_0 = 0;
     uint32_t duration_4 = 0;

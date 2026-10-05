@@ -127,8 +127,8 @@ WorldMapModelCoreStatus prepare_world_map_model_core(
 }
 
 WorldMapNativeModel::WorldMapNativeModel(std::unique_ptr<const WorldMapModelBank> bank,
-    WorldMapModelCore core, std::optional<WorldMapAnimationPlayback> playback)
-    : bank_(std::move(bank)), core_(std::move(core)), storage_requests_(core_.allocations),
+    WorldMapPreparedModelResource prepared,WorldMapModelCore core, std::optional<WorldMapAnimationPlayback> playback)
+    : bank_(std::move(bank)), prepared_(std::move(prepared)),core_(std::move(core)), storage_requests_(core_.allocations),
       playback_(std::move(playback)) {
     // D0FC -> E7C4 -> DD44 reaches no feature calls for this fresh core.
     // The final buffer is unused here; retain the target cursor request as
@@ -212,7 +212,7 @@ WorldMapModelConstructionResult construct_world_map_secondary_model(
         if(status!=WorldMapModelCoreStatus::Prepared || !initialized.core ||
             initialized.core->consumed_size+0x20u>resource.allocation_size)return invalid;
         auto model=std::unique_ptr<WorldMapNativeModel>(new WorldMapNativeModel(
-            std::move(owned_bank),std::move(*initialized.core),setup.saved_playback));
+            std::move(owned_bank),std::move(*prepared.prepared),std::move(*initialized.core),setup.saved_playback));
         *out=std::move(model);
         return {Status::Constructed};
     } catch(const std::bad_alloc&) {

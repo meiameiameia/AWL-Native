@@ -158,6 +158,9 @@ public:
     WorldMapNativeModel& operator=(WorldMapNativeModel&&) = delete;
     const WorldMapModelCore& core() const { return core_; }
     const WorldMapModelBank& bank() const { return *bank_; }
+    // Re-prepared from the private bank at construction, retained by move.
+    const WorldMapPreparedModelResource& prepared_resource() const { return prepared_; }
+    const std::vector<std::shared_ptr<const WorldMapAnimationBank>>& animation_banks() const { return animation_banks_; }
     const std::vector<WorldMapModelCoreAllocation>& storage_requests() const { return storage_requests_; }
     uint32_t consumed_size() const { return core_.consumed_size + 0x20u; }
     uint32_t flags_174() const { return 4; }
@@ -190,9 +193,10 @@ private:
         const WorldMapModelSourceChange&, WorldMapModelSourceStep*);
     void publish_links(const WorldMapModelLinkNode& node) noexcept;
     void set_playback(const WorldMapAnimationPartialPlayback& playback) noexcept;
-    WorldMapNativeModel(std::unique_ptr<const WorldMapModelBank> bank, WorldMapModelCore core,
+    WorldMapNativeModel(std::unique_ptr<const WorldMapModelBank> bank, WorldMapPreparedModelResource prepared,WorldMapModelCore core,
         std::optional<WorldMapAnimationPlayback> playback);
     std::unique_ptr<const WorldMapModelBank> bank_;
+    WorldMapPreparedModelResource prepared_;
     WorldMapModelCore core_;
     std::vector<WorldMapModelCoreAllocation> storage_requests_;
     std::optional<WorldMapAnimationPlayback> playback_;

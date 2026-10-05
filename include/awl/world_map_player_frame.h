@@ -108,11 +108,14 @@ struct WorldMapPlayerAnimationFrameResult {
     const std::vector<uint8_t>& previous_output,WorldMapPlayerFrame* out);
 
 struct WorldMapModelFrameSource {
-    // Exactly one primary work OR both prepared no-skin resource/core views.
+    // Exactly one primary work OR prepared no-skin resource/core views OR
+    // native secondary owner. Owner identity/links/playback/layout are authoritative;
+    // its input identity/parent/flags/children/playback observations are ignored.
     // Borrowed for this call; identities never dereference host/PPC pointers.
     const WorldMapPlayerSkinWork* primary = nullptr;
     const WorldMapPreparedModelResource* resource = nullptr;
     const WorldMapModelCore* core = nullptr;
+    const WorldMapNativeModel* secondary = nullptr;
     WorldMapPlayerAnimationFrameInput input; // links.identity is this record's key.
     WorldMapPlayerFrame previous_frame;
 };
@@ -142,6 +145,12 @@ struct WorldMapModelHierarchyFrameResult {
 // The two root controls propagate unchanged to every child. No clocks, owner
 // mutation/registry, GPU drawing or actor acceptance. Every failure preserves
 // *out; sources, records and banks remain immutable.
+// Owned sources use retained prepared views and banks, merge authoritative
+// partial playback keys with external complete records, and preserve unknown
+// fields. External records cannot duplicate an owned playback key. Identical
+// bank snapshots deduplicate; conflicting bytes under a reached key reject.
+// Root pose, inherited producer/matrix, settings, node post observations and
+// previous frame remain supplied. No root/feature/actor state is published to owners.
 [[nodiscard]] WorldMapModelHierarchyFrameResult evaluate_world_map_model_hierarchy_frame(
     const std::vector<WorldMapModelFrameSource>& sources,uint64_t root,
     const std::vector<WorldMapAnimationPlaybackRecord>& records,

@@ -200,21 +200,43 @@ WorldMapPlayerFrameStatus evaluate_primary(
         },root_pose,evaluate_nodes,request_skin,node_count,links,
         std::forward<Sample>(sample),std::forward<PostTransform>(post_transform),previous_output,out);
 }
-template<class Evaluate>
-WorldMapPlayerAnimationFrameResult animation_frame(
-    const WorldMapPlayerAnimationFrameInput& input,
-    const std::vector<WorldMapAnimationPlaybackRecord>& records,
-    const std::vector<const WorldMapAnimationBank*>& banks,Evaluate&& evaluate) {
+template<class Sample,class Evaluate>
+WorldMapPlayerAnimationFrameResult sampled_animation_frame(Sample&& sample, Evaluate&& evaluate) {
     WorldMapPlayerAnimationFrameResult result;
     result.status=evaluate([&](size_t i,std::optional<WorldMapAnimationPose>* sampled) {
         WorldMapAnimationPose value{},prior{};
-        const auto status=sample_world_map_blended_animation_pose(input.playback,uint32_t(i),records,banks,input.settings,prior,&value);
+        const auto status=sample(uint32_t(i),prior,&value);
         if (status==WorldMapAnimationPoseStatus::NoPose) {sampled->reset();return WorldMapPlayerFrameStatus::Evaluated;}
         if (status==WorldMapAnimationPoseStatus::Sampled) {*sampled=value;return WorldMapPlayerFrameStatus::Evaluated;}
         result.failed_node=uint32_t(i);result.sampling_status=status;
         return WorldMapPlayerFrameStatus::RequiresAnimationSampling;
     });
     return result;
+}
+template<class Evaluate>
+WorldMapPlayerAnimationFrameResult animation_frame(
+    const WorldMapPlayerAnimationFrameInput& input,
+    const std::vector<WorldMapAnimationPlaybackRecord>& records,
+    const std::vector<const WorldMapAnimationBank*>& banks,Evaluate&& evaluate) {
+    return sampled_animation_frame([&](uint32_t node,const auto& prior,auto* output) {
+        return sample_world_map_blended_animation_pose(input.playback,node,records,banks,input.settings,prior,output);
+    },std::forward<Evaluate>(evaluate));
+}
+template<class Sample>
+WorldMapPlayerFrameStatus evaluate_model(
+    const WorldMapPreparedModelResource& resource,const WorldMapModelCore& core,
+    const WorldMapPlayerAnimationFrameInput& input,Sample&& sample,
+    const std::vector<uint8_t>& previous_output,WorldMapPlayerFrame* out) {
+    using Status=WorldMapPlayerFrameStatus;
+    if (core.nodes.size()!=resource.metadata.count_6 ||
+        core.resource.reference.bank_identity!=resource.metadata.reference.bank_identity ||
+        core.resource.reference.offset!=resource.metadata.reference.offset || core.auxiliary_c)
+        return Status::UnsupportedLayout; // This API requires known null +C.
+    return evaluate_frame(core,resource,core.nodes.size(),std::nullopt,false,
+        [&](uint32_t feature,size_t node) {return feature==node && core.nodes[node].feature_8!=0;},
+        [](const auto&,const auto&,auto*) {return WorldMapPlayerSkinExecutionStatus::InvalidInput;},
+        input.root_pose,input.evaluate_nodes,input.request_skin,input.node_post_transforms.size(),input.links,
+        std::forward<Sample>(sample),[&](size_t i)->const std::optional<WorldMapModelMatrix>& {return input.node_post_transforms[i];},previous_output,out);
 }
 } // namespace
 WorldMapPlayerFrameStatus evaluate_world_map_player_frame(
@@ -242,16 +264,8 @@ WorldMapPlayerAnimationFrameResult evaluate_world_map_model_animation_frame(
     const std::vector<WorldMapAnimationPlaybackRecord>& records,
     const std::vector<const WorldMapAnimationBank*>& banks,
     const std::vector<uint8_t>& previous_output,WorldMapPlayerFrame* out) {
-    if (core.nodes.size()!=resource.metadata.count_6 ||
-        core.resource.reference.bank_identity!=resource.metadata.reference.bank_identity ||
-        core.resource.reference.offset!=resource.metadata.reference.offset || core.auxiliary_c)
-        return {WorldMapPlayerFrameStatus::UnsupportedLayout}; // This API requires known null +C.
     return animation_frame(input,records,banks,[&](auto&& sample) {
-        return evaluate_frame(core,resource,core.nodes.size(),std::nullopt,false,
-            [&](uint32_t feature,size_t node) {return feature==node && core.nodes[node].feature_8!=0;},
-            [](const auto&,const auto&,auto*) {return WorldMapPlayerSkinExecutionStatus::InvalidInput;},
-            input.root_pose,input.evaluate_nodes,input.request_skin,input.node_post_transforms.size(),input.links,
-            sample,[&](size_t i)->const std::optional<WorldMapModelMatrix>& {return input.node_post_transforms[i];},previous_output,out);
+        return evaluate_model(resource,core,input,sample,previous_output,out);
     });
 }
 WorldMapModelHierarchyFrameResult evaluate_world_map_model_hierarchy_frame(
@@ -261,31 +275,66 @@ WorldMapModelHierarchyFrameResult evaluate_world_map_model_hierarchy_frame(
     size_t maximum_evaluations,WorldMapModelHierarchyFrame* out) {
     using Status=WorldMapModelHierarchyFrameStatus;
     if (!out || !root || !maximum_evaluations) return {};
+    auto identity=[](const WorldMapModelFrameSource& source) {
+        return source.secondary?source.secondary->binding().model_identity:source.input.links.identity;
+    };
     auto find=[&](uint64_t key) {
-        for (size_t i=0;i<sources.size();++i) if (sources[i].input.links.identity==key) return i;
+        for (size_t i=0;i<sources.size();++i) if (identity(sources[i])==key) return i;
         return sources.size();
     };
     for (size_t i=0;i<sources.size();++i) {
-        const auto key=sources[i].input.links.identity;
+        const auto key=identity(sources[i]);
         if (!key || find(key)!=i) return {};
     }
     const size_t root_index=find(root);
     if (root_index==sources.size()) return {Status::RequiresModel,root};
     try {
         WorldMapModelHierarchyFrame staged;staged.models.reserve(sources.size());
-        for (const auto& source:sources) staged.models.push_back({source.input.links.identity,
-            source.input.root_pose,source.input.links.inherited,source.previous_frame});
+        bool has_owned=false;
+        for (const auto& source:sources) {
+            auto inherited=source.input.links.inherited;
+            if (source.secondary) {
+                inherited.parent=source.secondary->core().parent_150;
+                inherited.flags=source.secondary->core().flags_158;has_owned=true;
+            }
+            staged.models.push_back({identity(source),source.input.root_pose,inherited,source.previous_frame});
+        }
+        std::vector<WorldMapAnimationPartialPlaybackRecord> owned_records;
+        std::vector<const WorldMapAnimationBank*> owned_banks;
+        if (has_owned) {
+            for (const auto& record:records) owned_records.push_back({record.identity,partial_world_map_animation_playback(record.state)});
+            auto add_bank=[&](const WorldMapAnimationBank* bank) {
+                if (!bank || !bank->loaded()) return;
+                for (const auto* prior:owned_banks) if (prior->same_contents(*bank)) return;
+                // Conflicting bytes remain ambiguous only when this key is read.
+                owned_banks.push_back(bank);
+            };
+            for (const auto& source:sources) if (source.secondary) {
+                const auto binding=source.secondary->binding();
+                for (const auto& record:owned_records) if (record.identity==binding.playback_178)
+                    return {Status::InvalidInput,binding.model_identity};
+                owned_records.push_back({binding.playback_178,source.secondary->partial_playback()});
+                for (const auto& bank:source.secondary->animation_banks()) add_bank(bank.get());
+            }
+            for (const auto* bank:banks) add_bank(bank);
+        }
         struct Visit {size_t model=0,next_slot=0;};
         std::vector<Visit> stack;
         auto enter=[&](size_t index)->WorldMapModelHierarchyFrameResult {
             const auto& source=sources[index];auto& state=staged.models[index];
             for (const auto& active:stack) if (active.model==index) return {Status::Cycle,state.identity};
             if (staged.evaluation_order.size()>=maximum_evaluations) return {Status::EvaluationLimit,state.identity};
-            if ((source.primary && (source.resource || source.core)) || (!source.primary && (!source.resource || !source.core)))
-                return {Status::InvalidInput,state.identity};
+            if ((source.primary && (source.resource || source.core || source.secondary)) ||
+                (source.secondary && (source.resource || source.core)) ||
+                (!source.primary && !source.secondary && (!source.resource || !source.core))) return {Status::InvalidInput,state.identity};
             auto input=source.input;input.root_pose=state.root_pose;input.links.inherited=state.inherited;
             input.evaluate_nodes=sources[root_index].input.evaluate_nodes;
             input.request_skin=sources[root_index].input.request_skin;
+            if (source.secondary) {
+                input.links.identity=state.identity;
+                for (size_t slot=0;slot<4;++slot) input.links.children[slot]={source.secondary->core().children_15c[slot],
+                    source.secondary->core().attachments_16c[slot],std::nullopt};
+            }
             // Resolve reached children even when recursion is off: every nonnull
             // slot receives +120/+154. Flags come from the child's actual snapshot.
             for (auto& child:input.links.children) if (child.child) {
@@ -295,7 +344,19 @@ WorldMapModelHierarchyFrameResult evaluate_world_map_model_hierarchy_frame(
                 if (child.child_flags && child.child_flags!=flags) return {Status::InvalidInput,child.child};
                 child.child_flags=flags;
             }
-            const auto result=source.primary?
+            WorldMapPlayerAnimationFrameResult result;
+            if (has_owned) {
+                const auto playback=source.secondary?source.secondary->partial_playback():partial_world_map_animation_playback(input.playback);
+                result=sampled_animation_frame([&](uint32_t node,const auto& prior,auto* output) {
+                    return sample_world_map_partial_blended_animation_pose(playback,node,owned_records,owned_banks,input.settings,prior,output);
+                },[&](auto&& sample) {
+                    if (source.primary) return evaluate_primary(*source.primary,input.root_pose,input.evaluate_nodes,input.request_skin,
+                        input.node_post_transforms.size(),input.links,sample,
+                        [&](size_t i)->const std::optional<WorldMapModelMatrix>& {return input.node_post_transforms[i];},state.frame.vertex_output,&state.frame);
+                    return source.secondary?evaluate_model(source.secondary->prepared_resource(),source.secondary->core(),input,sample,state.frame.vertex_output,&state.frame):
+                        evaluate_model(*source.resource,*source.core,input,sample,state.frame.vertex_output,&state.frame);
+                });
+            } else result=source.primary?
                 evaluate_world_map_player_animation_frame(*source.primary,input,records,banks,state.frame.vertex_output,&state.frame):
                 evaluate_world_map_model_animation_frame(*source.resource,*source.core,input,records,banks,state.frame.vertex_output,&state.frame);
             if (result.status==WorldMapPlayerFrameStatus::AllocationFailure) return {Status::AllocationFailure,state.identity};

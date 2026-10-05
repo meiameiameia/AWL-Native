@@ -404,15 +404,17 @@ WorldMapAnimationPoseStatus blend_world_map_animation_poses(
     return Status::Sampled;
 }
 
-WorldMapAnimationPoseStatus sample_world_map_blended_animation_pose(
-    const WorldMapAnimationPlayback& playback, uint32_t node,
-    const std::vector<WorldMapAnimationPlaybackRecord>& records,
+namespace {
+template<class Playback,class Record,class Weight>
+WorldMapAnimationPoseStatus sample_blended_pose(
+    const Playback& playback, uint32_t node,
+    const std::vector<Record>& records,
     const std::vector<const WorldMapAnimationBank*>& banks,
     const WorldMapAnimationPoseSettings& settings,
-    const WorldMapAnimationPose& prior, WorldMapAnimationPose* out) noexcept {
+    const WorldMapAnimationPose& prior, WorldMapAnimationPose* out,Weight&& weight) noexcept {
     using Status = WorldMapAnimationPoseStatus;
     if (out == nullptr) return Status::InvalidInput;
-    auto sample = [&](const WorldMapAnimationPlayback& p, const WorldMapAnimationPose& input,
+    auto sample = [&](const Playback& p, const WorldMapAnimationPose& input,
         WorldMapAnimationPose* result) {
         if (!p.clip_10) return Status::NoPose;
         const WorldMapAnimationBank* bank = nullptr;
@@ -434,7 +436,7 @@ WorldMapAnimationPoseStatus sample_world_map_blended_animation_pose(
         // Any walk visiting more records than supplied must repeat one.
         // The DOL recursively unrolls nine records per FF8C call; iteration
         // preserves that order without risking an unbounded native stack.
-        const WorldMapAnimationPlayback* next = nullptr;
+        const Playback* next = nullptr;
         for (const auto& record : records) if (record.identity == current->link_14) {
             if (next != nullptr) return Status::InvalidInput;
             next = &record.state;
@@ -445,12 +447,35 @@ WorldMapAnimationPoseStatus sample_world_map_blended_animation_pose(
         status = sample(*next,sampled,&sampled);
         if (status == Status::NoPose) break; // FF8C stops before blending/following that record.
         if (status != Status::Sampled) return status;
-        status = blend_world_map_animation_poses(&pose,&sampled,current->value_18,pose,&pose);
+        const auto blend_weight=weight(*current);
+        if (!blend_weight && (((pose[0]|sampled[0])>>24)&13u)) return Status::RequiresBlendWeight;
+        // With no flagged components 23A0 does not use weight arithmetic. This
+        // scratch value neither writes a record nor establishes unknown +18.
+        status = blend_world_map_animation_poses(&pose,&sampled,blend_weight.value_or(0.0f),pose,&pose);
         if (status != Status::Sampled) return status;
         current = next;
     }
     *out = pose;
     return Status::Sampled;
+}
+} // namespace
+WorldMapAnimationPoseStatus sample_world_map_blended_animation_pose(
+    const WorldMapAnimationPlayback& playback,uint32_t node,
+    const std::vector<WorldMapAnimationPlaybackRecord>& records,
+    const std::vector<const WorldMapAnimationBank*>& banks,
+    const WorldMapAnimationPoseSettings& settings,
+    const WorldMapAnimationPose& prior,WorldMapAnimationPose* out) noexcept {
+    return sample_blended_pose(playback,node,records,banks,settings,prior,out,
+        [](const auto& record) {return std::optional<float>(record.value_18);});
+}
+WorldMapAnimationPoseStatus sample_world_map_partial_blended_animation_pose(
+    const WorldMapAnimationPartialPlayback& playback,uint32_t node,
+    const std::vector<WorldMapAnimationPartialPlaybackRecord>& records,
+    const std::vector<const WorldMapAnimationBank*>& banks,
+    const WorldMapAnimationPoseSettings& settings,
+    const WorldMapAnimationPose& prior,WorldMapAnimationPose* out) noexcept {
+    return sample_blended_pose(playback,node,records,banks,settings,prior,out,
+        [](const auto& record) {return record.value_18;});
 }
 
 std::optional<WorldMapAnimationPlayback> WorldMapAnimationPartialPlayback::complete() const noexcept {
