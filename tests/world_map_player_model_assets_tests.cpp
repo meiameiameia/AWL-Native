@@ -4,6 +4,7 @@
 #include "awl/world_map_player_draw_commands.h"
 #include "awl/world_map_player_skin_work.h"
 #include "awl/world_map_player_frame.h"
+#include "awl/world_map_player_topology.h"
 #include "awl/filesystem.h"
 
 #include <chrono>
@@ -1062,6 +1063,91 @@ void owned_hierarchy_frame_checks() {
             "supplied primary skinning and authoritative owned secondary share retained banks and ordered attachment placement");}
     std::cout<<"PLAYER_OWNED_HIERARCHY graph/channel/bank/default/frame boundaries checked\n";
 }
+void hash_topology(uint64_t& h,const awl::WorldMapPlayerTopology& topology) {
+    hash(h,uint32_t(topology.batches.size()));awl::WorldMapPlayerModelAssetView gpl;
+    expect(topology.assets && topology.assets->resource(2,&gpl),"topology retains GPL provider");
+    for(const auto& b:topology.batches){for(uint32_t v:{b.section,b.command,b.display_list.offset-gpl.reference.offset,b.display_list_size,b.nop_bytes,b.descriptor_word,
+        uint32_t(b.texture.binding.bank),uint32_t(b.texture.binding.index),uint32_t(b.texture.unit),uint32_t(b.references.size())})hash(h,v);
+        for(const auto& r:b.references)for(uint32_t v:{uint32_t(r.position),uint32_t(r.normal),uint32_t(r.uv)})hash(h,v);
+        hash(h,uint32_t(b.primitives.size()));for(const auto& q:b.primitives)for(uint32_t v:{uint32_t(q.opcode),q.first_reference,q.count})hash(h,v);
+        hash(h,uint32_t(b.triangle_indices.size()));for(auto v:b.triangle_indices)hash(h,v);}
+}
+std::vector<uint8_t> topology_gpl(uint8_t op=0x90,uint32_t count=3,uint32_t mask=7) {
+    auto b=draw_gpl();
+    for(size_t at:{size_t(64),size_t(512)}){
+        word(b,at+120,320);const auto vcd=((mask&1)?3u:2u)<<2|((mask&2)?3u:2u)<<4|((mask&4)?3u:2u)<<10;
+        word(b,at+132+2*16+4,vcd);
+        for(uint32_t j=2;j<5;++j){const size_t start=at+(j==2?320:384+(j-3)*32);const uint32_t n=j==2?count:3u;
+            const uint8_t code=j==2?op:0x90;b[start]=code;b[start+1]=uint8_t(n>>8);b[start+2]=uint8_t(n);size_t cursor=start+3;
+            for(uint32_t i=0;i<n;++i){const uint16_t indices[]{uint16_t(i%3),uint16_t((i+1)%3),uint16_t(i%2)};
+                for(size_t a=0;a<3;++a){if(mask&(1u<<a))b[cursor++]=uint8_t(indices[a]>>8);b[cursor++]=uint8_t(indices[a]);}}
+            word(b,at+132+j*16+8,uint32_t(start-at));word(b,at+132+j*16+12,uint32_t((cursor-start+15)&~size_t(15)));
+        }}return b;
+}
+void topology_checks() {
+    using T=awl::WorldMapPlayerTopologyStatus;Fixture fixture;auto payloads=files();payloads[0]=setup_model();payloads[2]=skin();
+    std::shared_ptr<const Assets> assets;std::unique_ptr<awl::WorldMapPlayerDrawCommands> drawing;awl::WorldMapPlayerTopology topology;
+    auto prepare=[&](){assets.reset();fixture.write("boy_0.arc",archive(payloads));
+        expect(awl::load_world_map_player_model_assets(0,&assets)==Status::Loaded &&
+            awl::prepare_world_map_player_draw_commands(assets,&drawing)==awl::WorldMapPlayerDrawStatus::PreparedParameters,"synthetic topology drawing profile prepares");};
+    size_t checked=0;const uint8_t ops[]{0x80,0x88,0x90,0x98,0xa0};
+    for(uint32_t mask=0;mask<8;++mask)for(uint8_t op:ops){const uint32_t count=op==0x80 || op==0x88?4u:op==0x90?6u:5u;
+        payloads[1]=topology_gpl(op,count,mask);prepare();if(!drawing)return;
+        expect(awl::prepare_world_map_player_topology(*drawing,&topology).status==T::PreparedTopology && topology.batches.size()==6,"complete reversed-section topology and ordered material ranges prepare");
+        if(topology.batches.size()!=6)return;
+        const auto& batch=topology.batches[0];const std::vector<uint32_t> expected=op==0x80 || op==0x88?std::vector<uint32_t>{0,1,2,0,2,3}:
+            op==0x90?std::vector<uint32_t>{0,1,2,3,4,5}:op==0x98?std::vector<uint32_t>{0,1,2,2,1,3,2,3,4}:std::vector<uint32_t>{0,1,2,0,2,3,0,3,4};
+        expect(batch.references.size()==count && batch.triangle_indices==expected && batch.primitives.size()==1 && batch.nop_bytes==batch.display_list_size-3-count*(3+uint32_t((mask&1)!=0)+uint32_t((mask&2)!=0)+uint32_t((mask&4)!=0)),"index-width combinations, NOP padding and independently listed GX triangle winding match");
+        for(uint32_t i=0;i<count;++i)expect(batch.references[i].position==i%3 && batch.references[i].normal==(i+1)%3 && batch.references[i].uv==i%2,"position/normal/UV index order matches independent invented references");
+        expect(topology.batches[0].command==2 && topology.batches[1].command==3 && topology.batches[2].command==4 &&
+            topology.batches[0].texture.binding.bank==Bank::Body && topology.batches[0].texture.binding.index==1 &&
+            topology.batches[1].texture.binding.bank==Bank::Body && topology.batches[1].texture.binding.index==1 && topology.batches[2].texture.binding.bank==Bank::Eyes,
+            "type-one attached lists use old texture before installing replacements");++checked;}
+    std::cout<<"PLAYER_TOPOLOGY_PROFILES "<<checked<<" widths/primitives/order checked\n";
+    auto previous=topology;uint64_t before=14695981039346656037ull;hash_topology(before,previous);
+    auto preserved=[&](){uint64_t h=14695981039346656037ull;hash_topology(h,topology);return h==before && topology.assets==previous.assets;};
+    for(uint32_t kind=0;kind<11;++kind){payloads[1]=topology_gpl();const size_t at=64;
+        if(kind==0)payloads[1][at+320]=0x91;
+        if(kind==1)payloads[1][at+320]=0xb8;
+        if(kind==2)word(payloads[1],at+132+2*16+12,2);
+        if(kind==3)word(payloads[1],at+132+2*16+12,20);
+        if(kind==4)payloads[1][at+324]=3; // First position equals count.
+        if(kind==5)payloads[1][at+326]=3; // First normal equals count.
+        if(kind==6)payloads[1][at+328]=2; // First UV equals count.
+        if(kind==7)word(payloads[1],at+120,384);
+        if(kind==8)word(payloads[1],at+132+2*16+4,0xc34); // Direct position.
+        if(kind==9)payloads[1][at+322]=2; // Triangle group cannot have two refs.
+        if(kind==10)word(payloads[1],at+132+4*16+8,120); // Metadata alias late in traversal.
+        prepare();const auto result=awl::prepare_world_map_player_topology(*drawing,&topology);
+        expect(result.status!=T::PreparedTopology && result.section==1u && preserved(),"malformed/unsupported late section preserves preceding batches, texture state and retained output");}
+    for(uint32_t missing=0;missing<3;++missing){payloads[1]=topology_gpl();
+        // Earlier commands carry valid standalone draw ranges, before one
+        // prerequisite has been established by the serialized stream.
+        const uint32_t command=missing==0?1u:missing==1?0u:2u;
+        for(size_t at:{size_t(64),size_t(512)}){
+            if(missing==2){payloads[1][at+132+16]=1;payloads[1][at+132+17]=255;word(payloads[1],at+132+16+4,0);}
+            else {word(payloads[1],at+132+command*16+8,320);word(payloads[1],at+132+command*16+12,32);}}
+        prepare();const auto result=awl::prepare_world_map_player_topology(*drawing,&topology);
+        const auto wanted=missing==0?T::RequiresDescriptor:missing==1?T::RequiresDescriptor:T::RequiresTev;
+        expect(result.status==wanted && preserved(),"ordered command prerequisites fail explicitly and preserve the complete prior topology");}
+    // Install a VCD first, with its own range, before any texture is selected.
+    payloads[1]=topology_gpl();for(size_t at:{size_t(64),size_t(512)}){
+        payloads[1][at+132]=2;word(payloads[1],at+132+4,0xc3c);word(payloads[1],at+132+8,320);word(payloads[1],at+132+12,32);}
+    prepare();expect(awl::prepare_world_map_player_topology(*drawing,&topology).status==T::RequiresTexture && preserved(),"first range cannot invent prior texture state");
+    payloads[1]=topology_gpl();prepare();
+    expect(awl::prepare_world_map_player_topology(*drawing,nullptr).status==T::InvalidInput,"null topology output rejects");
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    const auto live=allocation_probe::live;size_t failed=0;bool reached=false;
+    for(size_t fail=0;fail<128;++fail){allocation_probe::remaining=fail;allocation_probe::enabled=true;const auto result=awl::prepare_world_map_player_topology(*drawing,&topology);allocation_probe::enabled=false;
+        if(result.status==T::PreparedTopology){reached=true;break;}++failed;
+        expect(result.status==T::AllocationFailure && preserved() && allocation_probe::live==live,"topology allocation failures preserve prior references/primitives/triangles/providers and free staging");}
+    expect(reached && failed>10,"topology allocation sweep reaches all six complete ranges");std::cout<<"PLAYER_TOPOLOGY_ALLOCATION_FAILURES "<<failed<<'\n';
+#endif
+    auto lifetime=std::weak_ptr<const Assets>(topology.assets);assets.reset();drawing.reset();
+    expect(!lifetime.expired() && topology.assets->texture(Bank::Body,1),"prepared topology keeps immutable texture/geometry providers live independently of drawing owner");
+    previous={};topology={}; // Release the failure baseline as well as the published topology.
+    expect(lifetime.expired(),"last new topology provider reference releases after replacement and destruction");
+}
 void primary_frame_owner_checks() {
     using O=awl::WorldMapPlayerFrameOwnerStatus;using F=awl::WorldMapPlayerFrameStatus;using P=awl::WorldMapAnimationPoseStatus;
     Fixture fixture;auto payloads=files();payloads[1]=draw_gpl();
@@ -1502,7 +1588,7 @@ void hash_skin_work(uint64_t& h,uint32_t phase,const awl::WorldMapPlayerSkinWork
 void local(const char* disc,bool frame_evidence=false){
     expect(awl::filesystem_mount("/",disc),"local disc mounts");
     uint64_t digest=14695981039346656037ull,auxiliary_digest=digest,setup_digest=digest,draw_digest=digest,skin_work_digest=digest,skin_execution_digest=digest;
-    uint64_t animation_frame_digest=digest,owned_primary_digest=digest;
+    uint64_t animation_frame_digest=digest,owned_primary_digest=digest,topology_digest=digest;
     std::ifstream animation_file(std::filesystem::path(disc)/"files"/"boy_0.anm.arc",std::ios::binary);
     std::vector<uint8_t> animation_bytes((std::istreambuf_iterator<char>(animation_file)),{});
     awl::WorldMapAnimationBank animation_bank;
@@ -1558,6 +1644,12 @@ void local(const char* disc,bool frame_evidence=false){
         expect(arrays.size()==3 && arrays[0].count==1831 && arrays[0].bounded_size==21966 && arrays[1].count==1102 && arrays[1].bounded_size==4408 &&
             arrays[2].count==1831 && arrays[2].bounded_size==21966,"actual interleaved array bounds include the last XYZ/normal and UV element");
         hash_draw(draw_digest,phase,*draw);
+        awl::WorldMapPlayerTopology topology;
+        expect(awl::prepare_world_map_player_topology(*draw,&topology).status==awl::WorldMapPlayerTopologyStatus::PreparedTopology,
+            "every actual player material range decodes complete bounded references/triangle topology");
+        hash(topology_digest,phase);hash_topology(topology_digest,topology);
+        size_t references=0,triangles=0;for(const auto& batch:topology.batches){references+=batch.references.size();triangles+=batch.triangle_indices.size()/3;}
+        expect(topology.batches.size()==4 && references==4352 && triangles==2706,"each actual model selection preserves all four ranges / 4352 references / 2706 triangles");
         std::unique_ptr<awl::WorldMapPlayerSkinWork> skin_work;
         const auto work_status=awl::prepare_world_map_player_skin_work(assets,&skin_work);
         expect(work_status==awl::WorldMapPlayerSkinWorkStatus::PreparedWork && skin_work,"all local skin jobs prepare owned CPU storage");
@@ -1675,6 +1767,8 @@ void local(const char* disc,bool frame_evidence=false){
     expect(owned_primary_digest==0x30d965797df91c84ull,"persistent primary CPU frames match the existing local mapped-instruction digest under the same documented native numerical substitutions");
     expect(draw_digest==0xef4c5a9a9aa08adaull,"all six CPU drawing parameter sets match independently executed original routines");
     std::cout<<"LOCAL_PLAYER_DRAW_PARAMETERS "<<selections<<" digest "<<std::hex<<draw_digest<<std::dec<<'\n';
+    std::cout<<"LOCAL_PLAYER_TOPOLOGY 6 selections digest "<<std::hex<<topology_digest<<std::dec<<'\n';
+    expect(topology_digest==0x6421e51e33e9ada2ull,"all local ranges, prior texture bindings, exact reference triples, primitive boundaries and triangle indices match independent raw-byte parsing");
     std::cout<<"LOCAL_PLAYER_SETUP_PLANS "<<selections<<" digest "<<std::hex<<setup_digest<<std::dec<<'\n';
     expect(setup_digest==0xd9d84507566b1a0cull,
         "all six setup tables/budgets, features/sizes/shared caches and texture selections match mapped original instructions");
@@ -1686,7 +1780,7 @@ int main(int argc,char** argv){
         _CrtSetReportMode(kind,_CRTDBG_MODE_FILE);_CrtSetReportFile(kind,_CRTDBG_FILE_STDERR);
     }
 #endif
-    embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();skin_execution_checks();awl::filesystem_shutdown();frame_checks();awl::filesystem_shutdown();animation_frame_checks();awl::filesystem_shutdown();attachment_frame_checks();awl::filesystem_shutdown();hierarchy_frame_checks();awl::filesystem_shutdown();partial_frame_sampling_checks();owned_hierarchy_frame_checks();awl::filesystem_shutdown();primary_frame_owner_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
+    embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();skin_execution_checks();awl::filesystem_shutdown();frame_checks();awl::filesystem_shutdown();animation_frame_checks();awl::filesystem_shutdown();attachment_frame_checks();awl::filesystem_shutdown();hierarchy_frame_checks();awl::filesystem_shutdown();partial_frame_sampling_checks();owned_hierarchy_frame_checks();awl::filesystem_shutdown();primary_frame_owner_checks();awl::filesystem_shutdown();topology_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
     if(argc==3 && std::string(argv[1])=="--player-model-local")local(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-frame-local")local(argv[2],true);
     else if(argc!=1)expect(false,"usage: --player-model-local <disc> or --player-frame-local <disc>");
