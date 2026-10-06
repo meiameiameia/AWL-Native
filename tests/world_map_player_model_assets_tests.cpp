@@ -5,6 +5,7 @@
 #include "awl/world_map_player_skin_work.h"
 #include "awl/world_map_player_frame.h"
 #include "awl/world_map_player_topology.h"
+#include "awl/world_map_player_geometry.h"
 #include "awl/filesystem.h"
 
 #include <chrono>
@@ -1148,6 +1149,101 @@ void topology_checks() {
     previous={};topology={}; // Release the failure baseline as well as the published topology.
     expect(lifetime.expired(),"last new topology provider reference releases after replacement and destruction");
 }
+void hash_geometry(uint64_t& h,const awl::WorldMapPlayerGeometry& geometry) {
+    hash_topology(h,geometry.topology());hash(h,uint32_t(geometry.vertices().size()));
+    for(const auto& batch:geometry.vertices()){hash(h,uint32_t(batch.size()));for(const auto& vertex:batch)
+        for(const float value:{vertex.position[0],vertex.position[1],vertex.position[2],vertex.normal[0],vertex.normal[1],vertex.normal[2],vertex.uv[0],vertex.uv[1]}){
+            uint32_t raw;std::memcpy(&raw,&value,4);hash(h,raw);}}
+}
+std::vector<uint8_t> geometry_gpl() {
+    auto b=topology_gpl();
+    constexpr int positions[3][3]{{-32768,-1,32767},{8192,-8192,0},{1,16384,-16384}};
+    constexpr int normals[3][3]{{16384,-16384,8192},{-32768,32767,-1},{1,0,-8192}};
+    constexpr int uv[2][2]{{-32768,32767},{8192,-1}};
+    const auto store=[&](size_t at,int value){const auto raw=uint16_t(value);b[at]=uint8_t(raw>>8);b[at+1]=uint8_t(raw);};
+    for(size_t at:{size_t(64),size_t(512)}){word(b,at+24,32);word(b,at+288,38);
+        for(size_t i=0;i<3;++i)for(size_t lane=0;lane<3;++lane){store(at+32+i*12+lane*2,positions[i][lane]);store(at+38+i*12+lane*2,normals[i][lane]);}
+        for(size_t i=0;i<2;++i)for(size_t lane=0;lane<2;++lane)store(at+96+i*4+lane*2,uv[i][lane]);}
+    return b;
+}
+void geometry_checks() {
+    using G=awl::WorldMapPlayerGeometryStatus;Fixture fixture;auto payloads=files();payloads[0]=setup_model();payloads[2]=execution_skin(1);
+    std::shared_ptr<const Assets> assets;std::unique_ptr<awl::WorldMapPlayerSkinWork> work;std::unique_ptr<awl::WorldMapPlayerGeometry> geometry;
+    auto prepare=[&](){assets.reset();fixture.write("boy_0.arc",archive(payloads));
+        expect(awl::load_world_map_player_model_assets(0,&assets)==Status::Loaded &&
+            awl::prepare_world_map_player_skin_work(assets,&work)==awl::WorldMapPlayerSkinWorkStatus::PreparedWork,"synthetic geometry skin/draw bindings prepare");};
+    constexpr int positions[3][3]{{-32768,-1,32767},{8192,-8192,0},{1,16384,-16384}};
+    constexpr int normals[3][3]{{16384,-16384,8192},{-32768,32767,-1},{1,0,-8192}};
+    constexpr int uv[2][2]{{-32768,32767},{8192,-1}};
+    size_t cases=0;
+    for(uint8_t p:{uint8_t(0),uint8_t(13),uint8_t(15)})for(uint8_t t:{uint8_t(0),uint8_t(14),uint8_t(15)})for(uint8_t n:{uint8_t(0),uint8_t(7),uint8_t(15)}){
+        payloads[1]=geometry_gpl();for(size_t at:{size_t(64),size_t(512)}){payloads[1][at+30]=uint8_t(0x30|p);payloads[1][at+310]=uint8_t(0x30|t);payloads[1][at+294]=uint8_t(0x30|n);}
+        prepare();if(!work)return;
+        expect(awl::prepare_world_map_player_geometry(*work,&geometry).status==G::PreparedGeometry && geometry,"signed16 initial CPU geometry prepares with independently addressed normal/UV references");if(!geometry)return;
+        expect(geometry->vertices().size()==6,"all ranges in both serialized sections decode");
+        for(size_t batch=0;batch<geometry->vertices().size();++batch)for(size_t i=0;i<3;++i){const auto& v=geometry->vertices()[batch][i];
+            for(size_t lane=0;lane<3;++lane){expect(v.position[lane]==float(positions[i][lane])/float(1u<<p),"signed position extremes use configured fraction");
+                expect(v.normal[lane]==float(normals[(i+1)%3][lane])/16384.0f,"normal references use fixed GX signed16 fraction independent of header fraction");}
+            for(size_t lane=0;lane<2;++lane)expect(v.uv[lane]==float(uv[i%2][lane])/float(1u<<t),"UV references retain configured fraction without clamp/flip");}
+        auto output=work->initial_output();output[0]=0;output[1]=64;output[18]=0x40;output[19]=0;
+        const auto outside=geometry->vertices()[3];
+        expect(geometry->decode(*work,output).status==G::DecodedVertices && geometry->vertices()[0][0].position[0]==64.0f/float(1u<<p) &&
+            geometry->vertices()[0][0].normal[0]==1.0f && geometry->vertices()[3][0].position==outside[0].position && geometry->vertices()[3][0].normal==outside[0].normal,
+            "updates route selected interleaved bytes through private skin output, leaving other-section arrays immutable");
+        expect(geometry->vertices()[0][0].uv==std::array<float,2>{float(uv[0][0])/float(1u<<t),float(uv[0][1])/float(1u<<t)},"mutable skin output never substitutes UV bytes");++cases;}
+    std::cout<<"PLAYER_GEOMETRY_PROFILES "<<cases<<" signed scales/independent references/private binding checked\n";
+    uint64_t before=14695981039346656037ull;hash_geometry(before,*geometry);auto preserved=[&](){uint64_t h=14695981039346656037ull;hash_geometry(h,*geometry);return h==before;};
+    auto wrong=work->initial_output();wrong.pop_back();expect(geometry->decode(*work,wrong).status==G::InvalidInput && preserved(),"short skin output preserves complete geometry");
+    wrong.push_back(0);wrong.push_back(0);expect(geometry->decode(*work,wrong).status==G::InvalidInput && preserved(),"oversized skin output cannot hide extent mismatch");
+    payloads[1]=geometry_gpl();prepare();expect(geometry->decode(*work,work->initial_output()).status==G::InvalidInput && preserved(),"different retained provider cannot silently update prior geometry");
+    const auto* old=geometry.get();
+    expect(awl::prepare_world_map_player_geometry(*work,nullptr).status==G::InvalidInput,"null geometry output rejects");
+    for(uint32_t kind=0;kind<6;++kind){payloads[1]=geometry_gpl();
+        if(kind==0)word(payloads[1],512+288,40); // Normal base is not position +6.
+        if(kind==1)payloads[1][512+294]=0x1d; // Signed8 normal requires a separate decoder.
+        if(kind==2)payloads[1][512+310]=0x2e; // Unsigned16 UV.
+        if(kind==3)payloads[1][512+295]=3; // Normal stride is no longer interleaved.
+        if(kind==4)word(payloads[1],512+304,32); // UV aliases writable output.
+        if(kind==5)payloads[1][64+310]=0x2e; // Reject after preceding supported section.
+        prepare();expect(awl::prepare_world_map_player_geometry(*work,&geometry).status==G::UnsupportedLayout && geometry.get()==old && preserved(),"unsupported binding/format rejects atomically, including a late section");}
+    payloads[1]=geometry_gpl();payloads[1][64+320]=0xb8;prepare();const auto blocked=awl::prepare_world_map_player_geometry(*work,&geometry);
+    expect(blocked.status==G::RequiresTopology && blocked.section==1 && blocked.topology_failure==awl::WorldMapPlayerTopologyStatus::UnsupportedLayout && geometry.get()==old && preserved(),"topology failure retains reached context and prior geometry");
+    // A genuinely in-bounds INDEX8 value 255 is a GX skip marker, not a
+    // normal vertex. A larger invented array separates that from bounds errors.
+    const auto small=geometry_gpl();std::vector<uint8_t> large(4608);word(large,0,0x005bbc61);word(large,12,1);word(large,16,20);word(large,20,64);word(large,24,4500);
+    std::memcpy(large.data()+4500,"large",6);constexpr size_t at=64;
+    word(large,at,24);word(large,at+4,3200);word(large,at+8,3216);word(large,at+12,3208);word(large,at+16,3248);large[at+20]=1;
+    word(large,at+24,32);word(large,at+28,0x01003d06);word(large,at+3208,38);word(large,at+3212,0x01003d06);
+    word(large,at+3200,3496);word(large,at+3204,0x00010003);word(large,at+3216,3504);word(large,at+3220,0x00023e02);
+    word(large,at+3248,3392);word(large,at+3252,3264);large[at+3257]=6;
+    std::memcpy(large.data()+at+3264,small.data()+512+132,96);word(large,at+3264+2*16+4,0x828);
+    for(uint32_t j=2;j<5;++j){const size_t start=at+3392+(j-2)*32;word(large,at+3264+j*16+8,uint32_t(start-at));word(large,at+3264+j*16+12,16);
+        large[start]=0x90;large[start+2]=3;large[start+3]=255;large[start+7]=1;large[start+8]=1;large[start+9]=1;large[start+10]=2;}
+    word(payloads[0],60+20,0); // This one-section fixture has no feature group 1.
+    payloads[1]=large;prepare();expect(awl::prepare_world_map_player_geometry(*work,&geometry).status==G::UnsupportedLayout && geometry.get()==old && preserved(),
+        "in-bounds INDEX8 maximal position index cannot invent skip-marker connectivity");
+    for(uint32_t j=2;j<5;++j)large[at+3392+(j-2)*32+3]=254;
+    payloads[1]=large;prepare();std::unique_ptr<awl::WorldMapPlayerGeometry> adjacent;
+    expect(awl::prepare_world_map_player_geometry(*work,&adjacent).status==G::PreparedGeometry,"adjacent in-bounds INDEX8 position remains supported");adjacent.reset();
+    payloads[0]=setup_model();payloads[1]=geometry_gpl();prepare();
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    const auto live=allocation_probe::live;size_t failed=0;bool reached=false;
+    for(size_t fail=0;fail<128;++fail){allocation_probe::remaining=fail;allocation_probe::enabled=true;const auto result=awl::prepare_world_map_player_geometry(*work,&geometry);allocation_probe::enabled=false;
+        if(result.status==G::PreparedGeometry){reached=true;break;}++failed;
+        expect(result.status==G::AllocationFailure && geometry.get()==old && preserved() && allocation_probe::live==live,"geometry preparation allocation failures free staging and preserve all topology/providers/vertices");}
+    expect(reached && failed>47,"geometry preparation allocation sweep reaches full publication");std::cout<<"PLAYER_GEOMETRY_PREPARATION_ALLOCATION_FAILURES "<<failed<<'\n';
+    before=14695981039346656037ull;hash_geometry(before,*geometry);const auto update_live=allocation_probe::live;failed=0;reached=false;
+    auto output=work->initial_output();output[0]=0;output[1]=64;const auto update_with_input_live=allocation_probe::live;
+    for(size_t fail=0;fail<32;++fail){allocation_probe::remaining=fail;allocation_probe::enabled=true;const auto result=geometry->decode(*work,output);allocation_probe::enabled=false;
+        if(result.status==G::DecodedVertices){reached=true;break;}++failed;
+        expect(result.status==G::AllocationFailure && preserved() && allocation_probe::live==update_with_input_live,"late decode allocation failure preserves every batch and frees all staging");}
+    expect(reached && failed==7 && update_with_input_live==update_live+1,"one staging list and six batch allocations cover the complete update");std::cout<<"PLAYER_GEOMETRY_UPDATE_ALLOCATION_FAILURES "<<failed<<'\n';
+#else
+    expect(awl::prepare_world_map_player_geometry(*work,&geometry).status==G::PreparedGeometry,"geometry replacement prepares");
+#endif
+    const auto lifetime=std::weak_ptr<const Assets>(geometry->topology().assets);assets.reset();work.reset();
+    expect(!lifetime.expired() && geometry->vertices().size()==6,"decoded geometry retains source/texture providers without borrowed work/output lifetime");geometry.reset();expect(lifetime.expired(),"last geometry owner releases providers");
+}
 void primary_frame_owner_checks() {
     using O=awl::WorldMapPlayerFrameOwnerStatus;using F=awl::WorldMapPlayerFrameStatus;using P=awl::WorldMapAnimationPoseStatus;
     Fixture fixture;auto payloads=files();payloads[1]=draw_gpl();
@@ -1588,7 +1684,7 @@ void hash_skin_work(uint64_t& h,uint32_t phase,const awl::WorldMapPlayerSkinWork
 void local(const char* disc,bool frame_evidence=false){
     expect(awl::filesystem_mount("/",disc),"local disc mounts");
     uint64_t digest=14695981039346656037ull,auxiliary_digest=digest,setup_digest=digest,draw_digest=digest,skin_work_digest=digest,skin_execution_digest=digest;
-    uint64_t animation_frame_digest=digest,owned_primary_digest=digest,topology_digest=digest;
+    uint64_t animation_frame_digest=digest,owned_primary_digest=digest,topology_digest=digest,initial_geometry_digest=digest,animated_geometry_digest=digest;
     std::ifstream animation_file(std::filesystem::path(disc)/"files"/"boy_0.anm.arc",std::ios::binary);
     std::vector<uint8_t> animation_bytes((std::istreambuf_iterator<char>(animation_file)),{});
     awl::WorldMapAnimationBank animation_bank;
@@ -1688,6 +1784,10 @@ void local(const char* disc,bool frame_evidence=false){
         std::unique_ptr<awl::WorldMapPlayerFrameOwner> primary_owner;
         expect(awl::prepare_world_map_player_frame_owner(assets,&primary_owner).status==awl::WorldMapPlayerFrameOwnerStatus::PreparedCpuState,
             "actual primary CPU frame owner prepares retained skin/output/feature state");if(!primary_owner)return;
+        std::unique_ptr<awl::WorldMapPlayerGeometry> geometry;
+        expect(awl::prepare_world_map_player_geometry(primary_owner->work(),&geometry).status==awl::WorldMapPlayerGeometryStatus::PreparedGeometry,
+            "all local primary phases prepare persistent complete signed16 geometry");if(!geometry)return;
+        hash(initial_geometry_digest,phase);hash_geometry(initial_geometry_digest,*geometry);
         uint32_t pass=0;
         for(float time:{-5.0f,1.25f,10000.0f}) {
             animated.playback.position_0=time;linked_playback.position_0=time;
@@ -1708,10 +1808,23 @@ void local(const char* disc,bool frame_evidence=false){
                 primary_owner->feature_matrices()[0]==evaluated.root_matrix,"local sampled CPU frame publishes persistent primary root feature and quantized skin output");
             if(!primary_owner->frame())return;
             hash(owned_primary_digest,phase);hash(owned_primary_digest,pass);hash_frame(owned_primary_digest,*primary_owner->frame());
+            expect(geometry->decode(primary_owner->work(),primary_owner->vertex_output()).status==awl::WorldMapPlayerGeometryStatus::DecodedVertices,
+                "successive persistent CPU frame bytes feed every retained geometry reference");
+            hash(animated_geometry_digest,phase);hash(animated_geometry_digest,pass);hash_geometry(animated_geometry_digest,*geometry);
+            if(frame_evidence){std::ofstream evidence("build/terrain-trace/player-geometry-frame-"+std::to_string(phase)+"-"+std::to_string(pass)+".bin",std::ios::binary);
+                const auto& bytes=primary_owner->vertex_output();evidence.write(reinterpret_cast<const char*>(bytes.data()),std::streamsize(bytes.size()));
+                expect(bool(evidence),"ignored native vertex-byte evidence writes completely");}
             if(pass==0)first_vertices=evaluated.vertex_output;else if(evaluated.vertex_output!=first_vertices)changed=true;
             ++pass;
         }
         expect(changed,"local sampled time changes produce different actual vertex bytes");
+        uint64_t before_skip=14695981039346656037ull;hash_geometry(before_skip,*geometry);
+        awl::WorldMapPlayerOwnedFrameInput skipped;skipped.evaluate_nodes=false;skipped.request_skin=false;
+        expect(primary_owner->advance(skipped,{},{}).status==awl::WorldMapPlayerFrameStatus::Evaluated &&
+            geometry->decode(primary_owner->work(),primary_owner->vertex_output()).status==awl::WorldMapPlayerGeometryStatus::DecodedVertices,
+            "node/skin-off persistent frame can decode its retained output without animation inputs");
+        uint64_t after_skip=14695981039346656037ull;hash_geometry(after_skip,*geometry);
+        expect(before_skip==after_skip,"skipped skinning preserves all decoded geometry and topology");
         // Diagnostic no-skin owner over the actual ACT. This does not claim
         // that the primary ACT is the game's selected secondary model.
         auto source_models=assets->models();awl::WorldMapSecondarySetupStep owner_setup;
@@ -1769,6 +1882,10 @@ void local(const char* disc,bool frame_evidence=false){
     std::cout<<"LOCAL_PLAYER_DRAW_PARAMETERS "<<selections<<" digest "<<std::hex<<draw_digest<<std::dec<<'\n';
     std::cout<<"LOCAL_PLAYER_TOPOLOGY 6 selections digest "<<std::hex<<topology_digest<<std::dec<<'\n';
     expect(topology_digest==0x6421e51e33e9ada2ull,"all local ranges, prior texture bindings, exact reference triples, primitive boundaries and triangle indices match independent raw-byte parsing");
+    std::cout<<"LOCAL_PLAYER_INITIAL_GEOMETRY 6 digest "<<std::hex<<initial_geometry_digest<<std::dec<<'\n';
+    std::cout<<"LOCAL_PLAYER_ANIMATED_GEOMETRY 18 digest "<<std::hex<<animated_geometry_digest<<std::dec<<'\n';
+    expect(initial_geometry_digest==0xfa5b11bdd89ae606ull && animated_geometry_digest==0xc7236931e39f9331ull,
+        "all initial/updated local vertex values and preserved topology match independent raw-array/skin-byte dequantization");
     std::cout<<"LOCAL_PLAYER_SETUP_PLANS "<<selections<<" digest "<<std::hex<<setup_digest<<std::dec<<'\n';
     expect(setup_digest==0xd9d84507566b1a0cull,
         "all six setup tables/budgets, features/sizes/shared caches and texture selections match mapped original instructions");
@@ -1780,7 +1897,7 @@ int main(int argc,char** argv){
         _CrtSetReportMode(kind,_CRTDBG_MODE_FILE);_CrtSetReportFile(kind,_CRTDBG_FILE_STDERR);
     }
 #endif
-    embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();skin_execution_checks();awl::filesystem_shutdown();frame_checks();awl::filesystem_shutdown();animation_frame_checks();awl::filesystem_shutdown();attachment_frame_checks();awl::filesystem_shutdown();hierarchy_frame_checks();awl::filesystem_shutdown();partial_frame_sampling_checks();owned_hierarchy_frame_checks();awl::filesystem_shutdown();primary_frame_owner_checks();awl::filesystem_shutdown();topology_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
+    embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();skin_execution_checks();awl::filesystem_shutdown();frame_checks();awl::filesystem_shutdown();animation_frame_checks();awl::filesystem_shutdown();attachment_frame_checks();awl::filesystem_shutdown();hierarchy_frame_checks();awl::filesystem_shutdown();partial_frame_sampling_checks();owned_hierarchy_frame_checks();awl::filesystem_shutdown();primary_frame_owner_checks();awl::filesystem_shutdown();topology_checks();awl::filesystem_shutdown();geometry_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
     if(argc==3 && std::string(argv[1])=="--player-model-local")local(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-frame-local")local(argv[2],true);
     else if(argc!=1)expect(false,"usage: --player-model-local <disc> or --player-frame-local <disc>");

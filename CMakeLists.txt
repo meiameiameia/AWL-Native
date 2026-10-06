@@ -50,6 +50,7 @@ set(SOURCES
     src/world_map_player_model_setup.cpp
     src/world_map_player_draw_commands.cpp
     src/world_map_player_topology.cpp
+    src/world_map_player_geometry.cpp
     src/world_map_player_skin_work.cpp
     src/world_map_player_frame.cpp
     src/world_map_player_animation_assets.cpp
@@ -559,6 +560,7 @@ add_executable(world_map_player_model_assets_tests
     src/world_map_player_model_setup.cpp
     src/world_map_player_draw_commands.cpp
     src/world_map_player_topology.cpp
+    src/world_map_player_geometry.cpp
     src/world_map_player_skin_work.cpp
     src/world_map_player_frame.cpp
     src/world_map_model_initialization.cpp
