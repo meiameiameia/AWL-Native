@@ -6,6 +6,7 @@
 #include "awl/world_map_player_frame.h"
 #include "awl/world_map_player_topology.h"
 #include "awl/world_map_player_geometry.h"
+#include "awl/world_map_player_draw_state.h"
 #include "awl/filesystem.h"
 
 #include <chrono>
@@ -1244,6 +1245,87 @@ void geometry_checks() {
     const auto lifetime=std::weak_ptr<const Assets>(geometry->topology().assets);assets.reset();work.reset();
     expect(!lifetime.expired() && geometry->vertices().size()==6,"decoded geometry retains source/texture providers without borrowed work/output lifetime");geometry.reset();expect(lifetime.expired(),"last geometry owner releases providers");
 }
+void hash_channels(uint64_t& h,const awl::WorldMapModelChannelControls& controls) {
+    hash(h,controls.count);for(size_t i=0;i<controls.count;++i){const auto& c=controls.calls[i];
+        for(uint32_t v:{uint32_t(c.channel),uint32_t(c.enabled),uint32_t(c.ambient_source),uint32_t(c.material_source),c.light_mask,uint32_t(c.diffuse),uint32_t(c.attenuation)})hash(h,v);}
+}
+void hash_draw_state(uint64_t& h,awl::WorldMapPlayerDrawStateStatus status,const awl::WorldMapPlayerFeatureDrawState& state) {
+    hash(h,uint32_t(status));if(status==awl::WorldMapPlayerDrawStateStatus::SkippedFeature)return;
+    hash(h,state.feature);hash(h,state.section);const auto floats=[&](const auto& values){for(float value:values){uint32_t raw;value=value==0?0:value;std::memcpy(&raw,&value,4);hash(h,raw);}};
+    floats(state.feature_matrix);floats(state.model_view);hash(h,state.normal_matrix.has_value());if(state.normal_matrix)floats(*state.normal_matrix);
+    hash(h,state.matrix_index);hash_channels(h,state.channels);hash(h,state.material_color.has_value());if(state.material_color)for(auto v:*state.material_color)hash(h,v);
+}
+void feature_draw_state_checks() {
+    using D=awl::WorldMapPlayerDrawStateStatus;
+    awl::WorldMapModelChannelControls channels;uint64_t channel_digest=14695981039346656037ull;
+    for(uint32_t seed=0;seed<512;++seed){const uint32_t normals[]{0,0x100,1,0x101};const uint8_t enables[]{0,1,255};
+        const awl::WorldMapModelLightingSnapshot lights{enables[(seed/4)%3],0x80000000u|seed*17u,~seed,int32_t(seed%7)-2};
+        expect(awl::prepare_world_map_model_channel_controls(normals[seed%4],uint8_t(seed%2),lights,&channels)==D::PreparedChannels,"complete channel controls select from supplied lighting snapshots");
+        hash(channel_digest,seed);hash_channels(channel_digest,channels);}
+    std::cout<<"PLAYER_CHANNEL_CONTROLS 512 digest "<<std::hex<<channel_digest<<std::dec<<'\n';
+    expect(channel_digest==0xd780ba0691868a15ull,"complete 7BA4 call operands match independently executed DOL branches");
+    const auto before_channels=channels;auto channels_preserved=[&](){uint64_t a=0,b=0;hash_channels(a,channels);hash_channels(b,before_channels);return a==b;};
+    awl::WorldMapModelLightingSnapshot missing;
+    expect(awl::prepare_world_map_model_channel_controls(1,0,missing,&channels)==D::RequiresLightingState && channels_preserved(),"unknown enable is not treated as disabled lighting");
+    missing.enabled=uint8_t(1);expect(awl::prepare_world_map_model_channel_controls(1,0,missing,&channels)==D::RequiresLightingState && channels_preserved(),"lit color mask and alpha mode require observations");
+    missing.color_mask=0;missing.alpha_mode=1;expect(awl::prepare_world_map_model_channel_controls(1,0,missing,&channels)==D::RequiresLightingState && channels_preserved(),"lit alpha mode needs its separate mask and preserves preceding color proposal");
+    expect(awl::prepare_world_map_model_channel_controls(1,2,missing,&channels)==D::InvalidInput && channels_preserved(),"unsupported raster source rejects atomically");
+    expect(awl::prepare_world_map_model_channel_controls(0,0,{},nullptr)==D::InvalidInput,"null channel output rejects");
+    expect(awl::prepare_world_map_model_channel_controls(0x100,1,{},&channels)==D::PreparedChannels && channels.count==1 && channels.calls[0].channel==4 && channels.calls[0].material_source==1,
+        "low-byte zero skips every global lighting field");
+    missing.enabled=uint8_t(0);missing.color_mask.reset();missing.alpha_mode.reset();
+    expect(awl::prepare_world_map_model_channel_controls(1,0,missing,&channels)==D::PreparedChannels,"disabled global lighting skips masks/mode");
+    missing.enabled=uint8_t(1);missing.color_mask=0x12345678;missing.alpha_mode=-1;missing.alpha_mask.reset();
+    expect(awl::prepare_world_map_model_channel_controls(1,0,missing,&channels)==D::PreparedChannels && channels.count==2 && channels.calls[1].enabled==0 && channels.calls[1].diffuse==2 && channels.calls[1].attenuation==1,
+        "other signed alpha modes disable alpha without reading its mask or changing its diffuse/attenuation fields");
+    Fixture fixture;auto payloads=files();payloads[0]=setup_model();payloads[1]=geometry_gpl();payloads[2]=execution_skin(1);fixture.write("boy_0.arc",archive(payloads));
+    std::shared_ptr<const Assets> assets;std::unique_ptr<awl::WorldMapPlayerFrameOwner> owner;std::unique_ptr<awl::WorldMapPlayerGeometry> geometry;
+    expect(awl::load_world_map_player_model_assets(0,&assets)==Status::Loaded && awl::prepare_world_map_player_frame_owner(assets,&owner).status==awl::WorldMapPlayerFrameOwnerStatus::PreparedCpuState,
+        "feature draw CPU owner prepares");if(!owner)return;
+    expect(awl::prepare_world_map_player_geometry(owner->work(),&geometry).status==awl::WorldMapPlayerGeometryStatus::PreparedGeometry,"feature draw geometry prepares");if(!geometry)return;
+    awl::WorldMapPlayerFeatureDrawState state;awl::WorldMapPlayerFeatureDrawInput input;uint64_t digest=14695981039346656037ull;
+    for(uint32_t seed=0;seed<512;++seed){awl::WorldMapPlayerOwnedFrameInput placement;placement.evaluate_nodes=false;placement.request_skin=false;placement.root_pose=explicit_pose(skin_palette(seed,1)[0]);
+        expect(owner->advance(placement,{},{}).status==awl::WorldMapPlayerFrameStatus::Evaluated,"supplied feature placement publishes without animation/skin dependencies");
+        input={};if(seed%17)input.feature=seed%4;input.view=skin_palette(seed+128,1)[0];input.array_override=0;
+        input.raster=awl::WorldMapPlayerFeatureRasterSnapshot{uint8_t(seed%11?1:0),uint8_t(seed%5?0:2),std::array<uint8_t,4>{uint8_t(seed),uint8_t(seed>>1),uint8_t(255-seed),128}};
+        input.lighting={uint8_t(seed%3?1:0),0x80000000u|seed*17u,~seed,int32_t(seed%7)-2};
+        const auto result=awl::prepare_world_map_player_feature_draw_state(*owner,*geometry,input,&state);
+        expect(result==(input.feature && input.raster->enabled_3c?D::PreparedFeatureState:D::SkippedFeature),"feature gate, matrices, channel operands, known-null override and color prepare together");
+        hash(digest,seed);hash_draw_state(digest,result,state);}
+    std::cout<<"PLAYER_FEATURE_DRAW_STATE 512 digest "<<std::hex<<digest<<std::dec<<'\n';
+    expect(digest==0x70e9ae6b8767cf6full,"512 reached feature matrices/normal loads/channel controls/colors match independently executed 2CFC/7D6C/7BA4 instructions");
+    awl::WorldMapPlayerOwnedFrameInput placement;placement.evaluate_nodes=false;placement.request_skin=false;
+    placement.root_pose=explicit_pose({2,0,0,3,0,3,0,9,0,0,4,-2});expect(owner->advance(placement,{},{}).status==awl::WorldMapPlayerFrameStatus::Evaluated,"nonuniform feature placement publishes");
+    input={};input.feature=0;input.view=awl::WorldMapModelMatrix{0,-1,0,5,1,0,0,7,0,0,1,11};input.lighting.enabled=uint8_t(0);input.array_override=0;
+    expect(awl::prepare_world_map_player_feature_draw_state(*owner,*geometry,input,&state)==D::PreparedFeatureState &&
+        state.model_view==awl::WorldMapModelMatrix{0,-3,0,-4,2,0,0,10,0,0,4,9} && state.normal_matrix==std::array<float,9>{0,-3,0,2,0,0,0,0,4} && state.section==0 && state.matrix_index==0 &&
+        state.material_color==std::optional<std::array<uint8_t,4>>({16,69,165,255}),"view precedes feature placement and the original directly loads its 3x3 normal block, with retained registered material color");
+    uint64_t before=0;hash_draw_state(before,D::PreparedFeatureState,state);const auto provider=state.assets;
+    auto preserved=[&](){uint64_t h=0;hash_draw_state(h,D::PreparedFeatureState,state);return h==before && state.assets==provider;};
+    expect(awl::prepare_world_map_player_feature_draw_state(*owner,*geometry,input,nullptr)==D::InvalidInput,"null feature draw output rejects");
+    auto invalid=input;invalid.feature=99;expect(awl::prepare_world_map_player_feature_draw_state(*owner,*geometry,invalid,&state)==D::InvalidInput && preserved(),"missing retained feature rejects without state publication");
+    invalid=input;invalid.view.reset();expect(awl::prepare_world_map_player_feature_draw_state(*owner,*geometry,invalid,&state)==D::RequiresView && preserved(),"unknown view is not replaced by an identity camera");
+    invalid=input;invalid.lighting.enabled.reset();expect(awl::prepare_world_map_player_feature_draw_state(*owner,*geometry,invalid,&state)==D::RequiresLightingState && preserved(),"feature normals cannot infer global lighting enable");
+    invalid=input;invalid.array_override.reset();expect(awl::prepare_world_map_player_feature_draw_state(*owner,*geometry,invalid,&state)==D::RequiresArrayBinding && preserved(),"feature +34 zero cannot infer the distinct global array override");
+    invalid.array_override=123;expect(awl::prepare_world_map_player_feature_draw_state(*owner,*geometry,invalid,&state)==D::RequiresArrayBinding && preserved(),"nonnull global buffer needs a separately justified binding");
+    invalid=input;invalid.raster=awl::WorldMapPlayerFeatureRasterSnapshot{1,2,{}};expect(awl::prepare_world_map_player_feature_draw_state(*owner,*geometry,invalid,&state)==D::RequiresMaterialColor && preserved(),"unknown reached color override does not invent RGBA");
+    invalid=input;(*invalid.view)[11]=std::numeric_limits<float>::quiet_NaN();expect(awl::prepare_world_map_player_feature_draw_state(*owner,*geometry,invalid,&state)==D::UnsupportedNumerics && preserved(),"nonfinite view rejects complete state");
+    (*invalid.view)[11]=std::numeric_limits<float>::denorm_min();expect(awl::prepare_world_map_player_feature_draw_state(*owner,*geometry,invalid,&state)==D::UnsupportedNumerics && preserved(),"subnormal view rejects");
+    invalid=input;(*invalid.view)[0]=std::numeric_limits<float>::max();expect(awl::prepare_world_map_player_feature_draw_state(*owner,*geometry,invalid,&state)==D::UnsupportedNumerics && preserved(),"matrix arithmetic overflow rolls back preceding products");
+    const int rounding=std::fegetround();if(std::fesetround(FE_DOWNWARD)==0){expect(awl::prepare_world_map_player_feature_draw_state(*owner,*geometry,input,&state)==D::UnsupportedNumerics && preserved(),"unsupported rounding preserves proposal");std::fesetround(rounding);}
+    invalid={};invalid.feature=0;invalid.raster=awl::WorldMapPlayerFeatureRasterSnapshot{0,2,{}};invalid.view=awl::WorldMapModelMatrix{};(*invalid.view)[0]=std::numeric_limits<float>::quiet_NaN();invalid.array_override=999;
+    expect(awl::prepare_world_map_player_feature_draw_state(*owner,*geometry,invalid,&state)==D::SkippedFeature && !state.assets && !state.normal_matrix && !state.channels.count,"disabled feature ignores unreached view/global/color observations");
+    invalid.feature.reset();expect(awl::prepare_world_map_player_feature_draw_state(*owner,*geometry,invalid,&state)==D::SkippedFeature,"known null feature skips before all other fields");
+    input.raster=awl::WorldMapPlayerFeatureRasterSnapshot{1,2,std::array<uint8_t,4>{1,2,3,4}};
+    expect(awl::prepare_world_map_player_feature_draw_state(*owner,*geometry,input,&state)==D::PreparedFeatureState && state.material_color==input.raster->color_3e && state.channels.calls[0].material_source==0,"feature material override selects register source and supplied RGBA");
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    allocation_probe::remaining=0;allocation_probe::enabled=true;const auto no_allocation=awl::prepare_world_map_player_feature_draw_state(*owner,*geometry,input,&state);allocation_probe::enabled=false;
+    expect(no_allocation==D::PreparedFeatureState,"prepared draw-state updates require no allocation");
+#endif
+    std::unique_ptr<awl::WorldMapPlayerFrameOwner> other;std::shared_ptr<const Assets> other_assets;
+    expect(awl::load_world_map_player_model_assets(0,&other_assets)==Status::Loaded && awl::prepare_world_map_player_frame_owner(other_assets,&other).status==awl::WorldMapPlayerFrameOwnerStatus::PreparedCpuState,"distinct draw-state provider prepares");
+    if(other)expect(awl::prepare_world_map_player_feature_draw_state(*other,*geometry,input,&state)==D::InvalidInput && state.assets==assets,"different owner cannot attach matrices to prior geometry");
+}
 void primary_frame_owner_checks() {
     using O=awl::WorldMapPlayerFrameOwnerStatus;using F=awl::WorldMapPlayerFrameStatus;using P=awl::WorldMapAnimationPoseStatus;
     Fixture fixture;auto payloads=files();payloads[1]=draw_gpl();
@@ -1684,7 +1766,7 @@ void hash_skin_work(uint64_t& h,uint32_t phase,const awl::WorldMapPlayerSkinWork
 void local(const char* disc,bool frame_evidence=false){
     expect(awl::filesystem_mount("/",disc),"local disc mounts");
     uint64_t digest=14695981039346656037ull,auxiliary_digest=digest,setup_digest=digest,draw_digest=digest,skin_work_digest=digest,skin_execution_digest=digest;
-    uint64_t animation_frame_digest=digest,owned_primary_digest=digest,topology_digest=digest,initial_geometry_digest=digest,animated_geometry_digest=digest;
+    uint64_t animation_frame_digest=digest,owned_primary_digest=digest,topology_digest=digest,initial_geometry_digest=digest,animated_geometry_digest=digest,feature_draw_digest=digest;
     std::ifstream animation_file(std::filesystem::path(disc)/"files"/"boy_0.anm.arc",std::ios::binary);
     std::vector<uint8_t> animation_bytes((std::istreambuf_iterator<char>(animation_file)),{});
     awl::WorldMapAnimationBank animation_bank;
@@ -1811,6 +1893,13 @@ void local(const char* disc,bool frame_evidence=false){
             expect(geometry->decode(primary_owner->work(),primary_owner->vertex_output()).status==awl::WorldMapPlayerGeometryStatus::DecodedVertices,
                 "successive persistent CPU frame bytes feed every retained geometry reference");
             hash(animated_geometry_digest,phase);hash(animated_geometry_digest,pass);hash_geometry(animated_geometry_digest,*geometry);
+            awl::WorldMapPlayerFeatureDrawInput draw_input;draw_input.feature=0;draw_input.view=skin_palette(phase*3+pass+256,1)[0];draw_input.array_override=0;
+            draw_input.lighting={uint8_t(pass!=0),uint32_t(1u<<phase),uint32_t(2u<<phase),int32_t(pass)};
+            awl::WorldMapPlayerFeatureDrawState draw_state;
+            const auto draw_status=awl::prepare_world_map_player_feature_draw_state(*primary_owner,*geometry,draw_input,&draw_state);
+            expect(draw_status==awl::WorldMapPlayerDrawStateStatus::PreparedFeatureState && draw_state.normal_matrix && draw_state.section==0 &&
+                draw_state.feature_matrix==primary_owner->feature_matrices()[0],"all local sampled primary frames supply retained feature placement and checked drawing operands");
+            hash(feature_draw_digest,phase);hash(feature_draw_digest,pass);hash_draw_state(feature_draw_digest,draw_status,draw_state);
             if(frame_evidence){std::ofstream evidence("build/terrain-trace/player-geometry-frame-"+std::to_string(phase)+"-"+std::to_string(pass)+".bin",std::ios::binary);
                 const auto& bytes=primary_owner->vertex_output();evidence.write(reinterpret_cast<const char*>(bytes.data()),std::streamsize(bytes.size()));
                 expect(bool(evidence),"ignored native vertex-byte evidence writes completely");}
@@ -1886,6 +1975,8 @@ void local(const char* disc,bool frame_evidence=false){
     std::cout<<"LOCAL_PLAYER_ANIMATED_GEOMETRY 18 digest "<<std::hex<<animated_geometry_digest<<std::dec<<'\n';
     expect(initial_geometry_digest==0xfa5b11bdd89ae606ull && animated_geometry_digest==0xc7236931e39f9331ull,
         "all initial/updated local vertex values and preserved topology match independent raw-array/skin-byte dequantization");
+    std::cout<<"LOCAL_PLAYER_FEATURE_DRAW_STATE 18 digest "<<std::hex<<feature_draw_digest<<std::dec<<'\n';
+    expect(feature_draw_digest==0xa7e436eecc3560faull,"eighteen local feature/view/normal/channel/material proposals match independently executed draw-prefix instructions with supplied diagnostic view/lighting state");
     std::cout<<"LOCAL_PLAYER_SETUP_PLANS "<<selections<<" digest "<<std::hex<<setup_digest<<std::dec<<'\n';
     expect(setup_digest==0xd9d84507566b1a0cull,
         "all six setup tables/budgets, features/sizes/shared caches and texture selections match mapped original instructions");
@@ -1897,7 +1988,7 @@ int main(int argc,char** argv){
         _CrtSetReportMode(kind,_CRTDBG_MODE_FILE);_CrtSetReportFile(kind,_CRTDBG_FILE_STDERR);
     }
 #endif
-    embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();skin_execution_checks();awl::filesystem_shutdown();frame_checks();awl::filesystem_shutdown();animation_frame_checks();awl::filesystem_shutdown();attachment_frame_checks();awl::filesystem_shutdown();hierarchy_frame_checks();awl::filesystem_shutdown();partial_frame_sampling_checks();owned_hierarchy_frame_checks();awl::filesystem_shutdown();primary_frame_owner_checks();awl::filesystem_shutdown();topology_checks();awl::filesystem_shutdown();geometry_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
+    embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();skin_execution_checks();awl::filesystem_shutdown();frame_checks();awl::filesystem_shutdown();animation_frame_checks();awl::filesystem_shutdown();attachment_frame_checks();awl::filesystem_shutdown();hierarchy_frame_checks();awl::filesystem_shutdown();partial_frame_sampling_checks();owned_hierarchy_frame_checks();awl::filesystem_shutdown();primary_frame_owner_checks();awl::filesystem_shutdown();topology_checks();awl::filesystem_shutdown();geometry_checks();awl::filesystem_shutdown();feature_draw_state_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
     if(argc==3 && std::string(argv[1])=="--player-model-local")local(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-frame-local")local(argv[2],true);
     else if(argc!=1)expect(false,"usage: --player-model-local <disc> or --player-frame-local <disc>");

@@ -1,4 +1,5 @@
 #include "awl/world_map_player_frame.h"
+#include "world_map_matrix_math.h"
 #include <cfenv>
 #include <cmath>
 #include <new>
@@ -11,24 +12,7 @@ bool supported(const WorldMapModelMatrix& matrix) {
     for (float value:matrix) if (!supported(value)) return false;
     return true;
 }
-// 801B7D6C: first multiply, two fused adds, then translation's paired [0,1]
-// contribution for columns 2/3 only. Preserve each single-precision rounding.
-bool concatenate(const WorldMapModelMatrix& a,const WorldMapModelMatrix& b,WorldMapModelMatrix* out) {
-    if (!supported(a) || !supported(b)) return false;
-    WorldMapModelMatrix result{};
-    for (size_t row=0;row<3;++row) for (size_t column=0;column<4;++column) {
-        float value=b[column]*a[row*4];
-        if (!supported(value)) return false;
-        value=std::fma(b[4+column],a[row*4+1],value);
-        if (!supported(value)) return false;
-        value=std::fma(b[8+column],a[row*4+2],value);
-        if (!supported(value)) return false;
-        if (column>=2) value=std::fma(column==3?1.0f:0.0f,a[row*4+3],value);
-        if (!supported(value)) return false;
-        result[row*4+column]=value;
-    }
-    *out=result; return true;
-}
+using detail::concatenate;
 WorldMapPlayerFrameStatus pose(const std::array<uint32_t,13>& input,WorldMapModelMatrix* out) {
     const auto status=prepare_world_map_model_pose(input,out);
     if (status==WorldMapModelPreparationStatus::RequiresEulerRotation) return WorldMapPlayerFrameStatus::RequiresPoseConversion;
