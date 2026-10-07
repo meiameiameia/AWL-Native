@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace awl {
 
@@ -205,6 +206,36 @@ bool apply_world_map_scene_mode_request(
     if (classified(requested_mode) && classified(state->previous_mode_5c)) {
         state->global_flag_59b0 = 1;
     }
+    return true;
+}
+
+bool commit_world_map_scene_mode_fields(
+    WorldMapSceneModeRequestState* state, uint32_t transition_flags,
+    WorldMapSceneModeCommit* output) {
+    if (!state || !output) return false;
+    auto next = *state;
+    WorldMapSceneModeCommit result;
+    if (next.mode_58 != -1) {
+        result.transition = true;
+        if (next.mode_58 == -2) {
+            result.swapped = true;
+            std::swap(next.previous_mode_5c, next.prior_mode_60);
+            std::swap(next.scene_type_68, next.prior_scene_type_6c);
+        } else {
+            next.prior_mode_60 = next.previous_mode_5c;
+            next.prior_scene_type_6c = next.scene_type_68;
+            next.previous_mode_5c = next.mode_58;
+            next.scene_type_68 = next.state_64;
+        }
+        next.transition_flags_7c = transition_flags;
+        // The DOL clears these after its separate setup/construction calls.
+        next.mode_58 = -1;
+        next.state_64 = -1;
+    }
+    result.mode = next.previous_mode_5c;
+    result.scene_type = next.scene_type_68;
+    *state = next;
+    *output = result;
     return true;
 }
 

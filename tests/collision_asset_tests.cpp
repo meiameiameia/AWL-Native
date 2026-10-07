@@ -7497,11 +7497,199 @@ void test_world_map_player_start() {
            "invalid pose and null start output reject atomically");
 }
 
+void test_world_map_player_start_providers_and_tail() {
+    using TailStatus = awl::WorldMapPlayerConstructorTailStatus;
+    awl::WorldMapSceneModeRequestState scene;
+    expect(scene.mode_58 == -1 && scene.previous_mode_5c == -1 &&
+           scene.prior_mode_60 == -1 && scene.state_64 == -1 &&
+           scene.scene_type_68 == -1 && scene.prior_scene_type_6c == -1 &&
+           scene.transition_flags_7c == 0,
+           "scene constructor subset starts all six mode/type words at minus one");
+    awl::WorldMapSceneModeCommit committed;
+    expect(awl::apply_world_map_scene_mode_request(&scene, 4, 7) &&
+           scene.state_64 == 1 && scene.scene_type_68 == -1 &&
+           awl::commit_world_map_scene_mode_fields(&scene, 0x81234567u, &committed) &&
+           committed.transition && !committed.swapped && committed.mode == 4 &&
+           committed.scene_type == 1 && scene.mode_58 == -1 && scene.state_64 == -1 &&
+           scene.prior_mode_60 == -1 && scene.prior_scene_type_6c == -1 &&
+           scene.scene_byte_78 == 7 && scene.global_flag_59af == 1 &&
+           scene.transition_flags_7c == 0x81234567u,
+           "mode four request supplies type one only when the manager commits it");
+    expect(awl::commit_world_map_scene_mode_fields(&scene, 0, &committed) &&
+           !committed.transition && committed.mode == 4 && committed.scene_type == 1 &&
+           scene.transition_flags_7c == 0x81234567u,
+           "no pending mode leaves committed words and transition flags alone");
+    // A second request preserves supplied pending type for an unclassified
+    // mode, then -2 swaps whole mode/type pairs, not just the scene type.
+    scene.state_64 = 3;
+    expect(awl::apply_world_map_scene_mode_request(&scene, 3, 2) &&
+           awl::commit_world_map_scene_mode_fields(&scene, 9, &committed) &&
+           committed.mode == 3 && committed.scene_type == 3 &&
+           scene.prior_mode_60 == 4 && scene.prior_scene_type_6c == 1,
+           "normal scene commit retains the previous mode/type pair");
+    scene.mode_58 = -2; scene.state_64 = 44;
+    expect(awl::commit_world_map_scene_mode_fields(&scene, 11, &committed) &&
+           committed.swapped && committed.mode == 4 && committed.scene_type == 1 &&
+           scene.prior_mode_60 == 3 && scene.prior_scene_type_6c == 3 &&
+           scene.mode_58 == -1 && scene.state_64 == -1 &&
+           scene.scene_byte_78 == 2 && scene.global_flag_59af == 1,
+           "swap request ignores pending type, swaps both pairs, and preserves unrelated flags");
+    const auto saved_commit = committed;
+    scene.mode_58 = 13; scene.state_64 = 1;
+    expect(!awl::commit_world_map_scene_mode_fields(&scene, 99, nullptr) &&
+           scene.mode_58 == 13 && scene.state_64 == 1 && scene.scene_type_68 == 1 &&
+           !awl::commit_world_map_scene_mode_fields(nullptr, 99, &committed) &&
+           committed.mode == saved_commit.mode && committed.swapped == saved_commit.swapped,
+           "invalid scene commit pointers preserve both state and output");
+
+    // Invented memory, not a game save. Values next to every field differ;
+    // scene +64 is intentionally different from the consumed +68 word.
+    std::vector<uint8_t> saved(0x2A294, 0xA5), manager(0x6C, 0xA5);
+    std::vector<uint8_t> guards(0x684, 0xA5), secondary(0x3F4, 0xA5);
+    const std::array<float, 3> saved_position{2, 99, 2}, saved_heading{0.25f, -0.0f, -0.75f};
+    for (size_t i = 0; i < 3; ++i) {
+        put_be_float(saved, 0x29C78 + i * 4, saved_position[i]);
+        put_be_float(saved, 0x29F84 + i * 4, saved_heading[i]);
+    }
+    put_be32(saved, 0x2A290, 3);
+    saved[0x299A4] = 2; saved[0x299A5] = 0x80; saved[0x299A6] = 7;
+    saved[0x299A8] = 9; saved[0x299A9] = 0xFF; saved[0x299AF] = 1;
+    put_be32(manager, 0x64, 44); put_be32(manager, 0x68, 1);
+    put_be32(guards, 0x680, 0xFFFFFFFFu); put_be32(guards, 0x58C, 0);
+    secondary[0x3F1] = 2; secondary[0x3F2] = 0; secondary[0x3F3] = 3;
+    const auto saved_before = saved, manager_before = manager;
+    const auto guards_before = guards, secondary_before = secondary;
+    const awl::WorldMapPlayerStartOwners owners{saved.data(), saved.size(),
+        manager.data(), manager.size(), guards.data(), guards.size(),
+        secondary.data(), secondary.size()};
+    awl::WorldMapPlayerStartInputs inputs;
+    expect(awl::decode_world_map_player_start_inputs(owners, &inputs) &&
+           inputs.start.saved_pose.scene_type == 1 && inputs.saved_scene_type_2a290 == 3 &&
+           inputs.start.saved_pose.position == saved_position &&
+           inputs.start.saved_pose.heading == saved_heading &&
+           std::signbit(inputs.start.saved_pose.heading[1]) &&
+           inputs.start.state_680 == -1 && inputs.start.state_58c == 0 &&
+           inputs.start.secondary_byte_3f3 == 3 && inputs.secondary_byte_3f2 == 0 &&
+           inputs.start.placement.static_flags.state_299a4 &&
+           inputs.start.placement.static_flags.state_299a5 &&
+           inputs.start.placement.static_flags.state_299a6 &&
+           inputs.start.placement.static_flags.state_299a8 &&
+           inputs.start.placement.static_flags.state_299a9 &&
+           inputs.start.placement.static_flags.state_299af &&
+           inputs.start.placement.static_flags.secondary_3f1 &&
+           inputs.start.placement.static_flags.secondary_3f3 &&
+           inputs.start.placement.terrain_data == nullptr &&
+           saved == saved_before && manager == manager_before &&
+           guards == guards_before && secondary == secondary_before,
+           "owner snapshots decode distinct scene/saved types, signed guards and shared mask bytes read-only");
+    const auto preserved = inputs;
+    for (int view = 0; view < 4; ++view) {
+        auto bad = owners;
+        switch (view) {
+        case 0: --bad.saved_size; break;
+        case 1: --bad.scene_size; break;
+        case 2: --bad.guards_size; break;
+        case 3: --bad.secondary_size; break;
+        }
+        expect(!awl::decode_world_map_player_start_inputs(bad, &inputs) &&
+               inputs.start.saved_pose.position == preserved.start.saved_pose.position &&
+               inputs.start.state_680 == preserved.start.state_680 &&
+               inputs.saved_scene_type_2a290 == preserved.saved_scene_type_2a290,
+               "each short owner view rejects without partial output");
+        bad = owners;
+        switch (view) {
+        case 0: bad.saved = nullptr; break;
+        case 1: bad.scene = nullptr; break;
+        case 2: bad.guards = nullptr; break;
+        case 3: bad.secondary = nullptr; break;
+        }
+        expect(!awl::decode_world_map_player_start_inputs(bad, &inputs),
+               "each absent owner view rejects");
+    }
+    put_be32(manager, 0x68, 0xFFFFFFFFu);
+    expect(!awl::decode_world_map_player_start_inputs(owners, &inputs) &&
+           inputs.start.saved_pose.scene_type == 1 &&
+           !awl::decode_world_map_player_start_inputs(owners, nullptr),
+           "uncommitted scene type and absent output reject");
+    put_be32(manager, 0x68, 1); secondary[0x3F3] = 0;
+    expect(awl::decode_world_map_player_start_inputs(owners, &inputs) &&
+           !inputs.start.placement.static_flags.secondary_3f3,
+           "decoded raw relocation byte and static mask cannot disagree");
+
+    auto terrain = make_sample_leaf();
+    inputs.start.placement.terrain_data = terrain.data();
+    inputs.start.placement.terrain_size = terrain.size();
+    awl::WorldMapMovementRuntime runtime;
+    awl::WorldMapPlayerStart start;
+    expect(runtime.initialize_player_start(inputs.start, &start) ==
+               awl::WorldMapPlayerStartStatus::Ready &&
+           start.pose.position == std::array<float, 3>{2, 6, 2} &&
+           runtime.scene().size(1) == 1,
+           "decoded owners seed the shared runtime through initial placement");
+    awl::WorldMapPlayerConstructorTailQuery query;
+    query.inputs = inputs;
+    query.action_148_after_setup = 1;
+    awl::WorldMapPlayerConstructorTail tail;
+    tail.requested_state = 123; tail.message_target_id = 456;
+    expect(awl::plan_world_map_player_constructor_tail(query, &tail) ==
+               TailStatus::MissingCameraByteEvidence && tail.requested_state == 123 &&
+           tail.message_target_id == 456,
+           "reached constructor message cannot invent its unwritten camera byte");
+    query.payload_camera_byte_known = true; query.payload_camera_byte = 7;
+    expect(awl::plan_world_map_player_constructor_tail(query, &tail) == TailStatus::Ready &&
+           tail.requested_state == 0x29 && tail.message_prepared && tail.message_target_id == 1 &&
+           tail.message.scene_type == 3 && tail.message.position == saved_position &&
+           tail.message.position != start.pose.position && tail.message.heading == saved_heading &&
+           tail.message.camera_update_requested == 7 && runtime.position() == start.pose.position,
+           "constructor message uses saved type/raw pose, supplied camera byte, and leaves runtime alone");
+    query.binding_present = true; query.binding_word_0 = 0;
+    expect(awl::plan_world_map_player_constructor_tail(query, &tail) == TailStatus::Ready,
+           "present binding with word zero takes the same clear-binding branch as null");
+    query.binding_word_0 = 1;
+    const auto tail_before = tail;
+    expect(awl::plan_world_map_player_constructor_tail(query, &tail) ==
+               TailStatus::UnsupportedBusyBinding && tail.message.position == tail_before.message.position,
+           "busy binding's untranslated attachment effects reject atomically");
+    query.inputs.secondary_byte_3f2 = 2;
+    expect(awl::plan_world_map_player_constructor_tail(query, &tail) ==
+               TailStatus::UnsupportedRestoredPose,
+           "any nonzero restored-pose byte rejects before the binding branch");
+    query.inputs.start.state_680 = 0;
+    expect(awl::plan_world_map_player_constructor_tail(query, &tail) == TailStatus::Ready &&
+           tail.requested_state == 0x0F && !tail.message_prepared,
+           "first blocked guard requests state 0F without reaching later dependencies");
+    query.inputs.start.state_680 = -1; query.inputs.start.state_58c = -2;
+    expect(awl::plan_world_map_player_constructor_tail(query, &tail) == TailStatus::Ready &&
+           tail.requested_state == 0x0F && !tail.message_prepared,
+           "second blocked guard independently bypasses restored-pose and binding branches");
+    query.inputs.start.state_58c = 0; query.inputs.secondary_byte_3f2 = 0;
+    query.binding_present = false; query.action_148_after_setup = 0;
+    query.payload_camera_byte_known = false;
+    query.inputs.saved_scene_type_2a290 = -1;
+    expect(awl::plan_world_map_player_constructor_tail(query, &tail) == TailStatus::Ready &&
+           tail.requested_state == 0x29 && !tail.message_prepared && tail.message_target_id == 0,
+           "zero action selector skips saved message validation and camera evidence");
+    query.action_148_after_setup = 1;
+    expect(awl::plan_world_map_player_constructor_tail(query, &tail) == TailStatus::InvalidInput &&
+           tail.requested_state == 0x29 && !tail.message_prepared,
+           "reached unsupported saved scene type rejects without overwriting the prior plan");
+    query.inputs.saved_scene_type_2a290 = 1; query.payload_camera_byte_known = true;
+    query.inputs.start.saved_pose.heading[0] = std::numeric_limits<float>::infinity();
+    expect(awl::plan_world_map_player_constructor_tail(query, &tail) == TailStatus::InvalidInput &&
+           awl::plan_world_map_player_constructor_tail(query, nullptr) == TailStatus::InvalidInput,
+           "reached nonfinite saved pose or null output rejects");
+}
+
 bool check_local_player_start(const char* disc_root) {
     awl_memory_init();
     awl::filesystem_init();
     bool valid = awl::filesystem_mount("/", disc_root);
     awl::WorldMapCollisionAssets assets;
+    awl::WorldMapSceneModeRequestState scene;
+    awl::WorldMapSceneModeCommit commit;
+    valid = valid && awl::apply_world_map_scene_mode_request(&scene, 4, 0) &&
+        awl::commit_world_map_scene_mode_fields(&scene, 0, &commit) &&
+        commit.mode == 4 && commit.scene_type == 1;
     // Decode an invented owner snapshot for the supported seam. Separately
     // check the phase-entry source's known empty world-map terrain leaf.
     // Category 1, guards and empty lists are supplied, not a live capture.
@@ -7511,7 +7699,7 @@ bool check_local_player_start(const char* disc_root) {
             awl::WorldMapPlayerStart start;
             awl::WorldMapMovementRuntime runtime;
             valid = assets.load(phase, alternate != 0) &&
-                awl::make_world_map_phase_entry_pose(1, &query.saved_pose);
+                awl::make_world_map_phase_entry_pose(commit.scene_type, &query.saved_pose);
             if (!valid) break;
             query.placement.terrain_data = assets.terrain_bytes().data();
             query.placement.terrain_size = assets.terrain_bytes().size();
@@ -7531,19 +7719,38 @@ bool check_local_player_start(const char* disc_root) {
                 query.placement.terrain_data, query.placement.terrain_size,
                 120, 168, &surface);
             if (!valid) break;
-            std::vector<uint8_t> snapshot(0x29F90, 0);
+            std::vector<uint8_t> snapshot(0x2A294, 0), scene_snapshot(0x6C, 0);
+            std::vector<uint8_t> guard_snapshot(0x684, 0), secondary_snapshot(0x3F4, 0);
+            put_be32(scene_snapshot, 0x68, static_cast<uint32_t>(commit.scene_type));
+            put_be32(guard_snapshot, 0x680, 0xFFFFFFFFu);
+            put_be32(snapshot, 0x2A290, 1); // Invented saved scene choice.
+            snapshot[0x299A4] = alternate != 0 ? 1 : 0;
             const std::array<float, 3> seam{120, surface.height, 168};
             for (size_t i = 0; i < 3; ++i) {
                 put_be_float(snapshot, 0x29C78 + i * 4, seam[i]);
                 put_be_float(snapshot, 0x29F84 + i * 4, query.saved_pose.heading[i]);
             }
-            valid = awl::decode_world_map_player_start_pose(snapshot.data(),
-                snapshot.size(), 1, &query.saved_pose);
+            awl::WorldMapPlayerStartInputs inputs;
+            valid = awl::decode_world_map_player_start_inputs(
+                {snapshot.data(), snapshot.size(), scene_snapshot.data(), scene_snapshot.size(),
+                 guard_snapshot.data(), guard_snapshot.size(),
+                 secondary_snapshot.data(), secondary_snapshot.size()}, &inputs);
+            if (!valid) break;
+            const auto static_flags = inputs.start.placement.static_flags;
+            inputs.start.placement = query.placement;
+            inputs.start.placement.static_flags = static_flags;
+            query = inputs.start;
+            awl::WorldMapPlayerConstructorTailQuery tail_query;
+            tail_query.inputs = inputs; // Supplied null binding and zero action selector.
+            awl::WorldMapPlayerConstructorTail tail;
+            valid = awl::plan_world_map_player_constructor_tail(tail_query, &tail) ==
+                awl::WorldMapPlayerConstructorTailStatus::Ready &&
+                !tail.message_prepared && tail.requested_state == 0x29;
             if (!valid) break;
             const auto status = runtime.initialize_player_start(query, &start);
             valid = status == awl::WorldMapPlayerStartStatus::Ready &&
                 start.placement_called && runtime.tick_count() == 0 &&
-                runtime.position() == start.pose.position &&
+                runtime.position() == start.pose.position && start.pose.position == seam &&
                 runtime.starting_heading() == query.saved_pose.heading &&
                 runtime.steering().current_speed == 0;
             if (!valid) {
@@ -8883,6 +9090,7 @@ int main(int argc, char** argv) {
     test_synthetic_player_route_replay();
     test_simulation_clock_and_runtime();
     test_world_map_player_start();
+    test_world_map_player_start_providers_and_tail();
     test_world_map_scene_position_bucket_decision();
     test_world_map_scene_bucket_registry();
     test_world_map_player_scene_message_1f();

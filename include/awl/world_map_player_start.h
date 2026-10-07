@@ -27,6 +27,63 @@ struct WorldMapPlayerStartQuery {
     CollisionWorldMapInitialPlacementQuery placement{};
 };
 
+// Borrowed big-endian memory-owner views, not disc/save-file formats.
+// No pointers inside these snapshots are followed or retained.
+struct WorldMapPlayerStartOwners {
+    const uint8_t* saved = nullptr; size_t saved_size = 0;
+    const uint8_t* scene = nullptr; size_t scene_size = 0;
+    const uint8_t* guards = nullptr; size_t guards_size = 0;
+    const uint8_t* secondary = nullptr; size_t secondary_size = 0;
+};
+
+struct WorldMapPlayerStartInputs {
+    WorldMapPlayerStartQuery start{};
+    int32_t saved_scene_type_2a290 = 0;
+    uint8_t secondary_byte_3f2 = 0;
+};
+
+// Reads scene +68, guards +680/+58C, the saved pose/type and static-mask
+// bytes. Asset/list views remain empty for the caller to supply. Saved
+// message type is raw until its branch is reached; initial pose is finite
+// and scene type must be supported. Failed decode preserves output/bytes.
+[[nodiscard]] bool decode_world_map_player_start_inputs(
+    const WorldMapPlayerStartOwners& owners, WorldMapPlayerStartInputs* output);
+
+struct WorldMapPlayerConstructorTailQuery {
+    // Capture these owners at the tail boundary; earlier setup can change
+    // them. The action selector is supplied AFTER setup, not decoded from
+    // a guessed initial save field.
+    WorldMapPlayerStartInputs inputs{};
+    bool binding_present = false; // player +1454
+    uint32_t binding_word_0 = 0;
+    int32_t action_148_after_setup = 0; // pointed player +135C owner
+    bool payload_camera_byte_known = false;
+    uint8_t payload_camera_byte = 0; // caller stack payload +1C
+};
+
+struct WorldMapPlayerConstructorTail {
+    int32_t requested_state = 0;
+    bool message_prepared = false;
+    int32_t message_target_id = 0;
+    WorldMapPlayerSceneMessage1F message{};
+};
+
+enum class WorldMapPlayerConstructorTailStatus {
+    Ready,
+    InvalidInput,
+    UnsupportedRestoredPose,
+    UnsupportedBusyBinding,
+    MissingCameraByteEvidence
+};
+
+// Only the branches/payload at FUN_8002FDF8 800303B8..80030584.
+// Message delivery, post-message model attachment and state effects remain
+// pending. This never changes a pose or accepts a state request.
+// The constructor does not initialize payload +1C; reached messages need
+// explicit byte evidence. Unsupported branches preserve output.
+[[nodiscard]] WorldMapPlayerConstructorTailStatus plan_world_map_player_constructor_tail(
+    const WorldMapPlayerConstructorTailQuery& query, WorldMapPlayerConstructorTail* output);
+
 struct WorldMapPlayerStart {
     WorldMapPlayerScenePose pose{};
     WorldMapSteeringState steering{};

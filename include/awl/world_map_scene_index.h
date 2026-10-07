@@ -99,9 +99,15 @@ struct WorldMapPlayerSceneMessage1F {
     WorldMapScenePositionUpdate* update);
 
 struct WorldMapSceneModeRequestState {
-    int32_t mode_58 = 0;
-    int32_t previous_mode_5c = 0;
-    int32_t state_64 = 0;
+    // FUN_801770F8 initializes these six words to -1. The existing
+    // previous_mode_5c name means the committed mode before a new request.
+    int32_t mode_58 = -1;
+    int32_t previous_mode_5c = -1;
+    int32_t prior_mode_60 = -1;
+    int32_t state_64 = -1;
+    int32_t scene_type_68 = -1;
+    int32_t prior_scene_type_6c = -1;
+    uint32_t transition_flags_7c = 0;
     uint8_t scene_byte_78 = 0;
     uint8_t global_flag_59af = 0;
     uint8_t global_flag_59b0 = 0;
@@ -113,6 +119,21 @@ struct WorldMapSceneModeRequestState {
     WorldMapSceneModeRequestState* state,
     int32_t requested_mode,
     uint8_t scene_byte);
+
+struct WorldMapSceneModeCommit {
+    bool transition = false;
+    bool swapped = false;
+    int32_t mode = -1;
+    int32_t scene_type = -1;
+};
+
+// Only FUN_8017755C's field copies/swap and pending-word reset. Its
+// timing setup, scene construction/destruction and update calls are NOT
+// executed here. Mode -1 does nothing; -2 swaps current/prior pairs.
+// Output/state remain intact on invalid pointers.
+[[nodiscard]] bool commit_world_map_scene_mode_fields(
+    WorldMapSceneModeRequestState* state, uint32_t transition_flags,
+    WorldMapSceneModeCommit* output);
 
 struct WorldMapPlayerFixedTransitionStepState {
     // FUN_8010ACF4 reads these two guards and its sequence step.

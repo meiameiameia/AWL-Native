@@ -11,10 +11,21 @@ bool valid_pose(const WorldMapPlayerScenePose& pose) {
     return true;
 }
 
-float read_float(const uint8_t* bytes) {
-    const uint32_t word = (static_cast<uint32_t>(bytes[0]) << 24) |
+uint32_t read_word(const uint8_t* bytes) {
+    return (static_cast<uint32_t>(bytes[0]) << 24) |
         (static_cast<uint32_t>(bytes[1]) << 16) |
         (static_cast<uint32_t>(bytes[2]) << 8) | bytes[3];
+}
+
+int32_t read_signed_word(const uint8_t* bytes) {
+    const uint32_t word = read_word(bytes);
+    int32_t value;
+    std::memcpy(&value, &word, sizeof(value));
+    return value;
+}
+
+float read_float(const uint8_t* bytes) {
+    const uint32_t word = read_word(bytes);
     float value;
     std::memcpy(&value, &word, sizeof(value));
     return value;
@@ -45,6 +56,63 @@ bool make_world_map_phase_entry_pose(int32_t scene_type,
     if (!output || !valid_pose(next)) return false;
     *output = next;
     return true;
+}
+
+bool decode_world_map_player_start_inputs(
+    const WorldMapPlayerStartOwners& owners, WorldMapPlayerStartInputs* output) {
+    if (!output || !owners.saved || owners.saved_size < 0x2A294 ||
+        !owners.scene || owners.scene_size < 0x6C ||
+        !owners.guards || owners.guards_size < 0x684 ||
+        !owners.secondary || owners.secondary_size < 0x3F4) return false;
+    WorldMapPlayerStartInputs next;
+    if (!decode_world_map_player_start_pose(owners.saved, owners.saved_size,
+            read_signed_word(owners.scene + 0x68), &next.start.saved_pose)) return false;
+    next.start.state_680 = read_signed_word(owners.guards + 0x680);
+    next.start.state_58c = read_signed_word(owners.guards + 0x58C);
+    next.start.secondary_byte_3f3 = owners.secondary[0x3F3];
+    next.secondary_byte_3f2 = owners.secondary[0x3F2];
+    next.saved_scene_type_2a290 = read_signed_word(owners.saved + 0x2A290);
+    auto& flags = next.start.placement.static_flags;
+    flags.state_299a4 = owners.saved[0x299A4] != 0;
+    flags.state_299a5 = owners.saved[0x299A5] != 0;
+    flags.state_299a6 = owners.saved[0x299A6] != 0;
+    flags.state_299a8 = owners.saved[0x299A8] != 0;
+    flags.state_299a9 = owners.saved[0x299A9] != 0;
+    flags.state_299af = owners.saved[0x299AF] != 0;
+    flags.secondary_3f1 = owners.secondary[0x3F1] != 0;
+    flags.secondary_3f3 = next.start.secondary_byte_3f3 != 0;
+    *output = next;
+    return true;
+}
+
+WorldMapPlayerConstructorTailStatus plan_world_map_player_constructor_tail(
+    const WorldMapPlayerConstructorTailQuery& query, WorldMapPlayerConstructorTail* output) {
+    using Status = WorldMapPlayerConstructorTailStatus;
+    if (!output) return Status::InvalidInput;
+    WorldMapPlayerConstructorTail next;
+    next.requested_state = 0x0F;
+    const auto& inputs = query.inputs;
+    if (inputs.start.state_680 != -1 || inputs.start.state_58c != 0) {
+        *output = next;
+        return Status::Ready;
+    }
+    if (inputs.secondary_byte_3f2 != 0) return Status::UnsupportedRestoredPose;
+    // FUN_801A2A28 returns true for null or pointed word zero.
+    if (query.binding_present && query.binding_word_0 != 0)
+        return Status::UnsupportedBusyBinding;
+    next.requested_state = 0x29;
+    if (query.action_148_after_setup != 0) {
+        auto saved = inputs.start.saved_pose;
+        saved.scene_type = inputs.saved_scene_type_2a290;
+        if (!valid_pose(saved)) return Status::InvalidInput;
+        if (!query.payload_camera_byte_known) return Status::MissingCameraByteEvidence;
+        next.message_prepared = true;
+        next.message_target_id = query.action_148_after_setup;
+        next.message = {saved.scene_type, saved.position, saved.heading,
+                        query.payload_camera_byte};
+    }
+    *output = next;
+    return Status::Ready;
 }
 
 WorldMapPlayerStartStatus prepare_world_map_player_start(
