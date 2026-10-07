@@ -187,6 +187,40 @@ struct CollisionCategory1MovementAdjustment {
     CollisionDynamicPassAdjustment later_pass{};
 };
 
+// FUN_8001E170 uses active world-map terrain slot 10 and static slot 2.
+// Its two supplied lists are 802E92A0 then 802E92D8, in that order;
+// these are NOT the normal movement first/later ordering.
+struct CollisionWorldMapInitialPlacementQuery {
+    const uint8_t* terrain_data = nullptr;
+    size_t terrain_size = 0;
+    const uint8_t* static_data = nullptr;
+    size_t static_size = 0;
+    const CollisionDynamicPassObject* list_92a0 = nullptr;
+    size_t list_92a0_count = 0;
+    const CollisionDynamicPassObject* list_92d8 = nullptr;
+    size_t list_92d8_count = 0;
+    CollisionCategory1StaticFlags static_flags{};
+};
+
+struct CollisionWorldMapInitialPlacement {
+    std::array<float, 3> position{};
+    CollisionCategory1StaticAdjustment static_contact{};
+    CollisionDynamicPassAdjustment pass_92a0{};
+    CollisionDynamicPassAdjustment pass_92d8{};
+    CollisionTerrainRadiusAdjustment terrain{};
+    // The DOL returns only the final terrain operation's contact result.
+    bool reported_contact = false;
+};
+
+// Static contact at radius 0.3/flags zero, both lists with carried contact
+// bit 1 preserved, then terrain height at radius zero. No player, scene or
+// camera is changed. Unsupported/malformed dependencies leave output intact.
+[[nodiscard]] bool resolve_type1_world_map_initial_placement(
+    const CollisionWorldMapInitialPlacementQuery& query,
+    int32_t scene_type,
+    const std::array<float, 3>& saved_position,
+    CollisionWorldMapInitialPlacement* output);
+
 // Validates the relocatable type-1 tree structure used by the verified
 // movement collision assets, including their indexed triangle payloads.
 [[nodiscard]] bool analyze_type1_collision_asset(

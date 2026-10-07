@@ -1,6 +1,7 @@
 #pragma once
 #include "awl/world_map_movement.h"
 #include "awl/world_map_scene_index.h"
+#include "awl/world_map_player_start.h"
 
 namespace awl {
 struct WorldMapMovementRuntimeStep {
@@ -18,6 +19,12 @@ public:
     [[nodiscard]] bool initialize(const std::array<float, 3>& position,
                                   int32_t scene_type = 0,
                                   const std::array<float, 3>& axis = {0, 0, 1});
+    // Prepares the bounded original constructor start, then owns its pose
+    // and bucket. Both this owner and output survive a failed reinitialize.
+    // Supports movement category 1 only. Camera/model/state dispatch and
+    // subsequent guards remain supplied.
+    [[nodiscard]] WorldMapPlayerStartStatus initialize_player_start(
+        const WorldMapPlayerStartQuery& query, WorldMapPlayerStart* output);
     // Only dependency fields of the query are used. PAD, current position,
     // axis and steering come from this owner. Borrowed asset/list views
     // are consumed synchronously and are never retained.
@@ -29,6 +36,7 @@ public:
     // Native focus policy: clear held PAD/steering, retain scene and pose.
     void pause();
     const std::array<float, 3>& position() const { return position_; }
+    const std::array<float, 3>& starting_heading() const { return axis_; }
     const WorldMapSteeringState& steering() const { return steering_; }
     const HsdPadFrame& pad() const { return filter_.frame(); }
     uint64_t tick_count() const { return tick_; }

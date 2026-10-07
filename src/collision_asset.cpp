@@ -1134,7 +1134,7 @@ bool resolve_type1_dynamic_object_contact(
 
 namespace {
 
-enum class DynamicPassKind { First, Later, Third };
+enum class DynamicPassKind { First, Later, Third, InitialPlacement };
 
 bool resolve_type1_ordered_dynamic_object_pass(
     const CollisionDynamicPassObject* objects,
@@ -1163,9 +1163,10 @@ bool resolve_type1_ordered_dynamic_object_pass(
     CollisionDynamicPassAdjustment result;
     result.position = proposed_position;
     result.contact_flags_after = initial_contact_flags;
-    const uint32_t gate = pass == DynamicPassKind::First ? 4u :
+    const uint32_t gate = pass == DynamicPassKind::InitialPlacement ? 0u :
+                          pass == DynamicPassKind::First ? 4u :
                           pass == DynamicPassKind::Later ? 2u : 8u;
-    if ((resolver_flags & gate) == 0) {
+    if (gate != 0 && (resolver_flags & gate) == 0) {
         *adjustment = result;
         return true;
     }
@@ -1182,8 +1183,10 @@ bool resolve_type1_ordered_dynamic_object_pass(
 
     for (size_t index = 0; index < object_count; ++index) {
         const CollisionDynamicPassObject& object = objects[index];
-        if ((pass == DynamicPassKind::Later ? object.identity == 0 :
-                                               object.identity == source_identity) ||
+        const bool skip_null = pass == DynamicPassKind::Later ||
+                               pass == DynamicPassKind::InitialPlacement;
+        if ((skip_null ? object.identity == 0 :
+                         object.identity == source_identity) ||
             !object.enabled ||
             object.category != category) {
             continue;
@@ -1536,6 +1539,41 @@ bool resolve_type1_category1_static_contact(
     result.position = result.narrow_phase.position;
     result.contact = result.narrow_phase.contact;
     *adjustment = result;
+    return true;
+}
+
+bool resolve_type1_world_map_initial_placement(
+    const CollisionWorldMapInitialPlacementQuery& query,
+    int32_t scene_type,
+    const std::array<float, 3>& saved_position,
+    CollisionWorldMapInitialPlacement* output) {
+    if (!output || !finite_position(saved_position) ||
+        scene_type < 0 || scene_type > 44) return false;
+    CollisionWorldMapInitialPlacement next;
+    // FUN_8001E170 passes 0.3 to static and both object lists, but zero
+    // to its final height-enabled terrain operation. It has no source object.
+    constexpr float object_radius = 0.3f; // 8034A034: 3E99999A
+    if (!resolve_type1_category1_static_contact(
+            query.static_data, query.static_size, query.static_flags, 0u,
+            saved_position, saved_position, object_radius, 0u,
+            &next.static_contact)) return false;
+    const uint32_t carried = next.static_contact.contact ? 1u : 0u;
+    if (!resolve_type1_ordered_dynamic_object_pass(
+            query.list_92a0, query.list_92a0_count, 0, scene_type,
+            saved_position, next.static_contact.position, object_radius,
+            carried, 0u, DynamicPassKind::InitialPlacement, 0u,
+            &next.pass_92a0) ||
+        !resolve_type1_ordered_dynamic_object_pass(
+            query.list_92d8, query.list_92d8_count, 0, scene_type,
+            saved_position, next.pass_92a0.position, object_radius,
+            next.pass_92a0.contact_flags_after, 0u,
+            DynamicPassKind::InitialPlacement, 0u, &next.pass_92d8) ||
+        !adjust_type1_collision_terrain_with_radius(
+            query.terrain_data, query.terrain_size, saved_position,
+            next.pass_92d8.position, 0.0f, &next.terrain)) return false;
+    next.position = next.terrain.position;
+    next.reported_contact = next.terrain.terrain_contact;
+    *output = next;
     return true;
 }
 

@@ -7,6 +7,7 @@
 #include "awl/world_map_actor_heading.h"
 #include "awl/world_map_movement.h"
 #include "awl/world_map_movement_runtime.h"
+#include "awl/world_map_player_start.h"
 #include "awl/simulation_clock.h"
 #include "awl/movement_recording.h"
 #include "awl/world_map_trigger_asset.h"
@@ -7293,6 +7294,273 @@ bool record_local_seam_route(const char* disc_root, const char* output_path) {
     return valid;
 }
 
+void test_world_map_player_start() {
+    using Status = awl::WorldMapPlayerStartStatus;
+    // Invented in-memory owner snapshot. Adjacent words are deliberately
+    // different; this fixture is not a game save or copyrighted payload.
+    std::vector<uint8_t> owner(0x29F90, 0xA5);
+    for (size_t i = 0; i < 3; ++i) {
+        put_be_float(owner, 0x29C78 + i * 4,
+                     std::array<float, 3>{2, 99, 2}[i]);
+        put_be_float(owner, 0x29F84 + i * 4,
+                     std::array<float, 3>{0.25f, -0.0f, -0.75f}[i]);
+    }
+    const auto original_owner = owner;
+    awl::WorldMapPlayerScenePose pose;
+    expect(awl::decode_world_map_player_start_pose(owner.data(), owner.size(), 1,
+               &pose) && pose.scene_type == 1 &&
+           pose.position == std::array<float, 3>{2, 99, 2} &&
+           pose.heading[0] == 0.25f && pose.heading[2] == -0.75f &&
+           std::signbit(pose.heading[1]) && owner == original_owner,
+           "start snapshot copies exact big-endian pose words without normalization or writes");
+    const auto valid_pose = pose;
+    expect(!awl::decode_world_map_player_start_pose(owner.data(), owner.size()-1,
+               1, &pose) && pose.position == valid_pose.position &&
+           !awl::decode_world_map_player_start_pose(nullptr, owner.size(), 1, &pose) &&
+           !awl::decode_world_map_player_start_pose(owner.data(), owner.size(), 1, nullptr),
+           "short and null start snapshots reject atomically");
+    for (int type : {0, 2, 3, 44})
+        expect(awl::decode_world_map_player_start_pose(owner.data(), owner.size(),
+                   type, &pose) && pose.scene_type == type,
+               "snapshot supports the verified scene-type range");
+    expect(!awl::decode_world_map_player_start_pose(owner.data(), owner.size(),
+               -1, &pose) && !awl::decode_world_map_player_start_pose(
+               owner.data(), owner.size(), 45, &pose),
+           "untranslated start scene types reject");
+    put_be32(owner, 0x29C78, 0x7F800000u);
+    expect(!awl::decode_world_map_player_start_pose(owner.data(), owner.size(),
+               1, &pose), "nonfinite saved position rejects");
+    owner = original_owner;
+    put_be32(owner, 0x29F84, 0x7FC00000u);
+    expect(!awl::decode_world_map_player_start_pose(owner.data(), owner.size(),
+               1, &pose), "nonfinite saved heading rejects");
+    expect(awl::make_world_map_phase_entry_pose(1, &pose) &&
+           pose.position[0] == -1 && pose.position[1] == 0 &&
+           camera_float_bits(pose.position[2]) == 0xC0A66666u &&
+           pose.heading == std::array<float, 3>{0, 0, 1},
+           "phase-entry source uses the verified pose table words");
+    expect(!awl::make_world_map_phase_entry_pose(45, &pose) &&
+           !awl::make_world_map_phase_entry_pose(1, nullptr),
+           "phase-entry builder validates its supplied scene type/output");
+
+    auto terrain = make_sample_leaf(); // Independently defined plane Y=X+2Z.
+    awl::WorldMapPlayerStartQuery query;
+    query.saved_pose = valid_pose;
+    query.placement.terrain_data = terrain.data();
+    query.placement.terrain_size = terrain.size();
+    awl::CollisionDynamicPassObject a;
+    a.identity = 1; a.enabled = true; a.category = 1;
+    a.collision_flags = 1; a.radius = 0.5f; a.center_world = {2, 10, 2};
+    auto b = a;
+    b.identity = 2; b.radius = 0.2f; b.center_world = {2, 10, 2.81f};
+    query.placement.list_92a0 = &a; query.placement.list_92a0_count = 1;
+    query.placement.list_92d8 = &b; query.placement.list_92d8_count = 1;
+    awl::WorldMapPlayerStart start;
+    expect(awl::prepare_world_map_player_start(query, &start) == Status::Ready &&
+           start.placement_called && start.placement.pass_92a0.contact &&
+           start.placement.pass_92d8.contact &&
+           start.placement.pass_92a0.contact_flags_after == 1 &&
+           start.placement.pass_92d8.contact_flags_after == 1 &&
+           std::fabs(start.pose.position[2] - 3.32f) < 0.00001f &&
+           std::fabs(start.pose.position[1] - 8.64f) < 0.00001f &&
+           start.pose.heading == valid_pose.heading &&
+           start.steering.facing_x == 0.25f && start.steering.facing_z == -0.75f &&
+           start.steering.direction_x == 0 && start.steering.direction_z == 0 &&
+           start.steering.current_speed == 0 && start.steering.target_speed == 0 &&
+           !start.placement.reported_contact && !start.placement.terrain.radius_contact,
+           "initial placement runs 92A0 then 92D8, carries hits, samples final height and seeds saved facing");
+    std::swap(query.placement.list_92a0, query.placement.list_92d8);
+    expect(awl::prepare_world_map_player_start(query, &start) == Status::Ready &&
+           std::fabs(start.pose.position[2] - 2.81f) < 0.00001f,
+           "reversing initial lists changes the result, unlike movement's list order");
+    std::swap(query.placement.list_92a0, query.placement.list_92d8);
+    b.enabled = false;
+    expect(awl::prepare_world_map_player_start(query, &start) == Status::Ready &&
+           !start.placement.pass_92d8.contact &&
+           start.placement.pass_92d8.contact_flags_after == 1,
+           "initial second list preserves contact bit one even without a new hit");
+    b.enabled = true;
+    auto skipped = a;
+    skipped.identity = 0; skipped.radius = std::numeric_limits<float>::quiet_NaN();
+    auto inactive = a;
+    inactive.enabled = false;
+    auto different_category = a;
+    different_category.category = 2;
+    const std::array<awl::CollisionDynamicPassObject, 4> filtered{
+        skipped, inactive, different_category, a};
+    query.placement.list_92a0 = filtered.data();
+    query.placement.list_92a0_count = filtered.size();
+    expect(awl::prepare_world_map_player_start(query, &start) == Status::Ready &&
+           start.placement.pass_92a0.queried_objects == 1,
+           "initial placement skips null, inactive and wrong-category entries");
+    query.placement.list_92a0 = &a; query.placement.list_92a0_count = 1;
+
+    auto static_leaf = make_sample_leaf();
+    static_leaf[6] = 0;
+    put_be16(static_leaf, 8 + 0x34, 0); // Unconditional surface mask.
+    // Reverse the winding so the X=0 edge has its normal toward +X.
+    put_be16(static_leaf, 8 + 0x34 + 4, 2);
+    put_be16(static_leaf, 8 + 0x34 + 6, 1);
+    auto static_first = query;
+    static_first.saved_pose.position = {0.2f, 99, 2};
+    static_first.placement.static_data = static_leaf.data();
+    static_first.placement.static_size = static_leaf.size();
+    static_first.placement.list_92a0_count = 0;
+    static_first.placement.list_92d8_count = 0;
+    expect(awl::prepare_world_map_player_start(static_first, &start) == Status::Ready &&
+           start.placement.static_contact.contact &&
+           start.placement.static_contact.surface_mask == 0x41u &&
+           std::fabs(start.pose.position[0] - 0.31f) < 0.00001f &&
+           std::fabs(start.pose.position[1] - 4.31f) < 0.00001f &&
+           start.placement.pass_92a0.contact_flags_after == 1u &&
+           start.placement.pass_92d8.contact_flags_after == 1u &&
+           !start.placement.reported_contact,
+           "static radius 0.3/flags zero runs first and carries its hit through both empty lists");
+    auto marked_terrain = terrain;
+    put_be16(marked_terrain, 8 + 0x34, 0xE020u);
+    auto terrain_only = query;
+    terrain_only.saved_pose.position = {0.1f, 99, 0.1f};
+    terrain_only.placement = {};
+    terrain_only.placement.terrain_data = marked_terrain.data();
+    terrain_only.placement.terrain_size = marked_terrain.size();
+    expect(awl::prepare_world_map_player_start(terrain_only, &start) == Status::Ready &&
+           start.pose.position[0] == 0.1f && start.pose.position[2] == 0.1f &&
+           std::fabs(start.pose.position[1] - 0.3f) < 0.00001f &&
+           start.placement.terrain.radius_pass_count == 0,
+           "initial terrain radius zero samples height without pushing away from marked edges");
+    terrain_only.saved_pose.position = {-1, 99, -1};
+    expect(awl::prepare_world_map_player_start(terrain_only, &start) == Status::Ready &&
+           start.placement.reported_contact &&
+           start.placement.terrain.initial_edge_fallback &&
+           start.pose.position == std::array<float, 3>{0, 0, 0},
+           "initial miss projects to the nearest edge and reports final terrain contact");
+
+    // Guards bypass placement only, retaining saved heading and position.
+    const auto dependencies = query.placement;
+    query.placement = {};
+    query.state_680 = 0;
+    expect(awl::prepare_world_map_player_start(query, &start) == Status::Ready &&
+           !start.placement_called && start.pose.position == valid_pose.position,
+           "guard 680 bypasses placement without requiring collision assets");
+    query.state_680 = -1; query.state_58c = 1;
+    expect(awl::prepare_world_map_player_start(query, &start) == Status::Ready &&
+           !start.placement_called && start.pose.heading == valid_pose.heading,
+           "guard 58C independently bypasses placement");
+    query.state_58c = 0;
+    const auto sentinel = start;
+    expect(awl::prepare_world_map_player_start(query, &start) == Status::PlacementFailed &&
+           start.pose.position == sentinel.pose.position &&
+           start.placement_called == sentinel.placement_called,
+           "missing active terrain rejects and preserves prepared output");
+    query.secondary_byte_3f3 = 2;
+    expect(awl::prepare_world_map_player_start(query, &start) == Status::UnsupportedRelocation &&
+           start.pose.position == sentinel.pose.position,
+           "any nonzero relocation byte rejects instead of silently retaining the saved pose");
+    query.secondary_byte_3f3 = 0;
+    query.placement = dependencies;
+    query.placement.static_flags.secondary_3f3 = true;
+    expect(awl::prepare_world_map_player_start(query, &start) == Status::InvalidInput,
+           "inconsistent shared relocation byte rejects");
+    query.placement.static_flags.secondary_3f3 = false;
+
+    awl::WorldMapMovementRuntime runtime;
+    expect(runtime.initialize_player_start(query, &start) == Status::Ready &&
+           runtime.position() == start.pose.position &&
+           runtime.starting_heading() == valid_pose.heading &&
+           runtime.steering().facing_z == -0.75f && runtime.tick_count() == 0 &&
+           runtime.scene().size(1) == 1 && runtime.scene().size(-1) == 0,
+           "runtime owns the prepared start in the correct scene bucket");
+    awl::WorldMapMovementQuery movement;
+    movement.collision.terrain_data = terrain.data();
+    movement.collision.terrain_size = terrain.size();
+    awl::WorldMapMovementRuntimeStep step;
+    expect(runtime.tick({}, movement, &step) &&
+           runtime.steering().facing_x == 0.25f &&
+           runtime.steering().facing_z == -0.75f && runtime.tick_count() == 1,
+           "first neutral runtime tick retains saved facing with zero initial speed");
+    const auto before = awl::capture_movement_state(runtime, step);
+    query.placement.terrain_size = 1;
+    expect(runtime.initialize_player_start(query, &start) == Status::PlacementFailed &&
+           awl::capture_movement_state(runtime, step) == before &&
+           runtime.starting_heading() == valid_pose.heading && runtime.scene().size(1) == 1,
+           "failed reinitialization preserves complete prior public runtime and bucket state");
+    query.placement = dependencies;
+    query.saved_pose.scene_type = 2;
+    expect(runtime.initialize_player_start(query, &start) == Status::UnsupportedMovementCategory &&
+           awl::capture_movement_state(runtime, step) == before,
+           "runtime refuses an untranslated movement category instead of applying category one");
+    query.saved_pose = valid_pose;
+    query.saved_pose.heading[0] = std::numeric_limits<float>::infinity();
+    expect(runtime.initialize_player_start(query, &start) == Status::InvalidInput &&
+           awl::capture_movement_state(runtime, step) == before &&
+           awl::prepare_world_map_player_start(query, nullptr) == Status::InvalidInput,
+           "invalid pose and null start output reject atomically");
+}
+
+bool check_local_player_start(const char* disc_root) {
+    awl_memory_init();
+    awl::filesystem_init();
+    bool valid = awl::filesystem_mount("/", disc_root);
+    awl::WorldMapCollisionAssets assets;
+    // Decode an invented owner snapshot for the supported seam. Separately
+    // check the phase-entry source's known empty world-map terrain leaf.
+    // Category 1, guards and empty lists are supplied, not a live capture.
+    for (uint32_t phase = 0; valid && phase < 6; ++phase) {
+        for (int alternate = 0; valid && alternate < 2; ++alternate) {
+            awl::WorldMapPlayerStartQuery query;
+            awl::WorldMapPlayerStart start;
+            awl::WorldMapMovementRuntime runtime;
+            valid = assets.load(phase, alternate != 0) &&
+                awl::make_world_map_phase_entry_pose(1, &query.saved_pose);
+            if (!valid) break;
+            query.placement.terrain_data = assets.terrain_bytes().data();
+            query.placement.terrain_size = assets.terrain_bytes().size();
+            query.placement.static_data = assets.static_bytes().data();
+            query.placement.static_size = assets.static_bytes().size();
+            query.placement.static_flags.state_299a4 = alternate != 0;
+            awl::CollisionHeightSample entry_height;
+            valid = !awl::sample_type1_collision_height(
+                query.placement.terrain_data, query.placement.terrain_size,
+                query.saved_pose.position[0], query.saved_pose.position[2],
+                &entry_height) &&
+                runtime.initialize_player_start(query, &start) ==
+                    awl::WorldMapPlayerStartStatus::PlacementFailed;
+            if (!valid) break;
+            awl::CollisionSurfaceSample surface;
+            valid = awl::sample_type1_collision_surface(
+                query.placement.terrain_data, query.placement.terrain_size,
+                120, 168, &surface);
+            if (!valid) break;
+            std::vector<uint8_t> snapshot(0x29F90, 0);
+            const std::array<float, 3> seam{120, surface.height, 168};
+            for (size_t i = 0; i < 3; ++i) {
+                put_be_float(snapshot, 0x29C78 + i * 4, seam[i]);
+                put_be_float(snapshot, 0x29F84 + i * 4, query.saved_pose.heading[i]);
+            }
+            valid = awl::decode_world_map_player_start_pose(snapshot.data(),
+                snapshot.size(), 1, &query.saved_pose);
+            if (!valid) break;
+            const auto status = runtime.initialize_player_start(query, &start);
+            valid = status == awl::WorldMapPlayerStartStatus::Ready &&
+                start.placement_called && runtime.tick_count() == 0 &&
+                runtime.position() == start.pose.position &&
+                runtime.starting_heading() == query.saved_pose.heading &&
+                runtime.steering().current_speed == 0;
+            if (!valid) {
+                std::fprintf(stderr, "Local player start failed: phase=%u terrain=%d status=%d\n",
+                    phase, alternate, static_cast<int>(status));
+                break;
+            }
+            std::printf("Local seam start phase=%u terrain=%d: (%0.6f,%0.6f,%0.6f), entry empty-leaf rejected\n",
+                phase, alternate, start.pose.position[0], start.pose.position[1],
+                start.pose.position[2]);
+        }
+    }
+    awl::filesystem_shutdown();
+    awl_memory_shutdown();
+    return valid;
+}
+
 void test_simulation_clock_and_runtime() {
     awl::SimulationClock clock;
     awl::SimulationSteps steps{99, 99};
@@ -8614,6 +8882,7 @@ int main(int argc, char** argv) {
     test_world_map_trigger_asset();
     test_synthetic_player_route_replay();
     test_simulation_clock_and_runtime();
+    test_world_map_player_start();
     test_world_map_scene_position_bucket_decision();
     test_world_map_scene_bucket_registry();
     test_world_map_player_scene_message_1f();
@@ -8641,6 +8910,8 @@ int main(int argc, char** argv) {
             if (index + 2 >= argc) { ++failures; break; }
             const char* disc_root = argv[++index];
             if (!record_local_seam_route(disc_root, argv[++index])) ++failures;
+        } else if (std::strcmp(argv[index], "--player-start-local") == 0) {
+            if (++index >= argc || !check_local_player_start(argv[index])) ++failures;
         } else if (std::strcmp(argv[index], "--catalog-local") == 0) {
             if (++index >= argc || !inspect_local_catalog(argv[index])) {
                 ++failures;

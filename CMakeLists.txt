@@ -23,6 +23,7 @@ set(SOURCES
     src/world_map_contact.cpp
     src/world_map_movement.cpp
     src/world_map_movement_runtime.cpp
+    src/world_map_player_start.cpp
     src/simulation_clock.cpp
     src/startup_cli.cpp
     src/disc_identity.cpp
@@ -89,6 +90,7 @@ set(HEADERS
     include/awl/render_validation.h
     include/awl/dvd.h
     include/awl/player_input.h
+    include/awl/world_map_player_start.h
     include/awl/world_map_contact.h
     include/awl/world_map_movement.h
     include/awl/world_map_trigger_asset.h
@@ -280,6 +282,7 @@ add_executable(collision_asset_tests
     src/world_map_contact.cpp
     src/world_map_movement.cpp
     src/world_map_movement_runtime.cpp
+    src/world_map_player_start.cpp
     src/simulation_clock.cpp
     src/startup_cli.cpp
     src/disc_identity.cpp

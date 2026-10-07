@@ -26,6 +26,22 @@ bool WorldMapMovementRuntime::initialize(const std::array<float, 3>& position,
     return true;
 }
 
+WorldMapPlayerStartStatus WorldMapMovementRuntime::initialize_player_start(
+    const WorldMapPlayerStartQuery& query, WorldMapPlayerStart* output) {
+    if (!output) return WorldMapPlayerStartStatus::InvalidInput;
+    WorldMapPlayerStart next;
+    const auto status = prepare_world_map_player_start(query, &next);
+    if (status != WorldMapPlayerStartStatus::Ready) return status;
+    // The connected movement candidate currently supports category 1 only.
+    if (next.pose.scene_type != 1)
+        return WorldMapPlayerStartStatus::UnsupportedMovementCategory;
+    if (!initialize(next.pose.position, next.pose.scene_type, next.pose.heading))
+        return WorldMapPlayerStartStatus::SceneRegistrationFailed;
+    steering_ = next.steering;
+    *output = next;
+    return WorldMapPlayerStartStatus::Ready;
+}
+
 void WorldMapMovementRuntime::pause() {
     steering_ = {};
     filter_.reset();
