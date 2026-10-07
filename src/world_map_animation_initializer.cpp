@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstring>
 #include <utility>
+#include <type_traits>
 
 namespace awl {
 namespace {
@@ -197,15 +198,17 @@ WorldMapAnimationChannelStatus prepare_world_map_animation_channel_settings(
     *out = std::move(step); return status;
 }
 
-WorldMapAnimationInitializerStatus prepare_world_map_animation_initializer(
-    const WorldMapAnimationInitializerState& state, uint64_t requested,
+namespace {
+template<class State, class Step, class ChannelStep>
+WorldMapAnimationInitializerStatus prepare_initializer(
+    const State& state, uint64_t requested,
     const std::optional<WorldMapActorAnimationDescriptor>& descriptor,
     const std::optional<WorldMapActorAnimationGroup>& group,
     const std::optional<WorldMapAnimationModelBinding>& model, const WorldMapAnimationBank* bank,
-    const WorldMapAnimationInitializerObservations& observations, WorldMapAnimationInitializerStep* out) {
+    const WorldMapAnimationInitializerObservations& observations, Step* out) {
     using Status = WorldMapAnimationInitializerStatus;
     if (out == nullptr || &state == &out->after) return Status::InvalidInput;
-    WorldMapAnimationInitializerStep step; step.after = state;
+    Step step; step.after = state;
     auto finish = [&](Status status) { *out = std::move(step); return status; };
     WorldMapActorAnimationStep start;
     const auto begin = prepare_world_map_actor_animation_start(state.animation, requested, descriptor, group, &start);
@@ -214,8 +217,12 @@ WorldMapAnimationInitializerStatus prepare_world_map_animation_initializer(
     if (begin == WorldMapActorAnimationStatus::Unchanged) return finish(Status::Unchanged);
     if (begin == WorldMapActorAnimationStatus::RequiresDescriptor) return finish(Status::RequiresDescriptor);
     if (begin == WorldMapActorAnimationStatus::RequiresBinding) return finish(Status::RequiresBinding);
-    WorldMapAnimationChannelStep setup;
-    const auto channel_status = prepare_world_map_animation_channel(state.primary, state.records, *start.primary_setup, model, bank, &setup);
+    ChannelStep setup;
+    const auto channel_status = [&]() {
+        if constexpr (std::is_same_v<State, WorldMapPartialAnimationInitializerState>)
+            return prepare_world_map_partial_animation_channel(state.primary, state.records, *start.primary_setup, model, bank, &setup);
+        else return prepare_world_map_animation_channel(state.primary, state.records, *start.primary_setup, model, bank, &setup);
+    }();
     if (channel_status == WorldMapAnimationChannelStatus::InvalidInput) return Status::InvalidInput;
     step.setup = setup;
     if (channel_status != WorldMapAnimationChannelStatus::Prepared) return finish(Status::RequiresModelSetup);
@@ -245,15 +252,19 @@ WorldMapAnimationInitializerStatus prepare_world_map_animation_initializer(
     }
     if (fields.secondary_index) {
         step.secondary_index = fields.secondary_index;
-        if (!observations.secondary_group) return finish(Status::RequiresSecondarySetup);
-        if (observations.secondary_group->group_index != fields.group_index) return Status::InvalidInput;
-        WorldMapSecondarySetupStep secondary;
-        const auto status = prepare_world_map_secondary_model_setup(*fields.secondary_index,
-            observations.secondary_group->model_bank_identity, observations.model_bank,
-            state.secondary_model_c0, state.secondary_model, step.after.records, observations.secondary_arena_cc, &secondary);
-        if (status == WorldMapSecondarySetupStatus::InvalidInput) return Status::InvalidInput;
-        step.secondary_setup = std::move(secondary);
-        return finish(Status::RequiresSecondarySetup);
+        if constexpr (std::is_same_v<State, WorldMapPartialAnimationInitializerState>) {
+            return finish(Status::RequiresSecondarySetup);
+        } else {
+            if (!observations.secondary_group) return finish(Status::RequiresSecondarySetup);
+            if (observations.secondary_group->group_index != fields.group_index) return Status::InvalidInput;
+            WorldMapSecondarySetupStep secondary;
+            const auto status = prepare_world_map_secondary_model_setup(*fields.secondary_index,
+                observations.secondary_group->model_bank_identity, observations.model_bank,
+                state.secondary_model_c0, state.secondary_model, step.after.records, observations.secondary_arena_cc, &secondary);
+            if (status == WorldMapSecondarySetupStatus::InvalidInput) return Status::InvalidInput;
+            step.secondary_setup = std::move(secondary);
+            return finish(Status::RequiresSecondarySetup);
+        }
     }
     if (state.secondary_model_c0 != 0) {
         WorldMapSecondaryReleaseStep release;
@@ -283,9 +294,14 @@ WorldMapAnimationInitializerStatus prepare_world_map_animation_initializer(
         if (!std::isfinite(animation.speed_8)) return Status::InvalidInput;
         step.rate *= animation.speed_8;
     }
-    WorldMapAnimationChannelStep settings;
-    const auto status = prepare_world_map_animation_channel_settings(step.after.primary, step.after.records,
-        animation.model_identity_30, model, step.loop ? 1u : 0u, step.rate, &settings);
+    ChannelStep settings;
+    const auto status = [&]() {
+        if constexpr (std::is_same_v<State, WorldMapPartialAnimationInitializerState>)
+            return prepare_world_map_partial_animation_channel_settings(step.after.primary, step.after.records,
+                animation.model_identity_30, model, step.loop ? 1u : 0u, step.rate, &settings);
+        else return prepare_world_map_animation_channel_settings(step.after.primary, step.after.records,
+            animation.model_identity_30, model, step.loop ? 1u : 0u, step.rate, &settings);
+    }();
     if (status == WorldMapAnimationChannelStatus::InvalidInput) return Status::InvalidInput;
     step.settings = settings;
     if (status != WorldMapAnimationChannelStatus::Prepared) return finish(Status::RequiresModelSetup);
@@ -300,5 +316,24 @@ WorldMapAnimationInitializerStatus prepare_world_map_animation_initializer(
     if (links != WorldMapModelLinkStatus::Prepared) return finish(Status::RequiresModelHierarchy);
     step.after.model_links = std::move(hierarchy.after);
     return finish(Status::Prepared);
+}
+} // namespace
+WorldMapAnimationInitializerStatus prepare_world_map_animation_initializer(
+    const WorldMapAnimationInitializerState& state, uint64_t requested,
+    const std::optional<WorldMapActorAnimationDescriptor>& descriptor,
+    const std::optional<WorldMapActorAnimationGroup>& group,
+    const std::optional<WorldMapAnimationModelBinding>& model, const WorldMapAnimationBank* bank,
+    const WorldMapAnimationInitializerObservations& observations, WorldMapAnimationInitializerStep* out) {
+    return prepare_initializer<WorldMapAnimationInitializerState, WorldMapAnimationInitializerStep, WorldMapAnimationChannelStep>(
+        state, requested, descriptor, group, model, bank, observations, out);
+}
+WorldMapAnimationInitializerStatus prepare_world_map_partial_animation_initializer(
+    const WorldMapPartialAnimationInitializerState& state, uint64_t requested,
+    const std::optional<WorldMapActorAnimationDescriptor>& descriptor,
+    const std::optional<WorldMapActorAnimationGroup>& group,
+    const std::optional<WorldMapAnimationModelBinding>& model, const WorldMapAnimationBank* bank,
+    const WorldMapAnimationInitializerObservations& observations, WorldMapPartialAnimationInitializerStep* out) {
+    return prepare_initializer<WorldMapPartialAnimationInitializerState, WorldMapPartialAnimationInitializerStep, WorldMapAnimationPartialChannelStep>(
+        state, requested, descriptor, group, model, bank, observations, out);
 }
 } // namespace awl

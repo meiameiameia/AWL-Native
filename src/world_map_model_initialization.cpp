@@ -1,5 +1,6 @@
 #include "awl/world_map_model_initialization.h"
 #include "awl/world_map_animation_initializer.h"
+#include "awl/world_map_animation_channel_owner.h"
 
 #include <algorithm>
 #include <cmath>
@@ -325,6 +326,74 @@ void WorldMapNativeModel::publish_links(const WorldMapModelLinkNode& node) noexc
         core_.nodes[j].feature_8=node.features->nodes[j].feature_8;
         core_.nodes[j].next_feature_14=node.features->nodes[j].next_14;
     }
+}
+WorldMapNativeAnimationInitializerStatus advance_world_map_native_animation_initializer(
+    WorldMapNativeAnimationInitializerMetadata* metadata, WorldMapNativeAnimationChannel* channel,
+    const std::vector<WorldMapNativeModel*>& models, uint64_t requested,
+    const std::optional<WorldMapActorAnimationDescriptor>& descriptor,
+    const std::optional<WorldMapActorAnimationGroup>& group, const WorldMapAnimationBank* bank,
+    const WorldMapAnimationInitializerObservations& observations, WorldMapNativeAnimationInitializerStep* out) {
+    using Status = WorldMapNativeAnimationInitializerStatus;
+    using Init = WorldMapAnimationInitializerStatus;
+    static_assert(std::is_nothrow_move_assignable_v<WorldMapNativeAnimationInitializerStep>);
+    static_assert(std::is_nothrow_copy_assignable_v<WorldMapNativeAnimationInitializerMetadata>);
+    if (!metadata || !out || metadata == &out->after) return Status::InvalidInput;
+    try {
+        WorldMapNativeAnimationInitializerStep next; next.after = *metadata;
+        // D69C's equal-base branch reads no model/channel/bank bindings.
+        WorldMapActorAnimationStep start;
+        const auto begin = prepare_world_map_actor_animation_start(metadata->animation, requested, descriptor, group, &start);
+        if (begin == WorldMapActorAnimationStatus::InvalidInput) return Status::InvalidInput;
+        if (begin == WorldMapActorAnimationStatus::Unchanged) {
+            next.initializer_status = Init::Unchanged; *out = std::move(next); return Status::Unchanged;
+        }
+        if (!channel || !valid_model_owners(models)) return Status::InvalidInput;
+        WorldMapNativeModel* primary = nullptr;
+        for (auto* model : models) if (model->binding().model_identity == metadata->animation.model_identity_30) primary = model;
+        WorldMapPartialAnimationInitializerState supplied;
+        supplied.animation = metadata->animation;
+        supplied.has_optional_bindings = metadata->has_optional_bindings;
+        supplied.feature_38 = metadata->feature_38; supplied.feature_3c = metadata->feature_3c;
+        supplied.secondary_model_c0 = metadata->secondary_model_c0;
+        supplied.primary = channel->state_; supplied.records = channel->records_;
+        std::optional<WorldMapAnimationModelBinding> binding;
+        const WorldMapAnimationBank* retained = nullptr;
+        if (primary) {
+            binding = primary->binding();
+            for (const auto& record : supplied.records) if (record.identity == binding->playback_178) return Status::InvalidInput;
+            supplied.records.push_back({binding->playback_178, primary->partial_playback()});
+            if (group) retained = primary->animation_bank(group->bank_identity);
+        }
+        supplied.model_links.emplace();
+        for (const auto* model : models) supplied.model_links->nodes.push_back(model->model_links());
+        WorldMapPartialAnimationInitializerStep prepared;
+        const auto* selected_bank = bank ? bank : retained;
+        const auto status = prepare_world_map_partial_animation_initializer(supplied, requested, descriptor, group,
+            binding, selected_bank, observations, &prepared);
+        if (status == Init::InvalidInput) return Status::InvalidInput;
+        next.initializer_status = status;
+        if (status != Init::Prepared) {
+            next.initializer = std::move(prepared); *out = std::move(next); return Status::Incomplete;
+        }
+        if (!primary || !group || !selected_bank || !prepared.after.model_links ||
+            prepared.after.records.empty() || prepared.after.records.back().identity != binding->playback_178 ||
+            prepared.after.model_links->nodes.size() != models.size()) return Status::InvalidInput;
+        if (retained && !retained->same_contents(*selected_bank)) return Status::InvalidInput;
+        auto banks_after = primary->animation_banks_;
+        if (!retained) banks_after.push_back(std::make_shared<const WorldMapAnimationBank>(*selected_bank));
+        auto external = prepared.after.records;
+        const auto playback = external.back().state; external.pop_back();
+        next.after.animation = prepared.after.animation;
+        next.after.feature_38 = prepared.after.feature_38; next.after.feature_3c = prepared.after.feature_3c;
+        next.initializer = std::move(prepared);
+        // Only scalar stores, noexcept moves and swaps follow publication.
+        *out = std::move(next);
+        primary->animation_banks_.swap(banks_after); primary->set_playback(playback);
+        channel->state_ = out->initializer->after.primary; channel->records_.swap(external);
+        for (size_t i = 0; i < models.size(); ++i) models[i]->publish_links(out->initializer->after.model_links->nodes[i]);
+        *metadata = out->after;
+        return Status::Advanced;
+    } catch (const std::bad_alloc&) { return Status::AllocationFailure; }
 }
 WorldMapModelAttachmentStatus apply_world_map_native_model_attachments(
     const std::vector<WorldMapNativeModel*>& owners,

@@ -18,7 +18,7 @@ enum class WorldMapPlayerStartAnimationStatus {
     Decoded, Loaded, Selected, Prepared, Unchanged, InvalidInput,
     UnsupportedLayout, UnsupportedCommand, RequiresTables, RequiresItemType,
     RequiresAssets, RequiresGroup, InitializerIncomplete,
-    ReadFailure, WrongDol, AllocationFailure
+    ReadFailure, WrongDol, AllocationFailure, Advanced
 };
 
 // Immutable first records of selector 1's four descriptor choices. Logical
@@ -82,4 +82,25 @@ struct WorldMapPlayerStartAnimationStep {
     const std::optional<WorldMapAnimationModelBinding>& model,
     const WorldMapAnimationInitializerObservations& observations,
     WorldMapPlayerStartAnimationStep* out);
+
+struct WorldMapPlayerStartNativeAnimationStep {
+    std::shared_ptr<const WorldMapPlayerStartAnimationTables> tables;
+    std::optional<WorldMapPlayerStartAnimationSelection> selection;
+    std::optional<WorldMapPlayerAnimationGroupBinding> binding;
+    WorldMapNativeAnimationInitializerStep initializer;
+};
+// Select first, then atomically initialize supplied native no-skin model/channel
+// owners with their authoritative partial records/link graph. Advanced applies
+// only that bounded transaction, not real primary construction, parent state 29,
+// counter reset, frame evaluation or original gameplay acceptance. Reached
+// secondary paths still block. Invalid/allocation failure preserves output.
+[[nodiscard]] WorldMapPlayerStartAnimationStatus advance_world_map_player_start_animation(
+    const std::shared_ptr<const WorldMapPlayerStartAnimationTables>& tables,
+    const WorldMapPlayerStartAnimationCommand& command,
+    const std::optional<WorldMapPlayerStartItemType>& item_type,
+    WorldMapNativeAnimationInitializerMetadata* metadata, WorldMapNativeAnimationChannel* channel,
+    const std::vector<WorldMapNativeModel*>& models,
+    const std::shared_ptr<const WorldMapPlayerAnimationAssets>& assets,
+    const WorldMapAnimationInitializerObservations& observations,
+    WorldMapPlayerStartNativeAnimationStep* out);
 } // namespace awl

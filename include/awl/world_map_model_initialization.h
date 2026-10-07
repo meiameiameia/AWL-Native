@@ -2,6 +2,7 @@
 
 #include "awl/world_map_secondary_model.h"
 #include "awl/world_map_model_links.h"
+#include "awl/world_map_animation_initializer.h"
 
 #include <memory>
 
@@ -175,6 +176,12 @@ public:
     WorldMapSecondaryModelRecord record() const;
     WorldMapModelLinkNode model_links() const;
 private:
+    friend WorldMapNativeAnimationInitializerStatus advance_world_map_native_animation_initializer(
+        WorldMapNativeAnimationInitializerMetadata*, WorldMapNativeAnimationChannel*,
+        const std::vector<WorldMapNativeModel*>&, uint64_t,
+        const std::optional<WorldMapActorAnimationDescriptor>&,
+        const std::optional<WorldMapActorAnimationGroup>&, const WorldMapAnimationBank*,
+        const WorldMapAnimationInitializerObservations&, WorldMapNativeAnimationInitializerStep*);
     friend WorldMapModelConstructionResult construct_world_map_secondary_model(
         const WorldMapModelBank&, uint32_t, const WorldMapSecondarySetupStep&,
         std::unique_ptr<WorldMapNativeModel>*);

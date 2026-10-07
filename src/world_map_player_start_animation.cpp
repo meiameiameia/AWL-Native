@@ -170,4 +170,45 @@ Status prepare_world_map_player_start_animation(
         return finish(status == WorldMapAnimationInitializerStatus::Prepared ? Status::Prepared : Status::InitializerIncomplete);
     } catch (const std::bad_alloc&) { return Status::AllocationFailure; }
 }
+WorldMapPlayerStartAnimationStatus advance_world_map_player_start_animation(
+    const std::shared_ptr<const WorldMapPlayerStartAnimationTables>& tables,
+    const WorldMapPlayerStartAnimationCommand& command,
+    const std::optional<WorldMapPlayerStartItemType>& item_type,
+    WorldMapNativeAnimationInitializerMetadata* metadata, WorldMapNativeAnimationChannel* channel,
+    const std::vector<WorldMapNativeModel*>& models,
+    const std::shared_ptr<const WorldMapPlayerAnimationAssets>& assets,
+    const WorldMapAnimationInitializerObservations& observations, WorldMapPlayerStartNativeAnimationStep* out) {
+    using Status = WorldMapPlayerStartAnimationStatus;
+    using Native = WorldMapNativeAnimationInitializerStatus;
+    static_assert(std::is_nothrow_move_assignable_v<WorldMapPlayerStartNativeAnimationStep>);
+    if (!out || !metadata || metadata == &out->initializer.after) return Status::InvalidInput;
+    try {
+        WorldMapPlayerStartNativeAnimationStep next; next.tables = tables; next.initializer.after = *metadata;
+        if (!tables) return Status::RequiresTables;
+        WorldMapPlayerStartAnimationSelection selection;
+        const auto selected = tables->select(command, item_type, &selection);
+        if (selected != Status::Selected) return selected;
+        next.selection = selection;
+        const bool unchanged = metadata->animation.base_descriptor_4 == selection.descriptor.identity;
+        WorldMapPlayerAnimationGroupBinding binding;
+        if (!unchanged) {
+            const auto group = selection.descriptor.word_0 >> 25;
+            if (group != 0) { *out = std::move(next); return Status::RequiresGroup; }
+            const auto status = bind_world_map_player_animation_group(selection.descriptor.word_0, assets, &binding);
+            if (status == WorldMapPlayerAnimationAssetsStatus::RequiresAssets) { *out = std::move(next); return Status::RequiresAssets; }
+            if (status != WorldMapPlayerAnimationAssetsStatus::Bound) return Status::InvalidInput;
+            next.binding = binding;
+        }
+        const auto status = advance_world_map_native_animation_initializer(metadata, channel, models,
+            selection.descriptor.identity, selection.descriptor,
+            unchanged ? std::optional<WorldMapActorAnimationGroup>{} : binding.primary,
+            unchanged ? nullptr : &binding.assets->primary_animations(), observations, &next.initializer);
+        if (status == Native::InvalidInput) return Status::InvalidInput;
+        if (status == Native::AllocationFailure) return Status::AllocationFailure;
+        *out = std::move(next);
+        if (status == Native::Advanced) return Status::Advanced;
+        if (status == Native::Unchanged) return Status::Unchanged;
+        return Status::InitializerIncomplete;
+    } catch (const std::bad_alloc&) { return Status::AllocationFailure; }
+}
 } // namespace awl

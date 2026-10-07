@@ -491,5 +491,42 @@ void test_actor_model_type_matrix() {
     expect(cases == 200 && digest == 0xD907C192EDA2088Dull,
         "model type/store/timer matrix matches the bounded mapped instruction comparison");
 }
+void test_partial_initializer() {
+    awl::WorldMapPartialAnimationInitializerState state;
+    state.animation=initial().animation;state.has_optional_bindings=true;
+    state.primary={0,0,2,3,4,std::nullopt,0};
+    for(uint64_t key:{1ull,2ull,3ull,4ull}) {
+        awl::WorldMapAnimationPartialPlayback p;p.rate_4=1;
+        state.records.push_back({key,p});
+    }
+    state.model_links=awl::WorldMapModelLinkState{{awl::WorldMapModelLinkNode{100}}};
+    const auto owned=bank();Observations observations;
+    awl::WorldMapPartialAnimationInitializerStep step;
+    auto prepare=[&](uint32_t word_0,uint32_t word_4){
+        return awl::prepare_world_map_partial_animation_initializer(state,2,Descriptor{2,word_0,word_4,0},
+            awl::WorldMapActorAnimationGroup{0,200},awl::WorldMapAnimationModelBinding{100,1},&owned,observations,&step);};
+    expect(prepare(0x1000000u | (1u<<10),absent)==Status::Prepared && step.rate==-1 && step.loop &&
+        step.after.records[0].state.complete() && bits(step.after.records[0].state.position_0)==0x40ffff2eu &&
+        step.after.records[0].state.word_8==1u && step.after.records[0].state.value_18==0 &&
+        !step.after.records[2].state.word_8 && !step.after.records[3].state.limit_c &&
+        !step.after.records[1].state.value_18 && !step.after.primary.blend_14,
+        "partial initializer establishes reached reverse/loop/model fields and preserves unknown untouched fields");
+    state.records[0].state.clip_10=awl::WorldMapAnimationClipReference{77,4};
+    const auto prior=step.after.animation.base_descriptor_4;
+    expect(prepare(0,absent)==Status::RequiresModelSetup && step.setup && step.setup->required_record==1 &&
+        step.setup->required_fields==1 && !step.settings && !state.records[0].state.word_8,
+        "partial initializer stops at reached unknown model word before reading bank or later metadata");
+    state.records[0].state.word_8=2u;
+    expect(prepare(0,absent)==Status::RequiresModelSetup && step.setup->required_fields==2,
+        "partial initializer distinguishes reached unknown model limit from word");
+    state.records[0].state.limit_c=4.0f;
+    expect(prepare(0,absent)==Status::Prepared && step.after.records[0].state.complete(),
+        "FECC clears unknown source weight without requiring invented prior weight");
+    expect(prepare(0,absent & ~(127u<<11))==Status::RequiresSecondarySetup && step.secondary_index==0u &&
+        !step.secondary_setup && !step.settings,"partial secondary selection stops before unsupported save/construction preparation");
+    expect(awl::prepare_world_map_partial_animation_initializer(step.after,2,std::nullopt,std::nullopt,std::nullopt,nullptr,
+        observations,&step)==Status::InvalidInput && step.after.animation.base_descriptor_4==prior,
+        "partial initializer rejects input/output alias without overwriting evidence");
+}
 } // namespace
-int main(){test_initializer();test_feature();test_actor_model_type();test_actor_model_type_matrix();test_model_links();test_secondary();test_failure_order();test_partial_settings();test_settings_matrix();test_tail_matrix();test_feature_matrix();return failures==0?0:1;}
+int main(){test_initializer();test_feature();test_actor_model_type();test_actor_model_type_matrix();test_model_links();test_secondary();test_failure_order();test_partial_settings();test_partial_initializer();test_settings_matrix();test_tail_matrix();test_feature_matrix();return failures==0?0:1;}

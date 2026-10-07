@@ -84,10 +84,10 @@ struct WorldMapAnimationFeatureStep {
     uint64_t model_identity, const std::optional<WorldMapAnimationModelBinding>& model,
     uint32_t loop, float rate, WorldMapAnimationPartialChannelStep* out);
 
-struct WorldMapAnimationInitializerState {
+template<class PlaybackRecord> struct WorldMapBasicAnimationInitializerState {
     WorldMapActorAnimationState animation;
     WorldMapAnimationChannelState primary;
-    std::vector<WorldMapAnimationPlaybackRecord> records;
+    std::vector<PlaybackRecord> records;
     bool has_optional_bindings = false;
     std::optional<WorldMapAnimationFeature38> feature_38; // Absent means observed null, when bindings are known.
     std::optional<WorldMapAnimationFeature3c> feature_3c;
@@ -96,6 +96,8 @@ struct WorldMapAnimationInitializerState {
     std::optional<WorldMapSecondaryModelRecord> secondary_model;
     std::optional<WorldMapSecondaryFeatureRecord> secondary_feature;
 };
+using WorldMapAnimationInitializerState = WorldMapBasicAnimationInitializerState<WorldMapAnimationPlaybackRecord>;
+using WorldMapPartialAnimationInitializerState = WorldMapBasicAnimationInitializerState<WorldMapAnimationPartialPlaybackRecord>;
 enum class WorldMapAnimationInitializerStatus {
     Unchanged, RequiresDescriptor, RequiresBinding, RequiresModelSetup,
     RequiresOptionalBindings, RequiresFeatureTable, RequiresFeatureRow,
@@ -103,13 +105,13 @@ enum class WorldMapAnimationInitializerStatus {
     RequiresSecondaryRelease, RequiresModelHierarchy, InvalidInput,
     Prepared,
 };
-struct WorldMapAnimationInitializerStep {
+template<class State, class ChannelStep> struct WorldMapBasicAnimationInitializerStep {
     // Supplied-state proposal or unaccepted ordered prefix, never resumable
     // or a live parent acknowledgement. Reprepare from the original state
     // when evidence arrives; no arbitrary hierarchy success is accepted.
-    WorldMapAnimationInitializerState after;
+    State after;
     std::optional<WorldMapActorAnimationStep> start;
-    std::optional<WorldMapAnimationChannelStep> setup, settings;
+    std::optional<ChannelStep> setup, settings;
     std::optional<WorldMapAnimationFeatureRow> required_row;
     std::optional<uint32_t> feature_3c_index, secondary_index;
     bool loop = false;
@@ -119,6 +121,8 @@ struct WorldMapAnimationInitializerStep {
     std::optional<WorldMapSecondarySetupStep> secondary_setup;
     std::optional<WorldMapSecondaryReleaseStep> secondary_release;
 };
+using WorldMapAnimationInitializerStep = WorldMapBasicAnimationInitializerStep<WorldMapAnimationInitializerState, WorldMapAnimationChannelStep>;
+using WorldMapPartialAnimationInitializerStep = WorldMapBasicAnimationInitializerStep<WorldMapPartialAnimationInitializerState, WorldMapAnimationPartialChannelStep>;
 // FUN_8017D660 -> FUN_8017DB28. Composes the first channel, optional
 // feature metadata, absent or fully prepared no-free secondary release, clocks/rate/model
 // metadata and FUN_8017DF68's primary link clearing from supplied nodes.
@@ -133,5 +137,47 @@ struct WorldMapAnimationInitializerStep {
     const std::optional<WorldMapActorAnimationGroup>& group,
     const std::optional<WorldMapAnimationModelBinding>& model, const WorldMapAnimationBank* bank,
     const WorldMapAnimationInitializerObservations& observations, WorldMapAnimationInitializerStep* out);
+
+// Same ordered no-secondary path with constructor-unwritten playback fields
+// kept unknown. A selected secondary stops at RequiresSecondarySetup before
+// resource/save/construction preparation; no complete record is fabricated.
+// Missing reached playback fields remain visible in setup/settings evidence.
+[[nodiscard]] WorldMapAnimationInitializerStatus prepare_world_map_partial_animation_initializer(
+    const WorldMapPartialAnimationInitializerState& state, uint64_t requested,
+    const std::optional<WorldMapActorAnimationDescriptor>& descriptor,
+    const std::optional<WorldMapActorAnimationGroup>& group,
+    const std::optional<WorldMapAnimationModelBinding>& model, const WorldMapAnimationBank* bank,
+    const WorldMapAnimationInitializerObservations& observations, WorldMapPartialAnimationInitializerStep* out);
+
+class WorldMapNativeModel;
+class WorldMapNativeAnimationChannel;
+struct WorldMapNativeAnimationInitializerMetadata {
+    WorldMapActorAnimationState animation;
+    bool has_optional_bindings = false;
+    std::optional<WorldMapAnimationFeature38> feature_38;
+    std::optional<WorldMapAnimationFeature3c> feature_3c;
+    uint64_t secondary_model_c0 = 0;
+};
+enum class WorldMapNativeAnimationInitializerStatus { Advanced, Unchanged, Incomplete, InvalidInput, AllocationFailure };
+struct WorldMapNativeAnimationInitializerStep {
+    WorldMapNativeAnimationInitializerMetadata after;
+    std::optional<WorldMapAnimationInitializerStatus> initializer_status;
+    std::optional<WorldMapPartialAnimationInitializerStep> initializer;
+};
+// Compose DB28's no-secondary metadata, owned primary channel/model playback,
+// retained bank and authoritative model-link clearing. All allocations and
+// dependencies finish before any owner or actor metadata publishes. Incomplete
+// prefixes are diagnostics; after stays unchanged. Existing secondary release
+// and selected secondary construction remain explicit stops. Equal BASE skips
+// channel/model/bank/optional reads. Models borrow channel keys: destroy models
+// before the channel, or clear verified playback links while both are alive.
+// Supported native models are currently diagnostic no-skin owners: this neither
+// constructs the real primary player nor accepts parent state 29 or a frame.
+[[nodiscard]] WorldMapNativeAnimationInitializerStatus advance_world_map_native_animation_initializer(
+    WorldMapNativeAnimationInitializerMetadata* metadata, WorldMapNativeAnimationChannel* channel,
+    const std::vector<WorldMapNativeModel*>& models, uint64_t requested,
+    const std::optional<WorldMapActorAnimationDescriptor>& descriptor,
+    const std::optional<WorldMapActorAnimationGroup>& group, const WorldMapAnimationBank* bank,
+    const WorldMapAnimationInitializerObservations& observations, WorldMapNativeAnimationInitializerStep* out);
 
 } // namespace awl

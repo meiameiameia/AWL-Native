@@ -463,6 +463,153 @@ void start_animation_synthetic() {
         step.tables->select(command,std::nullopt,&selection)==S::Selected,
         "returned descriptor/bank owners survive caller owner release");
 }
+std::unique_ptr<awl::WorldMapNativeModel> start_native_model(const Assets& assets) {
+    awl::WorldMapSecondarySetupStep setup;
+    expect(awl::prepare_world_map_secondary_model_setup(1,assets.secondary_models().identity(),&assets.secondary_models(),
+        0,std::nullopt,{},uint64_t{0},&setup)==awl::WorldMapSecondarySetupStatus::RequiresConstruction,
+        "diagnostic no-skin startup model prepares with actual owned resource");
+    std::unique_ptr<awl::WorldMapNativeModel> result;
+    expect(awl::construct_world_map_secondary_model(assets.secondary_models(),1,setup,&result).status==
+        awl::WorldMapModelConstructionStatus::Constructed,"diagnostic startup model constructs");
+    return result;
+}
+uint64_t native_start_snapshot(const awl::WorldMapNativeAnimationInitializerMetadata& metadata,
+    const awl::WorldMapNativeAnimationChannel& channel,const awl::WorldMapNativeModel& model) {
+    uint64_t h=14695981039346656037ull;
+    auto key=[&](uint64_t v){hash(h,uint32_t(v>>32));hash(h,uint32_t(v));};
+    const auto& a=metadata.animation;
+    key(a.current_descriptor_0);key(a.base_descriptor_4);key(a.model_identity_30);key(metadata.secondary_model_c0);
+    for(uint32_t v:{bits(a.speed_8),a.default_duration_c,a.deadline_10,a.default_count_14,a.count_18,a.completed_count_1c,
+        uint32_t(a.completed_20),uint32_t(a.flag_21),a.restart_deadline_24,a.restart_limit_28,a.restart_count_2c,
+        uint32_t(metadata.has_optional_bindings),uint32_t(metadata.feature_38.has_value()),uint32_t(metadata.feature_3c.has_value())})hash(h,v);
+    if(metadata.feature_38){const auto& f=*metadata.feature_38;
+        hash(h,f.type_0);hash(h,f.type_4);hash(h,f.index_8);key(f.table_c);
+        for(const auto* t:{&f.first_14,&f.second_24}){key(t->resource_0);hash(h,t->clock_4);hash(h,bits(t->value_8));hash(h,bits(t->rate_c));}}
+    if(metadata.feature_3c){const auto& f=*metadata.feature_3c;key(f.resource_0);hash(h,bits(f.value_4));hash(h,bits(f.value_8));}
+    const auto& c=channel.state();hash(h,c.elapsed_0);hash(h,c.duration_4);hash(h,c.mode_18);
+    key(c.target_8);key(c.previous_c);key(c.older_10);hash(h,uint32_t(c.blend_14.has_value()));if(c.blend_14)hash(h,bits(*c.blend_14));
+    auto playback=[&](const awl::WorldMapAnimationPartialPlayback& p){
+        hash(h,bits(p.position_0));hash(h,bits(p.rate_4));hash(h,uint32_t(p.word_8.has_value()));if(p.word_8)hash(h,*p.word_8);
+        hash(h,uint32_t(p.limit_c.has_value()));if(p.limit_c)hash(h,bits(*p.limit_c));
+        hash(h,uint32_t(p.clip_10.has_value()));if(p.clip_10){key(p.clip_10->bank_identity);hash(h,p.clip_10->offset);}
+        key(p.link_14);hash(h,uint32_t(p.value_18.has_value()));if(p.value_18)hash(h,bits(*p.value_18));};
+    for(const auto& r:channel.records()){key(r.identity);playback(r.state);}playback(model.partial_playback());
+    for(const auto& b:model.animation_banks()){key(b->identity());key(b->clip_count());}
+    const auto& core=model.core();key(core.parent_150);hash(h,core.head_50);hash(h,uint32_t(core.flags_158.has_value()));
+    if(core.flags_158)hash(h,*core.flags_158);
+    for(size_t i=0;i<4;++i){key(core.children_15c[i]);hash(h,core.attachments_16c[i]);}
+    for(const auto& n:core.nodes){key(n.feature_8);hash(h,uint32_t(n.next_feature_14.has_value()));if(n.next_feature_14)hash(h,*n.next_feature_14);}
+    return h;
+}
+void start_animation_native_synthetic() {
+    using S=awl::WorldMapPlayerStartAnimationStatus;using Init=awl::WorldMapAnimationInitializerStatus;
+    Fixture fixture;fixture.complete();std::shared_ptr<const Assets> assets;
+    expect(awl::load_world_map_player_animation_assets(&assets)==Status::Loaded,"native startup synthetic banks load");if(!assets)return;
+    auto bytes=start_dol();std::shared_ptr<const awl::WorldMapPlayerStartAnimationTables> tables;
+    expect(awl::decode_world_map_player_start_animation_tables(bytes.data(),bytes.size(),&tables)==S::Decoded,
+        "native startup synthetic selector tables decode");if(!tables)return;
+    std::unique_ptr<awl::WorldMapNativeAnimationChannel> channel;
+    expect(awl::construct_world_map_animation_channel(&channel)==awl::WorldMapAnimationChannelConstructionStatus::Constructed,
+        "native startup owns constructor channel");if(!channel)return;
+    auto model=start_native_model(*assets);auto child=start_native_model(*assets);if(!model || !child)return;
+    awl::WorldMapNativeAnimationInitializerMetadata metadata;
+    metadata.animation.base_descriptor_4=77;metadata.animation.current_descriptor_0=88;metadata.animation.flag_21=9;
+    metadata.animation.model_identity_30=model->binding().model_identity;
+    std::vector<awl::WorldMapNativeModel*> owners{model.get()};
+    awl::WorldMapPlayerStartAnimationCommand command;awl::WorldMapPlayerStartNativeAnimationStep step;
+    awl::WorldMapAnimationInitializerObservations observations;
+    auto run=[&](){return awl::advance_world_map_player_start_animation(tables,command,std::nullopt,&metadata,
+        channel.get(),owners,assets,observations,&step);};
+    auto before=native_start_snapshot(metadata,*channel,*model);
+    expect(awl::advance_world_map_player_start_animation(tables,command,std::nullopt,&metadata,channel.get(),owners,{},observations,&step)==
+        S::RequiresAssets && step.initializer.after.animation.base_descriptor_4==77 &&
+        native_start_snapshot(metadata,*channel,*model)==before,"missing startup assets report prior metadata and preserve all native owners");
+    expect(run()==S::InitializerIncomplete && step.initializer.initializer_status==Init::RequiresOptionalBindings &&
+        step.initializer.initializer->setup && !step.initializer.initializer->settings &&
+        native_start_snapshot(metadata,*channel,*model)==before && step.initializer.after.animation.base_descriptor_4==77,
+        "late optional-binding dependency rolls back model/channel/metadata/bank publication");
+    metadata.has_optional_bindings=true;metadata.feature_38=awl::WorldMapAnimationFeature38{0x3a,0,0,0};
+    before=native_start_snapshot(metadata,*channel,*model);
+    expect(run()==S::InitializerIncomplete && step.initializer.initializer_status==Init::RequiresFeatureTable &&
+        native_start_snapshot(metadata,*channel,*model)==before,"reached feature-table dependency rolls back initial channel setup");
+    metadata.feature_38.reset();metadata.secondary_model_c0=child->binding().model_identity;before=native_start_snapshot(metadata,*channel,*model);
+    expect(run()==S::InitializerIncomplete && step.initializer.initializer_status==Init::RequiresSecondaryRelease &&
+        native_start_snapshot(metadata,*channel,*model)==before,"existing secondary release cannot be acknowledged from supplied keys");
+    metadata.secondary_model_c0=0;
+    awl::WorldMapModelAttachmentStep attached;
+    expect(awl::apply_world_map_native_model_attachments({model.get(),child.get()},
+        {model->binding().model_identity,child->binding().model_identity,42,0},&attached)==awl::WorldMapModelAttachmentStatus::Advanced,
+        "diagnostic child attaches before late startup hierarchy check");
+    before=native_start_snapshot(metadata,*channel,*model);
+    const auto child_before=native_start_snapshot(metadata,*channel,*child);
+    expect(run()==S::InitializerIncomplete && step.initializer.initializer_status==Init::RequiresModelHierarchy &&
+        step.initializer.initializer->settings && native_start_snapshot(metadata,*channel,*model)==before &&
+        native_start_snapshot(metadata,*channel,*child)==child_before,
+        "late missing child rolls back completed setup/settings and descriptor metadata");
+    owners.push_back(child.get());
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    const auto live=allocation_probe::live;const auto prior=step.selection->descriptor.identity;size_t rejected=0;bool advanced=false;
+    for(size_t fail=0;fail<256;++fail){
+        allocation_probe::remaining=fail;allocation_probe::enabled=true;
+        const auto status=run();allocation_probe::enabled=false;
+        if(status==S::Advanced){advanced=true;break;}++rejected;
+        expect(status==S::AllocationFailure && native_start_snapshot(metadata,*channel,*model)==before &&
+            native_start_snapshot(metadata,*channel,*child)==child_before && step.selection->descriptor.identity==prior && allocation_probe::live==live,
+            "every caught startup staging failure preserves descriptor/channel/model/banks/child/output and frees staging");
+    }
+    expect(advanced && rejected>10,"native startup allocation sweep reaches complete publication");
+    std::cout<<"NATIVE_START_ALLOCATION_FAILURES "<<rejected<<'\n';
+#else
+    expect(run()==S::Advanced,"complete native startup transaction publishes");
+#endif
+    expect(metadata.animation.base_descriptor_4==step.selection->descriptor.identity && metadata.animation.current_descriptor_0==
+        metadata.animation.base_descriptor_4 && metadata.animation.flag_21==0 && model->playback() &&
+        model->playback()->clip_10 && model->playback()->clip_10->bank_identity==assets->primary_animations().identity() &&
+        model->playback()->limit_c==3 && model->playback()->word_8==1 && model->playback()->link_14==0 && model->playback()->value_18==0 &&
+        model->core().children_15c[0]==0 && child->core().parent_150==0 &&
+        channel->records().size()==3 && !channel->state().blend_14 && !channel->records()[0].state.word_8 &&
+        !channel->records()[1].state.limit_c && !channel->records()[2].state.value_18,
+        "startup publishes known loop/clip/playback/graph fields while constructor-unwritten channel fields stay unknown");
+    const auto accepted=native_start_snapshot(metadata,*channel,*model);
+    expect(awl::advance_world_map_player_start_animation(tables,command,std::nullopt,&metadata,nullptr,{nullptr},{},observations,&step)==
+        S::Unchanged && native_start_snapshot(metadata,*channel,*model)==accepted,"equal base skips missing assets and invalid unread owners/channel");
+    expect(awl::advance_world_map_player_start_animation(tables,command,std::nullopt,&step.initializer.after,nullptr,{},assets,observations,&step)==
+        S::InvalidInput,"native startup metadata/output alias rejects");
+    auto timed_bytes=start_dol();word(timed_bytes,0x160,2u<<10);
+    std::shared_ptr<const awl::WorldMapPlayerStartAnimationTables> timed;
+    expect(awl::decode_world_map_player_start_animation_tables(timed_bytes.data(),timed_bytes.size(),&timed)==S::Decoded,"timed synthetic choice decodes");
+    metadata.animation.base_descriptor_4=55;before=native_start_snapshot(metadata,*channel,*model);
+    expect(awl::advance_world_map_player_start_animation(timed,command,std::nullopt,&metadata,channel.get(),owners,assets,observations,&step)==
+        S::InitializerIncomplete && step.initializer.initializer_status==Init::RequiresClock &&
+        native_start_snapshot(metadata,*channel,*model)==before,"missing clock rolls back reselection after an earlier accepted animation");
+    observations.clock=100;metadata.animation.default_duration_c=17;
+    expect(awl::advance_world_map_player_start_animation(timed,command,std::nullopt,&metadata,channel.get(),owners,assets,observations,&step)==
+        S::Advanced && metadata.animation.deadline_10==117,"timed native reinitialization consumes supplied clock and default duration");
+    metadata.animation.base_descriptor_4=55;before=native_start_snapshot(metadata,*channel,*model);
+    owners={child.get()};
+    expect(run()==S::InitializerIncomplete && step.initializer.initializer_status==Init::RequiresModelSetup &&
+        native_start_snapshot(metadata,*channel,*model)==before,"missing authoritative primary owner cannot be replaced by a supplied key");
+    owners={model.get(),model.get()};const auto conflict_prior=step.selection->descriptor.identity;
+    expect(run()==S::InvalidInput && native_start_snapshot(metadata,*channel,*model)==before && step.selection->descriptor.identity==conflict_prior,
+        "duplicate owner registry rejects without rewriting prior evidence");
+    owners={model.get()};
+    awl::WorldMapAnimationBank conflicting;
+    const auto identity=assets->primary_animations().identity();
+    expect(conflicting.parse(identity,archive({clip(99),clip(7)})),"conflicting same-key bank fixture parses");
+    awl::WorldMapNativeAnimationInitializerStep conflict_step;conflict_step.after.animation.base_descriptor_4=123;
+    const std::optional<awl::WorldMapActorAnimationGroup> group=awl::WorldMapActorAnimationGroup{0,identity};
+    const std::optional<awl::WorldMapActorAnimationDescriptor> descriptor=step.selection->descriptor;
+    expect(awl::advance_world_map_native_animation_initializer(&metadata,channel.get(),owners,descriptor->identity,descriptor,group,
+        &conflicting,observations,&conflict_step)==awl::WorldMapNativeAnimationInitializerStatus::InvalidInput &&
+        native_start_snapshot(metadata,*channel,*model)==before && conflict_step.after.animation.base_descriptor_4==123,
+        "same-key different bank bytes cannot replace the authoritative retained snapshot after staging");
+    expect(awl::advance_world_map_native_animation_initializer(&metadata,channel.get(),owners,descriptor->identity,descriptor,group,
+        nullptr,observations,&conflict_step)==awl::WorldMapNativeAnimationInitializerStatus::Advanced,
+        "direct bounded initializer can reuse the verified retained bank without rereading source bytes");
+    const auto bank_identity=assets->primary_animations().identity();assets.reset();step={};tables.reset();timed.reset();
+    expect(model->animation_bank(bank_identity) && model->playback() && model->playback()->clip_10 &&
+        model->animation_bank(bank_identity)->clip_count()==2,"accepted model owns its bank after all source/result owners drop");
+}
 void start_animation_local(const char* disc) {
     using S=awl::WorldMapPlayerStartAnimationStatus;
     awl::filesystem_init();expect(awl::filesystem_mount("/",disc),"local startup animation mount succeeds");
@@ -490,6 +637,24 @@ void start_animation_local(const char* disc) {
         step.initializer->secondary_setup && state.animation.base_descriptor_4==77,
         "actual action branch reaches explicit owned secondary-model setup instead of fake completion");
     std::cout<<"LOCAL_START_ANIMATION: no-item clip0 metadata prepared; action secondary setup explicit; no parent acceptance\n";
+    std::unique_ptr<awl::WorldMapNativeAnimationChannel> channel;
+    expect(awl::construct_world_map_animation_channel(&channel)==awl::WorldMapAnimationChannelConstructionStatus::Constructed,
+        "local diagnostic startup channel constructs");if(!channel)return;
+    auto model=start_native_model(*assets);if(!model)return;
+    awl::WorldMapNativeAnimationInitializerMetadata metadata;metadata.has_optional_bindings=true;
+    metadata.animation.model_identity_30=model->binding().model_identity;
+    awl::WorldMapPlayerStartNativeAnimationStep native;
+    command.action=0;
+    expect(awl::advance_world_map_player_start_animation(tables,command,std::nullopt,&metadata,channel.get(),{model.get()},assets,{},&native)==
+        S::Advanced && native.selection->descriptor_index==4 && model->playback() && model->playback()->clip_10 &&
+        model->playback()->clip_10->bank_identity==assets->primary_animations().identity() && model->playback()->word_8==1 &&
+        metadata.animation.base_descriptor_4==native.selection->descriptor.identity && !channel->records()[0].state.word_8,
+        "actual no-item selection initializes diagnostic native owners without inventing old channel fields");
+    const auto accepted=native_start_snapshot(metadata,*channel,*model);command.action=1;
+    expect(awl::advance_world_map_player_start_animation(tables,command,std::nullopt,&metadata,channel.get(),{model.get()},assets,{},&native)==
+        S::InitializerIncomplete && native.initializer.initializer_status==awl::WorldMapAnimationInitializerStatus::RequiresSecondarySetup &&
+        native_start_snapshot(metadata,*channel,*model)==accepted,"actual action selection rolls back diagnostic native reinitialization at secondary setup");
+    std::cout<<"LOCAL_NATIVE_START: clip0 initializes diagnostic no-skin owners; action rolls back; real primary/parent acceptance pending\n";
 }
 void start_animation_choice_matrix() {
     uint64_t digest=14695981039346656037ull;unsigned cases=0;
@@ -514,6 +679,7 @@ int main(int argc,char** argv){
 #endif
     synthetic();channel_constructor();awl::filesystem_shutdown();
     start_animation_synthetic();start_animation_choice_matrix();awl::filesystem_shutdown();
+    start_animation_native_synthetic();awl::filesystem_shutdown();
     if(argc==3 && std::string(argv[1])=="--player-banks-local")local(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-start-animation-local")start_animation_local(argv[2]);
     else if(argc!=1)expect(false,"usage: --player-banks-local <disc> | --player-start-animation-local <disc>");

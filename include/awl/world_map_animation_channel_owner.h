@@ -1,6 +1,7 @@
 #pragma once
 
 #include "awl/world_map_animation_channel.h"
+#include "awl/world_map_animation_initializer.h"
 
 #include <array>
 #include <memory>
@@ -37,6 +38,12 @@ public:
         WorldMapNativeModel* model, uint32_t loop, float rate,
         WorldMapAnimationPartialChannelStep* out);
 private:
+    friend WorldMapNativeAnimationInitializerStatus advance_world_map_native_animation_initializer(
+        WorldMapNativeAnimationInitializerMetadata*, WorldMapNativeAnimationChannel*,
+        const std::vector<WorldMapNativeModel*>&, uint64_t,
+        const std::optional<WorldMapActorAnimationDescriptor>&,
+        const std::optional<WorldMapActorAnimationGroup>&, const WorldMapAnimationBank*,
+        const WorldMapAnimationInitializerObservations&, WorldMapNativeAnimationInitializerStep*);
     WorldMapNativeAnimationChannel();
     friend WorldMapAnimationChannelConstructionStatus construct_world_map_animation_channel(
         std::unique_ptr<WorldMapNativeAnimationChannel>*);
