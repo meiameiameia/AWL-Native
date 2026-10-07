@@ -39,6 +39,8 @@ PlatformExitReason platform_get_exit_reason();
 // Timing infrastructure
 void time_begin_frame();
 double time_get_delta(); // Elapsed time between frame starts, clamped to 0.1 s
+uint64_t time_elapsed_counter(); // Unclamped QPC interval for the simulation clock.
+uint64_t time_counter_frequency();
 
 // Input
 void input_init();

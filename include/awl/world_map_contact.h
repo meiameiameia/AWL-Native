@@ -35,6 +35,8 @@ struct WorldMapContactResult {
 // Composes FUN_8001DE44's ordered contact/heading search and FUN_8003083C's
 // miss fallback. Only caller-supplied type-1 objects are supported; this
 // neither discovers runtime objects nor accepts a player position.
+// A reached vertex-only hit without a verified first-edge mask rejects;
+// it must not be treated as a supported miss/fallback.
 [[nodiscard]] bool query_world_map_directional_contact(
     const WorldMapContactObject* objects,
     size_t object_count,

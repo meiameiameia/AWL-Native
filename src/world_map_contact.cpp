@@ -79,7 +79,7 @@ bool query_world_map_directional_contact(
         // FUN_80191898 supplies the mask through its first edge call. A
         // vertex-only hit has no supported directional mask in this helper.
         if (!contact.local_narrow_phase.first_edge_contact) {
-            continue;
+            return false;
         }
         uint8_t code = 7;
         if (!classify_world_map_directional_contact(

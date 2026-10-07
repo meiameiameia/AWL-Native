@@ -6,6 +6,8 @@
 #include "awl/world_map_actor_action.h"
 #include "awl/world_map_actor_heading.h"
 #include "awl/world_map_movement.h"
+#include "awl/world_map_movement_runtime.h"
+#include "awl/simulation_clock.h"
 #include "awl/world_map_trigger_asset.h"
 #include "awl/world_map_event_conditions.h"
 #include "awl/world_map_action_asset.h"
@@ -3056,6 +3058,21 @@ void test_world_map_directional_contact_search() {
     expect(!awl::query_world_map_directional_contact(
                nullptr, 1, 1, prior, proposed, fallback_axis, &result),
            "missing nonempty object list is rejected");
+    const std::array<float, 3> vertex_prior{0.0f, 7.0f, 2.0f};
+    const std::array<float, 3> vertex_proposed{0.0f, 7.0f, 0.0f};
+    awl::CollisionDynamicObjectContactAdjustment vertex;
+    auto vertex_query = object.contact_query;
+    vertex_query.moving_radius = 0.3f;
+    vertex_query.surface_mask = 0x10000u;
+    expect(awl::resolve_type1_dynamic_object_contact(
+               bytes.data(), bytes.size(), vertex_query, vertex_prior,
+               vertex_proposed, &vertex) && vertex.contact &&
+               !vertex.local_narrow_phase.first_edge_contact,
+           "directional rejection fixture reaches a vertex-only hit");
+    expect(!awl::query_world_map_directional_contact(
+               &object, 1, 1, vertex_prior, vertex_proposed,
+               fallback_axis, &result) && !result.matched,
+           "unresolved vertex-only mask rejects instead of reporting a miss");
 }
 
 uint32_t camera_float_bits(float value) {
@@ -7130,6 +7147,190 @@ bool check_local_camera_collision(const char* disc_root) {
 
 // Development-only replay of supplied clear routes. The fixture supplies an
 // empty dynamic-object list and scene type zero; it is not a game-owned player.
+uint64_t movement_runtime_signature(const awl::WorldMapMovementRuntime& runtime,
+                                    const awl::WorldMapMovementRuntimeStep& step) {
+    uint64_t hash = 14695981039346656037ull;
+    const auto word = [&](uint32_t value) {
+        for (unsigned byte = 0; byte < 4; ++byte) {
+            hash ^= (value >> (byte * 8)) & 255u;
+            hash *= 1099511628211ull;
+        }
+    };
+    word(static_cast<uint32_t>(step.tick));
+    for (float value : runtime.position()) word(camera_float_bits(value));
+    const auto& steering = runtime.steering();
+    for (float value : {steering.direction_x, steering.direction_z,
+                       steering.facing_x, steering.facing_z,
+                       steering.target_speed, steering.current_speed,
+                       steering.intensity}) word(camera_float_bits(value));
+    const auto& pad = runtime.pad();
+    for (uint32_t value : {pad.current, pad.previous, pad.pressed,
+                          pad.released, pad.repeated}) word(value);
+    word(static_cast<uint8_t>(pad.stick_x));
+    word(static_cast<uint8_t>(pad.stick_y));
+    word(static_cast<uint8_t>(pad.substick_x));
+    word(static_cast<uint8_t>(pad.substick_y));
+    word(pad.trigger_l);
+    word(pad.trigger_r);
+    word(step.scene.next_bucket);
+    word(step.movement.collision.resolver_contact_bits);
+    return hash;
+}
+
+awl::PadSample recorded_movement_input(uint64_t tick) {
+    awl::PadSample sample;
+    sample.connected = true;
+    sample.buttons = awl::pad_button_mask(awl::PadButton::A);
+    sample.stick_x = tick < 24 ? int8_t(82)
+                     : tick >= 32 && tick < 56 ? int8_t(-82) : int8_t(0);
+    sample.substick_y = tick % 7 < 4 ? int8_t(82) : int8_t(-82);
+    sample.trigger_l = static_cast<uint8_t>(tick * 3);
+    sample.trigger_r = tick < 40 ? uint8_t(131) : uint8_t(130);
+    return sample;
+}
+
+bool compare_runtime_render_rates(const uint8_t* terrain, size_t terrain_size,
+                                  const uint8_t* static_data, size_t static_size,
+                                  float start_x, float start_z) {
+    awl::CollisionSurfaceSample surface;
+    if (!awl::sample_type1_collision_surface(terrain, terrain_size,
+                                              start_x, start_z, &surface))
+        return false;
+    const std::array<float, 3> spawn{start_x, surface.height, start_z};
+    awl::WorldMapMovementQuery dependencies;
+    dependencies.collision.terrain_data = terrain;
+    dependencies.collision.terrain_size = terrain_size;
+    dependencies.collision.static_data = static_data;
+    dependencies.collision.static_size = static_size;
+    awl::WorldMapMovementRuntime reference;
+    if (!reference.initialize(spawn)) return false;
+    std::array<uint64_t, 90> expected{};
+    for (auto& signature : expected) {
+        awl::WorldMapMovementRuntimeStep step;
+        if (!reference.tick(recorded_movement_input(reference.tick_count()),
+                            dependencies, &step)) return false;
+        signature = movement_runtime_signature(reference, step);
+    }
+    for (uint32_t render_rate : {15u, 30u, 60u, 120u, 144u, 240u}) {
+        constexpr uint64_t frequency = 1000000;
+        awl::SimulationClock clock;
+        awl::SimulationSteps steps;
+        awl::WorldMapMovementRuntime runtime;
+        if (!runtime.initialize(spawn) || !clock.initialize(frequency) ||
+            !clock.advance(0, true, &steps)) return false;
+        uint64_t previous = 0;
+        for (uint32_t frame = 1; frame <= render_rate * 3; ++frame) {
+            const uint64_t now = uint64_t(frame) * frequency / render_rate;
+            if (!clock.advance(now - previous, true, &steps) ||
+                steps.discarded_counter_ticks) return false;
+            previous = now;
+            for (uint32_t tick = 0; tick < steps.count; ++tick) {
+                if (runtime.tick_count() >= expected.size()) return false;
+                const size_t index = static_cast<size_t>(runtime.tick_count());
+                awl::WorldMapMovementRuntimeStep step;
+                if (!runtime.tick(recorded_movement_input(index), dependencies,
+                                  &step) ||
+                    movement_runtime_signature(runtime, step) != expected[index]) {
+                    std::fprintf(stderr, "Runtime replay differs: render=%u tick=%zu\n",
+                                 render_rate, index);
+                    return false;
+                }
+            }
+        }
+        if (runtime.tick_count() != expected.size() ||
+            runtime.position() != reference.position()) return false;
+    }
+    return true;
+}
+
+void test_simulation_clock_and_runtime() {
+    awl::SimulationClock clock;
+    awl::SimulationSteps steps{99, 99};
+    expect(!clock.advance(1, true, &steps) && steps.count == 99,
+           "unconfigured clock preserves output");
+    expect(!clock.initialize(0) && !clock.initialize(UINT64_MAX) &&
+           !clock.initialize(1000000, 0) && !clock.initialize(1000000, 61) &&
+           !clock.initialize(1000000, 30, 0), "unsafe clock rates reject");
+    expect(clock.initialize(1000000) && clock.advance(0, true, &steps),
+           "native clock starts from a supplied counter baseline");
+    expect(clock.advance(33333, true, &steps) && steps.count == 0 &&
+           clock.advance(1, true, &steps) && steps.count == 1,
+           "integer fractions retain the exact 30 Hz tick boundary");
+    expect(clock.advance(1000000, true, &steps) && steps.count == 3 &&
+           steps.discarded_counter_ticks == 900000,
+           "stall catch-up is bounded and discarded time is reported");
+    expect(clock.advance(32000, true, &steps) && steps.count == 0 &&
+           clock.advance(2000000, false, &steps) && steps.count == 0 &&
+           clock.advance(1000000, true, &steps) && steps.count == 0 &&
+           clock.advance(33334, true, &steps) && steps.count == 1,
+           "focus loss discards partial/backlog time and resume establishes a new baseline");
+    expect(!clock.advance(100, true, nullptr), "null clock output rejects");
+    expect(!clock.initialize(1000000, 60, 0) &&
+           clock.advance(33333, true, &steps) && steps.count == 1,
+           "invalid reconfiguration preserves clock phase and rate");
+    expect(clock.initialize(1000000, 30000, 1001) &&
+           clock.advance(0, true, &steps), "explicit rational rates are supported");
+    uint32_t rational_ticks = 0;
+    for (uint32_t interval = 0; interval < 10; ++interval) {
+        expect(clock.advance(100000, true, &steps), "rational clock interval prepares");
+        rational_ticks += steps.count;
+    }
+    expect(rational_ticks == 29, "one second at supplied 30000/1001 yields 29 complete ticks");
+
+    const auto terrain = make_sample_leaf();
+    expect(compare_runtime_render_rates(terrain.data(), terrain.size(), nullptr,
+                                        0, 2, 2),
+           "same recorded ticks reproduce exact state at 15/30/60/120/144/240 render Hz");
+    awl::WorldMapMovementRuntime runtime;
+    awl::WorldMapMovementRuntimeStep step;
+    awl::WorldMapMovementQuery query;
+    awl::CollisionSurfaceSample spawn;
+    expect(awl::sample_type1_collision_surface(terrain.data(), terrain.size(),
+                                               2, 2, &spawn), "runtime spawn samples");
+    expect(!runtime.tick({}, query, &step) &&
+           runtime.initialize({2, spawn.height, 2}), "uninitialized runtime rejects");
+    query.collision.terrain_data = terrain.data();
+    query.collision.terrain_size = terrain.size();
+    auto held = recorded_movement_input(0);
+    expect(runtime.tick(held, query, &step) && step.movement.movement_enabled,
+           "runtime owns filtered input, movement and scene commit together");
+    const auto previous_step = step;
+    const uint64_t signature = movement_runtime_signature(runtime, step);
+    auto bad_query = query;
+    bad_query.collision.terrain_size = 3;
+    held.stick_x = -82;
+    expect(!runtime.tick(held, bad_query, &step) &&
+           movement_runtime_signature(runtime, step) == signature &&
+           step.pad.current == previous_step.pad.current,
+           "failed collision preserves pose, steering, PAD history, tick and output");
+    const auto bucket = runtime.scene().snapshot(0);
+    expect(bucket.size() == 1 && bucket[0].position == runtime.position(),
+           "published runtime scene matches its accepted fixture position");
+    expect(!runtime.initialize({NAN, 0, 0}) &&
+           movement_runtime_signature(runtime, step) == signature,
+           "invalid spawn preserves previous initialized runtime");
+    expect(!runtime.tick({}, query, nullptr), "null runtime output rejects");
+    query.state_680 = 0;
+    expect(runtime.tick(held, query, &step) && !step.movement.movement_enabled &&
+           runtime.position() == previous_step.movement.resolved_position &&
+           runtime.steering().current_speed == previous_step.movement.steering.current_speed &&
+           runtime.pad().stick_x < 0,
+           "guarded tick advances input history while preserving movement state");
+    const auto paused_position = runtime.position();
+    const auto paused_tick = runtime.tick_count();
+    runtime.pause();
+    expect(runtime.position() == paused_position && runtime.tick_count() == paused_tick &&
+           runtime.steering().current_speed == 0 && runtime.pad().current == 0,
+           "native focus pause clears PAD and steering without losing scene pose");
+    held = {}; held.connected = true;
+    held.buttons = awl::pad_button_mask(awl::PadButton::A);
+    for (uint32_t tick = 1; tick <= 19; ++tick) {
+        expect(runtime.tick(held, query, &step), "guarded PAD repeat tick succeeds");
+        expect((step.pad.repeated != 0) == (tick == 1 || tick == 16 || tick == 19),
+               "world-map 15/3 repeat timing counts simulation ticks");
+    }
+}
+
 enum class LocalSlopeExpectation {
     None,
     Uphill,
@@ -7163,18 +7364,13 @@ bool replay_player_route(const uint8_t* terrain, size_t terrain_size,
         }
     }
     std::array<float, 3> position{start_x, spawn_surface.height, start_z};
-    awl::WorldMapSteeringState steering;
-    awl::WorldMapSceneBucketRegistry scene;
-    awl::WorldMapScenePositionUpdate scene_update;
-    if (!scene.register_object(1, 0, position) ||
-        !scene.update_position(1, position, &scene_update) ||
-        scene_update.next_bucket != 0) {
+    awl::WorldMapMovementRuntime runtime;
+    if (!runtime.initialize(position)) {
         return false;
     }
 
     awl::NativeInputAccumulator native;
     awl::PadAdapter adapter;
-    awl::HsdPadFilter filter;
     native.reset(true);
     const awl::NativeKey direction_key =
         downhill ? awl::NativeKey::A : awl::NativeKey::D;
@@ -7195,24 +7391,18 @@ bool replay_player_route(const uint8_t* terrain, size_t terrain_size,
         }
         native.begin_frame();
         adapter.begin_frame(native.frame());
-        filter.begin_frame(adapter.frame().sample);
         awl::WorldMapMovementQuery query;
-        query.pad = filter.frame();
         query.current_position = position;
-        query.current_axis = {0.0f, 0.0f, 1.0f};
-        query.steering = steering;
         query.collision.terrain_data = terrain;
         query.collision.terrain_size = terrain_size;
         query.collision.static_data = static_objects;
         query.collision.static_size = static_size;
-        awl::WorldMapMovementCandidate candidate;
-        if (!awl::calculate_world_map_movement_candidate(query, &candidate) ||
-            !candidate.movement_enabled ||
-            !scene.update_position(1, candidate.resolved_position,
-                                   &scene_update) ||
-            scene_update.next_bucket != 0) {
+        awl::WorldMapMovementRuntimeStep step;
+        if (!runtime.tick(adapter.frame().sample, query, &step) ||
+            !step.movement.movement_enabled || step.scene.next_bucket != 0) {
             return false;
         }
+        const auto& candidate = step.movement;
         // The fixture has no polygon-trigger provider. The DOL still
         // records prior/resolved positions and checks both category-1 slots.
         const std::array<awl::WorldMapMovementContactSlotOutcome, 2> slots{};
@@ -7226,8 +7416,7 @@ bool replay_player_route(const uint8_t* terrain, size_t terrain_size,
             contact_tail.state_requests != 0) {
             return false;
         }
-        steering = candidate.steering;
-        position = candidate.resolved_position;
+        position = runtime.position();
         awl::CollisionSurfaceSample surface;
         if (!awl::sample_type1_collision_surface(
                 terrain, terrain_size, position[0], position[2], &surface) ||
@@ -7255,7 +7444,7 @@ bool replay_player_route(const uint8_t* terrain, size_t terrain_size,
         }
         previous_x = position[0];
     }
-    const auto snapshot = scene.snapshot(0);
+    const auto snapshot = runtime.scene().snapshot(0);
     const float actual_rise = position[1] - spawn_surface.height;
     bool slope_valid = true;
     if (slope == LocalSlopeExpectation::Uphill) {
@@ -7282,7 +7471,7 @@ bool replay_player_route(const uint8_t* terrain, size_t terrain_size,
     return end_reached &&
            (downhill || required_end_x <= 125.0f || crossed_seam) &&
            changed_height && slope_valid &&
-           steering.current_speed == 0.0f && snapshot.size() == 1 &&
+           runtime.steering().current_speed == 0.0f && snapshot.size() == 1 &&
            snapshot[0].position == position;
 }
 
@@ -7320,11 +7509,17 @@ bool replay_local_player_route(const char* disc_root) {
                         assets.static_bytes().data(),
                         assets.static_bytes().size(),
                         128.0f, 160.0f, 72, 116.0f,
-                        LocalSlopeExpectation::Downhill);
+                        LocalSlopeExpectation::Downhill) &&
+                    compare_runtime_render_rates(
+                        assets.terrain_bytes().data(),
+                        assets.terrain_bytes().size(),
+                        assets.static_bytes().data(),
+                        assets.static_bytes().size(), 120.0f, 168.0f);
             if (valid) {
                 std::printf("Player routes passed: phase=%u terrain=%s "
                             "seam start=120,168; "
-                            "slope uphill/downhill start=115,160/128,160\n",
+                            "slope uphill/downhill start=115,160/128,160; "
+                            "90 recorded ticks equal at six render rates\n",
                             phase, assets.paths().terrain);
             }
         }
@@ -7820,8 +8015,8 @@ bool replay_local_static_wall_route(
     std::array<float, 3> position = wall.start;
     awl::NativeInputAccumulator native;
     awl::PadAdapter adapter;
-    awl::HsdPadFilter filter;
-    awl::WorldMapSteeringState steering;
+    awl::WorldMapMovementRuntime runtime;
+    if (!runtime.initialize(position)) return false;
     native.reset(true);
     native.set_key(awl::NativeKey::D, true);
     const bool diagonal = side != awl::DevelopmentWallRouteSide::MinZ;
@@ -7844,23 +8039,19 @@ bool replay_local_static_wall_route(
         }
         native.begin_frame();
         adapter.begin_frame(native.frame());
-        filter.begin_frame(adapter.frame().sample);
         awl::WorldMapMovementQuery query;
-        query.pad = filter.frame();
-        query.current_position = position;
-        query.current_axis = {0.0f, 0.0f, 1.0f};
-        query.steering = steering;
         if (!assets.bind(&query.collision)) {
             return false;
         }
-        awl::WorldMapMovementCandidate candidate;
-        if (!awl::calculate_world_map_movement_candidate(query, &candidate) ||
-            !candidate.movement_enabled ||
-            !std::isfinite(candidate.resolved_position[0]) ||
-            !std::isfinite(candidate.resolved_position[1]) ||
-            !std::isfinite(candidate.resolved_position[2])) {
+        awl::WorldMapMovementRuntimeStep step;
+        if (!runtime.tick(adapter.frame().sample, query, &step) ||
+            !step.movement.movement_enabled ||
+            !std::isfinite(step.movement.resolved_position[0]) ||
+            !std::isfinite(step.movement.resolved_position[1]) ||
+            !std::isfinite(step.movement.resolved_position[2])) {
             return false;
         }
+        const auto& candidate = step.movement;
         if (frame >= 26) {
             if (candidate.steering.current_speed != 0.0f ||
                 candidate.proposed_position != position) {
@@ -7880,7 +8071,6 @@ bool replay_local_static_wall_route(
             }
         }
         position = candidate.resolved_position;
-        steering = candidate.steering;
         awl::CollisionSurfaceSample surface;
         const bool sampled_surface = awl::sample_type1_collision_surface(
             assets.terrain_bytes().data(), assets.terrain_bytes().size(),
@@ -7919,7 +8109,7 @@ bool replay_local_static_wall_route(
     return approached_wall && saw_contact && expected_distance &&
            (side != awl::DevelopmentWallRouteSide::MinZ ||
             saw_neutral_fallback_reprojection) &&
-           steering.current_speed == 0.0f;
+           runtime.steering().current_speed == 0.0f;
 }
 
 bool replay_local_first_actor_route(
@@ -7951,8 +8141,8 @@ bool replay_local_first_actor_route(
     position[1] = spawn.height;
     awl::NativeInputAccumulator native;
     awl::PadAdapter adapter;
-    awl::HsdPadFilter filter;
-    awl::WorldMapSteeringState steering;
+    awl::WorldMapMovementRuntime runtime;
+    if (!runtime.initialize(position)) return false;
     native.reset(true);
     native.set_key(awl::NativeKey::D, true);
     bool saw_contact = false;
@@ -7965,12 +8155,7 @@ bool replay_local_first_actor_route(
         }
         native.begin_frame();
         adapter.begin_frame(native.frame());
-        filter.begin_frame(adapter.frame().sample);
         awl::WorldMapMovementQuery query;
-        query.pad = filter.frame();
-        query.current_position = position;
-        query.current_axis = {0.0f, 0.0f, 1.0f};
-        query.steering = steering;
         query.directional_objects = snapshot.first_directional.data();
         query.directional_object_count = snapshot.first_directional.size();
         query.collision.first_objects = snapshot.first_resolver.data();
@@ -7978,17 +8163,17 @@ bool replay_local_first_actor_route(
         if (!assets.bind(&query.collision)) {
             return false;
         }
-        awl::WorldMapMovementCandidate candidate;
-        if (!awl::calculate_world_map_movement_candidate(query, &candidate) ||
-            !candidate.movement_enabled) {
+        awl::WorldMapMovementRuntimeStep step;
+        if (!runtime.tick(adapter.frame().sample, query, &step) ||
+            !step.movement.movement_enabled) {
             return false;
         }
+        const auto& candidate = step.movement;
         if (candidate.collision.first_pass.contact &&
             (candidate.collision.resolver_contact_bits & 4u) == 0) {
             return false;
         }
         position = candidate.resolved_position;
-        steering = candidate.steering;
         const float dx = position[0] - center[0];
         const float dz = position[2] - center[2];
         last_distance = std::sqrt(dx * dx + dz * dz);
@@ -8012,7 +8197,7 @@ bool replay_local_first_actor_route(
                 saw_contact ? 1 : 0);
     return saw_contact && passed_center_x &&
            minimum_distance >= 1.199f && minimum_distance < 1.22f &&
-           last_distance > 2.0f && steering.current_speed == 0.0f;
+           last_distance > 2.0f && runtime.steering().current_speed == 0.0f;
 }
 
 bool inspect_local_catalog(const char* disc_root) {
@@ -8378,6 +8563,7 @@ int main(int argc, char** argv) {
     test_world_map_polygon_contact();
     test_world_map_trigger_asset();
     test_synthetic_player_route_replay();
+    test_simulation_clock_and_runtime();
     test_world_map_scene_position_bucket_decision();
     test_world_map_scene_bucket_registry();
     test_world_map_player_scene_message_1f();

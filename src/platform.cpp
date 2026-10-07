@@ -39,6 +39,7 @@ static bool key_from_virtual_key(WPARAM virtual_key, NativeKey* key) {
 static LARGE_INTEGER g_timer_freq;
 static LARGE_INTEGER g_time_start = {};
 static double g_delta_time = 0.0;
+static uint64_t g_elapsed_counter = 0;
 
 void logging_init() {
     // Console is typically already attached if built as a Console App.
@@ -208,6 +209,9 @@ PlatformExitReason platform_get_exit_reason() {
 void time_begin_frame() {
     LARGE_INTEGER now = {};
     QueryPerformanceCounter(&now);
+    g_elapsed_counter = g_time_start.QuadPart != 0 &&
+                        now.QuadPart >= g_time_start.QuadPart
+        ? static_cast<uint64_t>(now.QuadPart - g_time_start.QuadPart) : 0;
     if (g_time_start.QuadPart != 0 && g_timer_freq.QuadPart > 0) {
         g_delta_time = static_cast<double>(now.QuadPart - g_time_start.QuadPart) /
                        static_cast<double>(g_timer_freq.QuadPart);
@@ -224,6 +228,12 @@ void time_begin_frame() {
 
 double time_get_delta() {
     return g_delta_time;
+}
+
+uint64_t time_elapsed_counter() { return g_elapsed_counter; }
+uint64_t time_counter_frequency() {
+    return g_timer_freq.QuadPart > 0
+        ? static_cast<uint64_t>(g_timer_freq.QuadPart) : 0;
 }
 
 void input_init() {

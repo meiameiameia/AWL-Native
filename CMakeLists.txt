@@ -22,6 +22,8 @@ set(SOURCES
     src/player_input.cpp
     src/world_map_contact.cpp
     src/world_map_movement.cpp
+    src/world_map_movement_runtime.cpp
+    src/simulation_clock.cpp
     src/world_map_trigger_asset.cpp
     src/world_map_event_conditions.cpp
     src/world_map_action_asset.cpp
@@ -274,6 +276,8 @@ add_executable(collision_asset_tests
     src/collision_asset.cpp
     src/world_map_contact.cpp
     src/world_map_movement.cpp
+    src/world_map_movement_runtime.cpp
+    src/simulation_clock.cpp
     src/world_map_trigger_asset.cpp
     src/world_map_event_conditions.cpp
     src/world_map_action_asset.cpp

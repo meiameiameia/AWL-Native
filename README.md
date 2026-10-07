@@ -24,8 +24,10 @@ These pieces are development evidence. They do not yet add up to original-game m
 | 1. Collision foundation | Verify the terrain radius response in isolation. | Complete |
 | 2. Movement acceptance | Connect the original movement decision to justified terrain, object, state, and scene data. | In progress |
 | 3. Development scene | Move a temporary marker through a fixed scene with a controlled camera. | Complete as a rehearsal |
-| 4. Player presentation | Render the verified player resources and idle/walk states. | Planned |
-| 5. First interaction | Add one verified inspect-and-return action, then check startup, control, and exit together. | Planned |
+| 4. Player presentation | Render the verified player resources and idle/walk states. | CPU groundwork; drawing and live states pending |
+| 5. First interaction | Add one verified inspect-and-return action, then check startup, control, and exit together. | Isolated helpers; interaction pending |
+
+The current sequence is runtime timing and shared stepping → connected movement/camera → player presentation → one interaction → MVP hardening.
 
 The [first playable plan](docs/research/first-playable-slice.md) records the current gate, evidence, and remaining work. A development scene or a passing automated test is a milestone on this road; actual gameplay acceptance requires an in-game check.
 
