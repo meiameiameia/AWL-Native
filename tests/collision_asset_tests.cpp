@@ -8,6 +8,7 @@
 #include "awl/world_map_movement.h"
 #include "awl/world_map_movement_runtime.h"
 #include "awl/simulation_clock.h"
+#include "awl/movement_recording.h"
 #include "awl/world_map_trigger_asset.h"
 #include "awl/world_map_event_conditions.h"
 #include "awl/world_map_action_asset.h"
@@ -7205,12 +7206,24 @@ bool compare_runtime_render_rates(const uint8_t* terrain, size_t terrain_size,
     awl::WorldMapMovementRuntime reference;
     if (!reference.initialize(spawn)) return false;
     std::array<uint64_t, 90> expected{};
+    awl::MovementRecording recording;
+    recording.spawn = spawn;
+    if (!awl::sha1_bytes(terrain, terrain_size, &recording.terrain_sha1) ||
+        !awl::sha1_bytes(static_data, static_size, &recording.static_sha1)) return false;
     for (auto& signature : expected) {
         awl::WorldMapMovementRuntimeStep step;
         if (!reference.tick(recorded_movement_input(reference.tick_count()),
                             dependencies, &step)) return false;
         signature = movement_runtime_signature(reference, step);
+        awl::MovementRecordedTick recorded;
+        recorded.input = recorded_movement_input(reference.tick_count() - 1);
+        recorded.state = awl::capture_movement_state(reference, step);
+        recording.ticks.push_back(recorded);
     }
+    std::vector<uint8_t> bytes;
+    awl::MovementRecording decoded;
+    if (!awl::encode_movement_recording(recording, &bytes) ||
+        !awl::decode_movement_recording(bytes.data(), bytes.size(), &decoded)) return false;
     for (uint32_t render_rate : {15u, 30u, 60u, 120u, 144u, 240u}) {
         constexpr uint64_t frequency = 1000000;
         awl::SimulationClock clock;
@@ -7228,8 +7241,9 @@ bool compare_runtime_render_rates(const uint8_t* terrain, size_t terrain_size,
                 if (runtime.tick_count() >= expected.size()) return false;
                 const size_t index = static_cast<size_t>(runtime.tick_count());
                 awl::WorldMapMovementRuntimeStep step;
-                if (!runtime.tick(recorded_movement_input(index), dependencies,
+                if (!runtime.tick(decoded.ticks[index].input, dependencies,
                                   &step) ||
+                    awl::capture_movement_state(runtime, step) != decoded.ticks[index].state ||
                     movement_runtime_signature(runtime, step) != expected[index]) {
                     std::fprintf(stderr, "Runtime replay differs: render=%u tick=%zu\n",
                                  render_rate, index);
@@ -7241,6 +7255,42 @@ bool compare_runtime_render_rates(const uint8_t* terrain, size_t terrain_size,
             runtime.position() != reference.position()) return false;
     }
     return true;
+}
+
+bool record_local_seam_route(const char* disc_root, const char* output_path) {
+    awl_memory_init();
+    awl::filesystem_init();
+    awl::WorldMapCollisionAssets assets;
+    awl::WorldMapMovementRuntime runtime;
+    awl::MovementRecording recording;
+    awl::CollisionSurfaceSample surface;
+    bool valid = awl::filesystem_mount("/", disc_root) && assets.load(0, false) &&
+        awl::sample_type1_collision_surface(assets.terrain_bytes().data(), assets.terrain_bytes().size(),
+                                            120, 168, &surface) &&
+        awl::sha1_bytes(assets.terrain_bytes().data(), assets.terrain_bytes().size(), &recording.terrain_sha1) &&
+        awl::sha1_bytes(assets.static_bytes().data(), assets.static_bytes().size(), &recording.static_sha1);
+    if (valid) {
+        recording.spawn = {120, surface.height, 168};
+        valid = runtime.initialize(recording.spawn);
+    }
+    awl::WorldMapMovementQuery query;
+    valid = valid && assets.bind(&query.collision);
+    for (uint32_t index = 0; valid && index < 90; ++index) {
+        awl::MovementRecordedTick recorded;
+        recorded.reset_before = index == 45;
+        if (recorded.reset_before) runtime.pause();
+        recorded.input = recorded_movement_input(index);
+        awl::WorldMapMovementRuntimeStep step;
+        valid = runtime.tick(recorded.input, query, &step) && step.movement.movement_enabled;
+        if (valid) {
+            recorded.state = awl::capture_movement_state(runtime, step);
+            recording.ticks.push_back(recorded);
+        }
+    }
+    valid = valid && awl::save_movement_recording(output_path, recording);
+    awl::filesystem_shutdown(); awl_memory_shutdown();
+    if (valid) std::printf("Saved local seam evidence: %s, 90 ticks with reset at tick 46.\n", output_path);
+    return valid;
 }
 
 void test_simulation_clock_and_runtime() {
@@ -8587,7 +8637,11 @@ int main(int argc, char** argv) {
     test_world_map_collision_asset_provider();
 
     for (int index = 1; index < argc; ++index) {
-        if (std::strcmp(argv[index], "--catalog-local") == 0) {
+        if (std::strcmp(argv[index], "--record-local") == 0) {
+            if (index + 2 >= argc) { ++failures; break; }
+            const char* disc_root = argv[++index];
+            if (!record_local_seam_route(disc_root, argv[++index])) ++failures;
+        } else if (std::strcmp(argv[index], "--catalog-local") == 0) {
             if (++index >= argc || !inspect_local_catalog(argv[index])) {
                 ++failures;
             }

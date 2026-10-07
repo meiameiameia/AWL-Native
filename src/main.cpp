@@ -14,6 +14,9 @@
 #include "awl/world_map_movement.h"
 #include "awl/world_map_movement_runtime.h"
 #include "awl/simulation_clock.h"
+#include "awl/startup_cli.h"
+#include "awl/disc_identity.h"
+#include "awl/movement_recording.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -22,6 +25,7 @@
 #include <string>
 #include <cstdlib>
 #include <utility>
+#include <new>
 
 namespace {
 
@@ -42,6 +46,63 @@ struct SelectedGroundChunk {
     awl::GplTargetMaterial material;
 };
 
+bool prepare_seam_recording(const awl::WorldMapCollisionAssets& assets,
+                            awl::MovementRecording* recording) {
+    awl::CollisionSurfaceSample surface;
+    awl::MovementRecording next;
+    if (!recording || !awl::sample_type1_collision_surface(
+            assets.terrain_bytes().data(), assets.terrain_bytes().size(), 120, 168, &surface) ||
+        !awl::sha1_bytes(assets.terrain_bytes().data(), assets.terrain_bytes().size(), &next.terrain_sha1) ||
+        !awl::sha1_bytes(assets.static_bytes().data(), assets.static_bytes().size(), &next.static_sha1))
+        return false;
+    next.spawn = {120, surface.height, 168};
+    *recording = std::move(next);
+    return true;
+}
+
+int replay_seam_recording(const char* path) {
+    awl::MovementRecording recording, current;
+    awl::WorldMapCollisionAssets assets;
+    awl::WorldMapMovementRuntime runtime;
+    if (!awl::load_movement_recording(path, &recording)) {
+        AWL_LOG_ERROR("Replay rejected missing, malformed, oversized or unsupported recording: %s", path);
+        return 1;
+    }
+    if (!assets.load(0, false) || !prepare_seam_recording(assets, &current) ||
+        recording.terrain_sha1 != current.terrain_sha1 ||
+        recording.static_sha1 != current.static_sha1 ||
+        std::memcmp(recording.spawn.data(), current.spawn.data(), 3 * sizeof(float)) != 0 ||
+        !runtime.initialize(current.spawn)) {
+        AWL_LOG_ERROR("Replay rejected collision-file fingerprints or seam starting state.");
+        return 1;
+    }
+    awl::WorldMapMovementQuery query;
+    if (!assets.bind(&query.collision)) {
+        AWL_LOG_ERROR("Replay could not bind the validated seam collision dependencies.");
+        return 1;
+    }
+    for (size_t index = 0; index < recording.ticks.size(); ++index) {
+        const auto& recorded = recording.ticks[index];
+        if (recorded.reset_before) runtime.pause();
+        awl::WorldMapMovementRuntimeStep step;
+        if (!runtime.tick(recorded.input, query, &step) || !step.movement.movement_enabled) {
+            AWL_LOG_ERROR("Replay movement rejected tick %zu.", index + 1);
+            return 1;
+        }
+        const auto state = awl::capture_movement_state(runtime, step);
+        for (size_t word = 0; word < state.size(); ++word) {
+            if (state[word] == recorded.state[word]) continue;
+            AWL_LOG_ERROR("Replay differs at tick %zu, %s: expected %08X, observed %08X.",
+                          index + 1, awl::movement_state_word_name(word), recorded.state[word], state[word]);
+            return 1;
+        }
+    }
+    AWL_LOG_INFO("Movement replay passed: %zu ticks, all 23 state fields agree; no window opened.",
+                 recording.ticks.size());
+    AWL_LOG_INFO("This is native seam-fixture consistency, not original-game equivalence.");
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -51,41 +112,27 @@ int main(int argc, char** argv)
     constexpr const char* kSceneGroundGplB = "/files/jimen-L-2-0-2.gpl";
     constexpr const char* kWallGroundGplA = "/files/jimen-L-1-0-1.gpl";
     int exit_code = 0;
-    bool target_smoke = false;
-    bool preview_smoke = false;
-    bool scene_smoke = false;
-    bool movement_rehearsal = false;
-    bool rehearsal_smoke = false;
-    bool wall_rehearsal = false;
-    bool actor_rehearsal = false;
-    for (int argument_index = 1; argument_index < argc; ++argument_index) {
-        if (strcmp(argv[argument_index], "--target-smoke") == 0) {
-            target_smoke = true;
-        } else if (strcmp(argv[argument_index], "--preview-smoke") == 0) {
-            preview_smoke = true;
-        } else if (strcmp(argv[argument_index], "--scene-smoke") == 0) {
-            scene_smoke = true;
-        } else if (strcmp(argv[argument_index], "--movement-rehearsal") == 0) {
-            movement_rehearsal = true;
-        } else if (strcmp(argv[argument_index], "--movement-rehearsal-smoke") == 0) {
-            movement_rehearsal = true;
-            rehearsal_smoke = true;
-        } else if (strcmp(argv[argument_index], "--movement-wall-rehearsal") == 0) {
-            movement_rehearsal = true;
-            wall_rehearsal = true;
-        } else if (strcmp(argv[argument_index], "--movement-wall-rehearsal-smoke") == 0) {
-            movement_rehearsal = true;
-            wall_rehearsal = true;
-            rehearsal_smoke = true;
-        } else if (strcmp(argv[argument_index], "--movement-actor-rehearsal") == 0) {
-            movement_rehearsal = true;
-            actor_rehearsal = true;
-        } else if (strcmp(argv[argument_index], "--movement-actor-rehearsal-smoke") == 0) {
-            movement_rehearsal = true;
-            actor_rehearsal = true;
-            rehearsal_smoke = true;
-        }
+    awl::StartupOptions options;
+    std::string option_error;
+    if (!awl::parse_startup_options(argc, argv, &options, &option_error)) {
+        std::fprintf(stderr, "%s\n%s", option_error.c_str(), awl::startup_usage());
+        return 2;
     }
+    using Mode = awl::StartupMode;
+    if (options.mode == Mode::Help) { std::printf("%s", awl::startup_usage()); return 0; }
+    const bool console_mode = options.mode == Mode::VerifyDisc || options.mode == Mode::ReplayMovement;
+    const bool target_smoke = options.mode == Mode::TargetSmoke;
+    const bool preview_smoke = options.mode == Mode::PreviewSmoke;
+    const bool scene_smoke = options.mode == Mode::SceneSmoke;
+    const bool wall_rehearsal = options.mode == Mode::Wall || options.mode == Mode::WallSmoke;
+    const bool actor_rehearsal = options.mode == Mode::Actor || options.mode == Mode::ActorSmoke;
+    const bool rehearsal_smoke = options.mode == Mode::MovementSmoke ||
+        options.mode == Mode::WallSmoke || options.mode == Mode::ActorSmoke;
+    const bool movement_rehearsal = wall_rehearsal || actor_rehearsal ||
+        options.mode == Mode::Movement || options.mode == Mode::MovementSmoke;
+    const bool record_movement = !options.recording_path.empty();
+    awl::MovementRecording recording;
+    bool recording_reset_pending = false;
     const char* preview_gpl = getenv("AWL_PREVIEW_GPL");
     const bool has_preview_gpl =
         preview_gpl != nullptr && preview_gpl[0] != '\0';
@@ -97,9 +144,11 @@ int main(int argc, char** argv)
         return 2;
     }
     if (preview_smoke && !has_preview_gpl) {
+        std::fprintf(stderr, "--preview-smoke requires AWL_PREVIEW_GPL.\n");
         return 2;
     }
-    if (movement_rehearsal && has_preview_gpl) {
+    if ((movement_rehearsal || target_smoke) && has_preview_gpl) {
+        std::fprintf(stderr, "Selected mode rejects AWL_PREVIEW_GPL.\n");
         return 2;
     }
     const bool validation_smoke =
@@ -188,16 +237,7 @@ int main(int argc, char** argv)
     AWL_LOG_INFO("  --movement-wall-rehearsal: %s", wall_rehearsal ? "enabled" : "disabled");
     AWL_LOG_INFO("  --movement-actor-rehearsal: %s", actor_rehearsal ? "enabled" : "disabled");
     
-    // 2. Memory Arena
-    awl_memory_init();
-    memory_initialized = true;
-    AWL_LOG_INFO("Memory arena initialized: %llu bytes", static_cast<unsigned long long>(awl_memory_free()));
-    
-    // 3. Platform Window
-    awl::window_init();
-    window_initialized = true;
-    
-    // 4. File system
+    // Validate the actual mounted extraction before creating a window.
     awl::filesystem_init();
     filesystem_initialized = true;
 
@@ -207,6 +247,33 @@ int main(int argc, char** argv)
         exit_code = 1;
         goto shutdown;
     }
+    {
+        const auto identity = awl::verify_mounted_disc_identity();
+        if (identity.status != awl::DiscIdentityStatus::Verified) {
+            AWL_LOG_ERROR("Startup identity check failed: %s. Use tools/extract_disc.ps1 with the supported image.",
+                          awl::disc_identity_status_text(identity.status));
+            exit_code = 1;
+            goto shutdown;
+        }
+        AWL_LOG_INFO("Startup identity: %s.", awl::disc_identity_status_text(identity.status));
+        if (options.mode == Mode::VerifyDisc) goto shutdown;
+        if (record_movement && GetFileAttributesA(options.recording_path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            AWL_LOG_ERROR("Recording output already exists; choose a new build/<name>.awlr.");
+            exit_code = 1;
+            goto shutdown;
+        }
+    }
+    // 2. Memory arena (also used by console replay's asset readers).
+    awl_memory_init();
+    memory_initialized = true;
+    AWL_LOG_INFO("Memory arena initialized: %llu bytes", static_cast<unsigned long long>(awl_memory_free()));
+    if (console_mode) {
+        exit_code = replay_seam_recording(options.replay_path.c_str());
+        goto shutdown;
+    }
+    // 3. Platform window, after startup validation.
+    awl::window_init();
+    window_initialized = true;
 
     // --- Asset Inventory (Dev-only) ---
     // awl::asset_inventory_run("/");
@@ -781,6 +848,22 @@ int main(int argc, char** argv)
             exit_code = 1;
             goto shutdown;
         }
+        if (record_movement) {
+            if (!prepare_seam_recording(rehearsal_assets, &recording) ||
+                recording.spawn != rehearsal_position) {
+                AWL_LOG_ERROR("Recording could not prepare its declared seam starting state.");
+                exit_code = 1;
+                goto shutdown;
+            }
+            try { recording.ticks.reserve(awl::kMaxMovementRecordingTicks); }
+            catch (const std::bad_alloc&) {
+                AWL_LOG_ERROR("Recording could not allocate its bounded tick storage.");
+                exit_code = 1;
+                goto shutdown;
+            }
+            AWL_LOG_INFO("Recording seam tick inputs and state; clean exit saves %s (maximum 18000 ticks).",
+                         options.recording_path.c_str());
+        }
         const float position[3] = {rehearsal_position[0],
                                    rehearsal_position[1],
                                    rehearsal_position[2]};
@@ -853,6 +936,7 @@ int main(int argc, char** argv)
                     AWL_LOG_INFO("Movement rehearsal paused on focus loss.");
                 }
                 rehearsal_runtime.pause();
+                recording_reset_pending = true;
             } else {
                 for (uint32_t step = 0; step < simulation_steps.count; ++step) {
                     awl::WorldMapMovementQuery query;
@@ -867,6 +951,10 @@ int main(int argc, char** argv)
                             rehearsal_collision_snapshot.first_resolver.size();
                     }
                     awl::WorldMapMovementRuntimeStep runtime_step;
+                    if (record_movement && recording.ticks.size() >= awl::kMaxMovementRecordingTicks) {
+                        AWL_LOG_INFO("Recording reached its ten-minute tick limit; exiting cleanly.");
+                        break;
+                    }
                     if (!rehearsal_assets.bind(&query.collision) ||
                         !rehearsal_runtime.tick(awl::pad_frame().sample, query,
                                                 &runtime_step) ||
@@ -900,6 +988,14 @@ int main(int argc, char** argv)
                         break;
                     }
                     rehearsal_position = candidate.resolved_position;
+                    if (record_movement) {
+                        awl::MovementRecordedTick recorded;
+                        recorded.reset_before = recording_reset_pending;
+                        recorded.input = awl::pad_frame().sample;
+                        recorded.state = awl::capture_movement_state(rehearsal_runtime, runtime_step);
+                        recording.ticks.push_back(recorded); // Capacity reserved before the loop.
+                        recording_reset_pending = false;
+                    }
                     if (actor_rehearsal &&
                         candidate.collision.first_pass.contact &&
                         !rehearsal_actor_contact_logged) {
@@ -940,6 +1036,10 @@ int main(int argc, char** argv)
                 awl::game_update(1.0 / 30.0);
         }
         if (exit_code != 0) break;
+        if (record_movement && recording.ticks.size() == awl::kMaxMovementRecordingTicks) {
+            AWL_LOG_INFO("Recording reached its ten-minute tick limit; exiting cleanly.");
+            break;
+        }
         if (frame_count < 10) AWL_LOG_INFO("Frame %d: before render", frame_count);
 
         const uint64_t presented_before = render_ctx.presented_frame_count();
@@ -1005,9 +1105,18 @@ shutdown:
     if (audio_initialized) awl::audio_shutdown();
     if (render_initialized) render_ctx.shutdown();
     if (input_initialized) awl::input_shutdown();
-    if (filesystem_initialized) awl::filesystem_shutdown();
     if (window_initialized) awl::window_shutdown();
     if (memory_initialized) awl_memory_shutdown();
+    if (filesystem_initialized) awl::filesystem_shutdown();
+    if (record_movement && exit_code == 0) {
+        if (!awl::save_movement_recording(options.recording_path.c_str(), recording)) {
+            AWL_LOG_ERROR("Recording was not saved (no ticks, existing file, path or I/O failure).");
+            exit_code = 1;
+        } else {
+            AWL_LOG_INFO("Saved movement recording: %s, %zu ticks.",
+                         options.recording_path.c_str(), recording.ticks.size());
+        }
+    }
     
     awl::platform_shutdown();
 

@@ -24,6 +24,9 @@ set(SOURCES
     src/world_map_movement.cpp
     src/world_map_movement_runtime.cpp
     src/simulation_clock.cpp
+    src/startup_cli.cpp
+    src/disc_identity.cpp
+    src/movement_recording.cpp
     src/world_map_trigger_asset.cpp
     src/world_map_event_conditions.cpp
     src/world_map_action_asset.cpp
@@ -143,7 +146,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 # Platform defines
 if(WIN32)
     target_compile_definitions(${PROJECT_NAME} PRIVATE AWL_PLATFORM_WINDOWS _CRT_SECURE_NO_WARNINGS)
-    target_link_libraries(${PROJECT_NAME} PRIVATE d3d11 d3dcompiler xinput)
+    target_link_libraries(${PROJECT_NAME} PRIVATE d3d11 d3dcompiler xinput bcrypt)
 endif()
 
 # Compiler options
@@ -278,6 +281,9 @@ add_executable(collision_asset_tests
     src/world_map_movement.cpp
     src/world_map_movement_runtime.cpp
     src/simulation_clock.cpp
+    src/startup_cli.cpp
+    src/disc_identity.cpp
+    src/movement_recording.cpp
     src/world_map_trigger_asset.cpp
     src/world_map_event_conditions.cpp
     src/world_map_action_asset.cpp
@@ -318,7 +324,7 @@ target_include_directories(collision_asset_tests PRIVATE
 )
 if(WIN32)
     target_compile_definitions(collision_asset_tests PRIVATE AWL_PLATFORM_WINDOWS _CRT_SECURE_NO_WARNINGS)
-    target_link_libraries(collision_asset_tests PRIVATE xinput)
+    target_link_libraries(collision_asset_tests PRIVATE xinput bcrypt)
 endif()
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(collision_asset_tests PRIVATE -Wall -Wextra)
@@ -326,6 +332,24 @@ elseif(MSVC)
     target_compile_options(collision_asset_tests PRIVATE /W4)
 endif()
 add_test(NAME collision_asset_tests COMMAND collision_asset_tests)
+
+# Native startup and evidence format; all fixtures are invented and window-free.
+add_executable(startup_evidence_tests
+    tests/startup_evidence_tests.cpp
+    src/startup_cli.cpp src/disc_identity.cpp src/movement_recording.cpp
+    src/filesystem.cpp src/memory.cpp src/platform.cpp src/input.cpp
+)
+target_include_directories(startup_evidence_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(startup_evidence_tests PRIVATE AWL_PLATFORM_WINDOWS _CRT_SECURE_NO_WARNINGS)
+target_link_libraries(startup_evidence_tests PRIVATE xinput bcrypt)
+if(MSVC)
+    target_compile_options(startup_evidence_tests PRIVATE /W4)
+endif()
+add_test(NAME startup_evidence_tests COMMAND startup_evidence_tests)
+set_tests_properties(startup_evidence_tests PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME startup_help COMMAND awl-decomp --help)
+add_test(NAME startup_unknown_argument COMMAND awl-decomp --unknown-mode)
+set_tests_properties(startup_unknown_argument PROPERTIES WILL_FAIL TRUE)
 
 add_executable(world_map_selection_tests
     tests/world_map_selection_tests.cpp
