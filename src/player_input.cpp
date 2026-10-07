@@ -8,16 +8,40 @@ namespace awl {
 namespace {
 
 // Runtime constants read by FUN_8003083C from the verified target DOL.
-constexpr float kHighMagnitudeSquared = 4678.5596f;
-constexpr float kMediumMagnitudeSquared = 1049.76f;
-constexpr float kHighSpeed = 0.18f;
-constexpr float kMediumSpeed = 0.09f;
-constexpr float kLowSpeed = 0.06f;
-constexpr float kSpeedStep = 0.03f;
-constexpr float kRadiansPerDegree = 0.017453292f;
-constexpr float kTurnRateDegrees = 4.0f;
+constexpr float kHighMagnitudeSquared = 0x1.2468f4p+12f; // 4592347A
+constexpr float kMediumMagnitudeSquared = 0x1.0670a4p+10f; // 44833852
+constexpr float kHighSpeed = 0x1.70a3d6p-3f; // 3E3851EB
+constexpr float kMediumSpeed = 0x1.70a3d6p-4f; // 3DB851EB
+constexpr float kLowSpeed = 0x1.eb851ep-5f; // 3D75C28F
+constexpr float kSpeedStep = 0x1.eb851ep-6f; // 3CF5C28F
+constexpr float kRadiansPerDegree = 0x1.1df46ap-6f; // 3C8EFA35
+constexpr float kTurnRateDegrees = 0x1p+2f; // 40800000
 constexpr float kContactDirectionThreshold = 0.8660254f;
 constexpr float kContactAngleDegrees[4] = {0.0f, 180.0f, 90.0f, -90.0f};
+
+// FUN_801B8760 multiplies the first pair, fuses the second pair (Z,1),
+// then adds its two lanes. Keep zero terms: they affect signed zero.
+float transform_row(float a, float b, float c, const WorldMapPosition& v) {
+    const float first = a * v.x;
+    const float second = b * v.y;
+    const float left = std::fma(c, v.z, first);
+    const float right = std::fma(0.0f, 1.0f, second);
+    return left + right;
+}
+
+WorldMapPosition rotate_y(const WorldMapPosition& v, float angle) {
+    // FUN_801B8048 consumes double libm results and applies frsp before
+    // FUN_801B80C4 builds the Y rows. Native libm is still a substitution.
+    const float sine = static_cast<float>(std::sin(static_cast<double>(angle)));
+    const float cosine = static_cast<float>(std::cos(static_cast<double>(angle)));
+    return {transform_row(cosine, 0.0f, sine, v),
+            transform_row(0.0f, 1.0f, 0.0f, v),
+            transform_row(-sine, 0.0f, cosine, v)};
+}
+
+WorldMapPosition add(const WorldMapPosition& a, const WorldMapPosition& b) {
+    return {a.x + b.x, a.y + b.y, a.z + b.z};
+}
 
 } // namespace
 
@@ -25,7 +49,8 @@ void update_world_map_steering(const HsdPadFrame& pad,
                                float camera_yaw_radians,
                                WorldMapSteeringState& state) {
     const float x = static_cast<float>(pad.stick_x);
-    const float z = -static_cast<float>(pad.stick_y);
+    // The DOL negates the signed integer before converting, including Y=0.
+    const float z = static_cast<float>(-static_cast<int>(pad.stick_y));
     const float magnitude_squared = x * x + z * z;
 
     if (magnitude_squared == 0.0f) {
@@ -37,10 +62,13 @@ void update_world_map_steering(const HsdPadFrame& pad,
         state.direction_z = z * inverse_magnitude;
         // FUN_8003083C calls atan2(x, z), adds camera yaw, constructs the
         // verified Y-axis rotation, and transforms the unit-forward vector.
-        const float angle = std::atan2(state.direction_x, state.direction_z) +
-                            camera_yaw_radians;
-        state.facing_x = std::sin(angle);
-        state.facing_z = std::cos(angle);
+        const float stick_angle = static_cast<float>(std::atan2(
+            static_cast<double>(state.direction_x),
+            static_cast<double>(state.direction_z)));
+        const auto facing = rotate_y({0.0f, 0.0f, 1.0f},
+                                     stick_angle + camera_yaw_radians);
+        state.facing_x = facing.x;
+        state.facing_z = facing.z;
         if (magnitude_squared >= kHighMagnitudeSquared) {
             state.target_speed = kHighSpeed;
         } else if (magnitude_squared >= kMediumMagnitudeSquared) {
@@ -89,11 +117,9 @@ WorldMapPositionProposal propose_world_map_position_with_camera(
 
     // FUN_8003083C rotates (scaled_x, 0, 0) and (0, 0, scaled_z)
     // separately before adding both vectors to the current position.
-    WorldMapPosition proposed = current_position;
-    proposed.x += std::cos(x_component_yaw) * scaled_x;
-    proposed.z -= std::sin(x_component_yaw) * scaled_x;
-    proposed.x += std::sin(z_component_yaw) * scaled_z;
-    proposed.z += std::cos(z_component_yaw) * scaled_z;
+    const auto first = rotate_y({scaled_x, 0.0f, 0.0f}, x_component_yaw);
+    const auto second = rotate_y({0.0f, 0.0f, scaled_z}, z_component_yaw);
+    const auto proposed = add(add(current_position, first), second);
     return {proposed,
             camera_yaw_commit_enabled ? z_component_yaw : camera_yaw_radians,
             camera_yaw_commit_enabled};

@@ -6,9 +6,10 @@
 
 namespace awl {
 
-// Pure, DOL-backed steering portion of FUN_8003083C. The supplied-data
-// sequence in world_map_movement.h composes this with collision, but no live
-// player controller exists yet.
+// Isolated steering portion of FUN_8003083C. Constants and consumer rounding
+// order are DOL-backed; native sqrt/libm remain declared substitutions (see
+// input-player-trace.md). The supplied-data sequence in world_map_movement.h
+// composes this with collision, but no live player controller exists yet.
 struct WorldMapSteeringState {
     float direction_x = 0.0f;
     float direction_z = 0.0f;
