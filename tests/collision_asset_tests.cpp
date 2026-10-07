@@ -7680,6 +7680,157 @@ void test_world_map_player_start_providers_and_tail() {
            "reached nonfinite saved pose or null output rejects");
 }
 
+void test_world_map_player_start_state() {
+    using Status = awl::WorldMapPlayerStartStateStatus;
+    for (int32_t value : {INT32_MIN,-1,0,24999,25000,74999,75000,INT32_MAX}) {
+        const uint32_t expected = value >= 75000 ? 1u : value >= 25000 ? 0u : 7u;
+        expect(awl::select_world_map_player_model_type(0,value) == expected &&
+               awl::select_world_map_player_model_type(1,value) == 0x24 &&
+               awl::select_world_map_player_model_type(0x80,value) == 0x24 &&
+               awl::select_world_map_player_model_type(0xFF,value) == 0x24,
+               "model selector respects fractional thresholds and every nonzero override byte");
+    }
+    uint32_t slot = 123;
+    for (uint32_t phase = 0; phase < 6; ++phase) {
+        for (int32_t saved : {INT32_MIN,2,3,4,5,INT32_MAX}) {
+            expect(awl::select_world_map_player_model_type_slot(phase,0,saved,&slot) &&
+                   slot == 0x8029F818u + phase * 4,
+                   "default actor table slot depends only on the observed phase");
+            const uint32_t base = saved == 3 ? 0x8029FBC0u :
+                                  saved == 4 ? 0x8029FBD8u : 0x8029FBF0u;
+            expect(awl::select_world_map_player_model_type_slot(phase,1,saved,&slot) &&
+                   slot == base + phase * 4,
+                   "table type one selects distinct saved-three/four/other rows");
+        }
+    }
+    slot = 123;
+    expect(!awl::select_world_map_player_model_type_slot(6,0,0,&slot) && slot == 123 &&
+           !awl::select_world_map_player_model_type_slot(0,2,0,&slot) && slot == 123 &&
+           !awl::select_world_map_player_model_type_slot(0,UINT32_MAX,0,&slot) &&
+           !awl::select_world_map_player_model_type_slot(0,0,0,nullptr),
+           "unsupported phase/type and missing slot output reject atomically");
+
+    awl::WorldMapPlayerStartState state;
+    state.state_1364 = 0x55; state.counter_1368 = 0xABCDEF01u;
+    state.phase_byte_8 = 0x80; state.secondary_byte_3f0 = 9;
+    state.actor_table_type_134 = 1;
+    state.actor_model_type = {1,2,9,500,{10,11,12,13},{20,21,22,23}};
+    awl::WorldMapPlayerStartStateQuery query;
+    query.requested_state = 0x0F; query.phase = 2; query.saved_27e54 = 4;
+    query.saved_subobject_word_20 = 75000;
+    awl::WorldMapPlayerStartStateStep step;
+    auto unchanged = [&](const awl::WorldMapPlayerStartState& after) {
+        return after.state_1364 == 0x55 && after.counter_1368 == 0xABCDEF01u &&
+            after.phase_byte_8 == 0x80 && after.secondary_byte_3f0 == 9 &&
+            after.actor_table_type_134 == 1 && after.actor_model_type.type_0 == 1 &&
+            after.actor_model_type.type_4 == 2 && after.actor_model_type.index_8 == 9 &&
+            after.actor_model_type.table_c == 500 &&
+            after.actor_model_type.first_14.resource_0 == 10 &&
+            after.actor_model_type.first_14.clock_4 == 11 &&
+            after.actor_model_type.first_14.value_8 == 12 &&
+            after.actor_model_type.first_14.rate_c == 13 &&
+            after.actor_model_type.second_24.resource_0 == 20 &&
+            after.actor_model_type.second_24.clock_4 == 21 &&
+            after.actor_model_type.second_24.value_8 == 22 &&
+            after.actor_model_type.second_24.rate_c == 23;
+    };
+    expect(awl::advance_world_map_player_start_state(&state,query,&step) == Status::RequiresAudioByte &&
+           unchanged(state) && unchanged(step.after) && step.model_slot == 0,
+           "world-map request needs reached audio byte before model reads or state writes");
+    query.audio_byte_90 = uint8_t{0x80};
+    expect(awl::advance_world_map_player_start_state(&state,query,&step) == Status::RequiresAudioStop &&
+           unchanged(state) && unchanged(step.after) && step.model_selector == 0,
+           "nonzero audio byte stops at original audio call before the model selector");
+    query.audio_byte_90 = uint8_t{0};
+    expect(awl::advance_world_map_player_start_state(&state,query,&step) == Status::RequiresModelRow &&
+           step.model_selector == 1 && step.model_slot == 0x8029FBE0u &&
+           step.callback_address == 0 && unchanged(state) && unchanged(step.after),
+           "cleared audio reaches keyed model selection before either callback");
+    query.model_row = awl::WorldMapPlayerModelTypeRow{0x8029FBE0u,1,0x3D,0x29};
+    expect(awl::advance_world_map_player_start_state(&state,query,&step) == Status::RequiresTimerTable &&
+           unchanged(state) && unchanged(step.after) && step.callback_address == 0,
+           "state 0F cannot skip model timer evidence to reach its short initializer");
+    auto& obs = query.model_observations;
+    obs.fallback_table_38 = 600; obs.fallback_table_24 = 700;
+    obs.rows = {{600,3,0,1000}};
+    expect(awl::advance_world_map_player_start_state(&state,query,&step) == Status::RequiresClock &&
+           step.required_timer_row->table_identity == 600 && unchanged(state),
+           "state dispatch reports the first reached timer clock dependency");
+    obs.clock = 99;
+    expect(awl::advance_world_map_player_start_state(&state,query,&step) == Status::RequiresTimerRow &&
+           step.required_timer_row->table_identity == 700 && step.required_timer_row->index == 5 &&
+           unchanged(state) && unchanged(step.after),
+           "missing second timer rolls back state and first model timer");
+    obs.rows.push_back({700,5,0,2000});
+    query.model_row->selector = 7;
+    const auto prior = step;
+    expect(awl::advance_world_map_player_start_state(&state,query,&step) == Status::InvalidInput &&
+           unchanged(state) && step.required_timer_row->table_identity == prior.required_timer_row->table_identity &&
+           step.required_timer_row->index == prior.required_timer_row->index,
+           "wrong model selector key preserves state and diagnostics");
+    query.model_row->selector = 1; ++query.model_row->slot;
+    expect(awl::advance_world_map_player_start_state(&state,query,&step) == Status::InvalidInput &&
+           unchanged(state), "wrong phase-table slot key rejects");
+    --query.model_row->slot;
+    expect(awl::prepare_world_map_player_start_state(state,query,&step) == Status::Prepared &&
+           unchanged(state) && step.after.state_1364 == 0x0F &&
+           step.callback_address == 0x80035884u && step.after.phase_byte_8 == 0 &&
+           step.after.secondary_byte_3f0 == 1 && step.after.counter_1368 == 0xABCDEF01u &&
+           step.after.actor_model_type.type_0 == 0x3D && step.after.actor_model_type.type_4 == 0x29 &&
+           step.after.actor_model_type.first_14.resource_0 == 1000 &&
+           step.after.actor_model_type.second_24.resource_0 == 2000 &&
+           step.after.actor_model_type.first_14.clock_4 == 99 &&
+           step.after.actor_model_type.second_24.clock_4 == 99 &&
+           step.after.actor_model_type.first_14.value_8 == 0 &&
+           step.after.actor_model_type.second_24.rate_c == 1 &&
+           step.after.actor_model_type.index_8 == 9 && step.after.actor_model_type.table_c == 500 &&
+           !step.required_timer_row && !step.animation_command,
+           "state 0F proposal completes ordered model changes, clears phase byte, sets secondary flag, preserves counter");
+    const auto original = state;
+    expect(awl::advance_world_map_player_start_state(&state,query,&step) == Status::Advanced &&
+           state.state_1364 == 0x0F && state.phase_byte_8 == 0 && state.secondary_byte_3f0 == 1 &&
+           state.actor_model_type.first_14.resource_0 == 1000,
+           "supported supplied-state 0F transition applies only after all dependencies succeed");
+    query.scene_type_68 = 3; query.audio_byte_90.reset(); query.model_observations = {};
+    expect(awl::advance_world_map_player_start_state(&state,query,&step) == Status::Advanced &&
+           state.actor_model_type.first_14.clock_4 == 99,
+           "non-world-map scene and equal selected types skip audio and timer observations");
+    state = original; query.scene_type_68 = 1; query.audio_byte_90 = uint8_t{0};
+    query.model_observations.fallback_table_38 = 600;
+    query.model_observations.fallback_table_24 = 700;
+    query.model_observations.clock = 99;
+    query.model_observations.rows = {{600,3,0,1000},{700,5,0,2000}};
+    query.requested_state = 0x29; query.variant_138c = 5;
+    query.item_144 = 12; query.action_148 = 1;
+    expect(awl::advance_world_map_player_start_state(&state,query,&step) == Status::RequiresAnimationCommand &&
+           unchanged(state) && unchanged(step.after) && step.callback_address == 0x800349A4u &&
+           step.animation_command->selector == 1 && step.animation_command->variant == 5 &&
+           step.animation_command->item == 12 && step.animation_command->action == 1 &&
+           step.animation_command->mode == 4,
+           "state 29 reports exact animation arguments without accepting state, model changes, counter or flags");
+    query.secondary_byte_3f2 = 2;
+    expect(awl::advance_world_map_player_start_state(&state,query,&step) == Status::UnsupportedRestoredPose &&
+           unchanged(state) && !step.animation_command && step.callback_address == 0x800349A4u,
+           "restored-pose state29 branch stops before an invented animation command");
+    query.model_observations = {};
+    expect(awl::advance_world_map_player_start_state(&state,query,&step) == Status::RequiresTimerTable &&
+           unchanged(state) && step.callback_address == 0,
+           "even restored-pose state29 branch reaches model changes before its initializer");
+    query.requested_state = 0x0F; query.model_row->type_0 = 1; query.model_row->type_4 = 2;
+    query.phase = 6;
+    expect(awl::advance_world_map_player_start_state(&state,query,&step) == Status::UnsupportedModelTable &&
+           unchanged(state), "unsupported model phase cannot be accepted as startup state");
+    query.requested_state = 0; query.audio_byte_90.reset();
+    expect(awl::advance_world_map_player_start_state(&state,query,&step) == Status::UnsupportedState &&
+           unchanged(state), "other state requests require their own verified callbacks");
+    expect(awl::advance_world_map_player_start_state(nullptr,query,&step) == Status::InvalidInput &&
+           awl::advance_world_map_player_start_state(&state,query,nullptr) == Status::InvalidInput &&
+           awl::advance_world_map_player_start_state(&step.after,query,&step) == Status::InvalidInput &&
+           awl::prepare_world_map_player_start_state(step.after,query,&step) == Status::InvalidInput &&
+           awl::prepare_world_map_player_start_state(state,query,nullptr) == Status::InvalidInput,
+           "startup state null pointers and whole-state output aliases reject");
+}
+
 bool check_local_player_start(const char* disc_root) {
     awl_memory_init();
     awl::filesystem_init();
@@ -7747,6 +7898,21 @@ bool check_local_player_start(const char* disc_root) {
                 awl::WorldMapPlayerConstructorTailStatus::Ready &&
                 !tail.message_prepared && tail.requested_state == 0x29;
             if (!valid) break;
+            // Continue the supplied no-message tail to its actual next
+            // dependency. No model row/bank/animation acknowledgement is
+            // invented just to accept state 29 in this seam fixture.
+            awl::WorldMapPlayerStartState start_state;
+            awl::WorldMapPlayerStartStateQuery state_query;
+            state_query.requested_state = tail.requested_state;
+            state_query.scene_type_68 = commit.scene_type;
+            state_query.phase = phase;
+            state_query.audio_byte_90 = uint8_t{0}; // Supplied clear audio fixture.
+            awl::WorldMapPlayerStartStateStep state_step;
+            valid = awl::advance_world_map_player_start_state(&start_state,state_query,&state_step) ==
+                awl::WorldMapPlayerStartStateStatus::RequiresModelRow &&
+                state_step.model_selector == 7 && state_step.model_slot == 0x8029F818u + phase * 4 &&
+                start_state.state_1364 == 0 && state_step.callback_address == 0;
+            if (!valid) break;
             const auto status = runtime.initialize_player_start(query, &start);
             valid = status == awl::WorldMapPlayerStartStatus::Ready &&
                 start.placement_called && runtime.tick_count() == 0 &&
@@ -7758,7 +7924,7 @@ bool check_local_player_start(const char* disc_root) {
                     phase, alternate, static_cast<int>(status));
                 break;
             }
-            std::printf("Local seam start phase=%u terrain=%d: (%0.6f,%0.6f,%0.6f), entry empty-leaf rejected\n",
+            std::printf("Local seam start phase=%u terrain=%d: (%0.6f,%0.6f,%0.6f), entry empty-leaf rejected, state29 needs model row\n",
                 phase, alternate, start.pose.position[0], start.pose.position[1],
                 start.pose.position[2]);
         }
@@ -9091,6 +9257,7 @@ int main(int argc, char** argv) {
     test_simulation_clock_and_runtime();
     test_world_map_player_start();
     test_world_map_player_start_providers_and_tail();
+    test_world_map_player_start_state();
     test_world_map_scene_position_bucket_decision();
     test_world_map_scene_bucket_registry();
     test_world_map_player_scene_message_1f();

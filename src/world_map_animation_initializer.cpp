@@ -11,6 +11,26 @@ float reset_epsilon() {
     const uint32_t word = 0x38d1b717u; // Mapped 8034BD58, not 1.0.
     float value; std::memcpy(&value, &word, 4); return value;
 }
+WorldMapAnimationFeatureStatus prepare_timer(
+    WorldMapAnimationFeatureTimer& timer, const std::optional<uint64_t>& table,
+    uint32_t index, uint32_t column, const WorldMapAnimationInitializerObservations& observations,
+    std::optional<WorldMapAnimationFeatureRow>& required) {
+    using Status = WorldMapAnimationFeatureStatus;
+    if (!table) return Status::RequiresTable;
+    if (*table == 0) return Status::InvalidInput;
+    required = WorldMapAnimationFeatureRow{*table, index, column, 0};
+    const WorldMapAnimationFeatureRow* match = nullptr;
+    for (const auto& row : observations.rows) {
+        if (row.table_identity == *table && row.index == index && row.column == column) {
+            if (match != nullptr) return Status::InvalidInput;
+            match = &row;
+        }
+    }
+    if (!match) return Status::RequiresRow;
+    if (!observations.clock) return Status::RequiresClock;
+    timer = {match->resource_identity, *observations.clock, 0.0f, 1.0f};
+    return Status::Prepared;
+}
 } // namespace
 
 WorldMapAnimationFeatureStatus prepare_world_map_animation_feature38(
@@ -22,20 +42,7 @@ WorldMapAnimationFeatureStatus prepare_world_map_animation_feature38(
     auto stop = [&](Status status) { step.after = state; *out = step; return status; };
     auto set = [&](WorldMapAnimationFeatureTimer& timer, const std::optional<uint64_t>& table,
                    uint32_t row_index, uint32_t column) {
-        if (!table) return Status::RequiresTable;
-        if (*table == 0) return Status::InvalidInput;
-        step.required_row = WorldMapAnimationFeatureRow{*table, row_index, column, 0};
-        const WorldMapAnimationFeatureRow* match = nullptr;
-        for (const auto& row : observations.rows) {
-            if (row.table_identity == *table && row.index == row_index && row.column == column) {
-                if (match != nullptr) return Status::InvalidInput;
-                match = &row;
-            }
-        }
-        if (match == nullptr) return Status::RequiresRow;
-        if (!observations.clock) return Status::RequiresClock;
-        timer = {match->resource_identity, *observations.clock, 0.0f, 1.0f};
-        return Status::Prepared;
+        return prepare_timer(timer, table, row_index, column, observations, step.required_row);
     };
     Status status = Status::Prepared;
     if (index <= INT32_MAX && state.table_c != 0) {
@@ -53,6 +60,32 @@ WorldMapAnimationFeatureStatus prepare_world_map_animation_feature38(
     if (status != Status::Prepared) return stop(status);
     step.required_row.reset(); *out = step;
     return Status::Prepared;
+}
+
+WorldMapAnimationFeatureStatus prepare_world_map_actor_model_type(
+    const WorldMapAnimationFeature38& state, uint32_t type_0, uint32_t type_4,
+    const WorldMapAnimationInitializerObservations& observations, WorldMapAnimationFeatureStep* out) {
+    using Status = WorldMapAnimationFeatureStatus;
+    if (!out || &state == &out->after) return Status::InvalidInput;
+    WorldMapAnimationFeatureStep step; step.after = state;
+    auto status = Status::Prepared;
+    if (state.type_0 != type_0) {
+        step.after.type_0 = type_0;
+        if (signed_at_least(type_0, 0x3A))
+            status = prepare_timer(step.after.first_14, observations.fallback_table_38,
+                type_0 - 0x3A, 0, observations, step.required_row);
+    }
+    if (status == Status::Prepared && state.type_4 != type_4) {
+        step.after.type_4 = type_4;
+        if (signed_at_least(type_4, 0x24))
+            status = prepare_timer(step.after.second_24, observations.fallback_table_24,
+                type_4 - 0x24, 0, observations, step.required_row);
+    }
+    if (status == Status::InvalidInput) return status;
+    if (status != Status::Prepared) step.after = state;
+    else step.required_row.reset();
+    *out = step;
+    return status;
 }
 
 WorldMapAnimationChannelStatus prepare_world_map_partial_animation_channel_settings(

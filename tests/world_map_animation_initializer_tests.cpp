@@ -392,5 +392,104 @@ void test_partial_settings() {
         awl::prepare_world_map_partial_animation_channel_settings(channel,step.records_after,100,model,1,1,&step)==CStatus::InvalidInput &&
         step.required_record==required,"partial settings reject aliased outputs without replacing diagnostics");
 }
+void test_actor_model_type() {
+    using FStatus = awl::WorldMapAnimationFeatureStatus;
+    // Invented fields, rows and keys. Expectations follow changed/equal,
+    // signed threshold and first/second order in 8002F418..8002F478.
+    awl::WorldMapAnimationFeature38 state{1,2,9,500,{10,11,12,13},{20,21,22,23}};
+    Observations obs; awl::WorldMapAnimationFeatureStep step;
+    expect(awl::prepare_world_map_actor_model_type(state,1,2,obs,&step) == FStatus::Prepared &&
+        step.after.first_14.resource_0 == 10 && step.after.second_24.clock_4 == 21,
+        "equal model types skip both tables and the clock");
+    expect(awl::prepare_world_map_actor_model_type(state,0x39,0x23,obs,&step) == FStatus::Prepared &&
+        step.after.type_0 == 0x39 && step.after.type_4 == 0x23 &&
+        step.after.first_14.value_8 == 12 && step.after.second_24.rate_c == 23 &&
+        step.after.index_8 == 9 && step.after.table_c == 500,
+        "below-threshold changes preserve timers and independent local selection");
+    expect(awl::prepare_world_map_actor_model_type(state,UINT32_MAX,0x80000000u,obs,&step) == FStatus::Prepared &&
+        step.after.type_0 == UINT32_MAX && step.after.type_4 == 0x80000000u,
+        "negative signed type words store without requesting timers");
+    expect(awl::prepare_world_map_actor_model_type(state,0x3A,0x24,obs,&step) == FStatus::RequiresTable &&
+        step.after.type_0 == 1 && step.after.type_4 == 2 && !step.required_row,
+        "missing first fallback table rolls back types before considering second");
+    obs.fallback_table_38 = 600;
+    expect(awl::prepare_world_map_actor_model_type(state,0x3D,0x29,obs,&step) == FStatus::RequiresRow &&
+        step.required_row->table_identity == 600 && step.required_row->index == 3 &&
+        step.required_row->column == 0 && step.after.type_0 == 1,
+        "first model timer uses changed type minus 3A, column zero");
+    obs.rows = {{600,3,0,1000}};
+    expect(awl::prepare_world_map_actor_model_type(state,0x3D,0x29,obs,&step) == FStatus::RequiresClock &&
+        step.required_row->table_identity == 600 && step.after.first_14.clock_4 == 11,
+        "reached timer requires an observed clock before later table work");
+    obs.clock = 0xFFFFFFFEu;
+    expect(awl::prepare_world_map_actor_model_type(state,0x3D,0x29,obs,&step) == FStatus::RequiresTable &&
+        step.after.type_0 == 1 && step.after.first_14.resource_0 == 10,
+        "missing second table rolls back the first type and timer too");
+    obs.fallback_table_24 = 700;
+    expect(awl::prepare_world_map_actor_model_type(state,0x3D,0x29,obs,&step) == FStatus::RequiresRow &&
+        step.required_row->table_identity == 700 && step.required_row->index == 5 &&
+        step.required_row->column == 0 && step.after.second_24.value_8 == 22,
+        "second model timer uses changed type minus 24, column zero");
+    obs.rows.push_back({700,5,0,0}); // Observed null resource is a valid row.
+    expect(awl::prepare_world_map_actor_model_type(state,0x3D,0x29,obs,&step) == FStatus::Prepared &&
+        step.after.type_0 == 0x3D && step.after.type_4 == 0x29 &&
+        step.after.index_8 == 9 && step.after.table_c == 500 && !step.required_row &&
+        step.after.first_14.resource_0 == 1000 && step.after.second_24.resource_0 == 0 &&
+        step.after.first_14.clock_4 == 0xFFFFFFFEu && step.after.second_24.clock_4 == 0xFFFFFFFEu &&
+        step.after.first_14.value_8 == 0 && step.after.second_24.value_8 == 0 &&
+        step.after.first_14.rate_c == 1 && step.after.second_24.rate_c == 1 && state.type_0 == 1,
+        "both type changes reset exactly their timer fields and preserve supplied input");
+    auto changed = step.after;
+    expect(awl::prepare_world_map_actor_model_type(changed,0x3D,0x29,{},&step) == FStatus::Prepared &&
+        step.after.first_14.clock_4 == 0xFFFFFFFEu,
+        "repeated model type selection does not reset timers or require evidence");
+    obs.rows.push_back({700,5,0,999});
+    const auto before = step.after;
+    expect(awl::prepare_world_map_actor_model_type(state,0x3D,0x29,obs,&step) == FStatus::InvalidInput &&
+        step.after.type_0 == before.type_0 && step.after.second_24.resource_0 == before.second_24.resource_0,
+        "ambiguous reached second row preserves output");
+    obs.fallback_table_38 = 0;
+    expect(awl::prepare_world_map_actor_model_type(state,0x3D,0x29,obs,&step) == FStatus::InvalidInput &&
+        awl::prepare_world_map_actor_model_type(step.after,1,2,{},&step) == FStatus::InvalidInput &&
+        awl::prepare_world_map_actor_model_type(state,1,2,{},nullptr) == FStatus::InvalidInput,
+        "null reached table, aliased state and null output reject");
+    changed.type_4 = 0x23;
+    expect(awl::prepare_world_map_actor_model_type(changed,0x3D,0x24,
+        Observations{},&step) == FStatus::RequiresTable && step.after.type_4 == 0x23,
+        "equal first type skips its absent table before exact second threshold");
+}
+void test_actor_model_type_matrix() {
+    uint64_t digest = 14695981039346656037ull; unsigned cases = 0;
+    for (uint32_t type0 : {0x39u,0x3Au,0x3Bu,0x8000003Au,UINT32_MAX}) {
+        for (uint32_t type4 : {0x23u,0x24u,0x25u,0x80000024u,UINT32_MAX}) {
+            for (uint32_t same0 : {0u,1u}) for (uint32_t same4 : {0u,1u}) {
+                for (uint32_t clock : {0u,UINT32_MAX}) {
+                    awl::WorldMapAnimationFeature38 state{
+                        same0 ? type0 : 1u,same4 ? type4 : 2u,9,500,{1,2,3,4},{5,6,7,8}};
+                    Observations obs; obs.clock = clock;
+                    obs.fallback_table_38 = 600; obs.fallback_table_24 = 700;
+                    obs.rows = {{600,0,0,600},{600,1,0,610},{700,0,0,700},{700,1,0,710}};
+                    awl::WorldMapAnimationFeatureStep step;
+                    const auto status = awl::prepare_world_map_actor_model_type(state,type0,type4,obs,&step);
+                    expect(status == awl::WorldMapAnimationFeatureStatus::Prepared,
+                        "fully supplied model type branch matrix prepares");
+                    if (status != awl::WorldMapAnimationFeatureStatus::Prepared) continue;
+                    for (uint32_t word : {type0,type4,same0,same4,clock,step.after.type_0,
+                        step.after.type_4,step.after.index_8,static_cast<uint32_t>(step.after.table_c)}) hash(digest,word);
+                    for (const auto& timer : {step.after.first_14,step.after.second_24}) {
+                        for (uint32_t word : {static_cast<uint32_t>(timer.resource_0),timer.clock_4,
+                            bits(timer.value_8),bits(timer.rate_c)}) hash(digest,word);
+                    }
+                    ++cases;
+                }
+            }
+        }
+    }
+    std::cout << "ACTOR_MODEL_TYPE_MATRIX " << cases << ' ' << std::hex << digest << std::dec << '\n';
+    // Independent instruction walk of 8002F3E8/8017E11C with supplied
+    // table row, synthetic timer rows and clock. No original asset bytes.
+    expect(cases == 200 && digest == 0xD907C192EDA2088Dull,
+        "model type/store/timer matrix matches the bounded mapped instruction comparison");
+}
 } // namespace
-int main(){test_initializer();test_feature();test_model_links();test_secondary();test_failure_order();test_partial_settings();test_settings_matrix();test_tail_matrix();test_feature_matrix();return failures==0?0:1;}
+int main(){test_initializer();test_feature();test_actor_model_type();test_actor_model_type_matrix();test_model_links();test_secondary();test_failure_order();test_partial_settings();test_settings_matrix();test_tail_matrix();test_feature_matrix();return failures==0?0:1;}

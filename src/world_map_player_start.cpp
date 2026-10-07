@@ -115,6 +115,94 @@ WorldMapPlayerConstructorTailStatus plan_world_map_player_constructor_tail(
     return Status::Ready;
 }
 
+uint32_t select_world_map_player_model_type(uint8_t byte_14c, int32_t word_20) {
+    if (byte_14c != 0) return 0x24;
+    const float value = static_cast<float>(word_20);
+    // r13 = 8034E9C0 (80003334..38), not the stack/heap end address.
+    // Thresholds 80346BA0/4: 47927BA0 (74999.25), 46C34F80 (24999.75).
+    if (value >= 0x1.24f74p+16f) return 1;
+    if (value >= 0x1.869fp+14f) return 0;
+    return 7;
+}
+
+bool select_world_map_player_model_type_slot(
+    uint32_t phase, uint32_t table_type_134, int32_t saved_27e54, uint32_t* slot) {
+    if (!slot || phase >= 6 || table_type_134 > 1) return false;
+    uint32_t base = 0x8029F818;
+    if (table_type_134 == 1) {
+        base += saved_27e54 == 3 ? 0x3A8 : saved_27e54 == 4 ? 0x3C0 : 0x3D8;
+    }
+    *slot = base + phase * 4;
+    return true;
+}
+
+WorldMapPlayerStartStateStatus prepare_world_map_player_start_state(
+    const WorldMapPlayerStartState& state, const WorldMapPlayerStartStateQuery& query,
+    WorldMapPlayerStartStateStep* output) {
+    using Status = WorldMapPlayerStartStateStatus;
+    if (!output || &state == &output->after) return Status::InvalidInput;
+    WorldMapPlayerStartStateStep next; next.after = state;
+    auto stop = [&](Status status) {
+        next.after = state; *output = next; return status;
+    };
+    if (query.requested_state != 0x0F && query.requested_state != 0x29)
+        return stop(Status::UnsupportedState);
+    // The remaps for states 0/1 and byte stores for state 12 are not
+    // reached by either supported constructor request.
+    if (query.scene_type_68 == 1) {
+        if (!query.audio_byte_90) return stop(Status::RequiresAudioByte);
+        if (*query.audio_byte_90 != 0) return stop(Status::RequiresAudioStop);
+    }
+    next.after.state_1364 = query.requested_state;
+    next.model_selector = select_world_map_player_model_type(
+        query.saved_subobject_byte_14c, query.saved_subobject_word_20);
+    if (!select_world_map_player_model_type_slot(query.phase, state.actor_table_type_134,
+            query.saved_27e54, &next.model_slot)) return stop(Status::UnsupportedModelTable);
+    if (!query.model_row) return stop(Status::RequiresModelRow);
+    const auto& row = *query.model_row;
+    if (row.slot != next.model_slot || row.selector != next.model_selector)
+        return Status::InvalidInput;
+    WorldMapAnimationFeatureStep model;
+    const auto status = prepare_world_map_actor_model_type(state.actor_model_type,
+        row.type_0, row.type_4, query.model_observations, &model);
+    next.required_timer_row = model.required_row;
+    using FeatureStatus = WorldMapAnimationFeatureStatus;
+    switch (status) {
+    case FeatureStatus::InvalidInput: return Status::InvalidInput;
+    case FeatureStatus::RequiresTable: return stop(Status::RequiresTimerTable);
+    case FeatureStatus::RequiresRow: return stop(Status::RequiresTimerRow);
+    case FeatureStatus::RequiresClock: return stop(Status::RequiresClock);
+    case FeatureStatus::Prepared: break;
+    }
+    next.after.actor_model_type = model.after;
+    if (query.requested_state == 0x0F) {
+        next.callback_address = 0x80035884;
+        next.after.phase_byte_8 = 0;
+    } else {
+        next.callback_address = 0x800349A4;
+        if (query.secondary_byte_3f2 != 0) return stop(Status::UnsupportedRestoredPose);
+        next.animation_command = WorldMapPlayerStartAnimationCommand{
+            1, query.variant_138c, query.item_144, query.action_148, 4};
+        return stop(Status::RequiresAnimationCommand);
+    }
+    // The 0F callback cannot change +1364; 80031E88..80031F5C therefore
+    // follows the secondary +3F0=1 branch. The counter is not touched.
+    next.after.secondary_byte_3f0 = 1;
+    *output = next;
+    return Status::Prepared;
+}
+
+WorldMapPlayerStartStateStatus advance_world_map_player_start_state(
+    WorldMapPlayerStartState* state, const WorldMapPlayerStartStateQuery& query,
+    WorldMapPlayerStartStateStep* output) {
+    using Status = WorldMapPlayerStartStateStatus;
+    if (!state || !output || state == &output->after) return Status::InvalidInput;
+    const auto status = prepare_world_map_player_start_state(*state, query, output);
+    if (status != Status::Prepared) return status;
+    *state = output->after;
+    return Status::Advanced;
+}
+
 WorldMapPlayerStartStatus prepare_world_map_player_start(
     const WorldMapPlayerStartQuery& query, WorldMapPlayerStart* output) {
     if (!output || !valid_pose(query.saved_pose))

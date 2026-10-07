@@ -54,6 +54,15 @@ struct WorldMapAnimationFeatureStep {
     const WorldMapAnimationFeature38& state, uint32_t index,
     const WorldMapAnimationInitializerObservations& observations, WorldMapAnimationFeatureStep* out);
 
+// FUN_8007C8DC -> FUN_8002F3E8 on actor +124. The selected table row is
+// supplied separately; changed signed types >=3A/24 reset their timers via
+// FUN_8017E11C in first/second order. Equal types skip rows and clock.
+// Index +8 and table +C are preserved. Missing evidence rolls back both
+// type writes and timers; this is not model construction or animation start.
+[[nodiscard]] WorldMapAnimationFeatureStatus prepare_world_map_actor_model_type(
+    const WorldMapAnimationFeature38& state, uint32_t type_0, uint32_t type_4,
+    const WorldMapAnimationInitializerObservations& observations, WorldMapAnimationFeatureStep* out);
+
 // Ordered FUN_801A6C4C/6C28/6C70 and FUN_801A6A14 metadata effects.
 // Sets target loop low byte, rate, start position (+0 for rate >=0;
 // limit minus the verified binary32 epsilon for negative rate), then copies
