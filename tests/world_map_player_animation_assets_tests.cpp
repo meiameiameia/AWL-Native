@@ -1,4 +1,5 @@
 #include "awl/world_map_player_animation_assets.h"
+#include "awl/world_map_player_start_animation.h"
 #include "awl/world_map_animation_channel_owner.h"
 #include "awl/world_map_model_initialization.h"
 #include "awl/filesystem.h"
@@ -16,9 +17,9 @@
 #include <crtdbg.h>
 #endif
 
-namespace allocation_probe { bool enabled=false; size_t remaining=0,live=0; }
+namespace allocation_probe { bool enabled=false; size_t remaining=0,live=0,minimum_size=0; }
 void* operator new(size_t size) {
-    if(allocation_probe::enabled && allocation_probe::remaining--==0)throw std::bad_alloc();
+    if(allocation_probe::enabled && size>=allocation_probe::minimum_size && allocation_probe::remaining--==0)throw std::bad_alloc();
     if(void* p=std::malloc(size?size:1)){++allocation_probe::live;return p;}throw std::bad_alloc();
 }
 void operator delete(void* p) noexcept {if(p){--allocation_probe::live;std::free(p);}}
@@ -68,6 +69,7 @@ struct Fixture {
     }
     ~Fixture(){
         std::error_code e;
+        std::filesystem::remove(root/"sys"/"main.dol",e);std::filesystem::remove(root/"sys",e);
         for(const char* n:{"boy_0.anm.arc","boy_0_subanm.arc","boy_0_subact.arc"})std::filesystem::remove(root/"files"/n,e);
         std::filesystem::remove(root/"files",e);std::filesystem::remove(root,e);
     }
@@ -297,6 +299,212 @@ void local(const char* disc){
     expect(channel_cases==288 && channel_digest==0x3ef5a54351d90cf9ull,
         "all owned constructor/setup/settings sequences match independent original-instruction state comparisons");
 }
+std::vector<uint8_t> start_dol() {
+    // Entirely invented section/table/descriptor contents. Only the fixed
+    // lookup addresses and selector-one jump witness come from the trace.
+    std::vector<uint8_t> b(0x1C1);
+    constexpr uint32_t addresses[]{0x8029E4BC,0x80249238,0x8029BEF4,0x81001000,0x80282DF8};
+    constexpr uint32_t offsets[]{0x100,0x120,0x140,0x160,0x1C0};
+    constexpr uint32_t sizes[]{4,8,16,96,1};
+    for(size_t i=0;i<5;++i){word(b,i*4,offsets[i]);word(b,0x48+i*4,addresses[i]);word(b,0x90+i*4,sizes[i]);}
+    word(b,0x100,0x800289A8);
+    for(uint32_t i=0;i<4;++i){
+        b[0x120+i*2+1]=uint8_t(10+i);
+        word(b,0x140+i*4,0x81001000+i*24);
+        word(b,0x160+i*24,(1u<<10)|(i&1));
+        word(b,0x164+i*24,63u|(127u<<11)|(255u<<19));
+        word(b,0x168+i*24,0x1500+i);
+    }
+    return b;
+}
+awl::WorldMapAnimationInitializerState start_initializer() {
+    awl::WorldMapAnimationInitializerState state;
+    state.animation.base_descriptor_4=77;state.animation.current_descriptor_0=88;
+    state.animation.model_identity_30=100;state.animation.flag_21=9;
+    state.primary={0,0,20,21,22,0.25f,0};
+    for(uint64_t id:{10ull,20ull,21ull,22ull})state.records.push_back({id,{0,1,0,5,std::nullopt,0,0}});
+    state.has_optional_bindings=true;
+    state.model_links=awl::WorldMapModelLinkState{{awl::WorldMapModelLinkNode{100}}};
+    return state;
+}
+void start_animation_synthetic() {
+    using S=awl::WorldMapPlayerStartAnimationStatus;
+    using Tables=awl::WorldMapPlayerStartAnimationTables;
+    Fixture f;f.complete();std::filesystem::create_directory(f.root/"sys");
+    std::shared_ptr<const Tables> tables;
+    auto b=start_dol();
+    expect(awl::decode_world_map_player_start_animation_tables(b.data(),b.size(),&tables)==S::Decoded &&
+        tables && !tables->target_verified(),"invented DOL tables decode into an immutable unverified owner");
+    if(!tables)return;
+    const auto* original=tables.get();
+    awl::WorldMapPlayerStartAnimationCommand command;
+    awl::WorldMapPlayerStartAnimationSelection selection;
+    expect(tables->select(command,std::nullopt,&selection)==S::Selected && selection.choice==0 &&
+        selection.descriptor_index==10 && selection.descriptor.identity==0x81001000 &&
+        selection.descriptor.word_8==0x1500,"no item/action selects first record with all twelve bytes retained");
+    command.action=0xFFFFFFFFu;command.variant=0xFFFFFFFFu;command.mode=0;
+    expect(tables->select(command,std::nullopt,&selection)==S::Selected && selection.choice==2 &&
+        selection.descriptor_index==12,"any nonzero action selects two; variant and mode are unread in selector one");
+    command.item=7;
+    expect(tables->select(command,std::nullopt,&selection)==S::RequiresItemType && selection.choice==2,
+        "nonzero item cannot invent its metadata byte");
+    expect(tables->select(command,awl::WorldMapPlayerStartItemType{7,5},&selection)==S::Selected &&
+        selection.choice==1,"ordinary held item takes precedence over action");
+    expect(tables->select(command,awl::WorldMapPlayerStartItemType{7,2},&selection)==S::Selected &&
+        selection.choice==3,"special item type takes precedence over held/action branches");
+    command.item=0x4FF;
+    expect(tables->select(command,std::nullopt,&selection)==S::RequiresItemType &&
+        tables->select(command,awl::WorldMapPlayerStartItemType{0x4FF,0},&selection)==S::Selected &&
+        selection.choice==3,"4FF still reaches the metadata read, then overrides its category");
+    expect(tables->select(command,awl::WorldMapPlayerStartItemType{7,0},&selection)==S::InvalidInput &&
+        selection.choice==3,"wrong item metadata key preserves selection");
+    command.item=0;command.action=0;
+    expect(tables->select(command,awl::WorldMapPlayerStartItemType{0,1},&selection)==S::InvalidInput,
+        "supplied empty-item byte must agree with owned table evidence");
+    command.selector=2;
+    expect(tables->select(command,std::nullopt,&selection)==S::UnsupportedCommand &&
+        tables->select(command,std::nullopt,nullptr)==S::InvalidInput,"other selectors and missing output reject");
+    command.selector=1;
+    for(int fault=0;fault<13;++fault){
+        auto bad=b;
+        switch(fault){
+        case 0:bad.resize(255);break;
+        case 1:bad.pop_back();break;
+        case 2:word(bad,0,0xFF);break;
+        case 3:word(bad,0x90,1000);break;
+        case 4:word(bad,0x48,0xFFFFFFFEu);break;
+        case 5:word(bad,0x4C,0x8029E4BC);break;
+        case 6:word(bad,4,0x100);break;
+        case 7:word(bad,0x100,0x800289DC);break;
+        case 8:bad[0x120]=bad[0x121]=0xFF;break;
+        case 9:word(bad,0x140,0);break;
+        case 10:word(bad,0x140,0x81001001);break;
+        case 11:word(bad,0x140,0x81001058);break;
+        case 12:word(bad,0x140,0x80200000);break;
+        }
+        expect(awl::decode_world_map_player_start_animation_tables(bad.data(),bad.size(),&tables)==S::UnsupportedLayout &&
+            tables.get()==original,"bad DOL header/overlap/jump/index/pointer preserves the complete owner");
+    }
+    expect(awl::decode_world_map_player_start_animation_tables(nullptr,0,&tables)==S::InvalidInput &&
+        awl::decode_world_map_player_start_animation_tables(b.data(),b.size(),nullptr)==S::InvalidInput,
+        "null table decoder inputs reject");
+    expect(awl::load_world_map_player_start_animation_tables(&tables)==S::ReadFailure && tables.get()==original,
+        "unverified cached owner cannot bypass a missing target DOL");
+    f.write("../sys/main.dol",b);
+    expect(awl::load_world_map_player_start_animation_tables(&tables)==S::WrongDol && tables.get()==original,
+        "synthetic shape cannot bypass exact target SHA1");
+    allocation_probe::remaining=0;allocation_probe::enabled=true;
+    const auto allocated=awl::decode_world_map_player_start_animation_tables(b.data(),b.size(),&tables);
+    allocation_probe::enabled=false;
+    expect(allocated==S::AllocationFailure && tables.get()==original,"table allocation failure preserves ownership");
+    b.assign(b.size(),0);
+    expect(tables->select(command,std::nullopt,&selection)==S::Selected && selection.descriptor.word_8==0x1500,
+        "clearing source bytes cannot invalidate selected descriptor words");
+    auto other_group=start_dol();word(other_group,0x160,1u<<25);
+    std::shared_ptr<const Tables> group_tables;
+    expect(awl::decode_world_map_player_start_animation_tables(other_group.data(),other_group.size(),&group_tables)==S::Decoded,
+        "decoder retains unsupported descriptor group for explicit binding rejection");
+    std::shared_ptr<const Assets> assets;
+    expect(awl::load_world_map_player_animation_assets(&assets)==Status::Loaded,"supplied animation banks own their clips");
+    if(!assets)return;
+    auto state=start_initializer();awl::WorldMapPlayerStartAnimationStep step;
+    const awl::WorldMapAnimationModelBinding model_binding{100,10};
+    expect(awl::prepare_world_map_player_start_animation(group_tables,command,std::nullopt,state,{},std::nullopt,{},&step)==S::RequiresGroup &&
+        step.selection->descriptor.word_0>>25==1 && !step.binding,"unsupported group cannot substitute player group zero");
+    expect(awl::prepare_world_map_player_start_animation({},command,std::nullopt,state,{},std::nullopt,{},&step)==S::RequiresTables,
+        "command cannot select without descriptor tables");
+    expect(awl::prepare_world_map_player_start_animation(tables,command,std::nullopt,state,{},std::nullopt,{},&step)==S::RequiresAssets &&
+        step.selection->choice==0 && !step.initializer,"changed descriptor needs owned assets before initializer reads");
+    expect(awl::prepare_world_map_player_start_animation(tables,command,std::nullopt,state,assets,std::nullopt,{},&step)==S::InitializerIncomplete &&
+        step.initializer_status==awl::WorldMapAnimationInitializerStatus::RequiresModelSetup &&
+        state.animation.base_descriptor_4==77,"selected descriptor reaches actual model-binding dependency without state acceptance");
+    auto missing=state;missing.has_optional_bindings=false;
+    expect(awl::prepare_world_map_player_start_animation(tables,command,std::nullopt,missing,assets,model_binding,{},&step)==S::InitializerIncomplete &&
+        step.initializer_status==awl::WorldMapAnimationInitializerStatus::RequiresOptionalBindings &&
+        missing.animation.base_descriptor_4==77,"late unknown optional bindings do not accept the earlier initializer prefix");
+    expect(awl::prepare_world_map_player_start_animation(tables,command,std::nullopt,state,assets,model_binding,{},&step)==S::Prepared &&
+        step.initializer_status==awl::WorldMapAnimationInitializerStatus::Prepared && step.initializer->loop &&
+        step.initializer->after.animation.base_descriptor_4==selection.descriptor.identity &&
+        step.initializer->after.records[0].state.clip_10 &&
+        step.initializer->after.records[0].state.clip_10->bank_identity==assets->primary_animations().identity() &&
+        step.initializer->after.records[0].state.limit_c==3 && state.animation.base_descriptor_4==77,
+        "owned selection and supplied model/channel/hierarchy compose complete metadata without mutating input");
+    const auto prior=step.selection->descriptor.identity;
+    expect(awl::prepare_world_map_player_start_animation(tables,command,std::nullopt,state,assets,model_binding,{},nullptr)==S::InvalidInput,
+        "null animation proposal output rejects");
+    expect(awl::prepare_world_map_player_start_animation(tables,command,std::nullopt,step.initializer->after,assets,model_binding,{},&step)==S::InvalidInput &&
+        step.selection->descriptor.identity==prior,"aliased initializer output rejects without losing evidence");
+    auto equal=state;equal.animation.base_descriptor_4=selection.descriptor.identity;
+    equal.animation.current_descriptor_0=selection.descriptor.identity+12;
+    expect(awl::prepare_world_map_player_start_animation(tables,command,std::nullopt,equal,{},std::nullopt,{},&step)==S::Unchanged &&
+        !step.binding && step.initializer->after.animation.current_descriptor_0==selection.descriptor.identity+12,
+        "equal base skips bank/setup even when current descriptor advanced");
+    command.item=7;
+    expect(awl::prepare_world_map_player_start_animation(tables,command,std::nullopt,equal,{},std::nullopt,{},&step)==S::RequiresItemType &&
+        !step.selection,"descriptor equality cannot skip the earlier item metadata dependency");
+    command.item=0;
+    // Fail the playback-record data allocation. MSVC Debug also allocates
+    // tiny proxies inside noexcept vector constructors; those terminate on
+    // injected failure before ordinary bad_alloc handling can run.
+    const awl::WorldMapAnimationInitializerObservations allocation_observations;
+    allocation_probe::minimum_size=state.records.size()*sizeof(awl::WorldMapAnimationPlaybackRecord);
+    allocation_probe::remaining=0;allocation_probe::enabled=true;
+    const auto failed=awl::prepare_world_map_player_start_animation(tables,command,std::nullopt,state,assets,model_binding,allocation_observations,&step);
+    allocation_probe::enabled=false;
+    allocation_probe::minimum_size=0;
+    expect(failed==S::AllocationFailure && !step.selection && state.animation.base_descriptor_4==77,
+        "initializer allocation failure preserves previous output and original state");
+    expect(awl::prepare_world_map_player_start_animation(tables,command,std::nullopt,state,assets,model_binding,{},&step)==S::Prepared,
+        "ownership retention prepares again from original inputs");
+    const auto bank_id=assets->primary_animations().identity();
+    assets.reset();tables.reset();awl::WorldMapAnimationClip retained;
+    expect(step.tables && step.binding->assets->primary_animations().identity()==bank_id &&
+        step.binding->assets->primary_animations().resolve(0,&retained) &&
+        step.tables->select(command,std::nullopt,&selection)==S::Selected,
+        "returned descriptor/bank owners survive caller owner release");
+}
+void start_animation_local(const char* disc) {
+    using S=awl::WorldMapPlayerStartAnimationStatus;
+    awl::filesystem_init();expect(awl::filesystem_mount("/",disc),"local startup animation mount succeeds");
+    std::shared_ptr<const awl::WorldMapPlayerStartAnimationTables> tables;
+    std::shared_ptr<const Assets> assets;
+    expect(awl::load_world_map_player_start_animation_tables(&tables)==S::Loaded && tables && tables->target_verified(),
+        "mounted DOL identity and bounded startup tables verify");
+    expect(awl::load_world_map_player_animation_assets(&assets)==Status::Loaded,"actual player banks load");
+    if(!tables || !assets)return;
+    auto state=start_initializer();awl::WorldMapPlayerStartAnimationStep step;
+    awl::WorldMapPlayerStartAnimationCommand command;
+    const awl::WorldMapAnimationModelBinding model_binding{100,10};
+    expect(awl::prepare_world_map_player_start_animation(tables,command,std::nullopt,state,assets,model_binding,{},&step)==S::Prepared &&
+        step.selection->choice==0 && step.selection->descriptor_index==4 &&
+        step.initializer->start->primary_setup->clip_index==0 && step.initializer->loop &&
+        !step.initializer->start->fields->secondary_index && state.animation.base_descriptor_4==77,
+        "actual no-item descriptor selects clip zero and prepares complete supplied-state metadata");
+    const auto* cached=tables.get();
+    expect(awl::load_world_map_player_start_animation_tables(&tables)==S::Loaded && tables.get()==cached,
+        "verified immutable table owner reuses safely");
+    command.action=1;
+    expect(awl::prepare_world_map_player_start_animation(tables,command,std::nullopt,state,assets,model_binding,{},&step)==S::InitializerIncomplete &&
+        step.selection->choice==2 && step.selection->descriptor_index==6 &&
+        step.initializer_status==awl::WorldMapAnimationInitializerStatus::RequiresSecondarySetup &&
+        step.initializer->secondary_setup && state.animation.base_descriptor_4==77,
+        "actual action branch reaches explicit owned secondary-model setup instead of fake completion");
+    std::cout<<"LOCAL_START_ANIMATION: no-item clip0 metadata prepared; action secondary setup explicit; no parent acceptance\n";
+}
+void start_animation_choice_matrix() {
+    uint64_t digest=14695981039346656037ull;unsigned cases=0;
+    for(uint32_t item:{0u,1u,0x4FFu,0x500u,UINT32_MAX}) {
+        for(uint32_t action:{0u,1u,UINT32_MAX}) for(uint32_t type=0;type<256;++type) {
+            const auto choice=awl::classify_world_map_player_start_animation(item,action,uint8_t(type));
+            for(uint32_t w:{item,action,type,choice})hash(digest,w);
+            ++cases;
+        }
+    }
+    std::cout<<"START_ANIMATION_CHOICE_MATRIX "<<cases<<' '<<std::hex<<digest<<std::dec<<'\n';
+    // Independent FUN_80029138 instruction walk with a supplied metadata
+    // byte at its lookup address; not validation of live item IDs/assets.
+    expect(cases==3840 && digest==0xE23715C3B5D71F62ull,"all byte categories and ordered item/action cases match the mapped trace");
+}
 } // namespace
 int main(int argc,char** argv){
 #if defined(_MSC_VER) && defined(_DEBUG)
@@ -305,7 +513,9 @@ int main(int argc,char** argv){
     }
 #endif
     synthetic();channel_constructor();awl::filesystem_shutdown();
+    start_animation_synthetic();start_animation_choice_matrix();awl::filesystem_shutdown();
     if(argc==3 && std::string(argv[1])=="--player-banks-local")local(argv[2]);
-    else if(argc!=1)expect(false,"usage: --player-banks-local <disc>");
+    else if(argc==3 && std::string(argv[1])=="--player-start-animation-local")start_animation_local(argv[2]);
+    else if(argc!=1)expect(false,"usage: --player-banks-local <disc> | --player-start-animation-local <disc>");
     awl::filesystem_shutdown();return failures?1:0;
 }

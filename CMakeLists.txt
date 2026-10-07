@@ -24,6 +24,7 @@ set(SOURCES
     src/world_map_movement.cpp
     src/world_map_movement_runtime.cpp
     src/world_map_player_start.cpp
+    src/world_map_player_start_animation.cpp
     src/simulation_clock.cpp
     src/startup_cli.cpp
     src/disc_identity.cpp
@@ -91,6 +92,7 @@ set(HEADERS
     include/awl/dvd.h
     include/awl/player_input.h
     include/awl/world_map_player_start.h
+    include/awl/world_map_player_start_animation.h
     include/awl/world_map_contact.h
     include/awl/world_map_movement.h
     include/awl/world_map_trigger_asset.h
@@ -560,6 +562,8 @@ add_test(NAME world_map_held_item_assets_tests COMMAND world_map_held_item_asset
 add_executable(world_map_player_animation_assets_tests
     tests/world_map_player_animation_assets_tests.cpp
     src/world_map_player_animation_assets.cpp
+    src/world_map_player_start_animation.cpp
+    src/disc_identity.cpp
     src/world_map_model_initialization.cpp
     src/world_map_model_feature.cpp
     src/world_map_secondary_model.cpp
@@ -576,7 +580,7 @@ add_executable(world_map_player_animation_assets_tests
 target_include_directories(world_map_player_animation_assets_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
 if(WIN32)
     target_compile_definitions(world_map_player_animation_assets_tests PRIVATE AWL_PLATFORM_WINDOWS _CRT_SECURE_NO_WARNINGS)
-    target_link_libraries(world_map_player_animation_assets_tests PRIVATE xinput)
+    target_link_libraries(world_map_player_animation_assets_tests PRIVATE xinput bcrypt)
 endif()
 if(MSVC)
     target_compile_options(world_map_player_animation_assets_tests PRIVATE /W4)
