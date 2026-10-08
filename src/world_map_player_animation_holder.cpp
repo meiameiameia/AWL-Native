@@ -1,0 +1,117 @@
+#include "awl/world_map_player_animation_holder.h"
+#include <new>
+#include <type_traits>
+#include <utility>
+
+namespace awl {
+namespace {
+WorldMapNativeAnimationInitializerMetadata supplied_metadata(const WorldMapPlayerAnimationHolderState& s) {
+    WorldMapNativeAnimationInitializerMetadata result;
+    auto& a = result.animation;
+    a.current_descriptor_0 = s.current_descriptor_0; a.base_descriptor_4 = s.base_descriptor_4;
+    a.speed_8 = s.speed_8; a.default_duration_c = s.default_duration_c; a.default_count_14 = s.default_count_14;
+    // DB28's supported modes never read these prior words: mode 2 overwrites
+    // +10; mode 3 overwrites +18/+1C; D69C overwrites +20/+21 when changed.
+    // Private placeholders adapt the existing supplied-state helper. They are
+    // never exposed as observations or used to establish preserved fields.
+    a.deadline_10 = s.deadline_10.value_or(0); a.count_18 = s.count_18.value_or(0);
+    a.completed_count_1c = s.completed_count_1c.value_or(0);
+    a.completed_20 = s.completed_20.value_or(0); a.flag_21 = s.flag_21.value_or(0);
+    a.restart_deadline_24 = s.restart_deadline_24; a.restart_limit_28 = s.restart_limit_28; a.restart_count_2c = s.restart_count_2c;
+    a.model_identity_30 = s.model_identity_30;
+    result.has_optional_bindings = true; result.feature_38 = s.feature_38; result.feature_3c = s.feature_3c;
+    result.secondary_model_c0 = s.secondary_model_c0; return result;
+}
+void publish_known_fields(WorldMapPlayerAnimationHolderState& state,
+    const WorldMapNativeAnimationInitializerMetadata& metadata, const WorldMapActorAnimationDescriptor& descriptor) noexcept {
+    const auto& a = metadata.animation;
+    state.current_descriptor_0 = a.current_descriptor_0; state.base_descriptor_4 = a.base_descriptor_4;
+    state.completed_20 = a.completed_20; state.flag_21 = a.flag_21; state.restart_count_2c = a.restart_count_2c;
+    const auto mode = (descriptor.word_0 >> 10) & 3u;
+    if (mode == 2) state.deadline_10 = a.deadline_10;
+    if (mode == 3) { state.count_18 = a.count_18; state.completed_count_1c = a.completed_count_1c; }
+    state.feature_38 = metadata.feature_38; state.feature_3c = metadata.feature_3c;
+}
+template<class Result> void diagnostics(Result& out, const WorldMapNativeAnimationInitializerStep& initialized) noexcept {
+    out.initializer_status = initialized.initializer_status;
+    if (initialized.initializer) {
+        out.secondary_index = initialized.initializer->secondary_index;
+        out.required_row = initialized.initializer->required_row;
+        const auto& step = *initialized.initializer;
+        for (const auto* channel : {&step.setup, &step.settings}) if (*channel &&
+            ((*channel)->required_record || (*channel)->required_fields)) {
+            out.channel_dependency = WorldMapPlayerAnimationHolderChannelDependency{
+                channel == &step.settings, (*channel)->required_record, (*channel)->required_fields};
+        }
+    }
+}
+} // namespace
+WorldMapPlayerAnimationHolderResult construct_world_map_player_animation_holder(
+    const std::shared_ptr<const WorldMapPlayerModelAssets>& model_assets,
+    const std::shared_ptr<const WorldMapPlayerAnimationAssets>& animation_assets,
+    const WorldMapActorAnimationDescriptor& initial_descriptor,
+    const std::optional<WorldMapAnimationFeature38>& feature_38,
+    const WorldMapAnimationInitializerObservations& observations,
+    std::unique_ptr<WorldMapPlayerAnimationHolder>* out) {
+    using Status = WorldMapPlayerAnimationHolderStatus;
+    using Native = WorldMapNativeAnimationInitializerStatus;
+    if (!out || !initial_descriptor.identity) return {};
+    if (!model_assets) return {Status::RequiresModelAssets};
+    if (!animation_assets) return {Status::RequiresAnimationAssets};
+    try {
+        WorldMapPlayerAnimationGroupBinding group;
+        const auto bound = bind_world_map_player_animation_group(initial_descriptor.word_0, animation_assets, &group);
+        if (bound == WorldMapPlayerAnimationAssetsStatus::RequiresGroup) return {Status::RequiresGroup};
+        if (bound != WorldMapPlayerAnimationAssetsStatus::Bound) return {};
+        auto holder = std::unique_ptr<WorldMapPlayerAnimationHolder>(new WorldMapPlayerAnimationHolder);
+        for (auto* channel : {&holder->primary_channel_, &holder->secondary_channel_})
+            if (construct_world_map_animation_channel(channel) != WorldMapAnimationChannelConstructionStatus::Constructed) return {Status::AllocationFailure};
+        const auto primary = construct_world_map_player_primary(model_assets, &holder->primary_);
+        if (primary.status == WorldMapPlayerPrimaryStatus::AllocationFailure) return {Status::AllocationFailure, primary};
+        if (primary.status != WorldMapPlayerPrimaryStatus::ConstructedCpuPrimary) return {Status::RequiresPrimary, primary};
+        holder->animations_ = animation_assets;
+        holder->state_.model_identity_30 = holder->primary_->model().binding().model_identity;
+        // Stable native owner key for the retained group table equivalent.
+        holder->state_.group_identity_34 = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(animation_assets.get()));
+        holder->state_.feature_38 = feature_38;
+        holder->models_.push_back(&holder->primary_->model());
+        auto metadata = supplied_metadata(holder->state_);
+        WorldMapNativeAnimationInitializerStep initialized;
+        // Fresh D560 base is null and requested is nonnull. D69C changes it,
+        // so the existing helper executes D610's unconditional DB28 call.
+        // This does not implement equal-base D610 rebinding on an old holder.
+        const auto status = advance_world_map_native_animation_initializer(&metadata, holder->primary_channel_.get(),
+            holder->models_, initial_descriptor.identity, initial_descriptor, group.primary,
+            &group.assets->primary_animations(), observations, &initialized);
+        if (status == Native::AllocationFailure) return {Status::AllocationFailure};
+        if (status == Native::InvalidInput || status == Native::Unchanged) return {};
+        WorldMapPlayerAnimationHolderResult result;
+        diagnostics(result, initialized);
+        if (status != Native::Advanced) { result.status = Status::InitializerIncomplete; return result; }
+        publish_known_fields(holder->state_, metadata, initial_descriptor); holder->descriptor_ = initial_descriptor;
+        *out = std::move(holder); result.status = Status::ConstructedCpuHolder; return result;
+    } catch (const std::bad_alloc&) { return {Status::AllocationFailure}; }
+}
+WorldMapPlayerAnimationHolderStartResult WorldMapPlayerAnimationHolder::start(
+    const std::shared_ptr<const WorldMapPlayerStartAnimationTables>& tables,
+    const WorldMapPlayerStartAnimationCommand& command,
+    const std::optional<WorldMapPlayerStartItemType>& item_type,
+    const WorldMapAnimationInitializerObservations& observations) {
+    using Status = WorldMapPlayerStartAnimationStatus;
+    static_assert(std::is_nothrow_copy_assignable_v<WorldMapPlayerAnimationHolderState>);
+    static_assert(std::is_nothrow_copy_assignable_v<WorldMapPlayerAnimationHolderStartResult>);
+    try {
+        auto metadata = supplied_metadata(state_);
+        WorldMapPlayerStartNativeAnimationStep initialized;
+        WorldMapPlayerAnimationHolderStartResult result;
+        result.status = advance_world_map_player_start_animation(tables, command, item_type, &metadata,
+            primary_channel_.get(), models_, animations_, observations, &initialized);
+        result.selection = initialized.selection; diagnostics(result, initialized.initializer);
+        if (result.status == Status::Advanced) {
+            publish_known_fields(state_, metadata, initialized.selection->descriptor);
+            descriptor_ = initialized.selection->descriptor; tables_ = tables;
+        }
+        return result;
+    } catch (const std::bad_alloc&) { return {Status::AllocationFailure}; }
+}
+} // namespace awl

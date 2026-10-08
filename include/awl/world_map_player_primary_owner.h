@@ -27,7 +27,7 @@ struct WorldMapPlayerPrimaryUpdateResult {
 // Owns actual phase-selected ACT/GPL/SKN/texture providers, CPU skin/frame/mesh
 // storage and a native model with D7B0 feature bindings, E7C4 list order and
 // fresh partial playback. Checked CPU draw parameters replace GX packets;
-// GPU execution/draw scheduling and D610 holder/actor/state29 startup remain open.
+// GPU execution/draw scheduling and live actor/state29 startup remain open.
 // Release external borrowers before replacing this owner; models die before
 // channels whose record keys they borrow. No original heap/packed pointer ABI.
 class WorldMapPlayerPrimaryOwner {
