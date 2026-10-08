@@ -1,9 +1,19 @@
 #include "awl/world_map_player_primary_owner.h"
+#include "awl/world_map_player_initial_animation.h"
 #include <new>
 #include <type_traits>
 #include <utility>
 
 namespace awl {
+bool WorldMapPlayerPrimaryOwner::initialize_root_scale(float scale) {
+    if (frame_->frame_) return false; // Fresh construction only.
+    WorldMapAnimationPose next;
+    if (prepare_world_map_player_initial_root_pose(frame_->root_pose_, scale, &next) !=
+        WorldMapPlayerInitialAnimationStatus::Prepared) return false;
+    frame_->root_pose_ = next;
+    model_->core_.byte_1c = static_cast<uint8_t>(next[0] >> 24);
+    return true;
+}
 WorldMapPlayerPrimaryResult construct_world_map_player_primary(
     const std::shared_ptr<const WorldMapPlayerModelAssets>& assets, std::unique_ptr<WorldMapPlayerPrimaryOwner>* out) {
     using Status = WorldMapPlayerPrimaryStatus;

@@ -46,6 +46,8 @@ public:
         const WorldMapPlayerPrimaryFrameInput& input, const WorldMapNativeAnimationChannel* channel);
 private:
     WorldMapPlayerPrimaryOwner() = default;
+    friend class WorldMapPlayerAnimationHolder;
+    bool initialize_root_scale(float scale);
     friend WorldMapPlayerPrimaryResult construct_world_map_player_primary(
         const std::shared_ptr<const WorldMapPlayerModelAssets>&, std::unique_ptr<WorldMapPlayerPrimaryOwner>*);
     // Model keys refer to providers retained by frame_; destroy model first.

@@ -16,6 +16,7 @@ struct WorldMapPlayerInitialAnimationSelection {
     uint32_t type_0 = 0, type_4 = 0;
     uint32_t feature_source_10 = 0;
     uint8_t feature_flag_34 = 0;
+    float scale = 1; // 8002E47C's phase-selected catalog row +4.
 };
 enum class WorldMapPlayerInitialAnimationStatus {
     Decoded, Loaded, Selected, Prepared, RequiresInputs, RequiresPhase,
@@ -30,7 +31,7 @@ struct WorldMapPlayerInitialAnimationStep {
     std::optional<WorldMapAnimationFeature38> feature;
     std::optional<WorldMapAnimationFeatureRow> required_row;
 };
-// Immutable slot-zero initial descriptor and phase-keyed model-type rows.
+// Immutable slot-zero initial descriptor, phase-keyed model types and scale.
 // Owns static words only; phase, runtime timer tables/clock and live actor
 // ownership remain separate. Does not decode other models/alternate branches.
 class WorldMapPlayerInitialAnimationInputs {
@@ -49,6 +50,7 @@ private:
     WorldMapActorAnimationDescriptor descriptor_;
     uint16_t descriptor_index_ = 0;
     std::array<std::array<uint32_t,2>,6> types_{};
+    std::array<float,6> scales_{};
     bool target_verified_ = false;
 };
 // Synthetic decoder validates all reached extents and both changed timer
@@ -67,4 +69,9 @@ private:
     const std::shared_ptr<const WorldMapPlayerInitialAnimationInputs>& inputs,
     const WorldMapPlayerInitialAnimationQuery& query,
     const WorldMapAnimationInitializerObservations& observations);
+// B8F8 -> E7BC/1FC4: clear only the root flag byte, then write uniform scale
+// and flag 1. Other words are retained without interpreting unwritten floats.
+// Finite scales (including signed zero/negative) are supported. Stops preserve out.
+[[nodiscard]] WorldMapPlayerInitialAnimationStatus prepare_world_map_player_initial_root_pose(
+    const WorldMapAnimationPose& before, float scale, WorldMapAnimationPose* out);
 } // namespace awl

@@ -4,6 +4,8 @@
 #include "awl/filesystem.h"
 #include "world_map_dol_view.h"
 #include <fstream>
+#include <cmath>
+#include <cstring>
 #include <new>
 #include <utility>
 
@@ -40,6 +42,13 @@ bool WorldMapPlayerInitialAnimationInputs::decode(const uint8_t* data, size_t si
         // Each actual slot-zero phase writes both timers. Retaining an
         // unwritten timer requires a future partial-feature consumer.
         if (!reset_type(types_[phase][0], 0x3A) || !reset_type(types_[phase][1], 0x24)) return false;
+        const auto* catalog_index = view.read(0x8024A6E0 + phase, 1);
+        if (!catalog_index) return false;
+        const auto* scale = view.read(0x80249A6C + uint32_t(*catalog_index) * 0x18 + 4, 4);
+        if (!scale) return false;
+        const auto word = detail::dol_word(scale);
+        std::memcpy(&scales_[phase], &word, sizeof(word));
+        if (!std::isfinite(scales_[phase])) return false;
     }
     return true;
 }
@@ -48,7 +57,16 @@ WorldMapPlayerInitialAnimationStep WorldMapPlayerInitialAnimationInputs::select(
     if (query.alternate != UINT32_MAX) return {Status::UnsupportedAlternate};
     if (query.phase >= types_.size()) return {Status::RequiresPhase};
     return {Status::Selected, WorldMapPlayerInitialAnimationSelection{query.phase, descriptor_index_, descriptor_,
-        types_[query.phase][0], types_[query.phase][1], 0, 0}};
+        types_[query.phase][0], types_[query.phase][1], 0, 0, scales_[query.phase]}};
+}
+Status prepare_world_map_player_initial_root_pose(const WorldMapAnimationPose& before, float scale,
+    WorldMapAnimationPose* out) {
+    if (!out || !std::isfinite(scale)) return Status::InvalidInput;
+    auto next = before;
+    next[0] = (before[0] & 0x00FFFFFFu) | 0x01000000u;
+    uint32_t word; std::memcpy(&word, &scale, sizeof(word));
+    next[1] = next[2] = next[3] = word;
+    *out = next; return Status::Prepared;
 }
 Status decode_world_map_player_initial_animation_inputs(const uint8_t* data, size_t size,
     std::shared_ptr<const WorldMapPlayerInitialAnimationInputs>* out) {

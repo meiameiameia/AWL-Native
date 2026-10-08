@@ -68,6 +68,18 @@ struct WorldMapPlayerTimedInitialHolderResult {
     WorldMapPlayerInitialHolderResult holder;
 };
 
+// B8F8's supported slot-zero, alternate -1 wrapper writes. A source address
+// is a symbolic reference ONLY: no host pointer or runtime table contents.
+// Later consumers of +120 require a translated runtime table owner.
+struct WorldMapPlayerInitialModelState {
+    uint32_t model_slot_4 = 0, alternate_8 = UINT32_MAX;
+    uint32_t runtime_entry_address_120 = 0x802ED6C0;
+    // Raw private TAM node 7; bytes borrow the primary's retained assets.
+    // Its presence/binding does not establish decoding or TAM execution.
+    std::optional<WorldMapPlayerModelAssetView> private_texture_animation;
+    uint8_t initialized_c = 0;
+};
+
 // D4B4's two owned channels, D560 state, actual CPU primary and retained
 // group-zero providers. Fresh D610 binding executes initialization before
 // publication. Existing-holder D610 rebind/reset, secondary construction,
@@ -88,6 +100,7 @@ public:
     const std::shared_ptr<const WorldMapPlayerInitialAnimationInputs>& initial_inputs() const { return initial_inputs_; }
     const std::shared_ptr<const WorldMapPlayerTimerAssets>& timer_assets() const { return timer_assets_; }
     const std::shared_ptr<GameClock>& game_clock() const { return game_clock_; }
+    const std::optional<WorldMapPlayerInitialModelState>& initial_model_state() const { return initial_model_state_; }
     // Subsequent selector-1 starts use D660's conditional D69C -> DB28 path,
     // not D610's unconditional DB28 rebind. Every stop preserves all owners.
     [[nodiscard]] WorldMapPlayerAnimationHolderStartResult start(
@@ -100,6 +113,7 @@ public:
     }
 private:
     WorldMapPlayerAnimationHolder() = default;
+    bool finish_initial_model(float scale, const std::shared_ptr<const WorldMapPlayerModelAssets>& assets);
     friend WorldMapPlayerAnimationHolderResult construct_world_map_player_animation_holder(
         const std::shared_ptr<const WorldMapPlayerModelAssets>&,
         const std::shared_ptr<const WorldMapPlayerAnimationAssets>&, const WorldMapActorAnimationDescriptor&,
@@ -122,6 +136,12 @@ private:
         const std::shared_ptr<const WorldMapPlayerInitialAnimationInputs>&,
         const std::shared_ptr<const WorldMapPlayerTimerAssets>&, const WorldMapPlayerInitialAnimationQuery&,
         const std::shared_ptr<GameClock>&, std::unique_ptr<WorldMapPlayerAnimationHolder>*);
+    friend WorldMapPlayerTimedInitialHolderResult construct_world_map_player_initial_model_with_clock(
+        const std::shared_ptr<const WorldMapPlayerModelAssets>&,
+        const std::shared_ptr<const WorldMapPlayerAnimationAssets>&,
+        const std::shared_ptr<const WorldMapPlayerInitialAnimationInputs>&,
+        const std::shared_ptr<const WorldMapPlayerTimerAssets>&, const WorldMapPlayerInitialAnimationQuery&,
+        const std::shared_ptr<GameClock>&, std::unique_ptr<WorldMapPlayerAnimationHolder>*);
     // Declared before the model: it dies before the channels it borrows.
     std::unique_ptr<WorldMapNativeAnimationChannel> primary_channel_, secondary_channel_;
     std::shared_ptr<const WorldMapPlayerAnimationAssets> animations_;
@@ -133,6 +153,7 @@ private:
     std::vector<WorldMapNativeModel*> models_; // Borrowed registry, fixed after fresh construction.
     WorldMapPlayerAnimationHolderState state_;
     WorldMapActorAnimationDescriptor descriptor_;
+    std::optional<WorldMapPlayerInitialModelState> initial_model_state_;
 };
 // Fresh construction only. Retains all providers and the first descriptor
 // snapshot. Failures release staging and preserve *out; release external
@@ -171,6 +192,17 @@ private:
 // late holder failures preserve *out and never advance the shared clock.
 // Timer clock fields remain initial snapshots; TAM sampling is unsupported.
 [[nodiscard]] WorldMapPlayerTimedInitialHolderResult construct_world_map_player_initial_holder_with_clock(
+    const std::shared_ptr<const WorldMapPlayerModelAssets>& model_assets,
+    const std::shared_ptr<const WorldMapPlayerAnimationAssets>& animation_assets,
+    const std::shared_ptr<const WorldMapPlayerInitialAnimationInputs>& inputs,
+    const std::shared_ptr<const WorldMapPlayerTimerAssets>& timers,
+    const WorldMapPlayerInitialAnimationQuery& query, const std::shared_ptr<GameClock>& clock,
+    std::unique_ptr<WorldMapPlayerAnimationHolder>* out);
+// Adds B8F8's private-TAM table_C copy, flag/scale writes and final initialized
+// byte to fresh CPU startup. Symbolic +120 reference is retained, not resolved.
+// Never advances time, evaluates a frame or acknowledges parent state 29.
+// Every failure preserves *out and shared clock, including late dependencies.
+[[nodiscard]] WorldMapPlayerTimedInitialHolderResult construct_world_map_player_initial_model_with_clock(
     const std::shared_ptr<const WorldMapPlayerModelAssets>& model_assets,
     const std::shared_ptr<const WorldMapPlayerAnimationAssets>& animation_assets,
     const std::shared_ptr<const WorldMapPlayerInitialAnimationInputs>& inputs,

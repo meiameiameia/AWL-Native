@@ -197,4 +197,41 @@ WorldMapPlayerTimedInitialHolderResult construct_world_map_player_initial_holder
     }
     return result;
 }
+bool WorldMapPlayerAnimationHolder::finish_initial_model(float scale,
+    const std::shared_ptr<const WorldMapPlayerModelAssets>& assets) {
+    if (!assets || !state_.feature_38 || initial_model_state_) return false;
+    WorldMapPlayerInitialModelState next;
+    if (assets->file_count() >= 7) {
+        WorldMapPlayerModelAssetView view;
+        if (!assets->resource(7, &view)) return false;
+        next.private_texture_animation = view;
+    }
+    // B8F8 copies the primary wrapper's private TAM after D610. Its stable
+    // raw-byte key replaces the relocated PPC pointer; no TAM body is read.
+    const auto table = next.private_texture_animation ?
+        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(next.private_texture_animation->data)) : 0;
+    state_.feature_38->table_c = table;
+    if (!primary_->initialize_root_scale(scale)) return false;
+    next.initialized_c = 1; // Last supported wrapper write, after all dependencies.
+    initial_model_state_ = next;
+    return true;
+}
+WorldMapPlayerTimedInitialHolderResult construct_world_map_player_initial_model_with_clock(
+    const std::shared_ptr<const WorldMapPlayerModelAssets>& model_assets,
+    const std::shared_ptr<const WorldMapPlayerAnimationAssets>& animation_assets,
+    const std::shared_ptr<const WorldMapPlayerInitialAnimationInputs>& inputs,
+    const std::shared_ptr<const WorldMapPlayerTimerAssets>& timers,
+    const WorldMapPlayerInitialAnimationQuery& query, const std::shared_ptr<GameClock>& clock,
+    std::unique_ptr<WorldMapPlayerAnimationHolder>* out) {
+    using Status = WorldMapPlayerTimedInitialHolderStatus;
+    if (!out) return {};
+    std::unique_ptr<WorldMapPlayerAnimationHolder> staging;
+    auto result = construct_world_map_player_initial_holder_with_clock(model_assets, animation_assets,
+        inputs, timers, query, clock, &staging);
+    if (result.status != Status::ConstructedCpuHolder) return result;
+    if (!staging->finish_initial_model(result.holder.initial.selection->scale, model_assets)) {
+        result.status = Status::HolderIncomplete; return result;
+    }
+    *out = std::move(staging); return result;
+}
 } // namespace awl
