@@ -34,6 +34,9 @@ public:
     [[nodiscard]] WorldMapPlayerGeometryResult decode(
         const WorldMapPlayerSkinWork& work,const std::vector<uint8_t>& vertex_output);
 private:
+    friend class WorldMapPlayerPrimaryOwner;
+    [[nodiscard]] WorldMapPlayerGeometryResult stage_decode(const WorldMapPlayerSkinWork&,
+        const std::vector<uint8_t>&, std::vector<std::vector<WorldMapPlayerVertex>>*) const;
     WorldMapPlayerGeometry()=default;
     struct Binding {uint32_t offset=0;uint8_t stride=0,fraction=0;uint16_t count=0;bool skinned=false;};
     friend WorldMapPlayerGeometryResult prepare_world_map_player_geometry(

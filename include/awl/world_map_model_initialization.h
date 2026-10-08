@@ -75,6 +75,9 @@ struct WorldMapModelConstructionResult {
     uint64_t required_arena = 0;
 };
 class WorldMapNativeModel;
+class WorldMapPlayerPrimaryOwner;
+struct WorldMapPlayerPrimaryResult;
+class WorldMapPlayerModelAssets;
 // Consumes a supplied setup proposal, re-resolving/preparing its resource from
 // the bank before construction. CD50 assigns flag 4; D0FC's fresh no-feature
 // path records its final 0x20 cursor request. A compatible saved playback is
@@ -146,7 +149,9 @@ class WorldMapNativeModel;
     const std::vector<WorldMapNativeModel*>& owners, WorldMapModelAttachmentRequest* sources,
     const WorldMapModelSourceChange& change, WorldMapModelSourceStep* out);
 
-// Native owner for the CD50/D0FC null-arena, null-secondary-resource path.
+// Native model storage for CD50/D0FC's supported owned paths. The secondary
+// factory constructs the no-skin route; WorldMapPlayerPrimaryOwner composes
+// the checked primary auxiliary/features and CPU frame/geometry providers.
 // Typed C++ storage replaces the PPC heap/cursor's packed pointer layout.
 // It owns a private immutable bank snapshot and the constructed core, so
 // clearing/reusing the source bank cannot invalidate resource references.
@@ -163,7 +168,7 @@ public:
     const WorldMapPreparedModelResource& prepared_resource() const { return prepared_; }
     const std::vector<std::shared_ptr<const WorldMapAnimationBank>>& animation_banks() const { return animation_banks_; }
     const std::vector<WorldMapModelCoreAllocation>& storage_requests() const { return storage_requests_; }
-    uint32_t consumed_size() const { return core_.consumed_size + 0x20u; }
+    uint32_t consumed_size() const { return consumed_size_; }
     uint32_t flags_174() const { return 4; }
     // Fresh construction leaves three playback fields unknown. Restoration
     // or sufficient observed channel writes can make this snapshot complete.
@@ -176,6 +181,9 @@ public:
     WorldMapSecondaryModelRecord record() const;
     WorldMapModelLinkNode model_links() const;
 private:
+    friend class WorldMapPlayerPrimaryOwner;
+    friend WorldMapPlayerPrimaryResult construct_world_map_player_primary(
+        const std::shared_ptr<const WorldMapPlayerModelAssets>&, std::unique_ptr<WorldMapPlayerPrimaryOwner>*);
     friend WorldMapNativeAnimationInitializerStatus advance_world_map_native_animation_initializer(
         WorldMapNativeAnimationInitializerMetadata*, WorldMapNativeAnimationChannel*,
         const std::vector<WorldMapNativeModel*>&, uint64_t,
@@ -202,10 +210,13 @@ private:
     void set_playback(const WorldMapAnimationPartialPlayback& playback) noexcept;
     WorldMapNativeModel(std::unique_ptr<const WorldMapModelBank> bank, WorldMapPreparedModelResource prepared,WorldMapModelCore core,
         std::optional<WorldMapAnimationPlayback> playback);
+    WorldMapNativeModel(std::unique_ptr<const WorldMapModelBank> bank, WorldMapPreparedModelResource prepared, WorldMapModelCore core,
+        std::vector<WorldMapModelCoreAllocation> storage, uint32_t consumed);
     std::unique_ptr<const WorldMapModelBank> bank_;
     WorldMapPreparedModelResource prepared_;
     WorldMapModelCore core_;
     std::vector<WorldMapModelCoreAllocation> storage_requests_;
+    uint32_t consumed_size_ = 0;
     std::optional<WorldMapAnimationPlayback> playback_;
     std::vector<std::shared_ptr<const WorldMapAnimationBank>> animation_banks_;
 };

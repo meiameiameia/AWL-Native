@@ -89,9 +89,9 @@ struct WorldMapPlayerStartNativeAnimationStep {
     std::optional<WorldMapPlayerAnimationGroupBinding> binding;
     WorldMapNativeAnimationInitializerStep initializer;
 };
-// Select first, then atomically initialize supplied native no-skin model/channel
+// Select first, then atomically initialize supplied native model/channel
 // owners with their authoritative partial records/link graph. Advanced applies
-// only that bounded transaction, not real primary construction, parent state 29,
+// only that bounded transaction, not primary/holder construction, parent state 29,
 // counter reset, frame evaluation or original gameplay acceptance. Reached
 // secondary paths still block. Invalid/allocation failure preserves output.
 [[nodiscard]] WorldMapPlayerStartAnimationStatus advance_world_map_player_start_animation(

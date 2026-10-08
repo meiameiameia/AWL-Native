@@ -130,7 +130,7 @@ WorldMapModelCoreStatus prepare_world_map_model_core(
 WorldMapNativeModel::WorldMapNativeModel(std::unique_ptr<const WorldMapModelBank> bank,
     WorldMapPreparedModelResource prepared,WorldMapModelCore core, std::optional<WorldMapAnimationPlayback> playback)
     : bank_(std::move(bank)), prepared_(std::move(prepared)),core_(std::move(core)), storage_requests_(core_.allocations),
-      playback_(std::move(playback)) {
+      consumed_size_(core_.consumed_size + 0x20u), playback_(std::move(playback)) {
     // D0FC -> E7C4 -> DD44 reaches no feature calls for this fresh core.
     // The final buffer is unused here; retain the target cursor request as
     // layout evidence without allocating a dummy packed PPC byte buffer.
@@ -141,6 +141,10 @@ WorldMapAnimationPartialPlayback WorldMapNativeModel::partial_playback() const n
     const auto& p=core_.playback;
     return {p.position_0,p.rate_4,p.word_8,p.limit_c,p.clip_10,p.link_14,p.value_18};
 }
+WorldMapNativeModel::WorldMapNativeModel(std::unique_ptr<const WorldMapModelBank> bank,
+    WorldMapPreparedModelResource prepared, WorldMapModelCore core, std::vector<WorldMapModelCoreAllocation> storage, uint32_t consumed)
+    : bank_(std::move(bank)), prepared_(std::move(prepared)), core_(std::move(core)),
+      storage_requests_(std::move(storage)), consumed_size_(consumed) {}
 void WorldMapNativeModel::set_playback(const WorldMapAnimationPartialPlayback& p) noexcept {
     core_.playback.position_0=p.position_0;core_.playback.rate_4=p.rate_4;
     core_.playback.clip_10=p.clip_10;core_.playback.link_14=p.link_14;

@@ -58,6 +58,7 @@ set(SOURCES
     src/world_map_player_draw_commands.cpp
     src/world_map_player_topology.cpp
     src/world_map_player_geometry.cpp
+    src/world_map_player_primary_owner.cpp
     src/world_map_player_draw_state.cpp
     src/world_map_player_skin_work.cpp
     src/world_map_player_frame.cpp
@@ -124,6 +125,7 @@ set(HEADERS
     include/awl/world_map_player_draw_commands.h
     include/awl/world_map_player_skin_work.h
     include/awl/world_map_player_frame.h
+    include/awl/world_map_player_primary_owner.h
     include/awl/world_map_player_animation_assets.h
     include/awl/world_map_player_model_assets.h
     src/world_map_flat_archive.h
@@ -597,6 +599,11 @@ add_executable(world_map_player_model_assets_tests
     src/world_map_player_draw_commands.cpp
     src/world_map_player_topology.cpp
     src/world_map_player_geometry.cpp
+    src/world_map_player_primary_owner.cpp
+    src/world_map_animation_channel_owner.cpp
+    src/world_map_player_start_animation.cpp
+    src/world_map_player_animation_assets.cpp
+    src/disc_identity.cpp
     src/world_map_player_draw_state.cpp
     src/world_map_player_skin_work.cpp
     src/world_map_player_frame.cpp
@@ -617,7 +624,7 @@ add_executable(world_map_player_model_assets_tests
 target_include_directories(world_map_player_model_assets_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
 if(WIN32)
     target_compile_definitions(world_map_player_model_assets_tests PRIVATE AWL_PLATFORM_WINDOWS _CRT_SECURE_NO_WARNINGS)
-    target_link_libraries(world_map_player_model_assets_tests PRIVATE xinput)
+    target_link_libraries(world_map_player_model_assets_tests PRIVATE xinput bcrypt)
 endif()
 if(MSVC)
     target_compile_options(world_map_player_model_assets_tests PRIVATE /W4)

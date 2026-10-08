@@ -148,6 +148,10 @@ public:
         const std::vector<WorldMapAnimationPartialPlaybackRecord>& records,
         const std::vector<const WorldMapAnimationBank*>& banks);
 private:
+    friend class WorldMapPlayerPrimaryOwner;
+    [[nodiscard]] WorldMapPlayerAnimationFrameResult stage(
+        const WorldMapPlayerOwnedFrameInput&, const std::vector<WorldMapAnimationPartialPlaybackRecord>&,
+        const std::vector<const WorldMapAnimationBank*>&, WorldMapPlayerFrame*, std::vector<WorldMapModelMatrix>*) const;
     WorldMapPlayerFrameOwner(std::unique_ptr<WorldMapPlayerSkinWork> work,std::vector<WorldMapModelMatrix> features);
     friend WorldMapPlayerFrameOwnerResult prepare_world_map_player_frame_owner(
         const std::shared_ptr<const WorldMapPlayerModelAssets>&,std::unique_ptr<WorldMapPlayerFrameOwner>*);

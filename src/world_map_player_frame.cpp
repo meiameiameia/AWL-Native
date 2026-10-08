@@ -275,6 +275,17 @@ WorldMapPlayerAnimationFrameResult WorldMapPlayerFrameOwner::advance(
     const WorldMapPlayerOwnedFrameInput& input,
     const std::vector<WorldMapAnimationPartialPlaybackRecord>& records,
     const std::vector<const WorldMapAnimationBank*>& banks) {
+    WorldMapPlayerFrame staged; std::vector<WorldMapModelMatrix> features;
+    const auto result = stage(input, records, banks, &staged, &features);
+    if (result.status != WorldMapPlayerFrameStatus::Evaluated) return result;
+    root_pose_ = staged.root_pose_after; features_.swap(features); frame_.emplace(std::move(staged));
+    return result;
+}
+WorldMapPlayerAnimationFrameResult WorldMapPlayerFrameOwner::stage(
+    const WorldMapPlayerOwnedFrameInput& input,
+    const std::vector<WorldMapAnimationPartialPlaybackRecord>& records,
+    const std::vector<const WorldMapAnimationBank*>& banks,
+    WorldMapPlayerFrame* out, std::vector<WorldMapModelMatrix>* features) const {
     using Status=WorldMapPlayerFrameStatus;
     // Publishing a primary prefix would accept only part of E438 recursion.
     for (const auto& child:input.links.children) if (child.child) return {Status::RequiresHierarchy};
@@ -296,10 +307,9 @@ WorldMapPlayerAnimationFrameResult WorldMapPlayerFrameOwner::advance(
                 return {Status::UnsupportedLayout};
             features_after[index]=*staged.feature_matrix_writes[index];
         }
-        // All allocation/conversion/sampling/skin work completed. These moves
-        // cannot throw and publish the pose, features and vertices together.
-        root_pose_=staged.root_pose_after;
-        features_.swap(features_after);frame_.emplace(std::move(staged));
+        // Return a complete staged frame/features. The caller publishes only
+        // after its remaining work (including primary geometry) succeeds.
+        *out = std::move(staged); *features = std::move(features_after);
         return result;
     } catch (const std::bad_alloc&) { return {Status::AllocationFailure}; }
 }

@@ -15,6 +15,14 @@ float component(const uint8_t* p,uint8_t fraction) {
 } // namespace
 WorldMapPlayerGeometryResult WorldMapPlayerGeometry::decode(
     const WorldMapPlayerSkinWork& work,const std::vector<uint8_t>& vertex_output) {
+    std::vector<std::vector<WorldMapPlayerVertex>> staged;
+    const auto result = stage_decode(work, vertex_output, &staged);
+    if (result.status == Status::DecodedVertices) vertices_.swap(staged);
+    return result;
+}
+WorldMapPlayerGeometryResult WorldMapPlayerGeometry::stage_decode(
+    const WorldMapPlayerSkinWork& work,const std::vector<uint8_t>& vertex_output,
+    std::vector<std::vector<WorldMapPlayerVertex>>* out) const {
     if (work.drawing().setup().selection().assets!=topology_.assets || vertex_output.size()!=output_size_) return {};
     WorldMapPlayerGeometryResult result;
     try {
@@ -49,7 +57,7 @@ WorldMapPlayerGeometryResult WorldMapPlayerGeometry::decode(
             }
             staged.push_back(std::move(vertices));
         }
-        vertices_=std::move(staged);return {Status::DecodedVertices};
+        *out = std::move(staged);return {Status::DecodedVertices};
     } catch (const std::bad_alloc&) {result.status=Status::AllocationFailure;return result;}
 }
 WorldMapPlayerGeometryResult prepare_world_map_player_geometry(

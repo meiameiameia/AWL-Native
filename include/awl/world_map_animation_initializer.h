@@ -171,8 +171,8 @@ struct WorldMapNativeAnimationInitializerStep {
 // and selected secondary construction remain explicit stops. Equal BASE skips
 // channel/model/bank/optional reads. Models borrow channel keys: destroy models
 // before the channel, or clear verified playback links while both are alive.
-// Supported native models are currently diagnostic no-skin owners: this neither
-// constructs the real primary player nor accepts parent state 29 or a frame.
+// Accepts checked secondary or CPU-primary owners; does not construct the
+// primary/holder, accept parent state 29, execute a frame or schedule a draw.
 [[nodiscard]] WorldMapNativeAnimationInitializerStatus advance_world_map_native_animation_initializer(
     WorldMapNativeAnimationInitializerMetadata* metadata, WorldMapNativeAnimationChannel* channel,
     const std::vector<WorldMapNativeModel*>& models, uint64_t requested,
