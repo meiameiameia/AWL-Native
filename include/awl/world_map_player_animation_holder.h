@@ -1,6 +1,7 @@
 #pragma once
 #include "awl/world_map_player_primary_owner.h"
 #include "awl/world_map_player_start_animation.h"
+#include "awl/world_map_player_initial_animation.h"
 
 namespace awl {
 // D560's stores, with its unwritten words/bytes explicitly absent. These are
@@ -16,6 +17,9 @@ struct WorldMapPlayerAnimationHolderState {
     uint32_t restart_deadline_24 = 0, restart_limit_28 = 0, restart_count_2c = 0;
     uint64_t model_identity_30 = 0, group_identity_34 = 0;
     std::optional<WorldMapAnimationFeature38> feature_38;
+    // Known only through the supported actual F39C initial-input path.
+    std::optional<uint32_t> feature_source_10;
+    std::optional<uint8_t> feature_flag_34;
     std::optional<WorldMapAnimationFeature3c> feature_3c;
     uint64_t secondary_model_c0 = 0, feature_c4 = 0, auxiliary_model_c8 = 0, arena_cc = 0;
 };
@@ -43,12 +47,23 @@ struct WorldMapPlayerAnimationHolderStartResult {
     std::optional<WorldMapAnimationFeatureRow> required_row;
     std::optional<WorldMapPlayerAnimationHolderChannelDependency> channel_dependency;
 };
+enum class WorldMapPlayerInitialHolderStatus {
+    ConstructedCpuHolder, InitialInputsIncomplete, RequiresModelAssets,
+    PhaseMismatch, HolderIncomplete, InvalidInput, AllocationFailure
+};
+struct WorldMapPlayerInitialHolderResult {
+    WorldMapPlayerInitialHolderStatus status = WorldMapPlayerInitialHolderStatus::InvalidInput;
+    WorldMapPlayerInitialAnimationStep initial;
+    std::optional<WorldMapPlayerAnimationHolderResult> holder;
+};
 
 // D4B4's two owned channels, D560 state, actual CPU primary and retained
 // group-zero providers. Fresh D610 binding executes initialization before
 // publication. Existing-holder D610 rebind/reset, secondary construction,
 // descriptor sequences, holder clocks, actor acknowledgement and GPU draws
-// remain unsupported. Optional feature state is a supplied complete snapshot.
+// remain unsupported. General construction accepts a supplied complete
+// feature snapshot; the initial-input wrapper prepares it from static inputs
+// and reached runtime table/clock evidence.
 class WorldMapPlayerAnimationHolder {
 public:
     WorldMapPlayerAnimationHolder(const WorldMapPlayerAnimationHolder&) = delete;
@@ -59,6 +74,7 @@ public:
     const WorldMapPlayerPrimaryOwner& primary() const { return *primary_; }
     const std::shared_ptr<const WorldMapPlayerAnimationAssets>& animations() const { return animations_; }
     const WorldMapActorAnimationDescriptor& descriptor() const { return descriptor_; }
+    const std::shared_ptr<const WorldMapPlayerInitialAnimationInputs>& initial_inputs() const { return initial_inputs_; }
     // Subsequent selector-1 starts use D660's conditional D69C -> DB28 path,
     // not D610's unconditional DB28 rebind. Every stop preserves all owners.
     [[nodiscard]] WorldMapPlayerAnimationHolderStartResult start(
@@ -76,10 +92,16 @@ private:
         const std::shared_ptr<const WorldMapPlayerAnimationAssets>&, const WorldMapActorAnimationDescriptor&,
         const std::optional<WorldMapAnimationFeature38>&, const WorldMapAnimationInitializerObservations&,
         std::unique_ptr<WorldMapPlayerAnimationHolder>*);
+    friend WorldMapPlayerInitialHolderResult construct_world_map_player_initial_animation_holder(
+        const std::shared_ptr<const WorldMapPlayerModelAssets>&,
+        const std::shared_ptr<const WorldMapPlayerAnimationAssets>&,
+        const std::shared_ptr<const WorldMapPlayerInitialAnimationInputs>&, const WorldMapPlayerInitialAnimationQuery&,
+        const WorldMapAnimationInitializerObservations&, std::unique_ptr<WorldMapPlayerAnimationHolder>*);
     // Declared before the model: it dies before the channels it borrows.
     std::unique_ptr<WorldMapNativeAnimationChannel> primary_channel_, secondary_channel_;
     std::shared_ptr<const WorldMapPlayerAnimationAssets> animations_;
     std::shared_ptr<const WorldMapPlayerStartAnimationTables> tables_;
+    std::shared_ptr<const WorldMapPlayerInitialAnimationInputs> initial_inputs_;
     std::unique_ptr<WorldMapPlayerPrimaryOwner> primary_;
     std::vector<WorldMapNativeModel*> models_; // Borrowed registry, fixed after fresh construction.
     WorldMapPlayerAnimationHolderState state_;
@@ -93,6 +115,18 @@ private:
     const std::shared_ptr<const WorldMapPlayerAnimationAssets>& animation_assets,
     const WorldMapActorAnimationDescriptor& initial_descriptor,
     const std::optional<WorldMapAnimationFeature38>& feature_38,
+    const WorldMapAnimationInitializerObservations& observations,
+    std::unique_ptr<WorldMapPlayerAnimationHolder>* out);
+// Slot-zero, alternate -1 B8F8 inputs: exact static descriptor/types and
+// supplied runtime timer table/clock evidence, then fresh CPU construction.
+// Phase must match the retained primary asset variant. No actor final flag,
+// scale/message/state callback or live startup acknowledgement is performed.
+// All stops release staging and preserve *out, including late DB28 stops.
+[[nodiscard]] WorldMapPlayerInitialHolderResult construct_world_map_player_initial_animation_holder(
+    const std::shared_ptr<const WorldMapPlayerModelAssets>& model_assets,
+    const std::shared_ptr<const WorldMapPlayerAnimationAssets>& animation_assets,
+    const std::shared_ptr<const WorldMapPlayerInitialAnimationInputs>& inputs,
+    const WorldMapPlayerInitialAnimationQuery& query,
     const WorldMapAnimationInitializerObservations& observations,
     std::unique_ptr<WorldMapPlayerAnimationHolder>* out);
 } // namespace awl

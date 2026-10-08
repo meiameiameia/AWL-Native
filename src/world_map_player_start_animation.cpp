@@ -1,5 +1,6 @@
 #include "awl/world_map_player_start_animation.h"
 #include "awl/disc_identity.h"
+#include "world_map_dol_view.h"
 #include "awl/filesystem.h"
 #include <fstream>
 #include <new>
@@ -9,45 +10,9 @@
 namespace awl {
 namespace {
 using Status = WorldMapPlayerStartAnimationStatus;
-constexpr size_t max_dol_size = 32 * 1024 * 1024;
-uint32_t word(const uint8_t* p) {
-    return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3];
-}
-struct Section { uint32_t offset = 0, address = 0, size = 0; };
-class DolView {
-public:
-    bool initialize(const uint8_t* data, size_t size) {
-        if (!data || size < 0x100 || size > max_dol_size) return false;
-        data_ = data;
-        for (size_t i = 0; i < sections_.size(); ++i) {
-            const Section section{word(data + i * 4),word(data + 0x48 + i * 4),word(data + 0x90 + i * 4)};
-            if (section.size == 0) continue;
-            if (section.offset < 0x100 || section.offset > size || section.size > size - section.offset ||
-                uint64_t(section.address) + section.size > uint64_t(UINT32_MAX) + 1) return false;
-            for (size_t j = 0; j < i; ++j) {
-                const auto& prior = sections_[j];
-                if (prior.size == 0) continue;
-                if ((uint64_t(section.address) < uint64_t(prior.address) + prior.size &&
-                     uint64_t(prior.address) < uint64_t(section.address) + section.size) ||
-                    (uint64_t(section.offset) < uint64_t(prior.offset) + prior.size &&
-                     uint64_t(prior.offset) < uint64_t(section.offset) + section.size)) return false;
-            }
-            sections_[i] = section;
-        }
-        return true;
-    }
-    const uint8_t* read(uint32_t address, size_t size) const {
-        for (const auto& section : sections_) {
-            if (section.size != 0 && address >= section.address &&
-                uint64_t(address) - section.address + size <= section.size)
-                return data_ + section.offset + (address - section.address);
-        }
-        return nullptr;
-    }
-private:
-    const uint8_t* data_ = nullptr;
-    std::array<Section,18> sections_{};
-};
+using detail::max_dol_size;
+using detail::DolView;
+using detail::dol_word;
 } // namespace
 
 uint32_t classify_world_map_player_start_animation(uint32_t item, uint32_t action, uint8_t type) {
@@ -62,17 +27,17 @@ bool WorldMapPlayerStartAnimationTables::decode(const uint8_t* data, size_t size
     const auto* jump = view.read(0x8029E4BC,4);
     const auto* row = view.read(0x80249238,8);
     const auto* empty = view.read(0x80282DF8,1);
-    if (!jump || word(jump) != 0x800289A8 || !row || !empty) return false;
+    if (!jump || dol_word(jump) != 0x800289A8 || !row || !empty) return false;
     std::array<WorldMapPlayerStartAnimationSelection,4> entries;
     for (uint32_t i = 0; i < 4; ++i) {
         const uint16_t index = static_cast<uint16_t>((uint16_t(row[i * 2]) << 8) | row[i * 2 + 1]);
         const auto* slot = view.read(0x8029BECC + uint32_t(index) * 4,4);
         if (!slot) return false;
-        const uint32_t address = word(slot);
+        const uint32_t address = dol_word(slot);
         if (address == 0 || (address & 3) != 0) return false;
         const auto* descriptor = view.read(address,12);
         if (!descriptor) return false;
-        entries[i] = {i,index,{address,word(descriptor),word(descriptor + 4),word(descriptor + 8)}};
+        entries[i] = {i,index,{address,dol_word(descriptor),dol_word(descriptor + 4),dol_word(descriptor + 8)}};
     }
     entries_ = entries; empty_item_type_ = *empty;
     return true;

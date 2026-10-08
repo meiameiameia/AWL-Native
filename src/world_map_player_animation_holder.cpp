@@ -114,4 +114,38 @@ WorldMapPlayerAnimationHolderStartResult WorldMapPlayerAnimationHolder::start(
         return result;
     } catch (const std::bad_alloc&) { return {Status::AllocationFailure}; }
 }
+WorldMapPlayerInitialHolderResult construct_world_map_player_initial_animation_holder(
+    const std::shared_ptr<const WorldMapPlayerModelAssets>& model_assets,
+    const std::shared_ptr<const WorldMapPlayerAnimationAssets>& animation_assets,
+    const std::shared_ptr<const WorldMapPlayerInitialAnimationInputs>& inputs,
+    const WorldMapPlayerInitialAnimationQuery& query,
+    const WorldMapAnimationInitializerObservations& observations,
+    std::unique_ptr<WorldMapPlayerAnimationHolder>* out) {
+    using Status = WorldMapPlayerInitialHolderStatus;
+    static_assert(std::is_nothrow_copy_assignable_v<WorldMapPlayerInitialHolderResult>);
+    if (!out) return {};
+    WorldMapPlayerInitialHolderResult result;
+    result.initial = prepare_world_map_player_initial_animation(inputs, query, observations);
+    if (result.initial.status != WorldMapPlayerInitialAnimationStatus::Prepared) {
+        result.status = result.initial.status == WorldMapPlayerInitialAnimationStatus::InvalidInput ?
+            Status::InvalidInput : Status::InitialInputsIncomplete;
+        return result;
+    }
+    if (!model_assets) { result.status = Status::RequiresModelAssets; return result; }
+    constexpr uint32_t variants[]{0,0,0,1,1,2};
+    if (model_assets->variant() != variants[query.phase]) { result.status = Status::PhaseMismatch; return result; }
+    std::unique_ptr<WorldMapPlayerAnimationHolder> staging;
+    result.holder = construct_world_map_player_animation_holder(model_assets, animation_assets,
+        result.initial.selection->descriptor, result.initial.feature, observations, &staging);
+    if (result.holder->status == WorldMapPlayerAnimationHolderStatus::AllocationFailure) {
+        result.status = Status::AllocationFailure; return result;
+    }
+    if (result.holder->status != WorldMapPlayerAnimationHolderStatus::ConstructedCpuHolder) {
+        result.status = Status::HolderIncomplete; return result;
+    }
+    staging->initial_inputs_ = inputs;
+    staging->state_.feature_source_10 = result.initial.selection->feature_source_10;
+    staging->state_.feature_flag_34 = result.initial.selection->feature_flag_34;
+    *out = std::move(staging); result.status = Status::ConstructedCpuHolder; return result;
+}
 } // namespace awl

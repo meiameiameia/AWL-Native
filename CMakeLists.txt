@@ -60,6 +60,7 @@ set(SOURCES
     src/world_map_player_geometry.cpp
     src/world_map_player_primary_owner.cpp
     src/world_map_player_animation_holder.cpp
+    src/world_map_player_initial_animation.cpp
     src/world_map_player_draw_state.cpp
     src/world_map_player_skin_work.cpp
     src/world_map_player_frame.cpp
@@ -128,6 +129,7 @@ set(HEADERS
     include/awl/world_map_player_frame.h
     include/awl/world_map_player_primary_owner.h
     include/awl/world_map_player_animation_holder.h
+    include/awl/world_map_player_initial_animation.h
     include/awl/world_map_player_animation_assets.h
     include/awl/world_map_player_model_assets.h
     src/world_map_flat_archive.h
@@ -603,6 +605,7 @@ add_executable(world_map_player_model_assets_tests
     src/world_map_player_geometry.cpp
     src/world_map_player_primary_owner.cpp
     src/world_map_player_animation_holder.cpp
+    src/world_map_player_initial_animation.cpp
     src/world_map_animation_channel_owner.cpp
     src/world_map_player_start_animation.cpp
     src/world_map_player_animation_assets.cpp
