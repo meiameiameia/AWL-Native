@@ -148,4 +148,35 @@ WorldMapPlayerInitialHolderResult construct_world_map_player_initial_animation_h
     staging->state_.feature_flag_34 = result.initial.selection->feature_flag_34;
     *out = std::move(staging); result.status = Status::ConstructedCpuHolder; return result;
 }
+WorldMapPlayerTimedInitialHolderResult construct_world_map_player_initial_holder_with_timers(
+    const std::shared_ptr<const WorldMapPlayerModelAssets>& model_assets,
+    const std::shared_ptr<const WorldMapPlayerAnimationAssets>& animation_assets,
+    const std::shared_ptr<const WorldMapPlayerInitialAnimationInputs>& inputs,
+    const std::shared_ptr<const WorldMapPlayerTimerAssets>& timers,
+    const WorldMapPlayerInitialAnimationQuery& query, const std::optional<uint32_t>& clock,
+    std::unique_ptr<WorldMapPlayerAnimationHolder>* out) {
+    using Status = WorldMapPlayerTimedInitialHolderStatus;
+    static_assert(std::is_nothrow_copy_assignable_v<WorldMapPlayerTimedInitialHolderResult>);
+    if (!out) return {};
+    WorldMapPlayerTimedInitialHolderResult result;
+    if (!inputs) { result.holder.initial.status = WorldMapPlayerInitialAnimationStatus::RequiresInputs; result.status = Status::InitialInputsIncomplete; return result; }
+    result.holder.initial = inputs->select(query);
+    if (result.holder.initial.status != WorldMapPlayerInitialAnimationStatus::Selected) { result.status = Status::InitialInputsIncomplete; return result; }
+    const auto& selection = *result.holder.initial.selection;
+    WorldMapPlayerTimerBinding binding;
+    result.timer = bind_world_map_player_timer_assets(timers, selection.type_0, selection.type_4, clock, &binding);
+    if (result.timer.status != WorldMapPlayerTimerAssetsStatus::Bound) {
+        result.status = result.timer.status == WorldMapPlayerTimerAssetsStatus::AllocationFailure ? Status::AllocationFailure :
+            result.timer.status == WorldMapPlayerTimerAssetsStatus::InvalidInput ? Status::InvalidInput : Status::TimerInputsIncomplete;
+        return result;
+    }
+    std::unique_ptr<WorldMapPlayerAnimationHolder> staging;
+    result.holder = construct_world_map_player_initial_animation_holder(model_assets, animation_assets, inputs, query, binding.observations, &staging);
+    if (result.holder.status != WorldMapPlayerInitialHolderStatus::ConstructedCpuHolder) {
+        result.status = result.holder.status == WorldMapPlayerInitialHolderStatus::AllocationFailure ? Status::AllocationFailure : Status::HolderIncomplete;
+        return result;
+    }
+    staging->timer_assets_ = binding.assets;
+    *out = std::move(staging); result.status = Status::ConstructedCpuHolder; return result;
+}
 } // namespace awl
