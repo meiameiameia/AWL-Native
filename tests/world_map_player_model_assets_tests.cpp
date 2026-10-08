@@ -1463,6 +1463,8 @@ uint64_t holder_snapshot(const awl::WorldMapPlayerAnimationHolder& holder) {
     hash(h,s.feature_3c.has_value());if(s.feature_3c){key(s.feature_3c->resource_0);real(s.feature_3c->value_4);real(s.feature_3c->value_8);}
     optional_word(s.feature_source_10);optional_word(s.feature_flag_34);key(reinterpret_cast<uintptr_t>(holder.initial_inputs().get()));
     key(reinterpret_cast<uintptr_t>(holder.timer_assets().get()));
+    key(reinterpret_cast<uintptr_t>(holder.game_clock().get()));
+    if(holder.game_clock()){const auto& clock=holder.game_clock()->state();hash(h,clock.raw_time);hash(h,clock.loop_count);hash(h,clock.retrace_interval);}
     const auto partial=[&](const awl::WorldMapAnimationPartialPlayback& p){real(p.position_0);real(p.rate_4);optional_word(p.word_8);
         optional_real(p.limit_c);hash(h,p.clip_10.has_value());if(p.clip_10){key(p.clip_10->bank_identity);hash(h,p.clip_10->offset);}key(p.link_14);optional_real(p.value_18);};
     partial(holder.primary().model().partial_playback());key(holder.primary().model().animation_banks().size());
@@ -1858,20 +1860,41 @@ void timer_asset_checks() {
     auto secondary=dol;word(secondary,0x134,63u|(255u<<19));std::shared_ptr<const awl::WorldMapPlayerInitialAnimationInputs> blocked;
     expect(awl::decode_world_map_player_initial_animation_inputs(secondary.data(),secondary.size(),&blocked)==awl::WorldMapPlayerInitialAnimationStatus::Decoded,"opaque secondary descriptor fixture decodes");
     const auto late=awl::construct_world_map_player_initial_holder_with_timers(models,animations,blocked,loaded,query,17,&holder);
-    expect(late.status==H::HolderIncomplete && late.holder.holder && late.holder.holder->initializer_status==awl::WorldMapAnimationInitializerStatus::RequiresSecondarySetup && holder_preserved(),"late animation dependency preserves complete holder after owned timer binding");blocked.reset();
+    expect(late.status==H::HolderIncomplete && late.holder.holder && late.holder.holder->initializer_status==awl::WorldMapAnimationInitializerStatus::RequiresSecondarySetup && holder_preserved(),"late animation dependency preserves complete holder after owned timer binding");
+    auto clock=std::make_shared<awl::GameClock>();std::unique_ptr<awl::WorldMapPlayerAnimationHolder> clock_holder;
+    const auto with_clock=[&](const std::shared_ptr<awl::GameClock>& provider,const auto& initial){
+        return awl::construct_world_map_player_initial_holder_with_clock(models,animations,initial,loaded,query,provider,&clock_holder);};
+    expect(with_clock(clock,inputs).status==H::ConstructedCpuHolder && clock_holder,"fresh owned game clock composes real-path timer holder");if(!clock_holder)return;
+    expect(clock_holder->game_clock()==clock && clock_holder->state().feature_38->first_14.clock_4==0 && clock_holder->state().feature_38->second_24.clock_4==0 &&
+        clock->state().loop_count==0,"fresh clock snapshot initializes both timers without advancing shared time");
+    clock->set_retrace_interval(2);expect(clock->advance() && clock->advance() && clock->state().raw_time==66 && clock->state().loop_count==2,"shared clock advances separately through two original-equivalent loops");
+    expect(clock_holder->advance(frame).status==awl::WorldMapPlayerPrimaryUpdateStatus::Advanced && clock->state().raw_time==66 && clock->state().loop_count==2 &&
+        clock_holder->state().feature_38->first_14.clock_4==0 && clock_holder->state().feature_38->second_24.clock_4==0,"CPU frame evaluation preserves shared clock and initial timer snapshots before TAM execution exists");
+    const auto clock_before=holder_snapshot(*clock_holder);const auto* old_clock_holder=clock_holder.get();
+    const auto clock_preserved=[&](){return clock_holder.get()==old_clock_holder && holder_snapshot(*clock_holder)==clock_before;};
+    const auto no_clock=with_clock({},inputs);expect(no_clock.status==H::TimerInputsIncomplete && no_clock.timer.status==S::RequiresClock && clock_preserved(),"missing owned clock preserves prior holder and clock state");
+    query.phase=6;expect(with_clock({},inputs).status==H::InitialInputsIncomplete && clock_preserved(),"static phase stop precedes missing owned clock");query.phase=0;
+    const auto clock_late=with_clock(clock,blocked);expect(clock_late.status==H::HolderIncomplete && clock_late.holder.holder &&
+        clock_late.holder.holder->initializer_status==awl::WorldMapAnimationInitializerStatus::RequiresSecondarySetup && clock_preserved(),"late animation dependency cannot publish or advance shared clock owner");blocked.reset();
+    expect(awl::construct_world_map_player_initial_holder_with_clock(models,animations,inputs,loaded,query,clock,nullptr).status==H::InvalidInput,"null owned-clock holder output rejects");
 #if !defined(_MSC_VER) || !defined(_DEBUG)
     const auto construction_live=allocation_probe::live;size_t rejected_holder=0;bool constructed=false;
-    for(size_t fail=0;fail<512;++fail){allocation_probe::remaining=fail;allocation_probe::enabled=true;const auto result=construct(17);allocation_probe::enabled=false;
+    for(size_t fail=0;fail<512;++fail){allocation_probe::remaining=fail;allocation_probe::enabled=true;const auto result=with_clock(clock,inputs);allocation_probe::enabled=false;
         if(result.status==H::ConstructedCpuHolder){constructed=true;break;}++rejected_holder;
-        expect(result.status==H::AllocationFailure && holder_preserved() && allocation_probe::live==construction_live,"all owned timer binding/holder allocation failures preserve providers, timers, both channels and prior CPU frame");}
+        expect(result.status==H::AllocationFailure && clock_preserved() && holder_preserved() && allocation_probe::live==construction_live,"all owned clock/timer binding/holder allocation failures preserve shared time, providers, both channels and prior CPU frame");}
     expect(constructed && rejected_holder>224,"owned timer construction sweep includes binding snapshot before existing holder allocations");std::cout<<"PLAYER_TIMED_HOLDER_ALLOCATION_FAILURES "<<rejected_holder<<'\n';
 #endif
+    expect(with_clock(clock_holder->game_clock(),inputs).status==H::ConstructedCpuHolder && clock_holder->game_clock()==clock &&
+        clock_holder->state().feature_38->first_14.clock_4==66 && clock_holder->state().feature_38->second_24.clock_4==66,"clock provider/output alias retains ownership and selects current snapshot before replacing old holder");
+    const auto clock_lifetime=std::weak_ptr<awl::GameClock>(clock);clock.reset();
+    expect(!clock_lifetime.expired() && clock_holder->advance(frame).status==awl::WorldMapPlayerPrimaryUpdateStatus::Advanced && clock_holder->game_clock()->state().raw_time==66,"holder retains shared CPU clock after caller handle release");
+    clock_holder.reset();expect(clock_lifetime.expired(),"shared clock releases after last retained holder");
     const auto lifetime=std::weak_ptr<const awl::WorldMapPlayerTimerAssets>(loaded);loaded.reset();
     expect(!lifetime.expired() && holder->advance(frame).status==awl::WorldMapPlayerPrimaryUpdateStatus::Advanced,"last caller timer handle may drop while holder-owned timer resources remain live");
     awl::filesystem_shutdown();auto retained=holder->timer_assets();expect(awl::load_world_map_player_timer_assets(&retained)==S::Loaded && retained==holder->timer_assets(),"complete timer owner reuses without mounted file I/O");retained.reset();
     holder.reset();expect(lifetime.expired(),"timer resources release after the last holder/provider owner");
 }
-void local_timer_holder(const char* disc) {
+void local_timer_holder(const char* disc,bool owned_clock=false) {
     using S=awl::WorldMapPlayerTimerAssetsStatus;using B=awl::WorldMapPlayerTimerBank;using H=awl::WorldMapPlayerTimedInitialHolderStatus;
     expect(awl::filesystem_mount("/",disc),"local timer assets disc mounts");std::shared_ptr<const awl::WorldMapPlayerTimerAssets> timers;
     std::shared_ptr<const awl::WorldMapPlayerInitialAnimationInputs> inputs;std::shared_ptr<const awl::WorldMapPlayerAnimationAssets> animations;
@@ -1884,26 +1907,36 @@ void local_timer_holder(const char* disc) {
             expect(timers->resource(bank,row,column,&view),"actual timer resource view resolves");hash(table_digest,row);hash(table_digest,column);hash(table_digest,view.offset);hash(table_digest,view.size);}}
     expect(timers->row_count(B::Eyes)==18 && timers->row_count(B::Mouth)==14 && table_digest==0x3B8C90FA1D03FFA2ull,"32 actual row/column/offset/span views agree with mapped 824C/82D4/82E8 lookup");
     uint64_t digest=14695981039346656037ull,frame_digest=digest,geometry_digest=digest;size_t checked=0;
+    auto clock=owned_clock?std::make_shared<awl::GameClock>():std::shared_ptr<awl::GameClock>{};
+    const auto clock_lifetime=std::weak_ptr<awl::GameClock>(clock);if(clock)clock->set_retrace_interval(2);
     const auto real=[&](float v){uint32_t w;std::memcpy(&w,&v,4);hash(digest,w);};
     for(uint32_t phase=0;phase<6;++phase){awl::WorldMapPlayerInitialAnimationQuery query;query.phase=phase;const auto selected=inputs->select(query);if(!selected.selection)return;
         awl::WorldMapPlayerTimerResourceView first,second;expect(timers->resource(B::Eyes,selected.selection->type_0-0x3A,0,&first) && timers->resource(B::Mouth,selected.selection->type_4-0x24,0,&second),"actual startup timer resources resolve");
-        for(uint32_t clock:{0u,1u,33u,999u,UINT32_MAX-5,UINT32_MAX}){awl::WorldMapPlayerTimerBinding binding;
-            expect(awl::bind_world_map_player_timer_assets(timers,selected.selection->type_0,selected.selection->type_4,clock,&binding).status==S::Bound,"actual timer owners bind exact reached rows");
+        for(uint32_t raw_clock:{0u,1u,33u,999u,UINT32_MAX-5,UINT32_MAX}){awl::WorldMapPlayerTimerBinding binding;
+            expect(awl::bind_world_map_player_timer_assets(timers,selected.selection->type_0,selected.selection->type_4,raw_clock,&binding).status==S::Bound,"actual timer owners bind exact reached rows");
             const auto prepared=awl::prepare_world_map_player_initial_animation(inputs,query,binding.observations);expect(prepared.status==awl::WorldMapPlayerInitialAnimationStatus::Prepared && prepared.feature,"actual timer resources prepare nonnull complete initial feature");if(!prepared.feature)return;
             const auto& f=*prepared.feature;expect(f.first_14.resource_0==first.identity && f.second_24.resource_0==second.identity,"actual feature reset uses authoritative owner resource keys");
-            hash(digest,phase);hash(digest,clock);for(uint32_t v:{f.type_0,f.type_4,f.index_8,uint32_t(f.table_c),selected.selection->feature_source_10})hash(digest,v);
+            hash(digest,phase);hash(digest,raw_clock);for(uint32_t v:{f.type_0,f.type_4,f.index_8,uint32_t(f.table_c),selected.selection->feature_source_10})hash(digest,v);
             for(auto [timer,offset]:std::array<std::pair<const awl::WorldMapAnimationFeatureTimer*,uint32_t>,2>{{{&f.first_14,first.offset},{&f.second_24,second.offset}}}){hash(digest,offset);hash(digest,timer->clock_4);real(timer->value_8);real(timer->rate_c);}hash(digest,selected.selection->feature_flag_34);}
         std::shared_ptr<const Assets> models;std::unique_ptr<awl::WorldMapPlayerAnimationHolder> holder;
         expect(awl::load_world_map_player_model_assets(phase,&models)==Status::Loaded,"actual timer holder primary phase loads");
-        expect(awl::construct_world_map_player_initial_holder_with_timers(models,animations,inputs,timers,query,17,&holder).status==H::ConstructedCpuHolder && holder,"actual static/TAM/bank/model inputs reach owned initial CPU holder with supplied raw clock");if(!holder)return;
-        models.reset();if(phase==5){inputs.reset();timers.reset();animations.reset();}
+        const auto result=owned_clock?awl::construct_world_map_player_initial_holder_with_clock(models,animations,inputs,timers,query,clock,&holder):
+            awl::construct_world_map_player_initial_holder_with_timers(models,animations,inputs,timers,query,17,&holder);
+        expect(result.status==H::ConstructedCpuHolder && holder,"actual static/TAM/bank/model inputs reach owned initial CPU holder");if(!holder)return;
+        if(owned_clock){expect(holder->game_clock()==clock && holder->state().feature_38->first_14.clock_4==phase*3300u && holder->state().feature_38->second_24.clock_4==phase*3300u,
+                "actual startup binds both real resource timers to current shared clock snapshot");
+            for(uint32_t tick=0;tick<100;++tick)expect(holder->game_clock()->advance(),"owned raw clock advances between actual CPU holder/frame checks");
+            expect(clock->state().raw_time==(phase+1)*3300u && clock->state().loop_count==(phase+1)*100u,"shared two-retrace clock persists across successive phase constructions");}
+        models.reset();if(phase==5){inputs.reset();timers.reset();animations.reset();clock.reset();}
         awl::WorldMapPlayerPrimaryFrameInput frame;frame.node_post_transforms.resize(55);frame.root_pose=explicit_pose({1,0,0,10,0,1,0,20,0,0,1,30});
         expect(holder->advance(frame).status==awl::WorldMapPlayerPrimaryUpdateStatus::Advanced && holder->primary().cpu().frame()->skin_executed,"actual timer owner lifetimes survive full 55-node CPU frame publication");if(!holder->primary().cpu().frame())return;
         hash(frame_digest,phase);hash_frame(frame_digest,*holder->primary().cpu().frame());hash(geometry_digest,phase);hash_geometry(geometry_digest,holder->primary().geometry());++checked;
     }
     expect(digest==0x45896C1D4A78E995ull,"36 actual resource/feature resets match mapped constructor bodies with supplied phase/raw clock");
     expect(checked==6 && frame_digest==0xCC652D4BB4E9690Aull && geometry_digest==0xF5968658E37D53CAull,"owned actual timer resources preserve prior six-phase CPU frame and mesh fingerprints");
-    std::cout<<"LOCAL_PLAYER_TIMER_HOLDER "<<checked<<" phases / 32 resource views / 36 actual resource comparisons; raw clock supplied, TAM execution and actor/GPU pending\n";
+    if(owned_clock)expect(clock_lifetime.expired(),"last actual holder releases shared clock after all caller handles drop");
+    std::cout<<(owned_clock?"LOCAL_PLAYER_CLOCK_HOLDER ":"LOCAL_PLAYER_TIMER_HOLDER ")<<checked<<" phases / 32 resource views / 36 actual resource comparisons; "
+        <<(owned_clock?"600 owned clock updates; ":"raw clock supplied; ")<<"TAM execution and actor/GPU pending\n";
 }
 void hash_channels(uint64_t& h,const awl::WorldMapModelChannelControls& controls) {
     hash(h,controls.count);for(size_t i=0;i<controls.count;++i){const auto& c=controls.calls[i];
@@ -2655,6 +2688,7 @@ int main(int argc,char** argv){
     else if(argc==3 && std::string(argv[1])=="--player-holder-local")local_holder(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-initial-holder-local")local_initial_holder(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-timer-holder-local")local_timer_holder(argv[2]);
-    else if(argc!=1)expect(false,"usage: --player-model-local <disc>, --player-frame-local <disc>, --player-primary-local <disc>, --player-holder-local <disc>, --player-initial-holder-local <disc> or --player-timer-holder-local <disc>");
+    else if(argc==3 && std::string(argv[1])=="--player-clock-holder-local")local_timer_holder(argv[2],true);
+    else if(argc!=1)expect(false,"usage: --player-model-local <disc>, --player-frame-local <disc>, --player-primary-local <disc>, --player-holder-local <disc>, --player-initial-holder-local <disc>, --player-timer-holder-local <disc> or --player-clock-holder-local <disc>");
     awl::filesystem_shutdown();return failures?1:0;
 }

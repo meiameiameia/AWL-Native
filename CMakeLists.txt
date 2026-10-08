@@ -62,6 +62,7 @@ set(SOURCES
     src/world_map_player_animation_holder.cpp
     src/world_map_player_initial_animation.cpp
     src/world_map_player_timer_assets.cpp
+    src/game_clock.cpp
     src/world_map_player_draw_state.cpp
     src/world_map_player_skin_work.cpp
     src/world_map_player_frame.cpp
@@ -132,6 +133,7 @@ set(HEADERS
     include/awl/world_map_player_animation_holder.h
     include/awl/world_map_player_initial_animation.h
     include/awl/world_map_player_timer_assets.h
+    include/awl/game_clock.h
     include/awl/world_map_player_animation_assets.h
     include/awl/world_map_player_model_assets.h
     src/world_map_flat_archive.h
@@ -177,6 +179,17 @@ endif()
 
 # Tests
 enable_testing()
+set_source_files_properties(src/game_clock.cpp PROPERTIES
+    COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:strict>"
+)
+add_executable(game_clock_tests tests/game_clock_tests.cpp src/game_clock.cpp)
+target_include_directories(game_clock_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+if(MSVC)
+    target_compile_options(game_clock_tests PRIVATE /W4)
+else()
+    target_compile_options(game_clock_tests PRIVATE -Wall -Wextra)
+endif()
+add_test(NAME game_clock_tests COMMAND game_clock_tests)
 add_executable(gpl_render_mesh_tests
     tests/gpl_render_mesh_tests.cpp
     src/gpl_render_mesh.cpp
@@ -609,6 +622,7 @@ add_executable(world_map_player_model_assets_tests
     src/world_map_player_animation_holder.cpp
     src/world_map_player_initial_animation.cpp
     src/world_map_player_timer_assets.cpp
+    src/game_clock.cpp
     src/world_map_animation_channel_owner.cpp
     src/world_map_player_start_animation.cpp
     src/world_map_player_animation_assets.cpp

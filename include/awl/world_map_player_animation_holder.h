@@ -3,6 +3,7 @@
 #include "awl/world_map_player_start_animation.h"
 #include "awl/world_map_player_initial_animation.h"
 #include "awl/world_map_player_timer_assets.h"
+#include "awl/game_clock.h"
 
 namespace awl {
 // D560's stores, with its unwritten words/bytes explicitly absent. These are
@@ -86,6 +87,7 @@ public:
     const WorldMapActorAnimationDescriptor& descriptor() const { return descriptor_; }
     const std::shared_ptr<const WorldMapPlayerInitialAnimationInputs>& initial_inputs() const { return initial_inputs_; }
     const std::shared_ptr<const WorldMapPlayerTimerAssets>& timer_assets() const { return timer_assets_; }
+    const std::shared_ptr<GameClock>& game_clock() const { return game_clock_; }
     // Subsequent selector-1 starts use D660's conditional D69C -> DB28 path,
     // not D610's unconditional DB28 rebind. Every stop preserves all owners.
     [[nodiscard]] WorldMapPlayerAnimationHolderStartResult start(
@@ -114,12 +116,19 @@ private:
         const std::shared_ptr<const WorldMapPlayerInitialAnimationInputs>&,
         const std::shared_ptr<const WorldMapPlayerTimerAssets>&, const WorldMapPlayerInitialAnimationQuery&,
         const std::optional<uint32_t>&, std::unique_ptr<WorldMapPlayerAnimationHolder>*);
+    friend WorldMapPlayerTimedInitialHolderResult construct_world_map_player_initial_holder_with_clock(
+        const std::shared_ptr<const WorldMapPlayerModelAssets>&,
+        const std::shared_ptr<const WorldMapPlayerAnimationAssets>&,
+        const std::shared_ptr<const WorldMapPlayerInitialAnimationInputs>&,
+        const std::shared_ptr<const WorldMapPlayerTimerAssets>&, const WorldMapPlayerInitialAnimationQuery&,
+        const std::shared_ptr<GameClock>&, std::unique_ptr<WorldMapPlayerAnimationHolder>*);
     // Declared before the model: it dies before the channels it borrows.
     std::unique_ptr<WorldMapNativeAnimationChannel> primary_channel_, secondary_channel_;
     std::shared_ptr<const WorldMapPlayerAnimationAssets> animations_;
     std::shared_ptr<const WorldMapPlayerStartAnimationTables> tables_;
     std::shared_ptr<const WorldMapPlayerInitialAnimationInputs> initial_inputs_;
     std::shared_ptr<const WorldMapPlayerTimerAssets> timer_assets_;
+    std::shared_ptr<GameClock> game_clock_;
     std::unique_ptr<WorldMapPlayerPrimaryOwner> primary_;
     std::vector<WorldMapNativeModel*> models_; // Borrowed registry, fixed after fresh construction.
     WorldMapPlayerAnimationHolderState state_;
@@ -156,5 +165,16 @@ private:
     const std::shared_ptr<const WorldMapPlayerInitialAnimationInputs>& inputs,
     const std::shared_ptr<const WorldMapPlayerTimerAssets>& timers,
     const WorldMapPlayerInitialAnimationQuery& query, const std::optional<uint32_t>& clock,
+    std::unique_ptr<WorldMapPlayerAnimationHolder>* out);
+// Same fresh startup from a shared GameClock's raw snapshot, with clock
+// lifetime retained before publication. First-row/clock/second-row stops and
+// late holder failures preserve *out and never advance the shared clock.
+// Timer clock fields remain initial snapshots; TAM sampling is unsupported.
+[[nodiscard]] WorldMapPlayerTimedInitialHolderResult construct_world_map_player_initial_holder_with_clock(
+    const std::shared_ptr<const WorldMapPlayerModelAssets>& model_assets,
+    const std::shared_ptr<const WorldMapPlayerAnimationAssets>& animation_assets,
+    const std::shared_ptr<const WorldMapPlayerInitialAnimationInputs>& inputs,
+    const std::shared_ptr<const WorldMapPlayerTimerAssets>& timers,
+    const WorldMapPlayerInitialAnimationQuery& query, const std::shared_ptr<GameClock>& clock,
     std::unique_ptr<WorldMapPlayerAnimationHolder>* out);
 } // namespace awl

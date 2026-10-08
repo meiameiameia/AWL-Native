@@ -179,4 +179,22 @@ WorldMapPlayerTimedInitialHolderResult construct_world_map_player_initial_holder
     staging->timer_assets_ = binding.assets;
     *out = std::move(staging); result.status = Status::ConstructedCpuHolder; return result;
 }
+WorldMapPlayerTimedInitialHolderResult construct_world_map_player_initial_holder_with_clock(
+    const std::shared_ptr<const WorldMapPlayerModelAssets>& model_assets,
+    const std::shared_ptr<const WorldMapPlayerAnimationAssets>& animation_assets,
+    const std::shared_ptr<const WorldMapPlayerInitialAnimationInputs>& inputs,
+    const std::shared_ptr<const WorldMapPlayerTimerAssets>& timers,
+    const WorldMapPlayerInitialAnimationQuery& query, const std::shared_ptr<GameClock>& clock,
+    std::unique_ptr<WorldMapPlayerAnimationHolder>* out) {
+    if (!out) return {};
+    const auto snapshot = clock ? std::optional<uint32_t>(clock->state().raw_time) : std::nullopt;
+    std::unique_ptr<WorldMapPlayerAnimationHolder> staging;
+    auto result = construct_world_map_player_initial_holder_with_timers(model_assets, animation_assets,
+        inputs, timers, query, snapshot, &staging);
+    if (result.status == WorldMapPlayerTimedInitialHolderStatus::ConstructedCpuHolder) {
+        staging->game_clock_ = clock;
+        *out = std::move(staging);
+    }
+    return result;
+}
 } // namespace awl
