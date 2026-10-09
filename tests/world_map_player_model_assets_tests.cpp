@@ -10,6 +10,7 @@
 #include "awl/world_map_player_primary_owner.h"
 #include "awl/world_map_player_start_animation.h"
 #include "awl/world_map_player_animation_holder.h"
+#include "awl/world_map_player_startup.h"
 #include "awl/filesystem.h"
 
 #include <chrono>
@@ -1633,10 +1634,10 @@ void local_holder(const char* disc) {
 }
 std::vector<uint8_t> initial_input_dol() {
     // Invented sections, indices, descriptors, phase rows and scale catalog.
-    std::vector<uint8_t> b(0x248);
-    constexpr uint32_t addresses[]{0x80249230,0x8029E4B8,0x80282DF8,0x8029BECC,0x81000000,0x8029F818,0x81000100,0x8024A6E0,0x80249A6C};
-    constexpr uint32_t offsets[]{0x100,0x108,0x10C,0x110,0x130,0x160,0x180,0x1B0,0x1B8}, sizes[]{8,4,1,20,48,24,48,6,144};
-    for(size_t i=0;i<9;++i){word(b,i*4,offsets[i]);word(b,0x48+i*4,addresses[i]);word(b,0x90+i*4,sizes[i]);}
+    std::vector<uint8_t> b(0x368);
+    constexpr uint32_t addresses[]{0x80249230,0x8029E4B8,0x80282DF8,0x8029BECC,0x81000000,0x8029F818,0x81000100,0x8024A6E0,0x80249A6C,0x81000130};
+    constexpr uint32_t offsets[]{0x100,0x108,0x10C,0x110,0x130,0x160,0x180,0x1B0,0x1B8,0x248}, sizes[]{8,4,1,20,48,24,48,6,144,0x120};
+    for(size_t i=0;i<10;++i){word(b,i*4,offsets[i]);word(b,0x48+i*4,addresses[i]);word(b,0x90+i*4,sizes[i]);}
     word(b,0x108,0x800289A8);
     constexpr uint32_t absent=63u|(127u<<11)|(255u<<19);
     for(uint32_t i=0;i<4;++i){b[0x101+i*2]=uint8_t(i+1);word(b,0x114+i*4,0x81000000+i*12);
@@ -1645,6 +1646,7 @@ std::vector<uint8_t> initial_input_dol() {
     constexpr uint8_t catalog[]{5,2,4,1,3,0};
     constexpr uint32_t scale_words[]{0x3F800001,0x80000000,0,0x3F000000,0xC0400000,0x40000000};
     for(size_t i=0;i<6;++i){b[0x1B0+i]=catalog[i];word(b,0x1BC+i*24,scale_words[i]);}
+    for(uint32_t i=6;i<42;++i){word(b,0x248+(i-6)*8,0x3A+i%6);word(b,0x24C+(i-6)*8,0x24+i%6);}
     return b;
 }
 awl::WorldMapAnimationInitializerObservations initial_timers(const awl::WorldMapPlayerInitialAnimationSelection& selection,uint32_t clock) {
@@ -1693,6 +1695,12 @@ void initial_input_checks() {
             prepared.feature->first_14.value_8==0 && prepared.feature->second_24.value_8==0 &&
             prepared.feature->first_14.rate_c==1 && prepared.feature->second_24.rate_c==1,"both initial timers have independently known resource/clock/zero/one reset fields");}
     query.phase=6;expect(inputs->select(query).status==S::RequiresPhase,"unsupported phase cannot index static initial rows");query.phase=0;
+    for(uint32_t phase=0;phase<6;++phase)for(uint32_t selector:{0u,1u,7u,0x24u}){awl::WorldMapPlayerModelTypeRow row;
+        expect(inputs->select_model_type(phase,selector,&row) && row.slot==0x8029F818+phase*4 && row.selector==selector &&
+            row.type_0==0x3A+(phase+selector)%6 && row.type_4==0x24+(phase+selector)%6,"retained dispatch rows follow phase pointer, selector stride and exact typed keys");}
+    awl::WorldMapPlayerModelTypeRow row_before{9,10,11,12},row_out=row_before;
+    expect(!inputs->select_model_type(6,0,&row_out) && !inputs->select_model_type(0,2,&row_out) && !inputs->select_model_type(0,0,nullptr) &&
+        row_out.slot==9 && row_out.selector==10 && row_out.type_0==11 && row_out.type_4==12,"invalid dispatch row query preserves prior output");
     query.model_slot=1;expect(inputs->select(query).status==S::UnsupportedModelSlot,"other actor model slots remain explicit stops");query.model_slot=0;
     query.alternate=0;expect(inputs->select(query).status==S::UnsupportedAlternate,"alternate 286D8 descriptor/model branch remains unsupported");query.alternate=UINT32_MAX;
     expect(awl::prepare_world_map_player_initial_animation({},query,{}).status==S::RequiresInputs,"missing initial provider has no invented feature snapshot");
@@ -1700,7 +1708,7 @@ void initial_input_checks() {
     for(auto change:std::vector<std::pair<size_t,uint32_t>>{{0x108,0},{0x114,0},{0x114,0x81000001},{0x114,0x81000028},
         {0x160,0},{0x174,0x81000129},{0x180,0x39},{0x180,UINT32_MAX},{0x184,0x23},{0x184,0x80000024},
         {4,0x100},{0x4C,0x80249230},{0x60,0xFFFFFFF0},{0x90+6*4,49},{0x90+7*4,5},{0x90+8*4,124},
-        {0x1BC,0x7F800000},{0x234,0x7FC01234}}){auto malformed=bytes;word(malformed,change.first,change.second);
+        {0x1BC,0x7F800000},{0x234,0x7FC01234},{0x90+9*4,0x11F}}){auto malformed=bytes;word(malformed,change.first,change.second);
         expect(awl::decode_world_map_player_initial_animation_inputs(malformed.data(),malformed.size(),&inputs)==S::UnsupportedLayout && inputs.get()==previous,"malformed reached tables/sections/pointers and unwritten timer types reject atomically");}
     auto outside=bytes;outside[0x1B5]=255;
     expect(awl::decode_world_map_player_initial_animation_inputs(outside.data(),outside.size(),&inputs)==S::UnsupportedLayout && inputs.get()==previous,"out-of-extent phase scale index preserves old provider");
@@ -1945,6 +1953,156 @@ void timer_asset_checks() {
     expect(!lifetime.expired() && holder->advance(frame).status==awl::WorldMapPlayerPrimaryUpdateStatus::Advanced,"last caller timer handle may drop while holder-owned timer resources remain live");
     awl::filesystem_shutdown();auto retained=holder->timer_assets();expect(awl::load_world_map_player_timer_assets(&retained)==S::Loaded && retained==holder->timer_assets(),"complete timer owner reuses without mounted file I/O");retained.reset();
     holder.reset();expect(lifetime.expired(),"timer resources release after the last holder/provider owner");
+}
+uint64_t startup_snapshot(const awl::WorldMapPlayerStartup& owner) {
+    auto h=holder_snapshot(owner.model());const auto& s=owner.state();
+    hash(h,uint32_t(s.state_1364));hash(h,s.counter_1368);hash(h,s.secondary_byte_3f0);
+    const auto key=reinterpret_cast<uintptr_t>(owner.starts().get());hash(h,uint32_t(uint64_t(key)>>32));hash(h,uint32_t(key));return h;
+}
+void startup_owner_checks() {
+    using S=awl::WorldMapPlayerStartupStatus;using A=awl::WorldMapPlayerStartAnimationStatus;using I=awl::WorldMapAnimationInitializerStatus;
+    Fixture fixture;auto payloads=files();payloads[0]=setup_model();payloads[1]=geometry_gpl();payloads[2]=execution_skin(1);
+    fixture.write("boy_0.arc",archive(payloads));fixture.write("boy_0.anm.arc",archive({owner_frame_clip(),owner_frame_clip(4)}));
+    fixture.write("boy_0_subanm.arc",archive({owner_frame_clip()}));fixture.write("boy_0_subact.arc",archive({setup_model()}));
+    auto initial_bytes=initial_input_dol(),start_bytes=holder_start_tables();awl::WorldMapPlayerStartupProviders p;
+    expect(awl::load_world_map_player_model_assets(0,&p.models)==Status::Loaded &&
+        awl::load_world_map_player_animation_assets(&p.animations)==awl::WorldMapPlayerAnimationAssetsStatus::Loaded &&
+        awl::decode_world_map_player_initial_animation_inputs(initial_bytes.data(),initial_bytes.size(),&p.initial)==awl::WorldMapPlayerInitialAnimationStatus::Decoded &&
+        awl::decode_world_map_player_start_animation_tables(start_bytes.data(),start_bytes.size(),&p.starts)==A::Decoded &&
+        awl::decode_world_map_player_timer_assets(timer_table(),timer_table(),&p.timers)==awl::WorldMapPlayerTimerAssetsStatus::Decoded,"complete invented startup providers prepare");
+    if(!p.models || !p.animations || !p.initial || !p.starts || !p.timers)return;
+    p.clock=std::make_shared<awl::GameClock>();p.clock->set_retrace_interval(2);expect(p.clock->advance() && p.clock->advance(),"startup test clock advances explicitly before construction");
+    awl::WorldMapPlayerStartupQuery q;q.tail.inputs.start.saved_pose.scene_type=1;q.audio_byte_90=uint8_t(0);
+    std::unique_ptr<awl::WorldMapPlayerStartup> owner;
+    const auto result=awl::construct_world_map_player_startup(p,q,&owner);
+    expect(result.status==S::ConstructedCpuStartup && result.animation && result.animation->status==A::Advanced && owner,"normal no-message constructor reaches owned CPU state 29 after a changed animation callback");if(!owner)return;
+    awl::WorldMapPlayerTimerResourceView eye,mouth;
+    expect(p.timers->resource(awl::WorldMapPlayerTimerBank::Eyes,1,0,&eye) && p.timers->resource(awl::WorldMapPlayerTimerBank::Mouth,1,0,&mouth),"selected synthetic dispatch resources resolve");
+    const auto& state=owner->state();const auto& feature=*owner->model().state().feature_38;
+    expect(state.state_1364==0x29 && state.counter_1368==0 && state.secondary_byte_3f0==1 && feature.type_0==0x3B && feature.type_4==0x25 &&
+        feature.first_14.resource_0==eye.identity && feature.second_24.resource_0==mouth.identity && feature.first_14.clock_4==66 && feature.second_24.clock_4==66 &&
+        owner->model().initial_model_state()->initialized_c==1 && owner->starts()==p.starts && !owner->model().primary().cpu().frame() && p.clock->state().loop_count==2,
+        "model timer writes, retained startup tables and parent fields publish together without frame/time advancement");
+    awl::WorldMapPlayerPrimaryFrameInput frame;frame.node_post_transforms.resize(3);
+    expect(owner->advance(frame).status==awl::WorldMapPlayerPrimaryUpdateStatus::Advanced && owner->model().primary().cpu().frame()->skin_executed &&
+        owner->model().primary().cpu().frame()->root_matrix==awl::WorldMapModelMatrix{2,0,0,0,0,2,0,0,0,0,2,0},"owned parent startup reaches first scaled CPU frame without supplied pose");
+    const auto before=startup_snapshot(*owner);const auto* old=owner.get();
+    const auto preserved=[&](){return owner.get()==old && startup_snapshot(*owner)==before;};
+    auto bad=p;bad.clock.reset();auto stopped=awl::construct_world_map_player_startup(bad,q,&owner);
+    expect(stopped.status==S::InitialModelIncomplete && stopped.initial_model.timer.status==awl::WorldMapPlayerTimerAssetsStatus::RequiresClock && preserved(),"missing constructor clock preserves complete prior startup/frame");bad=p;
+    auto request=q;request.tail.inputs.start.state_58c=1;request.tail.action_148_after_setup=17;
+    stopped=awl::construct_world_map_player_startup(p,request,&owner);
+    expect(stopped.status==S::UnsupportedConstructorState && stopped.tail && stopped.tail->requested_state==0xF && preserved(),"blocked guard stops at F before message/audio and cannot publish state 29");
+    request=q;request.tail.inputs.secondary_byte_3f2=1;
+    expect(awl::construct_world_map_player_startup(p,request,&owner).status==S::ConstructorTailIncomplete && preserved(),"restored-pose constructor remains an explicit dependency");
+    request=q;request.tail.binding_present=true;request.tail.binding_word_0=9;
+    expect(awl::construct_world_map_player_startup(p,request,&owner).status==S::ConstructorTailIncomplete && preserved(),"busy binding cannot silently skip model source effects");
+    request=q;request.tail.action_148_after_setup=17;
+    stopped=awl::construct_world_map_player_startup(p,request,&owner);
+    expect(stopped.status==S::ConstructorTailIncomplete && stopped.tail_status==awl::WorldMapPlayerConstructorTailStatus::MissingCameraByteEvidence && preserved(),"reached message retains missing camera-byte evidence");
+    request.tail.payload_camera_byte_known=true;
+    expect(awl::construct_world_map_player_startup(p,request,&owner).status==S::RequiresMessageDelivery && preserved(),"prepared scene-object message still requires actual recipient/attachment delivery");
+    request=q;request.audio_byte_90.reset();expect(awl::construct_world_map_player_startup(p,request,&owner).status==S::RequiresAudioByte && preserved(),"scene-one audio byte is required before model work");
+    request.audio_byte_90=uint8_t(1);expect(awl::construct_world_map_player_startup(p,request,&owner).status==S::RequiresAudioStop && preserved(),"active audio remains a dependency before model work");
+    bad.starts.reset();stopped=awl::construct_world_map_player_startup(bad,q,&owner);
+    expect(stopped.status==S::AnimationIncomplete && stopped.animation && stopped.animation->status==A::RequiresTables && preserved(),"late selector-table stop rolls back already staged timer/type changes");bad=p;
+    request=q;request.item_144_after_setup=1;stopped=awl::construct_world_map_player_startup(p,request,&owner);
+    expect(stopped.status==S::AnimationIncomplete && stopped.animation && stopped.animation->status==A::RequiresItemType && preserved(),"late nonzero item metadata dependency preserves complete previous startup");
+    request.item_type=awl::WorldMapPlayerStartItemType{1,1};stopped=awl::construct_world_map_player_startup(p,request,&owner);
+    expect(stopped.status==S::AnimationIncomplete && stopped.animation && stopped.animation->initializer_status==I::RequiresSecondarySetup && preserved(),"selected secondary setup remains blocked after owned model timer work");
+    expect(awl::decode_world_map_player_timer_assets(timer_table(),timer_table(1),&bad.timers)==awl::WorldMapPlayerTimerAssetsStatus::Decoded,"limited mouth provider prepares constructor row but omits dispatch row");
+    stopped=awl::construct_world_map_player_startup(bad,q,&owner);
+    expect(stopped.status==S::RequiresTimerRow && stopped.required_row && stopped.required_row->table_identity==bad.timers->table_identity(awl::WorldMapPlayerTimerBank::Mouth) &&
+        stopped.required_row->index==1 && preserved(),"late second model timer row failure rolls back first reset and parent/animation state");bad=p;
+    expect(awl::construct_world_map_player_startup(p,q,nullptr).status==S::InvalidInput,"null startup output rejects");
+    // Same-base selector still calls the callback and clears the parent counter.
+    auto same=start_bytes;word(same,0x54,0x81000000);
+    for(uint32_t i=0;i<4;++i)word(same,0x140+i*4,0x81000000+i*24);
+    word(same,0x160,1u<<10);word(same,0x164,63u|(127u<<11)|(255u<<19));
+    expect(awl::decode_world_map_player_start_animation_tables(same.data(),same.size(),&bad.starts)==A::Decoded,"same-base selector fixture decodes");
+    std::unique_ptr<awl::WorldMapPlayerStartup> equal;
+    stopped=awl::construct_world_map_player_startup(bad,q,&equal);
+    expect(stopped.status==S::ConstructedCpuStartup && stopped.animation && stopped.animation->status==A::Unchanged && equal->state().counter_1368==0 &&
+        equal->state().secondary_byte_3f0==1 && equal->starts()==bad.starts,"same-base animation no-op still establishes callback counter/flag writes and retains selection owner");equal.reset();bad=p;
+    // Below-threshold changes preserve both previous timers and need no row.
+    auto low=initial_bytes;word(low,0x250,UINT32_MAX);word(low,0x254,0x23);
+    expect(awl::decode_world_map_player_initial_animation_inputs(low.data(),low.size(),&bad.initial)==awl::WorldMapPlayerInitialAnimationStatus::Decoded,"dispatch-only negative/below-threshold rows retain known initial timer construction");
+    expect(awl::decode_world_map_player_timer_assets(timer_table(1),timer_table(1),&bad.timers)==awl::WorldMapPlayerTimerAssetsStatus::Decoded,"single-row timer providers suffice for initial construction");
+    stopped=awl::construct_world_map_player_startup(bad,q,&equal);
+    expect(stopped.status==S::ConstructedCpuStartup && equal && equal->model().state().feature_38->type_0==UINT32_MAX &&
+        equal->model().state().feature_38->type_4==0x23 && equal->model().state().feature_38->first_14.clock_4==66 &&
+        bad.timers->resource(awl::WorldMapPlayerTimerBank::Eyes,0,0,&eye) && equal->model().state().feature_38->first_14.resource_0==eye.identity,
+        "negative/below-threshold dispatch types preserve initial timers without inventing row lookups");equal.reset();bad={};
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    const auto live=allocation_probe::live;size_t rejected=0;bool reached=false;
+    for(size_t fail=0;fail<512;++fail){allocation_probe::remaining=fail;allocation_probe::enabled=true;const auto attempt=awl::construct_world_map_player_startup(p,q,&owner);allocation_probe::enabled=false;
+        if(attempt.status==S::ConstructedCpuStartup){reached=true;break;}++rejected;
+        expect(attempt.status==S::AllocationFailure && preserved() && allocation_probe::live==live,"every startup allocation stop releases staged model/timer/animation/parent work and preserves previous frame and clock");}
+    expect(reached && rejected>225,"startup sweep includes model type row staging and changed callback setup after initial model construction");
+    std::cout<<"PLAYER_STARTUP_ALLOCATION_FAILURES "<<rejected<<'\n';
+#endif
+    const auto model_lifetime=std::weak_ptr<const Assets>(p.models);const auto inputs_lifetime=std::weak_ptr<const awl::WorldMapPlayerInitialAnimationInputs>(p.initial);
+    const auto starts_lifetime=std::weak_ptr<const awl::WorldMapPlayerStartAnimationTables>(p.starts);const auto clock_lifetime=std::weak_ptr<awl::GameClock>(p.clock);p={};
+    expect(!model_lifetime.expired() && !inputs_lifetime.expired() && !starts_lifetime.expired() && !clock_lifetime.expired() &&
+        owner->advance(frame).status==awl::WorldMapPlayerPrimaryUpdateStatus::Advanced && owner->model().game_clock()->state().raw_time==66,
+        "CPU startup retains model, both static input owners and clock after all caller handles drop");owner.reset();
+    expect(model_lifetime.expired() && inputs_lifetime.expired() && starts_lifetime.expired() && clock_lifetime.expired(),"last startup releases providers and shared clock");
+}
+void local_startup(const char* disc) {
+    using S=awl::WorldMapPlayerStartupStatus;using A=awl::WorldMapPlayerStartAnimationStatus;using B=awl::WorldMapPlayerTimerBank;
+    expect(awl::filesystem_mount("/",disc),"local player startup disc mounts");awl::WorldMapPlayerStartupProviders p;
+    expect(awl::load_world_map_player_initial_animation_inputs(&p.initial)==awl::WorldMapPlayerInitialAnimationStatus::Loaded && p.initial && p.initial->target_verified() &&
+        awl::load_world_map_player_animation_assets(&p.animations)==awl::WorldMapPlayerAnimationAssetsStatus::Loaded &&
+        awl::load_world_map_player_timer_assets(&p.timers)==awl::WorldMapPlayerTimerAssetsStatus::Loaded &&
+        awl::load_world_map_player_start_animation_tables(&p.starts)==A::Loaded,"verified actual constructor static, animation, timer and selector providers load");
+    if(!p.initial || !p.animations || !p.timers || !p.starts)return;
+    p.clock=std::make_shared<awl::GameClock>();p.clock->set_retrace_interval(2);
+    uint64_t rows_digest=14695981039346656037ull,state_digest=rows_digest;size_t checked=0,changed=0,unchanged=0;
+    for(uint32_t phase=0;phase<6;++phase){expect(p.clock->advance(),"explicit local startup clock advances between phases");
+        expect(awl::load_world_map_player_model_assets(phase,&p.models)==Status::Loaded,"actual startup model phase loads");if(!p.models)return;
+        for(const auto [flag,word20]:std::array<std::pair<uint8_t,int32_t>,4>{{{uint8_t(0),25000},{uint8_t(0),75000},{uint8_t(0),0},{uint8_t(1),0}}}){
+            awl::WorldMapPlayerStartupQuery q;q.initial.phase=phase;q.tail.inputs.start.saved_pose.scene_type=1;q.audio_byte_90=uint8_t(0);
+            q.saved_subobject_byte_14c=flag;q.saved_subobject_word_20=word20;
+            const auto clock_before=p.clock->state();std::unique_ptr<awl::WorldMapPlayerStartup> owner;
+            const auto result=awl::construct_world_map_player_startup(p,q,&owner);
+            expect(result.status==S::ConstructedCpuStartup && owner && result.model_row && result.animation,"all actual no-message constructor selectors reach owned CPU parent state");
+            if(!owner || !result.model_row || !result.animation)return;
+            changed+=result.animation->status==A::Advanced;unchanged+=result.animation->status==A::Unchanged;
+            const auto& row=*result.model_row;const auto& parent=owner->state();const auto& h=owner->model().state();const auto& f=*h.feature_38;
+            expect(parent.state_1364==0x29 && parent.counter_1368==0 && parent.secondary_byte_3f0==1 && f.type_0==row.type_0 && f.type_4==row.type_4 &&
+                h.feature_source_10==0u && f.table_c!=0 && owner->starts()==p.starts && owner->model().game_clock()==p.clock &&
+                !owner->model().primary().cpu().frame() && clock_before.raw_time==p.clock->state().raw_time && clock_before.loop_count==p.clock->state().loop_count,
+                "actual model types, parent callback fields and retained providers publish without evaluating frame or advancing clock");
+            for(uint32_t v:{phase,row.selector,row.slot,row.type_0,row.type_4})hash(rows_digest,v);
+            for(uint32_t v:{phase,row.selector,uint32_t(parent.state_1364),parent.counter_1368,uint32_t(parent.secondary_byte_3f0),f.type_0,f.type_4,f.index_8,uint32_t(f.table_c!=0),h.feature_source_10.value_or(UINT32_MAX)})hash(state_digest,v);
+            awl::WorldMapPlayerTimerResourceView eye,mouth;
+            expect(p.timers->resource(B::Eyes,f.type_0-0x3A,0,&eye) && p.timers->resource(B::Mouth,f.type_4-0x24,0,&mouth) &&
+                f.first_14.resource_0==eye.identity && f.second_24.resource_0==mouth.identity,"actual dispatch timers use selected authoritative resources");
+            for(auto [timer,offset]:std::array<std::pair<const awl::WorldMapAnimationFeatureTimer*,uint32_t>,2>{{{&f.first_14,eye.offset},{&f.second_24,mouth.offset}}}){
+                hash(state_digest,offset);hash(state_digest,timer->clock_4);
+                for(float value:{timer->value_8,timer->rate_c}){uint32_t bits;std::memcpy(&bits,&value,4);hash(state_digest,bits);}}
+            const auto initial=owner->model().initial_model_state();awl::WorldMapPlayerModelAssetView private_tam;
+            expect(initial && initial->initialized_c==1 && initial->runtime_entry_address_120==0x802ED6C0 && initial->private_texture_animation &&
+                p.models->resource(7,&private_tam) && initial->private_texture_animation->data==private_tam.data && f.table_c==reinterpret_cast<uintptr_t>(private_tam.data),
+                "actual parent retains initial wrapper and private TAM ownership after state callback");
+            // Drop all caller handles on the last case, then consume the retained providers.
+            const bool last=phase==5 && flag==1;const auto clock_lifetime=std::weak_ptr<awl::GameClock>(p.clock);
+            const auto starts_lifetime=std::weak_ptr<const awl::WorldMapPlayerStartAnimationTables>(p.starts);
+            const auto models_lifetime=std::weak_ptr<const Assets>(p.models);
+            if(last)p={};
+            awl::WorldMapPlayerPrimaryFrameInput frame;frame.node_post_transforms.resize(55);
+            expect(owner->advance(frame).status==awl::WorldMapPlayerPrimaryUpdateStatus::Advanced && owner->model().primary().cpu().frame()->skin_executed &&
+                owner->model().primary().cpu().frame()->root_matrix==awl::WorldMapModelMatrix{1,0,0,0,0,1,0,0,0,0,1,0} &&
+                owner->model().game_clock()->state().raw_time==clock_before.raw_time && owner->model().game_clock()->state().loop_count==clock_before.loop_count,
+                "first actual startup frame samples 55 nodes and skins at initialized root without caller placement or implicit time advancement");
+            owner.reset();if(last)expect(clock_lifetime.expired() && starts_lifetime.expired() && models_lifetime.expired(),"last actual startup releases retained caller providers");++checked;
+        }
+    }
+    std::cout<<"LOCAL_PLAYER_STARTUP_ROWS "<<checked<<" digest "<<std::hex<<rows_digest<<std::dec<<'\n';
+    std::cout<<"LOCAL_PLAYER_STARTUP_STATE "<<checked<<" digest "<<std::hex<<state_digest<<std::dec<<'\n';
+    expect(checked==24 && rows_digest==0x6A990DF449C60A45ull,"all 24 phase/selector rows match independently mapped F748 tables");
+    expect(state_digest==0xC57D5EFAEAF64EBDull,"all 24 parent/model timer states match original 31D7C/F3E8/349A4 instructions with the animation callback supplied");
+    std::cout<<"LOCAL_PLAYER_STARTUP "<<checked<<" first 55-node CPU frames; callbacks changed "<<changed<<" unchanged "<<unchanged<<"; scene-message, live actor and GPU pending\n";
 }
 void local_timer_holder(const char* disc,bool owned_clock=false,bool initial_model=false) {
     using S=awl::WorldMapPlayerTimerAssetsStatus;using B=awl::WorldMapPlayerTimerBank;using H=awl::WorldMapPlayerTimedInitialHolderStatus;
@@ -2749,7 +2907,7 @@ int main(int argc,char** argv){
         _CrtSetReportMode(kind,_CRTDBG_MODE_FILE);_CrtSetReportFile(kind,_CRTDBG_FILE_STDERR);
     }
 #endif
-    embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();skin_execution_checks();awl::filesystem_shutdown();frame_checks();awl::filesystem_shutdown();animation_frame_checks();awl::filesystem_shutdown();attachment_frame_checks();awl::filesystem_shutdown();hierarchy_frame_checks();awl::filesystem_shutdown();partial_frame_sampling_checks();owned_hierarchy_frame_checks();awl::filesystem_shutdown();primary_frame_owner_checks();awl::filesystem_shutdown();topology_checks();awl::filesystem_shutdown();geometry_checks();awl::filesystem_shutdown();primary_owner_checks();awl::filesystem_shutdown();holder_checks();awl::filesystem_shutdown();initial_root_scale_checks();initial_input_checks();awl::filesystem_shutdown();timer_asset_checks();awl::filesystem_shutdown();feature_draw_state_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
+    embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();skin_execution_checks();awl::filesystem_shutdown();frame_checks();awl::filesystem_shutdown();animation_frame_checks();awl::filesystem_shutdown();attachment_frame_checks();awl::filesystem_shutdown();hierarchy_frame_checks();awl::filesystem_shutdown();partial_frame_sampling_checks();owned_hierarchy_frame_checks();awl::filesystem_shutdown();primary_frame_owner_checks();awl::filesystem_shutdown();topology_checks();awl::filesystem_shutdown();geometry_checks();awl::filesystem_shutdown();primary_owner_checks();awl::filesystem_shutdown();holder_checks();awl::filesystem_shutdown();initial_root_scale_checks();initial_input_checks();awl::filesystem_shutdown();timer_asset_checks();awl::filesystem_shutdown();startup_owner_checks();awl::filesystem_shutdown();feature_draw_state_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
     if(argc==3 && std::string(argv[1])=="--player-model-local")local(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-frame-local")local(argv[2],true);
     else if(argc==3 && std::string(argv[1])=="--player-primary-local")local_primary(argv[2]);
@@ -2758,6 +2916,7 @@ int main(int argc,char** argv){
     else if(argc==3 && std::string(argv[1])=="--player-timer-holder-local")local_timer_holder(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-clock-holder-local")local_timer_holder(argv[2],true);
     else if(argc==3 && std::string(argv[1])=="--player-initial-model-local")local_timer_holder(argv[2],true,true);
-    else if(argc!=1)expect(false,"usage: --player-model-local <disc>, --player-frame-local <disc>, --player-primary-local <disc>, --player-holder-local <disc>, --player-initial-holder-local <disc>, --player-timer-holder-local <disc>, --player-clock-holder-local <disc> or --player-initial-model-local <disc>");
+    else if(argc==3 && std::string(argv[1])=="--player-startup-local")local_startup(argv[2]);
+    else if(argc!=1)expect(false,"usage: --player-model-local <disc>, --player-frame-local <disc>, --player-primary-local <disc>, --player-holder-local <disc>, --player-initial-holder-local <disc>, --player-timer-holder-local <disc>, --player-clock-holder-local <disc>, --player-initial-model-local <disc> or --player-startup-local <disc>");
     awl::filesystem_shutdown();return failures?1:0;
 }

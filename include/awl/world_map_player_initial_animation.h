@@ -1,5 +1,6 @@
 #pragma once
 #include "awl/world_map_animation_initializer.h"
+#include "awl/world_map_player_start.h"
 #include <array>
 #include <memory>
 
@@ -40,6 +41,10 @@ public:
     WorldMapPlayerInitialAnimationInputs& operator=(const WorldMapPlayerInitialAnimationInputs&) = delete;
     bool target_verified() const { return target_verified_; }
     [[nodiscard]] WorldMapPlayerInitialAnimationStep select(const WorldMapPlayerInitialAnimationQuery& query) const;
+    // Type-zero table only, for 4E190's four possible selectors. Retained
+    // reached rows, not an inferred whole table or a live phase owner.
+    // Unknown phase/selector or null output preserves out.
+    [[nodiscard]] bool select_model_type(uint32_t phase, uint32_t selector, WorldMapPlayerModelTypeRow* out) const;
 private:
     WorldMapPlayerInitialAnimationInputs() = default;
     bool decode(const uint8_t* data, size_t size);
@@ -50,6 +55,7 @@ private:
     WorldMapActorAnimationDescriptor descriptor_;
     uint16_t descriptor_index_ = 0;
     std::array<std::array<uint32_t,2>,6> types_{};
+    std::array<std::array<std::array<uint32_t,2>,4>,6> model_types_{};
     std::array<float,6> scales_{};
     bool target_verified_ = false;
 };

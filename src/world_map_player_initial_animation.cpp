@@ -6,12 +6,14 @@
 #include <fstream>
 #include <cmath>
 #include <cstring>
+#include <iterator>
 #include <new>
 #include <utility>
 
 namespace awl {
 namespace {
 using Status = WorldMapPlayerInitialAnimationStatus;
+constexpr uint32_t model_selectors[]{0,1,7,0x24};
 bool reset_type(uint32_t value, uint32_t minimum) { return value >= minimum && value <= INT32_MAX; }
 } // namespace
 bool WorldMapPlayerInitialAnimationInputs::decode(const uint8_t* data, size_t size) {
@@ -42,6 +44,13 @@ bool WorldMapPlayerInitialAnimationInputs::decode(const uint8_t* data, size_t si
         // Each actual slot-zero phase writes both timers. Retaining an
         // unwritten timer requires a future partial-feature consumer.
         if (!reset_type(types_[phase][0], 0x3A) || !reset_type(types_[phase][1], 0x24)) return false;
+        for (size_t i = 0; i < std::size(model_selectors); ++i) {
+            const auto selected_address = uint64_t(type_address) + model_selectors[i] * 8;
+            if (selected_address + 8 > uint64_t(UINT32_MAX) + 1) return false;
+            const auto* selected = view.read(static_cast<uint32_t>(selected_address), 8);
+            if (!selected) return false;
+            model_types_[phase][i] = {detail::dol_word(selected), detail::dol_word(selected + 4)};
+        }
         const auto* catalog_index = view.read(0x8024A6E0 + phase, 1);
         if (!catalog_index) return false;
         const auto* scale = view.read(0x80249A6C + uint32_t(*catalog_index) * 0x18 + 4, 4);
@@ -51,6 +60,15 @@ bool WorldMapPlayerInitialAnimationInputs::decode(const uint8_t* data, size_t si
         if (!std::isfinite(scales_[phase])) return false;
     }
     return true;
+}
+bool WorldMapPlayerInitialAnimationInputs::select_model_type(uint32_t phase, uint32_t selector,
+    WorldMapPlayerModelTypeRow* out) const {
+    if (!out || phase >= model_types_.size()) return false;
+    for (size_t i = 0; i < std::size(model_selectors); ++i) if (selector == model_selectors[i]) {
+        const auto& types = model_types_[phase][i];
+        *out = {0x8029F818 + phase * 4, selector, types[0], types[1]}; return true;
+    }
+    return false;
 }
 WorldMapPlayerInitialAnimationStep WorldMapPlayerInitialAnimationInputs::select(const WorldMapPlayerInitialAnimationQuery& query) const {
     if (query.model_slot != 0) return {Status::UnsupportedModelSlot};

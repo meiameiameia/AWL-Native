@@ -6,6 +6,10 @@
 #include "awl/game_clock.h"
 
 namespace awl {
+class WorldMapPlayerStartup;
+struct WorldMapPlayerStartupProviders;
+struct WorldMapPlayerStartupQuery;
+struct WorldMapPlayerStartupResult;
 // D560's stores, with its unwritten words/bytes explicitly absent. These are
 // native semantic fields, not the original packed holder/vtable layout.
 struct WorldMapPlayerAnimationHolderState {
@@ -113,6 +117,8 @@ public:
     }
 private:
     WorldMapPlayerAnimationHolder() = default;
+    friend WorldMapPlayerStartupResult construct_world_map_player_startup(
+        const WorldMapPlayerStartupProviders&, const WorldMapPlayerStartupQuery&, std::unique_ptr<WorldMapPlayerStartup>*);
     bool finish_initial_model(float scale, const std::shared_ptr<const WorldMapPlayerModelAssets>& assets);
     friend WorldMapPlayerAnimationHolderResult construct_world_map_player_animation_holder(
         const std::shared_ptr<const WorldMapPlayerModelAssets>&,
