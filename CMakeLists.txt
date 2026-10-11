@@ -62,6 +62,7 @@ set(SOURCES
     src/world_map_player_animation_holder.cpp
     src/world_map_player_startup.cpp
     src/world_map_player_update.cpp
+    src/world_map_player_status.cpp
     src/world_map_update_inputs.cpp
     src/world_map_player_initial_animation.cpp
     src/world_map_player_timer_assets.cpp
@@ -136,6 +137,7 @@ set(HEADERS
     include/awl/world_map_player_animation_holder.h
     include/awl/world_map_player_startup.h
     include/awl/world_map_player_update.h
+    include/awl/world_map_player_status.h
     include/awl/world_map_update_inputs.h
     include/awl/world_map_player_initial_animation.h
     include/awl/world_map_player_timer_assets.h
@@ -206,6 +208,15 @@ else()
     target_compile_options(world_map_update_inputs_tests PRIVATE -Wall -Wextra)
 endif()
 add_test(NAME world_map_update_inputs_tests COMMAND world_map_update_inputs_tests)
+add_executable(world_map_player_status_tests
+    tests/world_map_player_status_tests.cpp src/world_map_player_status.cpp)
+target_include_directories(world_map_player_status_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+if(MSVC)
+    target_compile_options(world_map_player_status_tests PRIVATE /W4)
+else()
+    target_compile_options(world_map_player_status_tests PRIVATE -Wall -Wextra)
+endif()
+add_test(NAME world_map_player_status_tests COMMAND world_map_player_status_tests)
 add_executable(gpl_render_mesh_tests
     tests/gpl_render_mesh_tests.cpp
     src/gpl_render_mesh.cpp
@@ -638,6 +649,7 @@ add_executable(world_map_player_model_assets_tests
     src/world_map_player_animation_holder.cpp
     src/world_map_player_startup.cpp
     src/world_map_player_update.cpp
+    src/world_map_player_status.cpp
     src/world_map_update_inputs.cpp
     src/world_map_scene_index.cpp
     src/world_map_player_start.cpp

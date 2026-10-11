@@ -67,11 +67,14 @@ struct WorldMapPlayerStartupUpdateInput {
     std::optional<int32_t> action_148;
     std::optional<WorldMapPlayerStartupCameraSeed> first_camera;
     uint64_t player_node_identity = 0;
+    WorldMapPlayerStatusInputs status_inputs;
 };
 struct WorldMapPlayerStartupUpdateResult {
     WorldMapPlayerUpdateStatus status = WorldMapPlayerUpdateStatus::InvalidInput;
     // Prepared callback results on a late stop are diagnostic, not published.
     std::optional<WorldMapPlayerState29CameraStep> callback;
+    // Complete status proposal on a late tail stop is also diagnostic only.
+    std::optional<WorldMapPlayerStatusStep> status_update;
 };
 // Callback observations only. Control and priority are derived by the owned
 // input boundary; callers cannot supply an overriding raw control word.
@@ -82,6 +85,8 @@ struct WorldMapPlayerStartupDispatchInput {
     std::optional<int32_t> action_148;
     std::optional<WorldMapPlayerStartupCameraSeed> first_camera;
     uint64_t player_node_identity = 0;
+    // Phase raw is reread from the same retained source as control generation.
+    WorldMapPlayerStatusFactors status_factors;
 };
 // Owns the supported CPU initial model -> no-message tail -> normal state-29
 // callback boundary. Only known parent/secondary writes are exposed;
@@ -102,8 +107,9 @@ public:
     [[nodiscard]] WorldMapPlayerState29CameraStep advance_state29_camera(
         const WorldMapPlayerStartupState29Input& input);
     // Normal 31144 state-29 path with supplied guard/scene/control/pose and
-    // writable CPU owner counterparts. Bit 0x800 must skip the untranslated
-    // status pair. Camera/counter/control and all owner effects commit together;
+    // writable CPU owner counterparts. Without bit 0x800, the status pair
+    // requires explicit status/global/rate/phase inputs; its elapsed curve
+    // still stops. Camera/counter/control/status and owner effects commit together;
     // every stop preserves owners and the prior model/frame/camera/clock.
     // This does not discover live owners, consume the queue or schedule ticks.
     [[nodiscard]] WorldMapPlayerStartupUpdateResult advance_state29_parent(

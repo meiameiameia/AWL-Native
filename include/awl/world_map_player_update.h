@@ -1,5 +1,6 @@
 #pragma once
 #include "awl/world_map_scene_index.h"
+#include "awl/world_map_player_status.h"
 #include <optional>
 
 namespace awl {
@@ -29,6 +30,8 @@ struct WorldMapPlayerUpdateOwners {
     // Presence establishes the owner needed by 8014FDA8 on scene type one.
     std::optional<std::array<float,3>> scene_one_position_240;
     std::vector<WorldMapPlayerUpdateQueueEntry> queue;
+    // Explicit pointed-owner snapshot, needed only without control bit 800.
+    std::optional<WorldMapPlayerStatusState> status;
 };
 enum class WorldMapPlayerUpdateStatus {
     Prepared, Advanced, RequiresControlWord, RequiresGuardOwner,

@@ -35,7 +35,7 @@ WorldMapPlayerState29CameraStep WorldMapPlayerStartup::advance_state29_camera(
 WorldMapPlayerStartupUpdateResult WorldMapPlayerStartup::advance_state29_parent(
     const WorldMapPlayerStartupUpdateInput& input, WorldMapPlayerUpdateOwners* owners) {
     using S = WorldMapPlayerUpdateStatus;
-    if (state_.state_1364 != 0x29) return {S::UnsupportedState, {}};
+    if (state_.state_1364 != 0x29) return {S::UnsupportedState, {}, {}};
     WorldMapPlayerStartupUpdateResult result;
     result.status = prepare_world_map_player_state29_update_entry(input.entry);
     if (result.status != S::Prepared) return result;
@@ -46,11 +46,18 @@ WorldMapPlayerStartupUpdateResult WorldMapPlayerStartup::advance_state29_parent(
         return result;
     }
     // The original reaches these calls only after the state callback.
-    if ((*input.entry.control_word & 0x800u) == 0) { result.status = S::RequiresStatusUpdate; return result; }
+    if ((*input.entry.control_word & 0x800u) == 0) {
+        if (!owners || !owners->status) { result.status = S::RequiresStatusUpdate; return result; }
+        result.status_update = prepare_world_map_player_status(*owners->status, model_->descriptor().word_8, input.status_inputs);
+        if (result.status_update->status != WorldMapPlayerStatusCode::Prepared) {
+            result.status = S::RequiresStatusUpdate; return result;
+        }
+    }
     if (!owners) { result.status = S::RequiresEffectOwners; return result; }
     WorldMapPlayerUpdateOwners next;
     result.status = prepare_world_map_player_state29_update_tail(*owners, input.pose, input.player_node_identity, &next);
     if (result.status != S::Prepared) return result;
+    if (result.status_update) next.status = result.status_update->after;
     const auto collision = camera_ ? camera_->collision : input.first_camera->collision;
     camera_ = WorldMapPlayerStartupCameraState{collision, *result.callback->final_camera, *result.callback->update};
     state_.counter_1368 = *result.callback->counter_after;
@@ -66,16 +73,21 @@ WorldMapPlayerStartupUpdateResult WorldMapPlayerStartup::dispatch_state29_parent
     WorldMapPlayerUpdateOwners* owners) {
     using S = WorldMapPlayerUpdateStatus;
     const auto dispatch = inputs.dispatch(0x5001u);
-    if (dispatch.status == WorldMapDispatchStatus::RequiresControl) return {S::RequiresDispatchControl, {}};
-    if (dispatch.status == WorldMapDispatchStatus::Filtered) return {S::SkippedByDispatchFilter, {}};
+    if (dispatch.status == WorldMapDispatchStatus::RequiresControl) return {S::RequiresDispatchControl, {}, {}};
+    if (dispatch.status == WorldMapDispatchStatus::Filtered) return {S::SkippedByDispatchFilter, {}, {}};
     if (dispatch.status != WorldMapDispatchStatus::Ready || !dispatch.control_word ||
-        inputs.game_clock() != model_->game_clock()) return {S::InvalidInput, {}};
+        inputs.game_clock() != model_->game_clock()) return {S::InvalidInput, {}, {}};
     WorldMapPlayerStartupUpdateInput update;
     update.entry = {dispatch.control_word, input.guards, input.scene_child_word_4};
     update.pose = input.pose;
     update.action_148 = input.action_148;
     update.first_camera = input.first_camera;
     update.player_node_identity = input.player_node_identity;
+    update.status_inputs.globals = input.status_factors.globals;
+    update.status_inputs.rate = input.status_factors.rate;
+    // CDB8 rereads this owner at callback time; do not substitute GameClock
+    // or let a supplied rate/global observation introduce another phase owner.
+    if (inputs.sources().phase) update.status_inputs.phase_raw = inputs.sources().phase->raw_word_0;
     return advance_state29_parent(update, owners);
 }
 
