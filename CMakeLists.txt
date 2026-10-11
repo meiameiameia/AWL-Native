@@ -625,6 +625,7 @@ add_executable(world_map_player_model_assets_tests
     src/world_map_player_startup.cpp
     src/world_map_player_start.cpp
     src/collision_asset.cpp
+    src/world_map_camera.cpp
     src/world_map_player_initial_animation.cpp
     src/world_map_player_timer_assets.cpp
     src/game_clock.cpp

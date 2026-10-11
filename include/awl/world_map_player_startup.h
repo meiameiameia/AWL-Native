@@ -1,5 +1,6 @@
 #pragma once
 #include "awl/world_map_player_animation_holder.h"
+#include "awl/world_map_camera.h"
 
 namespace awl {
 struct WorldMapPlayerStartupProviders {
@@ -40,6 +41,22 @@ struct WorldMapPlayerStartupResult {
     std::optional<WorldMapAnimationFeatureRow> required_row;
     std::optional<WorldMapPlayerAnimationHolderStartResult> animation;
 };
+struct WorldMapPlayerStartupCameraSeed {
+    std::shared_ptr<const WorldMapCameraCollisionAsset> collision;
+    // Explicit observation at callback entry, not inferred constructor state.
+    WorldMapCameraViewQuery camera{};
+};
+struct WorldMapPlayerStartupCameraState {
+    std::shared_ptr<const WorldMapCameraCollisionAsset> collision;
+    WorldMapCameraViewQuery camera{};
+    WorldMapCameraPostUpdate update{};
+};
+struct WorldMapPlayerStartupState29Input {
+    std::array<float,3> player_position{};
+    std::optional<int32_t> action_148;
+    // Required only for the first successful callback; later reseeding rejects.
+    std::optional<WorldMapPlayerStartupCameraSeed> first_camera;
+};
 // Owns the supported CPU initial model -> no-message tail -> normal state-29
 // callback boundary. Only the three known parent/secondary writes are exposed;
 // constructor-unwritten or untouched parent words are not invented. This is
@@ -51,6 +68,13 @@ public:
     const WorldMapPlayerStartupState& state() const { return state_; }
     const WorldMapPlayerAnimationHolder& model() const { return *model_; }
     const std::shared_ptr<const WorldMapPlayerStartAnimationTables>& starts() const { return starts_; }
+    const std::optional<WorldMapPlayerStartupCameraState>& camera() const { return camera_; }
+    // Own only the normal 34A6C callback's camera/counter result. Position and
+    // reached action remain observed inputs. Failure preserves parent/camera,
+    // model/frame/mesh and clock; late-stop camera results are diagnostic only.
+    // No frame evaluation, clock advance, movement or full parent update.
+    [[nodiscard]] WorldMapPlayerState29CameraStep advance_state29_camera(
+        const WorldMapPlayerStartupState29Input& input);
     [[nodiscard]] WorldMapPlayerPrimaryUpdateResult advance(const WorldMapPlayerPrimaryFrameInput& input) {
         return model_->advance(input);
     }
@@ -61,6 +85,7 @@ private:
     std::shared_ptr<const WorldMapPlayerStartAnimationTables> starts_;
     std::unique_ptr<WorldMapPlayerAnimationHolder> model_;
     WorldMapPlayerStartupState state_;
+    std::optional<WorldMapPlayerStartupCameraState> camera_;
 };
 // Fresh slot-zero / alternate -1 / type-zero startup only. Supplied phase,
 // post-setup guards/binding/item fields and audio byte remain explicit.

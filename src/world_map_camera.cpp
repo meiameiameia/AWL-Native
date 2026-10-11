@@ -602,6 +602,30 @@ bool calculate_world_map_camera_post_update_from_collision(
         query, sample_camera_collision_height, &context, output);
 }
 
+WorldMapPlayerState29CameraStep prepare_world_map_player_state29_camera(
+    const WorldMapPlayerState29CameraQuery& query,
+    WorldMapCameraHeightSampler sample_height, void* sample_context) {
+    using Status = WorldMapPlayerState29CameraStatus;
+    WorldMapPlayerState29CameraStep next;
+    if (!sample_height) return next;
+    auto camera = query.previous_camera;
+    camera.target.camera.position = query.player_position;
+    WorldMapCameraPostUpdate update;
+    if (!calculate_world_map_camera_post_update(camera, sample_height, sample_context, &update)) {
+        next.status = Status::CameraFailure; return next;
+    }
+    camera.target.pitch_offset_8c = 0.0f;
+    camera.target.yaw_offset_90 = 0.0f;
+    next.final_camera = camera; next.update = update;
+    if (query.counter_1368 == 2) {
+        if (!query.action_148) { next.status = Status::RequiresActionTarget; return next; }
+        if (*query.action_148 != 0) { next.status = Status::RequiresAuxiliarySource; return next; }
+    }
+    next.counter_after = query.counter_1368 + 1u;
+    next.status = Status::Prepared;
+    return next;
+}
+
 bool WorldMapCameraCollisionAsset::load() {
     clear();
     void* raw = nullptr;
@@ -672,6 +696,13 @@ bool WorldMapCameraCollisionAsset::calculate_player_movement_update(
     CameraCollisionContext context{bytes_.data(), bytes_.size()};
     return calculate_world_map_player_movement_camera_update(
         query, sample_camera_collision_height, &context, output);
+}
+
+WorldMapPlayerState29CameraStep WorldMapCameraCollisionAsset::calculate_player_state29_update(
+    const WorldMapPlayerState29CameraQuery& query) const {
+    if (bytes_.empty()) return {WorldMapPlayerState29CameraStatus::RequiresCamera, {}, {}, {}};
+    CameraCollisionContext context{bytes_.data(), bytes_.size()};
+    return prepare_world_map_player_state29_camera(query, sample_camera_collision_height, &context);
 }
 
 } // namespace awl

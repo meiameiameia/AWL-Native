@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace awl {
@@ -218,6 +219,33 @@ struct WorldMapPlayerMovementCameraResult {
 inline constexpr const char* kWorldMapCameraCollisionPath =
     "/files/jimen-camera.col";
 
+struct WorldMapPlayerState29CameraQuery {
+    WorldMapCameraViewQuery previous_camera{};
+    std::array<float, 3> player_position{}; // observed player +4C, not a proposal
+    uint32_t counter_1368 = 0;
+    std::optional<int32_t> action_148; // read only when counter is exactly two
+};
+enum class WorldMapPlayerState29CameraStatus {
+    Prepared, Advanced, RequiresCamera, RequiresActionTarget,
+    RequiresAuxiliarySource, CameraFailure, UnsupportedState,
+    InvalidInput, AllocationFailure
+};
+struct WorldMapPlayerState29CameraStep {
+    WorldMapPlayerState29CameraStatus status = WorldMapPlayerState29CameraStatus::InvalidInput;
+    // Present after both camera passes, including a later action/source stop.
+    // These are staged diagnostics until status Prepared/Advanced.
+    std::optional<WorldMapCameraViewQuery> final_camera;
+    std::optional<WorldMapCameraPostUpdate> update;
+    std::optional<uint32_t> counter_after;
+};
+// FUN_80034A6C: copy XYZ directly (no region/yaw follow-up), run 85884 then
+// 85998, inspect action only at counter two, then increment with word wrap.
+// A nonzero action stops before actor +58/source/animation writes. Sampler
+// side effects belong to the caller. No full 31144 update or live actor runs.
+[[nodiscard]] WorldMapPlayerState29CameraStep prepare_world_map_player_state29_camera(
+    const WorldMapPlayerState29CameraQuery& query,
+    WorldMapCameraHeightSampler sample_height, void* sample_context);
+
 // Applies the post-update using a caller-owned, validated type-1 camera COL
 // (header byte 6 = 0). This is still a supplied-data path, not live camera
 // or scene ownership. Failure leaves output unchanged.
@@ -246,6 +274,8 @@ public:
     [[nodiscard]] bool calculate_player_movement_update(
         const WorldMapPlayerMovementCameraQuery& query,
         WorldMapPlayerMovementCameraResult* output) const;
+    [[nodiscard]] WorldMapPlayerState29CameraStep calculate_player_state29_update(
+        const WorldMapPlayerState29CameraQuery& query) const;
 
 private:
     std::vector<uint8_t> bytes_;

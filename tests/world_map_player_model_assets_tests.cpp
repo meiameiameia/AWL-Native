@@ -91,7 +91,7 @@ struct Fixture {
     }
     ~Fixture(){
         std::error_code e;
-        for(const char* name:{"boy_0.arc","boy_1.arc","boy_2.arc","boy_0.anm.arc","boy_0_subanm.arc","boy_0_subact.arc","char_com_eye.tam","char_com_mouth.tam"})std::filesystem::remove(root/"files"/name,e);
+        for(const char* name:{"boy_0.arc","boy_1.arc","boy_2.arc","boy_0.anm.arc","boy_0_subanm.arc","boy_0_subact.arc","char_com_eye.tam","char_com_mouth.tam","jimen-camera.col"})std::filesystem::remove(root/"files"/name,e);
         std::filesystem::remove(root/"sys"/"main.dol",e);std::filesystem::remove(root/"sys",e);
         std::filesystem::remove(root/"files",e);std::filesystem::remove(root,e);
     }
@@ -1954,10 +1954,70 @@ void timer_asset_checks() {
     awl::filesystem_shutdown();auto retained=holder->timer_assets();expect(awl::load_world_map_player_timer_assets(&retained)==S::Loaded && retained==holder->timer_assets(),"complete timer owner reuses without mounted file I/O");retained.reset();
     holder.reset();expect(lifetime.expired(),"timer resources release after the last holder/provider owner");
 }
+uint64_t camera_snapshot(const awl::WorldMapPlayerStartupCameraState& state) {
+    uint64_t h=14695981039346656037ull;
+    const auto real=[&](float value){uint32_t w;std::memcpy(&w,&value,4);hash(h,w);};
+    const auto vector=[&](const auto& values){for(float v:values)real(v);};
+    const auto view=[&](const awl::WorldMapCameraView& v){vector(v.target.raw);vector(v.target.bounded);hash(h,v.target.clamped);
+        vector(v.second_point);vector(v.rotated_up);vector(v.matrix_50);};
+    const auto& q=state.camera;const auto& c=q.target.camera;vector(c.position);real(c.field_18);real(c.yaw);vector(c.bounds_min);vector(c.bounds_max);
+    hash(h,c.flag_98);hash(h,c.flag_99);vector(q.target.origin_offset_0c);real(q.target.distance_30);real(q.target.pitch_offset_8c);real(q.target.yaw_offset_90);
+    vector(q.up_vector_24);real(q.pitch_offset_44);real(q.yaw_offset_48);
+    const auto& u=state.update;view(u.first_view);vector(u.first_plane.normal);real(u.first_plane.constant);real(u.temporary_pitch_offset_8c);view(u.pitched_view);
+    vector(u.final_plane.normal);real(u.final_plane.constant);vector(u.final_target);vector(u.final_matrix_50);hash(h,u.terrain_clamped);
+    const auto key=reinterpret_cast<uintptr_t>(state.collision.get());hash(h,uint32_t(uint64_t(key)>>32));hash(h,uint32_t(key));return h;
+}
 uint64_t startup_snapshot(const awl::WorldMapPlayerStartup& owner) {
     auto h=holder_snapshot(owner.model());const auto& s=owner.state();
     hash(h,uint32_t(s.state_1364));hash(h,s.counter_1368);hash(h,s.secondary_byte_3f0);
-    const auto key=reinterpret_cast<uintptr_t>(owner.starts().get());hash(h,uint32_t(uint64_t(key)>>32));hash(h,uint32_t(key));return h;
+    const auto key=reinterpret_cast<uintptr_t>(owner.starts().get());hash(h,uint32_t(uint64_t(key)>>32));hash(h,uint32_t(key));
+    hash(h,owner.camera().has_value());if(owner.camera()){const auto camera=camera_snapshot(*owner.camera());hash(h,uint32_t(camera>>32));hash(h,uint32_t(camera));}return h;
+}
+struct State29HeightProbe {
+    unsigned calls=0,fail_at=0;bool nonfinite=false;
+    std::array<std::array<float,3>,2> positions{};
+    static bool sample(const std::array<float,3>& p,float* height,void* context){auto& s=*static_cast<State29HeightProbe*>(context);
+        if(s.calls<2)s.positions[s.calls]=p;++s.calls;if(s.calls==s.fail_at)return false;
+        *height=s.nonfinite?std::numeric_limits<float>::quiet_NaN():0.0f;return true;}
+};
+void state29_camera_checks() {
+    using S=awl::WorldMapPlayerState29CameraStatus;uint64_t digest=14695981039346656037ull;
+    awl::WorldMapPlayerState29CameraQuery q;q.previous_camera.target.distance_30=2;q.previous_camera.up_vector_24={0,1,0};
+    q.previous_camera.target.camera.position={999,999,999};
+    for(uint32_t seed=0;seed<512;++seed){constexpr uint32_t counters[]{0,1,2,3,UINT32_MAX,0x80000000};
+        constexpr int32_t actions[]{0,1,-1,INT32_MIN};q.counter_1368=counters[seed%6];q.action_148=actions[(seed/6)%4];
+        q.player_position={float(seed%17)-8,float((seed/17)%7)-3,float(seed%11)-5};State29HeightProbe probe;
+        const auto result=awl::prepare_world_map_player_state29_camera(q,State29HeightProbe::sample,&probe);
+        const bool blocked=q.counter_1368==2 && *q.action_148!=0;
+        expect(result.status==(blocked?S::RequiresAuxiliarySource:S::Prepared) && probe.calls==2 && result.final_camera && result.update &&
+            result.final_camera->target.camera.position==q.player_position && result.counter_after.has_value()==!blocked &&
+            (blocked || *result.counter_after==q.counter_1368+1u),"state29 copies position, completes both camera queries, gates source before increment and wraps word counter");
+        for(uint32_t v:{seed,q.counter_1368,static_cast<uint32_t>(*q.action_148),0x80085884u,0x80085998u})hash(digest,v);
+        for(float v:q.player_position){uint32_t bits;std::memcpy(&bits,&v,4);hash(digest,bits);}hash(digest,blocked);hash(digest,result.counter_after.value_or(UINT32_MAX));
+    }
+    expect(digest==0xE81DBA5EC8A4E964ull,"512 callback copy/order/counter/dependency results match mapped original instructions with camera/source/animation calls supplied");
+    std::cout<<"PLAYER_STATE29_CALLBACK 512 digest "<<std::hex<<digest<<std::dec<<'\n';
+    q.counter_1368=2;q.action_148.reset();q.player_position={2,0,0};State29HeightProbe probe;
+    auto result=awl::prepare_world_map_player_state29_camera(q,State29HeightProbe::sample,&probe);
+    expect(result.status==S::RequiresActionTarget && probe.calls==2 && result.update && !result.counter_after,"unknown action blocks only after both camera queries at counter two");
+    for(unsigned fail:{1u,2u}){probe={};probe.fail_at=fail;result=awl::prepare_world_map_player_state29_camera(q,State29HeightProbe::sample,&probe);
+        expect(result.status==S::CameraFailure && probe.calls==fail && !result.update && !result.final_camera && !result.counter_after,"first/second terrain failure precedes unknown action and exposes no complete camera/counter result");}
+    probe={};probe.nonfinite=true;expect(awl::prepare_world_map_player_state29_camera(q,State29HeightProbe::sample,&probe).status==S::CameraFailure && probe.calls==1,"nonfinite sampled height rejects before action");
+    q.counter_1368=1;probe={};expect(awl::prepare_world_map_player_state29_camera(q,State29HeightProbe::sample,&probe).status==S::Prepared,"unreached action remains unknown outside counter two");
+    q.previous_camera.target.camera.yaw=0.25f;q.previous_camera.target.camera.field_18=0.5f;q.previous_camera.target.camera.flag_99=true;
+    q.previous_camera.target.pitch_offset_8c=0.125f;q.previous_camera.target.yaw_offset_90=-0.125f;probe={};result=awl::prepare_world_map_player_state29_camera(q,State29HeightProbe::sample,&probe);
+    expect(result.status==S::Prepared && result.final_camera->target.camera.yaw==0.25f && result.final_camera->target.camera.field_18==0.5f &&
+        result.final_camera->target.camera.flag_99 && result.final_camera->target.pitch_offset_8c==0 && result.final_camera->target.yaw_offset_90==0,
+        "state29 preserves region/yaw/flags and clears only post-update temporary offsets");
+    q.player_position[0]=std::numeric_limits<float>::quiet_NaN();probe={};expect(awl::prepare_world_map_player_state29_camera(q,State29HeightProbe::sample,&probe).status==S::CameraFailure && !probe.calls,"nonfinite actor position rejects before height queries");
+    expect(awl::prepare_world_map_player_state29_camera(q,nullptr,nullptr).status==S::InvalidInput,"missing sampler cannot invent a camera source");
+}
+std::vector<uint8_t> startup_camera_col() {
+    // Invented single-leaf camera COL: one flat Y=0 triangle, scale one.
+    std::vector<uint8_t> b(92);word(b,0,0xE7E3F1F4);b[4]=1;
+    word(b,8+4,10);word(b,8+8,0x000A000A); // bounds (0,0,0)..(10,10,10)
+    word(b,8+0x1C,1);word(b,8+0x20,3);word(b,8+0x28,0x34);word(b,8+0x2C,0x3C);
+    word(b,60,0x00200000);word(b,64,0x00010002);word(b,76,0x000A0000);word(b,84,0);word(b,88,0x000A0000);return b;
 }
 void startup_owner_checks() {
     using S=awl::WorldMapPlayerStartupStatus;using A=awl::WorldMapPlayerStartAnimationStatus;using I=awl::WorldMapAnimationInitializerStatus;
@@ -2041,12 +2101,57 @@ void startup_owner_checks() {
     expect(reached && rejected>225,"startup sweep includes model type row staging and changed callback setup after initial model construction");
     std::cout<<"PLAYER_STARTUP_ALLOCATION_FAILURES "<<rejected<<'\n';
 #endif
+    using C=awl::WorldMapPlayerState29CameraStatus;
+    expect(owner->advance(frame).status==awl::WorldMapPlayerPrimaryUpdateStatus::Advanced,"camera rollback checks retain an evaluated CPU frame");
+    const auto no_camera=startup_snapshot(*owner);awl::WorldMapPlayerStartupState29Input callback;callback.player_position={2,0,0};
+    expect(owner->advance_state29_camera(callback).status==C::RequiresCamera && startup_snapshot(*owner)==no_camera,"first callback requires explicit camera evidence and preserves prior model/frame/counter");
+    auto camera=std::make_shared<awl::WorldMapCameraCollisionAsset>();awl::WorldMapCameraViewQuery camera_query;camera_query.target.distance_30=2;camera_query.up_vector_24={0,1,0};
+    callback.first_camera=awl::WorldMapPlayerStartupCameraSeed{camera,camera_query};
+    expect(owner->advance_state29_camera(callback).status==C::RequiresCamera && startup_snapshot(*owner)==no_camera,"unloaded camera provider preserves complete startup");
+    fixture.write("jimen-camera.col",startup_camera_col());expect(camera->load(),"invented flat camera terrain loads through the real provider");
+    callback.first_camera->camera.target.distance_30=0;
+    expect(owner->advance_state29_camera(callback).status==C::CameraFailure && startup_snapshot(*owner)==no_camera,"degenerate seed does not bind provider or consume counter");
+    callback.first_camera->camera=camera_query;
+    const auto clock_before=p.clock->state();const auto model_before=holder_snapshot(owner->model());
+    auto camera_step=owner->advance_state29_camera(callback);
+    expect(camera_step.status==C::Advanced && owner->camera() && owner->state().counter_1368==1 &&
+        owner->camera()->camera.target.camera.position==callback.player_position && owner->camera()->update.final_target==std::array<float,3>{2,0,2},
+        "first camera callback binds checked terrain, copies position, builds view and increments counter atomically");
+    auto camera_before=startup_snapshot(*owner);
+    expect(owner->advance_state29_camera(callback).status==C::InvalidInput && startup_snapshot(*owner)==camera_before,"bound camera cannot be silently reset by another initial seed");
+    callback.first_camera.reset();callback.action_148=17;
+    expect(owner->advance_state29_camera(callback).status==C::Advanced && owner->state().counter_1368==2,"nonzero target is not consumed at counter one");
+    camera_before=startup_snapshot(*owner);callback.action_148.reset();callback.player_position[0]=3;
+    camera_step=owner->advance_state29_camera(callback);
+    expect(camera_step.status==C::RequiresActionTarget && camera_step.update && !camera_step.counter_after && startup_snapshot(*owner)==camera_before,
+        "late unknown action reports staged camera diagnostics while preserving accepted camera/model/frame/counter");
+    callback.action_148=-1;camera_step=owner->advance_state29_camera(callback);
+    expect(camera_step.status==C::RequiresAuxiliarySource && camera_step.update && startup_snapshot(*owner)==camera_before,"all nonzero action words require actual auxiliary source at counter two");
+    callback.player_position[0]=std::numeric_limits<float>::quiet_NaN();camera_step=owner->advance_state29_camera(callback);
+    expect(camera_step.status==C::CameraFailure && !camera_step.update && startup_snapshot(*owner)==camera_before,"invalid later pose fails before attachment and preserves previous frame/camera");
+    callback.player_position[0]=3;callback.action_148=0;
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    const auto camera_live=allocation_probe::live;size_t camera_rejected=0;bool camera_reached=false;
+    for(size_t fail=0;fail<64;++fail){allocation_probe::remaining=fail;allocation_probe::enabled=true;camera_step=owner->advance_state29_camera(callback);allocation_probe::enabled=false;
+        if(camera_step.status==C::Advanced){camera_reached=true;break;}++camera_rejected;
+        expect(camera_step.status==C::AllocationFailure && startup_snapshot(*owner)==camera_before && allocation_probe::live==camera_live,
+            "every first/second terrain allocation failure rolls back camera and parent counter without leaking staged work");}
+    expect(camera_reached && camera_rejected>1,"camera allocation sweep reaches both terrain passes and successful retry");
+    std::cout<<"PLAYER_STATE29_CAMERA_ALLOCATION_FAILURES "<<camera_rejected<<'\n';
+#else
+    camera_step=owner->advance_state29_camera(callback);
+#endif
+    expect(camera_step.status==C::Advanced && owner->state().counter_1368==3 && holder_snapshot(owner->model())==model_before &&
+        p.clock->state().raw_time==clock_before.raw_time && p.clock->state().loop_count==clock_before.loop_count,
+        "zero-target retry publishes camera/counter alone and never advances model playback, CPU frame or shared clock");
+    const auto camera_lifetime=std::weak_ptr<const awl::WorldMapCameraCollisionAsset>(camera);camera.reset();
+    expect(!camera_lifetime.expired() && owner->advance_state29_camera(callback).status==C::Advanced,"camera terrain remains usable after its last caller handle drops");
     const auto model_lifetime=std::weak_ptr<const Assets>(p.models);const auto inputs_lifetime=std::weak_ptr<const awl::WorldMapPlayerInitialAnimationInputs>(p.initial);
     const auto starts_lifetime=std::weak_ptr<const awl::WorldMapPlayerStartAnimationTables>(p.starts);const auto clock_lifetime=std::weak_ptr<awl::GameClock>(p.clock);p={};
     expect(!model_lifetime.expired() && !inputs_lifetime.expired() && !starts_lifetime.expired() && !clock_lifetime.expired() &&
         owner->advance(frame).status==awl::WorldMapPlayerPrimaryUpdateStatus::Advanced && owner->model().game_clock()->state().raw_time==66,
         "CPU startup retains model, both static input owners and clock after all caller handles drop");owner.reset();
-    expect(model_lifetime.expired() && inputs_lifetime.expired() && starts_lifetime.expired() && clock_lifetime.expired(),"last startup releases providers and shared clock");
+    expect(model_lifetime.expired() && inputs_lifetime.expired() && starts_lifetime.expired() && clock_lifetime.expired() && camera_lifetime.expired(),"last startup releases model, camera providers and shared clock");
 }
 void local_startup(const char* disc) {
     using S=awl::WorldMapPlayerStartupStatus;using A=awl::WorldMapPlayerStartAnimationStatus;using B=awl::WorldMapPlayerTimerBank;
@@ -2057,7 +2162,9 @@ void local_startup(const char* disc) {
         awl::load_world_map_player_start_animation_tables(&p.starts)==A::Loaded,"verified actual constructor static, animation, timer and selector providers load");
     if(!p.initial || !p.animations || !p.timers || !p.starts)return;
     p.clock=std::make_shared<awl::GameClock>();p.clock->set_retrace_interval(2);
-    uint64_t rows_digest=14695981039346656037ull,state_digest=rows_digest;size_t checked=0,changed=0,unchanged=0;
+    auto camera_collision=std::make_shared<awl::WorldMapCameraCollisionAsset>();awl::WorldMapCameraInitialProfile profile;
+    expect(camera_collision->load() && awl::make_world_map_camera_initial_profile(&profile),"actual slot-one camera terrain and supplied constructor profile prepare");
+    uint64_t rows_digest=14695981039346656037ull,state_digest=rows_digest;size_t checked=0,changed=0,unchanged=0,camera_updates=0;
     for(uint32_t phase=0;phase<6;++phase){expect(p.clock->advance(),"explicit local startup clock advances between phases");
         expect(awl::load_world_map_player_model_assets(phase,&p.models)==Status::Loaded,"actual startup model phase loads");if(!p.models)return;
         for(const auto [flag,word20]:std::array<std::pair<uint8_t,int32_t>,4>{{{uint8_t(0),25000},{uint8_t(0),75000},{uint8_t(0),0},{uint8_t(1),0}}}){
@@ -2095,7 +2202,19 @@ void local_startup(const char* disc) {
                 owner->model().primary().cpu().frame()->root_matrix==awl::WorldMapModelMatrix{1,0,0,0,0,1,0,0,0,0,1,0} &&
                 owner->model().game_clock()->state().raw_time==clock_before.raw_time && owner->model().game_clock()->state().loop_count==clock_before.loop_count,
                 "first actual startup frame samples 55 nodes and skins at initialized root without caller placement or implicit time advancement");
-            owner.reset();if(last)expect(clock_lifetime.expired() && starts_lifetime.expired() && models_lifetime.expired(),"last actual startup releases retained caller providers");++checked;
+            const auto model_before=holder_snapshot(owner->model());awl::WorldMapPlayerStartupState29Input callback;
+            callback.first_camera=awl::WorldMapPlayerStartupCameraSeed{camera_collision,profile.view_query};callback.action_148=0;
+            const auto camera_lifetime=std::weak_ptr<const awl::WorldMapCameraCollisionAsset>(camera_collision);if(last)camera_collision.reset();
+            for(uint32_t tick=0;tick<8;++tick){callback.player_position={120.0f+float(tick)*0.125f,5.21f,168.0f};
+                const auto step=owner->advance_state29_camera(callback);expect(step.status==awl::WorldMapPlayerState29CameraStatus::Advanced && owner->camera() &&
+                    owner->state().counter_1368==tick+1 && owner->camera()->camera.target.camera.position==callback.player_position &&
+                    owner->camera()->camera.target.camera.yaw==profile.view_query.target.camera.yaw && owner->camera()->camera.target.pitch_offset_8c==0 &&
+                    owner->camera()->camera.target.yaw_offset_90==0 && holder_snapshot(owner->model())==model_before &&
+                    owner->model().game_clock()->state().raw_time==clock_before.raw_time && owner->model().game_clock()->state().loop_count==clock_before.loop_count,
+                    "all actual startup phases own repeated camera/counter callbacks from supplied diagnostic positions without region yaw, model or clock advancement");
+                callback.first_camera.reset();++camera_updates;
+            }
+            owner.reset();if(last)expect(clock_lifetime.expired() && starts_lifetime.expired() && models_lifetime.expired() && camera_lifetime.expired(),"last actual startup releases retained caller providers and camera terrain");++checked;
         }
     }
     std::cout<<"LOCAL_PLAYER_STARTUP_ROWS "<<checked<<" digest "<<std::hex<<rows_digest<<std::dec<<'\n';
@@ -2103,6 +2222,7 @@ void local_startup(const char* disc) {
     expect(checked==24 && rows_digest==0x6A990DF449C60A45ull,"all 24 phase/selector rows match independently mapped F748 tables");
     expect(state_digest==0xC57D5EFAEAF64EBDull,"all 24 parent/model timer states match original 31D7C/F3E8/349A4 instructions with the animation callback supplied");
     std::cout<<"LOCAL_PLAYER_STARTUP "<<checked<<" first 55-node CPU frames; callbacks changed "<<changed<<" unchanged "<<unchanged<<"; scene-message, live actor and GPU pending\n";
+    std::cout<<"LOCAL_PLAYER_STATE29_CAMERA "<<camera_updates<<" updates across "<<checked<<" startups; supplied diagnostic positions/profile, actual camera COL; full parent loop pending\n";
 }
 void local_timer_holder(const char* disc,bool owned_clock=false,bool initial_model=false) {
     using S=awl::WorldMapPlayerTimerAssetsStatus;using B=awl::WorldMapPlayerTimerBank;using H=awl::WorldMapPlayerTimedInitialHolderStatus;
@@ -2907,7 +3027,7 @@ int main(int argc,char** argv){
         _CrtSetReportMode(kind,_CRTDBG_MODE_FILE);_CrtSetReportFile(kind,_CRTDBG_FILE_STDERR);
     }
 #endif
-    embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();skin_execution_checks();awl::filesystem_shutdown();frame_checks();awl::filesystem_shutdown();animation_frame_checks();awl::filesystem_shutdown();attachment_frame_checks();awl::filesystem_shutdown();hierarchy_frame_checks();awl::filesystem_shutdown();partial_frame_sampling_checks();owned_hierarchy_frame_checks();awl::filesystem_shutdown();primary_frame_owner_checks();awl::filesystem_shutdown();topology_checks();awl::filesystem_shutdown();geometry_checks();awl::filesystem_shutdown();primary_owner_checks();awl::filesystem_shutdown();holder_checks();awl::filesystem_shutdown();initial_root_scale_checks();initial_input_checks();awl::filesystem_shutdown();timer_asset_checks();awl::filesystem_shutdown();startup_owner_checks();awl::filesystem_shutdown();feature_draw_state_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
+    embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();skin_execution_checks();awl::filesystem_shutdown();frame_checks();awl::filesystem_shutdown();animation_frame_checks();awl::filesystem_shutdown();attachment_frame_checks();awl::filesystem_shutdown();hierarchy_frame_checks();awl::filesystem_shutdown();partial_frame_sampling_checks();owned_hierarchy_frame_checks();awl::filesystem_shutdown();primary_frame_owner_checks();awl::filesystem_shutdown();topology_checks();awl::filesystem_shutdown();geometry_checks();awl::filesystem_shutdown();primary_owner_checks();awl::filesystem_shutdown();holder_checks();awl::filesystem_shutdown();initial_root_scale_checks();initial_input_checks();awl::filesystem_shutdown();timer_asset_checks();awl::filesystem_shutdown();state29_camera_checks();startup_owner_checks();awl::filesystem_shutdown();feature_draw_state_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
     if(argc==3 && std::string(argv[1])=="--player-model-local")local(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-frame-local")local(argv[2],true);
     else if(argc==3 && std::string(argv[1])=="--player-primary-local")local_primary(argv[2]);

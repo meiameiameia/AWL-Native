@@ -3,6 +3,28 @@
 #include <utility>
 
 namespace awl {
+WorldMapPlayerState29CameraStep WorldMapPlayerStartup::advance_state29_camera(
+    const WorldMapPlayerStartupState29Input& input) {
+    using Status = WorldMapPlayerState29CameraStatus;
+    if (state_.state_1364 != 0x29) return {Status::UnsupportedState, {}, {}, {}};
+    if (camera_ && input.first_camera) return {};
+    if (!camera_ && (!input.first_camera || !input.first_camera->collision))
+        return {Status::RequiresCamera, {}, {}, {}};
+    const auto collision = camera_ ? camera_->collision : input.first_camera->collision;
+    WorldMapPlayerState29CameraQuery query;
+    query.previous_camera = camera_ ? camera_->camera : input.first_camera->camera;
+    query.player_position = input.player_position;
+    query.counter_1368 = state_.counter_1368;
+    query.action_148 = input.action_148;
+    try {
+        auto step = collision->calculate_player_state29_update(query);
+        if (step.status != Status::Prepared) return step;
+        camera_ = WorldMapPlayerStartupCameraState{collision, *step.final_camera, *step.update};
+        state_.counter_1368 = *step.counter_after;
+        step.status = Status::Advanced; return step;
+    } catch (const std::bad_alloc&) { return {Status::AllocationFailure, {}, {}, {}}; }
+}
+
 WorldMapPlayerStartupResult construct_world_map_player_startup(
     const WorldMapPlayerStartupProviders& providers, const WorldMapPlayerStartupQuery& query,
     std::unique_ptr<WorldMapPlayerStartup>* out) {
