@@ -2,6 +2,7 @@
 #include "awl/world_map_player_animation_holder.h"
 #include "awl/world_map_camera.h"
 #include "awl/world_map_player_update.h"
+#include "awl/world_map_update_inputs.h"
 
 namespace awl {
 struct WorldMapPlayerStartupProviders {
@@ -72,6 +73,16 @@ struct WorldMapPlayerStartupUpdateResult {
     // Prepared callback results on a late stop are diagnostic, not published.
     std::optional<WorldMapPlayerState29CameraStep> callback;
 };
+// Callback observations only. Control and priority are derived by the owned
+// input boundary; callers cannot supply an overriding raw control word.
+struct WorldMapPlayerStartupDispatchInput {
+    std::optional<WorldMapPlayerUpdateGuards> guards;
+    std::optional<int32_t> scene_child_word_4;
+    WorldMapPlayerScenePose pose;
+    std::optional<int32_t> action_148;
+    std::optional<WorldMapPlayerStartupCameraSeed> first_camera;
+    uint64_t player_node_identity = 0;
+};
 // Owns the supported CPU initial model -> no-message tail -> normal state-29
 // callback boundary. Only known parent/secondary writes are exposed;
 // constructor-unwritten or untouched parent words are not invented. This is
@@ -97,6 +108,14 @@ public:
     // This does not discover live owners, consume the queue or schedule ticks.
     [[nodiscard]] WorldMapPlayerStartupUpdateResult advance_state29_parent(
         const WorldMapPlayerStartupUpdateInput& input, WorldMapPlayerUpdateOwners* owners);
+    // Mode-four registration's priority 0x5001 through the retained group
+    // filter/control snapshot. Filtered nodes skip all callback dependencies.
+    // Uses the same shared GameClock as the player. Capture/scene commit are
+    // separate earlier boundaries; a callback stop preserves them for retry.
+    // No live registration, other manager passes or queue consumer is implied.
+    [[nodiscard]] WorldMapPlayerStartupUpdateResult dispatch_state29_parent(
+        const WorldMapUpdateInputs& inputs, const WorldMapPlayerStartupDispatchInput& input,
+        WorldMapPlayerUpdateOwners* owners);
     [[nodiscard]] WorldMapPlayerPrimaryUpdateResult advance(const WorldMapPlayerPrimaryFrameInput& input) {
         return model_->advance(input);
     }

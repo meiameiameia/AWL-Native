@@ -61,6 +61,24 @@ WorldMapPlayerStartupUpdateResult WorldMapPlayerStartup::advance_state29_parent(
     return result;
 }
 
+WorldMapPlayerStartupUpdateResult WorldMapPlayerStartup::dispatch_state29_parent(
+    const WorldMapUpdateInputs& inputs, const WorldMapPlayerStartupDispatchInput& input,
+    WorldMapPlayerUpdateOwners* owners) {
+    using S = WorldMapPlayerUpdateStatus;
+    const auto dispatch = inputs.dispatch(0x5001u);
+    if (dispatch.status == WorldMapDispatchStatus::RequiresControl) return {S::RequiresDispatchControl, {}};
+    if (dispatch.status == WorldMapDispatchStatus::Filtered) return {S::SkippedByDispatchFilter, {}};
+    if (dispatch.status != WorldMapDispatchStatus::Ready || !dispatch.control_word ||
+        inputs.game_clock() != model_->game_clock()) return {S::InvalidInput, {}};
+    WorldMapPlayerStartupUpdateInput update;
+    update.entry = {dispatch.control_word, input.guards, input.scene_child_word_4};
+    update.pose = input.pose;
+    update.action_148 = input.action_148;
+    update.first_camera = input.first_camera;
+    update.player_node_identity = input.player_node_identity;
+    return advance_state29_parent(update, owners);
+}
+
 WorldMapPlayerStartupResult construct_world_map_player_startup(
     const WorldMapPlayerStartupProviders& providers, const WorldMapPlayerStartupQuery& query,
     std::unique_ptr<WorldMapPlayerStartup>* out) {

@@ -36,7 +36,7 @@ enum class WorldMapPlayerUpdateStatus {
     RequiresSceneTransition, RequiresStatusUpdate, RequiresEffectOwners,
     RequiresScenePositionOwner, RequiresQueueNode, InvalidQueue,
     UnsupportedQueuePriorityChange, CameraIncomplete, UnsupportedState, InvalidInput,
-    AllocationFailure
+    AllocationFailure, SkippedByDispatchFilter, RequiresDispatchControl
 };
 // FUN_80031144's pre-callback decisions, restricted to state 29. The guard
 // transition and scene transition are separate, ordered dependencies.
