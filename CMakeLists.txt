@@ -61,6 +61,7 @@ set(SOURCES
     src/world_map_player_primary_owner.cpp
     src/world_map_player_animation_holder.cpp
     src/world_map_player_startup.cpp
+    src/world_map_player_update.cpp
     src/world_map_player_initial_animation.cpp
     src/world_map_player_timer_assets.cpp
     src/game_clock.cpp
@@ -133,6 +134,7 @@ set(HEADERS
     include/awl/world_map_player_primary_owner.h
     include/awl/world_map_player_animation_holder.h
     include/awl/world_map_player_startup.h
+    include/awl/world_map_player_update.h
     include/awl/world_map_player_initial_animation.h
     include/awl/world_map_player_timer_assets.h
     include/awl/game_clock.h
@@ -623,6 +625,7 @@ add_executable(world_map_player_model_assets_tests
     src/world_map_player_primary_owner.cpp
     src/world_map_player_animation_holder.cpp
     src/world_map_player_startup.cpp
+    src/world_map_player_update.cpp
     src/world_map_player_start.cpp
     src/collision_asset.cpp
     src/world_map_camera.cpp

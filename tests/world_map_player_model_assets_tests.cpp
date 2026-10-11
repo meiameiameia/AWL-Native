@@ -1970,6 +1970,7 @@ uint64_t camera_snapshot(const awl::WorldMapPlayerStartupCameraState& state) {
 uint64_t startup_snapshot(const awl::WorldMapPlayerStartup& owner) {
     auto h=holder_snapshot(owner.model());const auto& s=owner.state();
     hash(h,uint32_t(s.state_1364));hash(h,s.counter_1368);hash(h,s.secondary_byte_3f0);
+    hash(h,s.control_word_1384.has_value());hash(h,s.control_word_1384.value_or(0));
     const auto key=reinterpret_cast<uintptr_t>(owner.starts().get());hash(h,uint32_t(uint64_t(key)>>32));hash(h,uint32_t(key));
     hash(h,owner.camera().has_value());if(owner.camera()){const auto camera=camera_snapshot(*owner.camera());hash(h,uint32_t(camera>>32));hash(h,uint32_t(camera));}return h;
 }
@@ -1980,6 +1981,64 @@ struct State29HeightProbe {
         if(s.calls<2)s.positions[s.calls]=p;++s.calls;if(s.calls==s.fail_at)return false;
         *height=s.nonfinite?std::numeric_limits<float>::quiet_NaN():0.0f;return true;}
 };
+uint64_t update_owners_snapshot(const awl::WorldMapPlayerUpdateOwners& owners) {
+    uint64_t h=14695981039346656037ull;
+    const auto vector=[&](const auto& values){for(float v:values){uint32_t bits;std::memcpy(&bits,&v,4);hash(h,bits);}};
+    hash(h,uint32_t(owners.saved_pose.scene_type));vector(owners.saved_pose.position);vector(owners.saved_pose.heading);
+    vector(owners.position_802fc20c);hash(h,owners.scene_one_position_240.has_value());
+    if(owners.scene_one_position_240)vector(*owners.scene_one_position_240);
+    hash(h,uint32_t(owners.queue.size()));for(const auto& e:owners.queue){hash(h,uint32_t(e.node_identity>>32));hash(h,uint32_t(e.node_identity));hash(h,e.priority);}return h;
+}
+void parent_update_checks() {
+    using S=awl::WorldMapPlayerUpdateStatus;
+    awl::WorldMapPlayerUpdateEntry entry;expect(awl::prepare_world_map_player_state29_update_entry(entry)==S::RequiresControlWord,"parent control word must be observed before guard reads");
+    entry.control_word=0;expect(awl::prepare_world_map_player_state29_update_entry(entry)==S::RequiresGuardOwner,"missing guard owner cannot run callback");
+    entry.guards=awl::WorldMapPlayerUpdateGuards{-1,{}};expect(awl::prepare_world_map_player_state29_update_entry(entry)==S::RequiresGuardWord58c,"clear first guard reaches unknown second guard");
+    entry.guards->word_680=0;expect(awl::prepare_world_map_player_state29_update_entry(entry)==S::RequiresGuardTransition,"blocked first guard does not need second guard or scene");
+    entry.guards=awl::WorldMapPlayerUpdateGuards{-1,0};expect(awl::prepare_world_map_player_state29_update_entry(entry)==S::RequiresSceneWord,"scene child field remains a distinct reached dependency");
+    uint64_t digest=14695981039346656037ull;
+    constexpr uint32_t controls[]{0,0x800,0x7ff,UINT32_MAX,0x1000,0x80000000,0x801,0x80000800};
+    constexpr int32_t first[]{-1,0,1,INT32_MIN},second[]{0,1,-1},scenes[]{0,1,-1,2};
+    for(uint32_t seed=0;seed<384;++seed){const auto control=controls[seed/48];const auto g680=first[seed%4],g58c=second[seed/4%3],scene=scenes[seed/12%4];
+        entry={control,awl::WorldMapPlayerUpdateGuards{g680,g680==-1?std::optional<int32_t>{g58c}:std::nullopt},
+            g680==-1 && g58c==0?std::optional<int32_t>{scene}:std::nullopt};
+        const auto result=awl::prepare_world_map_player_state29_update_entry(entry);
+        const auto expected=g680!=-1 || g58c!=0?S::RequiresGuardTransition:scene==1?S::RequiresSceneTransition:S::Prepared;
+        expect(result==expected,"state29 guard short circuit and scene decision match original pre-callback routes");
+        const uint32_t route=result==S::RequiresGuardTransition?0x80031250u:result==S::RequiresSceneTransition?0x80031364u:0x80031388u;
+        for(uint32_t w:{seed,control,uint32_t(g680),uint32_t(g58c),uint32_t(scene),route,control})hash(digest,w);
+    }
+    expect(digest==0x2DEA788AAF99D6E5ull,"384 parent entry routes agree with bounded actual instructions and trapped unreached reads");
+    std::cout<<"PLAYER_PARENT_ENTRY 384 digest "<<std::hex<<digest<<std::dec<<'\n';
+    digest=14695981039346656037ull;
+    for(uint32_t seed=0;seed<640;++seed){awl::WorldMapPlayerUpdateOwners owners,after;owners.scene_one_position_240=std::array<float,3>{900,901,902};
+        constexpr int32_t types[]{0,1,-1,44,INT32_MIN};constexpr uint32_t priorities[]{0,0x100f,0x1010,0x1010,0x1011,0x80000000,UINT32_MAX};
+        awl::WorldMapPlayerScenePose pose{types[seed%5],{float(seed%17)-8,seed%2?-0.0f:float(seed%7),float(seed%11)-5},{-0.0f,float(seed%5)-2,2}};
+        for(uint32_t i=0;i<seed%8;++i)owners.queue.push_back({i+1,priorities[i]});
+        if(seed/8%2 && owners.queue.size()>=4)owners.queue[3].node_identity=99;
+        expect(awl::prepare_world_map_player_state29_update_tail(owners,pose,99,&after)==S::Prepared,"state29 tail copies raw pose and inserts or reinserts own queue node");
+        for(uint32_t w:{seed,uint32_t(pose.scene_type)})hash(digest,w);
+        const auto vector=[&](const auto& values){for(float v:values){uint32_t bits;std::memcpy(&bits,&v,4);hash(digest,bits);}};
+        vector(pose.position);vector(pose.heading);hash(digest,uint32_t(after.saved_pose.scene_type));vector(after.saved_pose.position);vector(after.saved_pose.heading);
+        vector(after.position_802fc20c);vector(*after.scene_one_position_240);hash(digest,uint32_t(after.queue.size()));
+        for(const auto& item:after.queue){hash(digest,uint32_t(item.node_identity));hash(digest,item.priority);}
+        auto alias=owners;expect(awl::prepare_world_map_player_state29_update_tail(alias,pose,99,&alias)==S::Prepared && update_owners_snapshot(alias)==update_owners_snapshot(after),"tail supports input/output aliasing with identical state");
+    }
+    expect(digest==0x912F8894AA493C9Aull,"640 tail cases match actual pose/position and queue insertion/unlink instruction bodies");
+    std::cout<<"PLAYER_PARENT_TAIL 640 digest "<<std::hex<<digest<<std::dec<<'\n';
+    awl::WorldMapPlayerUpdateOwners owners,after;after.queue={{8,4}};const auto untouched=update_owners_snapshot(after);
+    awl::WorldMapPlayerScenePose pose{1,{2,0,0},{-0.0f,0,2}};
+    expect(awl::prepare_world_map_player_state29_update_tail(owners,pose,99,&after)==S::RequiresScenePositionOwner && update_owners_snapshot(after)==untouched,"scene-one copy needs its owner and preserves output");
+    pose.scene_type=2;expect(awl::prepare_world_map_player_state29_update_tail(owners,pose,0,&after)==S::RequiresQueueNode && update_owners_snapshot(after)==untouched,"queue node cannot be invented");
+    for(const auto& entries:std::vector<std::vector<awl::WorldMapPlayerUpdateQueueEntry>>{{{0,1}},{{1,2},{2,1}},{{1,1},{1,2}}}){owners.queue=entries;
+        expect(awl::prepare_world_map_player_state29_update_tail(owners,pose,99,&after)==S::InvalidQueue && update_owners_snapshot(after)==untouched,"null keys, unordered priorities and duplicate identities reject atomically");}
+    owners.queue={{99,0}};expect(awl::prepare_world_map_player_state29_update_tail(owners,pose,99,&after)==S::UnsupportedQueuePriorityChange && update_owners_snapshot(after)==untouched,"changing an existing priority is not inferred from normal update");
+    owners.queue.clear();pose.heading[1]=std::numeric_limits<float>::infinity();
+    expect(awl::prepare_world_map_player_state29_update_tail(owners,pose,99,&after)==S::InvalidInput && update_owners_snapshot(after)==untouched,"nonfinite heading does not publish earlier pose/position writes");
+    pose.heading[1]=0;pose.position[1]=std::numeric_limits<float>::quiet_NaN();
+    expect(awl::prepare_world_map_player_state29_update_tail(owners,pose,99,&after)==S::InvalidInput && update_owners_snapshot(after)==untouched &&
+        awl::prepare_world_map_player_state29_update_tail(owners,pose,99,nullptr)==S::InvalidInput,"nonfinite position and null output preserve state");
+}
 void state29_camera_checks() {
     using S=awl::WorldMapPlayerState29CameraStatus;uint64_t digest=14695981039346656037ull;
     awl::WorldMapPlayerState29CameraQuery q;q.previous_camera.target.distance_30=2;q.previous_camera.up_vector_24={0,1,0};
@@ -2018,6 +2077,75 @@ std::vector<uint8_t> startup_camera_col() {
     word(b,8+4,10);word(b,8+8,0x000A000A); // bounds (0,0,0)..(10,10,10)
     word(b,8+0x1C,1);word(b,8+0x20,3);word(b,8+0x28,0x34);word(b,8+0x2C,0x3C);
     word(b,60,0x00200000);word(b,64,0x00010002);word(b,76,0x000A0000);word(b,84,0);word(b,88,0x000A0000);return b;
+}
+void parent_owner_checks(const awl::WorldMapPlayerStartupProviders& providers,const awl::WorldMapPlayerStartupQuery& query,
+    const awl::WorldMapPlayerPrimaryFrameInput& frame,const std::shared_ptr<awl::WorldMapCameraCollisionAsset>& camera,
+    const awl::WorldMapCameraViewQuery& camera_query) {
+    using S=awl::WorldMapPlayerUpdateStatus;using C=awl::WorldMapPlayerState29CameraStatus;
+    std::unique_ptr<awl::WorldMapPlayerStartup> owner;
+    expect(awl::construct_world_map_player_startup(providers,query,&owner).status==awl::WorldMapPlayerStartupStatus::ConstructedCpuStartup && owner &&
+        owner->advance(frame).status==awl::WorldMapPlayerPrimaryUpdateStatus::Advanced,"parent update fixture owns an evaluated CPU startup");if(!owner)return;
+    awl::WorldMapPlayerUpdateOwners owners;owners.saved_pose={7,{40,50,60},{3,2,1}};owners.position_802fc20c={70,80,90};
+    owners.queue={{1,0x100f},{2,0x1010},{3,UINT32_MAX}};
+    awl::WorldMapPlayerStartupUpdateInput input;input.pose={1,{2,0,0},{-0.0f,0,2}};input.player_node_identity=99;input.action_148=0;
+    input.first_camera=awl::WorldMapPlayerStartupCameraSeed{camera,camera_query};
+    const auto before=startup_snapshot(*owner),effects_before=update_owners_snapshot(owners),model_before=holder_snapshot(owner->model());
+    const auto clock_before=providers.clock->state();
+    const auto preserved=[&](){return startup_snapshot(*owner)==before && update_owners_snapshot(owners)==effects_before;};
+    auto step=owner->advance_state29_parent(input,&owners);
+    expect(step.status==S::RequiresControlWord && !step.callback && preserved(),"unknown control word stops before camera with no constructor value guessed");
+    input.entry.control_word=0x800;step=owner->advance_state29_parent(input,&owners);
+    expect(step.status==S::RequiresGuardOwner && !step.callback && preserved(),"missing guard owner preserves full prior frame and effects");
+    input.entry.guards=awl::WorldMapPlayerUpdateGuards{0,{}};step=owner->advance_state29_parent(input,&owners);
+    expect(step.status==S::RequiresGuardTransition && !step.callback && preserved(),"blocked guard stops before unknown second guard, scene and callback");
+    input.entry.guards=awl::WorldMapPlayerUpdateGuards{-1,0};step=owner->advance_state29_parent(input,&owners);
+    expect(step.status==S::RequiresSceneWord && !step.callback && preserved(),"scene child field cannot be replaced with pose scene type");
+    input.entry.scene_child_word_4=1;step=owner->advance_state29_parent(input,&owners);
+    expect(step.status==S::RequiresSceneTransition && !step.callback && preserved(),"scene transition precedes state29 camera and counter");
+    input.entry.scene_child_word_4=0;input.entry.control_word=0;step=owner->advance_state29_parent(input,&owners);
+    expect(step.status==S::RequiresStatusUpdate && step.callback && step.callback->status==C::Prepared && preserved(),"control bit clear reaches untranslated status pair only after staged callback, without accepting camera/control/counter");
+    input.entry.control_word=0x800;step=owner->advance_state29_parent(input,nullptr);
+    expect(step.status==S::RequiresEffectOwners && step.callback && step.callback->status==C::Prepared && preserved(),"late missing effect owners roll back successful camera calculation");
+    step=owner->advance_state29_parent(input,&owners);
+    expect(step.status==S::RequiresScenePositionOwner && step.callback && preserved(),"scene-one position owner is required after callback and before queue publication");
+    owners.scene_one_position_240=std::array<float,3>{90,91,92};const auto ready_effects=update_owners_snapshot(owners);
+    const auto ready_preserved=[&](){return startup_snapshot(*owner)==before && update_owners_snapshot(owners)==ready_effects;};
+    input.player_node_identity=0;step=owner->advance_state29_parent(input,&owners);
+    expect(step.status==S::RequiresQueueNode && ready_preserved(),"late unknown queue node preserves all owners");
+    input.player_node_identity=99;input.pose.heading[2]=std::numeric_limits<float>::quiet_NaN();step=owner->advance_state29_parent(input,&owners);
+    expect(step.status==S::InvalidInput && step.callback && step.callback->status==C::Prepared && ready_preserved(),"invalid tail heading rolls back a complete camera result");
+    input.pose.heading[2]=2;input.first_camera->camera.target.distance_30=0;step=owner->advance_state29_parent(input,&owners);
+    expect(step.status==S::CameraIncomplete && step.callback && step.callback->status==C::CameraFailure && ready_preserved(),"camera failure prevents tail owner/queue writes");
+    input.first_camera->camera=camera_query;
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    const auto live_before=allocation_probe::live;size_t rejected=0;bool reached=false;
+    for(size_t fail=0;fail<64;++fail){allocation_probe::remaining=fail;allocation_probe::enabled=true;step=owner->advance_state29_parent(input,&owners);allocation_probe::enabled=false;
+        if(step.status==S::Advanced){reached=true;break;}++rejected;
+        expect(step.status==S::AllocationFailure && ready_preserved() && allocation_probe::live==live_before,"each camera and late queue-copy/insertion allocation failure preserves owner/effects and frees staging");}
+    expect(reached && rejected>=10,"parent allocation sweep reaches both camera passes, queue copy and insertion before success");
+    std::cout<<"PLAYER_PARENT_ALLOCATION_FAILURES "<<rejected<<'\n';
+#else
+    step=owner->advance_state29_parent(input,&owners);
+#endif
+    expect(step.status==S::Advanced && step.callback && step.callback->status==C::Advanced && owner->state().counter_1368==1 && owner->state().control_word_1384==0x800u &&
+        owners.saved_pose.scene_type==1 && owners.saved_pose.position==input.pose.position && owners.saved_pose.heading==input.pose.heading &&
+        owners.position_802fc20c==input.pose.position && owners.scene_one_position_240==input.pose.position && owners.queue.size()==4 &&
+        owners.queue[1].node_identity==99 && owners.queue[2].node_identity==2 && owners.queue[3].priority==UINT32_MAX,"complete parent publishes camera/counter/control, direct raw pose copies and unsigned insertion before equal priorities together");
+    input.first_camera.reset();input.entry.control_word=0x80000800;input.pose.scene_type=2;input.pose.position[0]=3;
+    std::swap(owners.queue[1],owners.queue[2]);step=owner->advance_state29_parent(input,&owners);
+    expect(step.status==S::Advanced && owner->state().counter_1368==2 && owner->state().control_word_1384==0x80000800u && owners.queue.size()==4 &&
+        owners.queue[1].node_identity==99 && owners.scene_one_position_240==std::array<float,3>{2,0,0} && owners.position_802fc20c==input.pose.position,
+        "repeated parent update reinserts existing node ahead of equals, copies new position and preserves unreached scene-one owner");
+    const auto accepted=startup_snapshot(*owner),accepted_effects=update_owners_snapshot(owners);input.action_148.reset();
+    step=owner->advance_state29_parent(input,&owners);
+    expect(step.status==S::CameraIncomplete && step.callback && step.callback->status==C::RequiresActionTarget && startup_snapshot(*owner)==accepted &&
+        update_owners_snapshot(owners)==accepted_effects,"counter-two unknown action preserves previously accepted parent/effects");
+    input.action_148=-1;step=owner->advance_state29_parent(input,&owners);
+    expect(step.status==S::CameraIncomplete && step.callback && step.callback->status==C::RequiresAuxiliarySource && startup_snapshot(*owner)==accepted &&
+        update_owners_snapshot(owners)==accepted_effects,"nonzero attachment action cannot reach post-callback owners");
+    input.action_148=0;step=owner->advance_state29_parent(input,&owners);
+    expect(step.status==S::Advanced && owner->state().counter_1368==3 && owners.queue.size()==4 && holder_snapshot(owner->model())==model_before &&
+        providers.clock->state().raw_time==clock_before.raw_time && providers.clock->state().loop_count==clock_before.loop_count,"successful retry completes parent update without model/frame or shared-clock advancement");
 }
 void startup_owner_checks() {
     using S=awl::WorldMapPlayerStartupStatus;using A=awl::WorldMapPlayerStartAnimationStatus;using I=awl::WorldMapAnimationInitializerStatus;
@@ -2109,6 +2237,7 @@ void startup_owner_checks() {
     callback.first_camera=awl::WorldMapPlayerStartupCameraSeed{camera,camera_query};
     expect(owner->advance_state29_camera(callback).status==C::RequiresCamera && startup_snapshot(*owner)==no_camera,"unloaded camera provider preserves complete startup");
     fixture.write("jimen-camera.col",startup_camera_col());expect(camera->load(),"invented flat camera terrain loads through the real provider");
+    parent_owner_checks(p,q,frame,camera,camera_query);
     callback.first_camera->camera.target.distance_30=0;
     expect(owner->advance_state29_camera(callback).status==C::CameraFailure && startup_snapshot(*owner)==no_camera,"degenerate seed does not bind provider or consume counter");
     callback.first_camera->camera=camera_query;
@@ -2202,16 +2331,22 @@ void local_startup(const char* disc) {
                 owner->model().primary().cpu().frame()->root_matrix==awl::WorldMapModelMatrix{1,0,0,0,0,1,0,0,0,0,1,0} &&
                 owner->model().game_clock()->state().raw_time==clock_before.raw_time && owner->model().game_clock()->state().loop_count==clock_before.loop_count,
                 "first actual startup frame samples 55 nodes and skins at initialized root without caller placement or implicit time advancement");
-            const auto model_before=holder_snapshot(owner->model());awl::WorldMapPlayerStartupState29Input callback;
+            const auto model_before=holder_snapshot(owner->model());awl::WorldMapPlayerStartupUpdateInput callback;
+            callback.entry={0x800u,awl::WorldMapPlayerUpdateGuards{-1,0},0};callback.pose.scene_type=1;callback.pose.heading={0,0,1};callback.player_node_identity=99;
+            awl::WorldMapPlayerUpdateOwners effects;effects.scene_one_position_240=std::array<float,3>{0,0,0};effects.queue={{1,0},{2,0x1010},{3,UINT32_MAX}};
             callback.first_camera=awl::WorldMapPlayerStartupCameraSeed{camera_collision,profile.view_query};callback.action_148=0;
             const auto camera_lifetime=std::weak_ptr<const awl::WorldMapCameraCollisionAsset>(camera_collision);if(last)camera_collision.reset();
-            for(uint32_t tick=0;tick<8;++tick){callback.player_position={120.0f+float(tick)*0.125f,5.21f,168.0f};
-                const auto step=owner->advance_state29_camera(callback);expect(step.status==awl::WorldMapPlayerState29CameraStatus::Advanced && owner->camera() &&
-                    owner->state().counter_1368==tick+1 && owner->camera()->camera.target.camera.position==callback.player_position &&
+            for(uint32_t tick=0;tick<8;++tick){callback.pose.position={120.0f+float(tick)*0.125f,5.21f,168.0f};
+                const auto step=owner->advance_state29_parent(callback,&effects);expect(step.status==awl::WorldMapPlayerUpdateStatus::Advanced && step.callback &&
+                    step.callback->status==awl::WorldMapPlayerState29CameraStatus::Advanced && owner->camera() && owner->state().control_word_1384==0x800u &&
+                    effects.saved_pose.position==callback.pose.position && effects.saved_pose.heading==callback.pose.heading && effects.saved_pose.scene_type==1 &&
+                    effects.position_802fc20c==callback.pose.position && effects.scene_one_position_240==callback.pose.position && effects.queue.size()==4 &&
+                    effects.queue[1].node_identity==99 && effects.queue[2].node_identity==2 && effects.queue[3].priority==UINT32_MAX &&
+                    owner->state().counter_1368==tick+1 && owner->camera()->camera.target.camera.position==callback.pose.position &&
                     owner->camera()->camera.target.camera.yaw==profile.view_query.target.camera.yaw && owner->camera()->camera.target.pitch_offset_8c==0 &&
                     owner->camera()->camera.target.yaw_offset_90==0 && holder_snapshot(owner->model())==model_before &&
                     owner->model().game_clock()->state().raw_time==clock_before.raw_time && owner->model().game_clock()->state().loop_count==clock_before.loop_count,
-                    "all actual startup phases own repeated camera/counter callbacks from supplied diagnostic positions without region yaw, model or clock advancement");
+                    "all actual startup phases complete normal parent updates over real camera terrain with supplied guards/control/pose/owners, no duplicate queue nodes or model/clock advancement");
                 callback.first_camera.reset();++camera_updates;
             }
             owner.reset();if(last)expect(clock_lifetime.expired() && starts_lifetime.expired() && models_lifetime.expired() && camera_lifetime.expired(),"last actual startup releases retained caller providers and camera terrain");++checked;
@@ -2223,6 +2358,7 @@ void local_startup(const char* disc) {
     expect(state_digest==0xC57D5EFAEAF64EBDull,"all 24 parent/model timer states match original 31D7C/F3E8/349A4 instructions with the animation callback supplied");
     std::cout<<"LOCAL_PLAYER_STARTUP "<<checked<<" first 55-node CPU frames; callbacks changed "<<changed<<" unchanged "<<unchanged<<"; scene-message, live actor and GPU pending\n";
     std::cout<<"LOCAL_PLAYER_STATE29_CAMERA "<<camera_updates<<" updates across "<<checked<<" startups; supplied diagnostic positions/profile, actual camera COL; full parent loop pending\n";
+    std::cout<<"LOCAL_PLAYER_STATE29_PARENT "<<camera_updates<<" guarded updates with atomic pose/position/queue effects; supplied owners/control, live scheduling pending\n";
 }
 void local_timer_holder(const char* disc,bool owned_clock=false,bool initial_model=false) {
     using S=awl::WorldMapPlayerTimerAssetsStatus;using B=awl::WorldMapPlayerTimerBank;using H=awl::WorldMapPlayerTimedInitialHolderStatus;
@@ -3027,7 +3163,7 @@ int main(int argc,char** argv){
         _CrtSetReportMode(kind,_CRTDBG_MODE_FILE);_CrtSetReportFile(kind,_CRTDBG_FILE_STDERR);
     }
 #endif
-    embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();skin_execution_checks();awl::filesystem_shutdown();frame_checks();awl::filesystem_shutdown();animation_frame_checks();awl::filesystem_shutdown();attachment_frame_checks();awl::filesystem_shutdown();hierarchy_frame_checks();awl::filesystem_shutdown();partial_frame_sampling_checks();owned_hierarchy_frame_checks();awl::filesystem_shutdown();primary_frame_owner_checks();awl::filesystem_shutdown();topology_checks();awl::filesystem_shutdown();geometry_checks();awl::filesystem_shutdown();primary_owner_checks();awl::filesystem_shutdown();holder_checks();awl::filesystem_shutdown();initial_root_scale_checks();initial_input_checks();awl::filesystem_shutdown();timer_asset_checks();awl::filesystem_shutdown();state29_camera_checks();startup_owner_checks();awl::filesystem_shutdown();feature_draw_state_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
+    embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();skin_execution_checks();awl::filesystem_shutdown();frame_checks();awl::filesystem_shutdown();animation_frame_checks();awl::filesystem_shutdown();attachment_frame_checks();awl::filesystem_shutdown();hierarchy_frame_checks();awl::filesystem_shutdown();partial_frame_sampling_checks();owned_hierarchy_frame_checks();awl::filesystem_shutdown();primary_frame_owner_checks();awl::filesystem_shutdown();topology_checks();awl::filesystem_shutdown();geometry_checks();awl::filesystem_shutdown();primary_owner_checks();awl::filesystem_shutdown();holder_checks();awl::filesystem_shutdown();initial_root_scale_checks();initial_input_checks();awl::filesystem_shutdown();timer_asset_checks();awl::filesystem_shutdown();state29_camera_checks();parent_update_checks();startup_owner_checks();awl::filesystem_shutdown();feature_draw_state_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
     if(argc==3 && std::string(argv[1])=="--player-model-local")local(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-frame-local")local(argv[2],true);
     else if(argc==3 && std::string(argv[1])=="--player-primary-local")local_primary(argv[2]);

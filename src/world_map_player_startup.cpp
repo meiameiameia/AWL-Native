@@ -3,8 +3,8 @@
 #include <utility>
 
 namespace awl {
-WorldMapPlayerState29CameraStep WorldMapPlayerStartup::advance_state29_camera(
-    const WorldMapPlayerStartupState29Input& input) {
+WorldMapPlayerState29CameraStep WorldMapPlayerStartup::prepare_state29_camera(
+    const WorldMapPlayerStartupState29Input& input) const {
     using Status = WorldMapPlayerState29CameraStatus;
     if (state_.state_1364 != 0x29) return {Status::UnsupportedState, {}, {}, {}};
     if (camera_ && input.first_camera) return {};
@@ -17,12 +17,48 @@ WorldMapPlayerState29CameraStep WorldMapPlayerStartup::advance_state29_camera(
     query.counter_1368 = state_.counter_1368;
     query.action_148 = input.action_148;
     try {
-        auto step = collision->calculate_player_state29_update(query);
-        if (step.status != Status::Prepared) return step;
-        camera_ = WorldMapPlayerStartupCameraState{collision, *step.final_camera, *step.update};
-        state_.counter_1368 = *step.counter_after;
-        step.status = Status::Advanced; return step;
+        return collision->calculate_player_state29_update(query);
     } catch (const std::bad_alloc&) { return {Status::AllocationFailure, {}, {}, {}}; }
+}
+
+WorldMapPlayerState29CameraStep WorldMapPlayerStartup::advance_state29_camera(
+    const WorldMapPlayerStartupState29Input& input) {
+    auto step = prepare_state29_camera(input);
+    if (step.status != WorldMapPlayerState29CameraStatus::Prepared) return step;
+    const auto collision = camera_ ? camera_->collision : input.first_camera->collision;
+    camera_ = WorldMapPlayerStartupCameraState{collision, *step.final_camera, *step.update};
+    state_.counter_1368 = *step.counter_after;
+    step.status = WorldMapPlayerState29CameraStatus::Advanced;
+    return step;
+}
+
+WorldMapPlayerStartupUpdateResult WorldMapPlayerStartup::advance_state29_parent(
+    const WorldMapPlayerStartupUpdateInput& input, WorldMapPlayerUpdateOwners* owners) {
+    using S = WorldMapPlayerUpdateStatus;
+    if (state_.state_1364 != 0x29) return {S::UnsupportedState, {}};
+    WorldMapPlayerStartupUpdateResult result;
+    result.status = prepare_world_map_player_state29_update_entry(input.entry);
+    if (result.status != S::Prepared) return result;
+    result.callback = prepare_state29_camera({input.pose.position, input.action_148, input.first_camera});
+    if (result.callback->status != WorldMapPlayerState29CameraStatus::Prepared) {
+        result.status = result.callback->status == WorldMapPlayerState29CameraStatus::AllocationFailure ?
+            S::AllocationFailure : S::CameraIncomplete;
+        return result;
+    }
+    // The original reaches these calls only after the state callback.
+    if ((*input.entry.control_word & 0x800u) == 0) { result.status = S::RequiresStatusUpdate; return result; }
+    if (!owners) { result.status = S::RequiresEffectOwners; return result; }
+    WorldMapPlayerUpdateOwners next;
+    result.status = prepare_world_map_player_state29_update_tail(*owners, input.pose, input.player_node_identity, &next);
+    if (result.status != S::Prepared) return result;
+    const auto collision = camera_ ? camera_->collision : input.first_camera->collision;
+    camera_ = WorldMapPlayerStartupCameraState{collision, *result.callback->final_camera, *result.callback->update};
+    state_.counter_1368 = *result.callback->counter_after;
+    state_.control_word_1384 = *input.entry.control_word;
+    *owners = std::move(next);
+    result.callback->status = WorldMapPlayerState29CameraStatus::Advanced;
+    result.status = S::Advanced;
+    return result;
 }
 
 WorldMapPlayerStartupResult construct_world_map_player_startup(
@@ -99,7 +135,7 @@ WorldMapPlayerStartupResult construct_world_map_player_startup(
         }
         next->starts_ = providers.starts;
         // Only complete callback results establish these parent/secondary words.
-        next->state_ = {0x29,0,1};
+        next->state_ = {0x29,0,1,{}};
         *out = std::move(next); result.status = Status::ConstructedCpuStartup; return result;
     } catch (const std::bad_alloc&) { result.status = Status::AllocationFailure; return result; }
 }

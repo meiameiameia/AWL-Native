@@ -1,6 +1,7 @@
 #pragma once
 #include "awl/world_map_player_animation_holder.h"
 #include "awl/world_map_camera.h"
+#include "awl/world_map_player_update.h"
 
 namespace awl {
 struct WorldMapPlayerStartupProviders {
@@ -25,6 +26,8 @@ struct WorldMapPlayerStartupState {
     int32_t state_1364 = 0x29;
     uint32_t counter_1368 = 0;
     uint8_t secondary_byte_3f0 = 1;
+    // Established only by a complete supported parent update, not startup.
+    std::optional<uint32_t> control_word_1384;
 };
 enum class WorldMapPlayerStartupStatus {
     ConstructedCpuStartup, InitialModelIncomplete, ConstructorTailIncomplete,
@@ -57,8 +60,20 @@ struct WorldMapPlayerStartupState29Input {
     // Required only for the first successful callback; later reseeding rejects.
     std::optional<WorldMapPlayerStartupCameraSeed> first_camera;
 };
+struct WorldMapPlayerStartupUpdateInput {
+    WorldMapPlayerUpdateEntry entry;
+    WorldMapPlayerScenePose pose;
+    std::optional<int32_t> action_148;
+    std::optional<WorldMapPlayerStartupCameraSeed> first_camera;
+    uint64_t player_node_identity = 0;
+};
+struct WorldMapPlayerStartupUpdateResult {
+    WorldMapPlayerUpdateStatus status = WorldMapPlayerUpdateStatus::InvalidInput;
+    // Prepared callback results on a late stop are diagnostic, not published.
+    std::optional<WorldMapPlayerState29CameraStep> callback;
+};
 // Owns the supported CPU initial model -> no-message tail -> normal state-29
-// callback boundary. Only the three known parent/secondary writes are exposed;
+// callback boundary. Only known parent/secondary writes are exposed;
 // constructor-unwritten or untouched parent words are not invented. This is
 // not a live actor, scene registration, game loop or gameplay acknowledgement.
 class WorldMapPlayerStartup {
@@ -75,11 +90,20 @@ public:
     // No frame evaluation, clock advance, movement or full parent update.
     [[nodiscard]] WorldMapPlayerState29CameraStep advance_state29_camera(
         const WorldMapPlayerStartupState29Input& input);
+    // Normal 31144 state-29 path with supplied guard/scene/control/pose and
+    // writable CPU owner counterparts. Bit 0x800 must skip the untranslated
+    // status pair. Camera/counter/control and all owner effects commit together;
+    // every stop preserves owners and the prior model/frame/camera/clock.
+    // This does not discover live owners, consume the queue or schedule ticks.
+    [[nodiscard]] WorldMapPlayerStartupUpdateResult advance_state29_parent(
+        const WorldMapPlayerStartupUpdateInput& input, WorldMapPlayerUpdateOwners* owners);
     [[nodiscard]] WorldMapPlayerPrimaryUpdateResult advance(const WorldMapPlayerPrimaryFrameInput& input) {
         return model_->advance(input);
     }
 private:
     WorldMapPlayerStartup() = default;
+    [[nodiscard]] WorldMapPlayerState29CameraStep prepare_state29_camera(
+        const WorldMapPlayerStartupState29Input& input) const;
     friend WorldMapPlayerStartupResult construct_world_map_player_startup(
         const WorldMapPlayerStartupProviders&, const WorldMapPlayerStartupQuery&, std::unique_ptr<WorldMapPlayerStartup>*);
     std::shared_ptr<const WorldMapPlayerStartAnimationTables> starts_;
