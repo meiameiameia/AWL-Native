@@ -190,6 +190,7 @@ public:
     WorldMapModelLinkNode model_links() const;
 private:
     friend class WorldMapPlayerPrimaryOwner;
+    friend class WorldMapPlayerAnimationHolder;
     friend WorldMapPlayerPrimaryResult construct_world_map_player_primary(
         const std::shared_ptr<const WorldMapPlayerModelAssets>&, std::unique_ptr<WorldMapPlayerPrimaryOwner>*);
     friend WorldMapNativeAnimationInitializerStatus advance_world_map_native_animation_initializer(

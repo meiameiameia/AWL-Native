@@ -29,6 +29,35 @@ struct WorldMapPlayerAnimationHolderState {
     std::optional<WorldMapAnimationFeature3c> feature_3c;
     uint64_t secondary_model_c0 = 0, feature_c4 = 0, auxiliary_model_c8 = 0, arena_cc = 0;
 };
+enum class WorldMapPlayerHolderProgressStatus {
+    Prepared, Advanced, RequiresSecondary, RequiresCompletedFlag, RequiresClock,
+    RequiresDeadline, RequiresCount, RequiresNextDescriptor, RequiresFeatureReset,
+    RequiresInitialization, InvalidInput, ChannelIncomplete, TimerIncomplete, AllocationFailure
+};
+struct WorldMapPlayerHolderPolicyStep {
+    WorldMapPlayerAnimationHolderState after;
+    WorldMapActorAnimationDescriptor descriptor;
+    bool disable_primary_loop = false, disable_secondary_loop = false;
+    std::optional<uint64_t> required_descriptor;
+    std::optional<uint32_t> required_field;
+};
+// D7FC after both 69C4 calls (D854..D9E4). Supplied next record must have the
+// exact current+12 key. Stops before reached F494/DB28; no fake initializer
+// reset or sequence read. Stops restore proposals; InvalidInput preserves out.
+[[nodiscard]] WorldMapPlayerHolderProgressStatus prepare_world_map_player_holder_policy(
+    const WorldMapPlayerAnimationHolderState& state, const WorldMapActorAnimationDescriptor& descriptor,
+    bool primary_completed, std::optional<uint32_t> now,
+    const std::optional<WorldMapActorAnimationDescriptor>& next, WorldMapPlayerHolderPolicyStep* out) noexcept;
+struct WorldMapPlayerHolderProgressResult {
+    WorldMapPlayerHolderProgressStatus status = WorldMapPlayerHolderProgressStatus::InvalidInput;
+    std::optional<WorldMapAnimationChannelStatus> channel_status;
+    std::optional<bool> primary_completed;
+    std::optional<uint64_t> required_descriptor;
+    std::optional<uint32_t> required_field;
+    uint64_t required_record = 0;
+    uint32_t required_playback_fields = 0;
+    std::optional<WorldMapTextureTimerResult> timers;
+};
 enum class WorldMapPlayerAnimationHolderStatus { ConstructedCpuHolder, RequiresModelAssets,
     RequiresAnimationAssets, RequiresPrimary, RequiresGroup, InitializerIncomplete, InvalidInput, AllocationFailure };
 struct WorldMapPlayerAnimationHolderChannelDependency {
@@ -87,7 +116,7 @@ struct WorldMapPlayerInitialModelState {
 // D4B4's two owned channels, D560 state, actual CPU primary and retained
 // group-zero providers. Fresh D610 binding executes initialization before
 // publication. Existing-holder D610 rebind/reset, secondary construction,
-// descriptor sequences, holder clocks, actor acknowledgement and GPU draws
+// descriptor transitions/restarts, actor acknowledgement and GPU draws
 // remain unsupported. General construction accepts a supplied complete
 // feature snapshot; the initial-input wrapper prepares it from static inputs
 // and reached runtime table/clock evidence.
@@ -125,6 +154,10 @@ public:
     [[nodiscard]] WorldMapAnimationChannelStatus advance_primary_channel(WorldMapAnimationChannelProgressStep* out) {
         return primary_channel_->progress(&primary_->model(), out);
     }
+    // BA94's ordered primary 69C4 -> D7FC policy -> F6D4, published together.
+    // Reached secondary/sequence/initializer dependencies reject the entire
+    // update. Retains clock without advancing it; no CPU frame or queue work.
+    [[nodiscard]] WorldMapPlayerHolderProgressResult advance_animation();
     // BBA0's ordered CPU frame -> F548 selection/cache update. Both publish
     // atomically after all preparation. Timer values/clocks, holder sequence,
     // actor metadata, optional effect and queues remain unchanged.

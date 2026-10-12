@@ -251,6 +251,9 @@ public:
     [[nodiscard]] WorldMapAnimationChannelStatus advance_primary_channel(WorldMapAnimationChannelProgressStep* out) {
         return model_->advance_primary_channel(out);
     }
+    [[nodiscard]] WorldMapPlayerHolderProgressResult advance_animation() {
+        return model_->advance_animation();
+    }
 private:
     WorldMapPlayerStartup() = default;
     [[nodiscard]] WorldMapPlayerState29CameraStep prepare_state29_camera(

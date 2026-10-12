@@ -42,6 +42,7 @@ public:
     [[nodiscard]] WorldMapAnimationChannelStatus progress(
         WorldMapNativeModel* model, WorldMapAnimationChannelProgressStep* out);
 private:
+    friend class WorldMapPlayerAnimationHolder;
     friend WorldMapNativeAnimationInitializerStatus advance_world_map_native_animation_initializer(
         WorldMapNativeAnimationInitializerMetadata*, WorldMapNativeAnimationChannel*,
         const std::vector<WorldMapNativeModel*>&, uint64_t,
