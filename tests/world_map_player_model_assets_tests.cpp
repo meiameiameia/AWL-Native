@@ -2169,7 +2169,9 @@ uint64_t startup_snapshot(const awl::WorldMapPlayerStartup& owner) {
     hash(h,uint32_t(s.state_1364));hash(h,s.counter_1368);hash(h,s.secondary_byte_3f0);
     hash(h,s.control_word_1384.has_value());hash(h,s.control_word_1384.value_or(0));
     const auto key=reinterpret_cast<uintptr_t>(owner.starts().get());hash(h,uint32_t(uint64_t(key)>>32));hash(h,uint32_t(key));
-    hash(h,owner.camera().has_value());if(owner.camera()){const auto camera=camera_snapshot(*owner.camera());hash(h,uint32_t(camera>>32));hash(h,uint32_t(camera));}return h;
+    hash(h,owner.camera().has_value());if(owner.camera()){const auto camera=camera_snapshot(*owner.camera());hash(h,uint32_t(camera>>32));hash(h,uint32_t(camera));}
+    const auto& actor=owner.actor_metadata();hash(h,actor.flag_15d);hash(h,actor.flag_15e);hash(h,actor.flag_15f);
+    hash(h,actor.effect_wrapper.has_value());hash(h,uint32_t(actor.effect_wrapper.value_or(0)>>32));hash(h,uint32_t(actor.effect_wrapper.value_or(0)));return h;
 }
 struct State29HeightProbe {
     unsigned calls=0,fail_at=0;bool nonfinite=false;
@@ -2635,6 +2637,115 @@ void fresh_status_parent_checks(awl::WorldMapPlayerStartup& player,const awl::Wo
         player.model().game_clock()->state().raw_time==clock.raw_time && player.model().game_clock()->state().loop_count==clock.loop_count,
         "fresh status updates publish one queued node and pose while preserving model/frame/time");
 }
+uint64_t actor_queue_snapshot(const awl::WorldMapPlayerActorQueue& queue) {
+    uint64_t h=14695981039346656037ull;hash(h,uint32_t(queue.size()));
+    for(const auto& entry:queue){hash(h,uint32_t(entry.node_identity>>32));hash(h,uint32_t(entry.node_identity));hash(h,entry.priority);}return h;
+}
+void actor_callback_owner_checks(awl::WorldMapPlayerStartup& player,bool allocations) {
+    using S=awl::WorldMapPlayerStartupActorCallbackStatus;using Q=awl::WorldMapPlayerActorScheduleStatus;
+    using F=awl::WorldMapPlayerStartupActorFrameStatus;using P=awl::WorldMapPlayerPrimaryUpdateStatus;
+    const auto& metadata=player.actor_metadata();
+    expect(metadata.flag_15d==1 && metadata.flag_15e==1 && metadata.flag_15f==1 && !metadata.effect_wrapper,
+        "supported fresh startup owns original constructor flags and an unwritten effect wrapper");
+    const auto effect=player.effect_node_identity(),render=player.render_node_identity(),wrapper=player.actor_wrapper_identity();
+    expect(effect && render && wrapper && effect!=render && effect!=wrapper && render!=wrapper,"startup owns three stable distinct process-local node/wrapper keys");
+    const auto parent=player.state();const auto camera=player.camera()?camera_snapshot(*player.camera()):0;
+    const auto model_before=holder_snapshot(player.model()),timers=holder_snapshot(player.model(),false);
+    awl::WorldMapPlayerActorQueue queue{{1,0},{2,0x21},{3,0x2002},{4,UINT32_MAX}};
+    const auto queue_before=actor_queue_snapshot(queue),before=startup_snapshot(player);
+    awl::WorldMapPlayerStartupActorCallbackInput input;
+    auto step=player.advance_state29_actor_callback(input,&queue);
+    expect(step.status==S::RequiresControl && !step.actor && startup_snapshot(player)==before && actor_queue_snapshot(queue)==queue_before,
+        "callback requires observed control without guessing constructor zero or changing owners");
+    input.control_word=0x12345678;input.actor.saved_byte_29a01=uint8_t(0);input.actor.script.emplace();
+    input.actor.script->flag_width_4=1;input.actor.script->flag_bytes={1};input.actor.script->records.emplace();
+    input.actor.frame.actor_placement=awl::WorldMapPlayerActorPlacement{{std::numeric_limits<float>::quiet_NaN(),20,30},{0,0,1}};
+    step=player.advance_state29_actor_callback(input,nullptr);
+    expect(step.status==S::ScriptBlocked && player.state().control_word_1384==*input.control_word &&
+        holder_snapshot(player.model())==model_before && player.actor_metadata().flag_15e==1 && player.actor_metadata().flag_15f==1 &&
+        !player.actor_metadata().effect_wrapper && actor_queue_snapshot(queue)==queue_before,
+        "blocked script publishes only control and skips invalid placement, unknown visibility/effect and absent queue");
+    const auto pending=startup_snapshot(player);const auto preserved=[&](){return startup_snapshot(player)==pending && actor_queue_snapshot(queue)==queue_before;};
+    input.control_word=0x87654321;input.actor.saved_byte_29a01=uint8_t(1);input.actor.script.reset();
+    step=player.advance_state29_actor_callback(input,&queue);
+    expect(step.status==S::ActorIncomplete && step.actor && step.actor->gate==awl::WorldMapPlayerActorGateStatus::RequiresAuxiliaryCallback && preserved(),
+        "reached auxiliary callback preserves prior control, metadata, frame/cache and queue");
+    input.actor.saved_byte_29a01=uint8_t(0);input.actor.script.emplace();input.actor.script->flag_width_4=1;
+    input.actor.script->flag_bytes={0};input.actor.script->records.emplace();input.actor.derive_normal_visibility=true;
+    input.actor.frame.actor_placement->position={40,50,60};
+    input.actor.frame.node_post_transforms.resize(player.model().primary().model().core().nodes.size());
+    input.actor.visibility.emplace();input.actor.visibility->view=awl::WorldMapModelMatrix{1,0,0,0,0,1,0,0,0,0,1,0};
+    for(size_t i=0;i<6;++i){awl::WorldMapPlayerActorPlane plane;plane.point[i/2]=i%2?-1000.0f:1000.0f;plane.normal[i/2]=i%2?-1.0f:1.0f;input.actor.visibility->planes[i]=plane;}
+    input.actor.screen.emplace();input.actor.screen->view=*input.actor.visibility->view;input.actor.screen->half_extents={1000.0f,1000.0f};
+    input.actor.derive_normal_visibility=false;input.actor.sphere=awl::WorldMapPlayerActorSphere{{40,51,60},1};
+    step=player.advance_state29_actor_callback(input,&queue);
+    expect(step.status==S::InvalidInput && preserved(),"scheduled normal callback cannot accept isolated observed-sphere frame mode");
+    input.actor.derive_normal_visibility=true;input.actor.sphere.reset();
+    step=player.advance_state29_actor_callback(input,&queue);
+    expect(step.status==S::ScheduleIncomplete && step.schedule_status==Q::RequiresEffectGate && step.actor && step.actor->frame &&
+        step.actor->frame->status==P::Advanced && step.actor->frame->texture_features && preserved(),
+        "missing optional-effect gate is reached after successful frame/texture staging but rolls back all published owners");
+    awl::WorldMapModelMatrix invalid{1,0,0,0,0,1,0,0,0,0,1,std::numeric_limits<float>::quiet_NaN()};
+    input.actor.frame.node_post_transforms.back()=invalid;step=player.advance_state29_actor_callback(input,&queue);
+    expect(step.status==S::ActorIncomplete && step.actor && step.actor->status==F::FrameIncomplete && !step.schedule_status && preserved(),
+        "late CPU frame failure precedes missing effect gate and leaves prior metadata/control/cache/queue intact");
+    input.actor.frame.node_post_transforms.back().reset();input.effect_gate=uint8_t(255);
+    queue[1].node_identity=1;const auto bad_queue=actor_queue_snapshot(queue);step=player.advance_state29_actor_callback(input,&queue);
+    expect(step.status==S::ScheduleIncomplete && step.schedule_status==Q::InvalidQueue && startup_snapshot(player)==pending && actor_queue_snapshot(queue)==bad_queue,
+        "invalid late render queue rolls back prepared frame/cache and actor flags");queue[1].node_identity=2;
+    queue[1].node_identity=effect;queue[1].priority=0x20;const auto changed_queue=actor_queue_snapshot(queue);
+    step=player.advance_state29_actor_callback(input,&queue);
+    expect(step.status==S::ScheduleIncomplete && step.schedule_status==Q::UnsupportedPriorityChange && startup_snapshot(player)==pending &&
+        actor_queue_snapshot(queue)==changed_queue,"unsupported existing effect priority preserves complete callback for retry");queue[1]={2,0x21};
+    step=player.advance_state29_actor_callback(input,nullptr);
+    expect(step.status==S::InvalidInput && step.actor && step.actor->frame && preserved(),"absent reached queue cannot publish a staged frame");
+    bool completed=false;
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    if(allocations){const auto live=allocation_probe::live;size_t frame_failures=0,queue_failures=0;
+        for(size_t fail=0;fail<128;++fail){allocation_probe::remaining=fail;allocation_probe::enabled=true;
+            step=player.advance_state29_actor_callback(input,&queue);allocation_probe::enabled=false;
+            if(step.status==S::Completed){completed=true;break;}
+            if(step.status==S::ActorIncomplete){++frame_failures;expect(step.actor && step.actor->frame && step.actor->frame->status==P::AllocationFailure,"frame allocation stop retains its exact cause");}
+            else {++queue_failures;expect(step.status==S::ScheduleIncomplete && step.schedule_status==Q::AllocationFailure,"late schedule allocation stop retains its exact cause");}
+            expect(preserved() && allocation_probe::live==live,"every frame and queue allocation failure preserves all prior owners and frees staging");}
+        expect(completed && frame_failures>5 && queue_failures>0,"callback allocation sweep covers CPU and later queue stages through complete publication");
+        std::cout<<"PLAYER_ACTOR_CALLBACK_ALLOCATION_FAILURES "<<frame_failures<<" frame / "<<queue_failures<<" queue\n";}
+#else
+    (void)allocations;
+#endif
+    if(!completed)step=player.advance_state29_actor_callback(input,&queue);
+    expect(step.status==S::Completed && step.effect_scheduled==true && player.actor_metadata().flag_15d==1 &&
+        player.actor_metadata().flag_15e==0 && player.actor_metadata().flag_15f==1 && player.actor_metadata().effect_wrapper==wrapper &&
+        queue.size()==6 && queue[1].node_identity==effect && queue[1].priority==0x21 && queue[2].node_identity==2 &&
+        queue[3].node_identity==render && queue[3].priority==0x2002 && queue[4].node_identity==3 &&
+        player.state().control_word_1384==*input.control_word && player.model().primary().cpu().frame()->root_matrix[3]==40,
+        "complete callback publishes frame/cache, metadata/wrapper and effect-before-player queue ordering with new control");
+    const auto accepted_queue=actor_queue_snapshot(queue);
+    input.actor.frame.actor_placement->position[0]=41;step=player.advance_state29_actor_callback(input,&queue);
+    expect(step.status==S::Completed && step.effect_scheduled==true && actor_queue_snapshot(queue)==accepted_queue &&
+        player.model().primary().cpu().frame()->root_matrix[3]==41,"repeat callback advances frame with stable owned keys and no duplicate queue nodes");
+    const auto accepted_model=holder_snapshot(player.model());input.actor.visibility->planes[0]->point[0]=0;
+    input.actor.screen.reset();input.effect_gate.reset();input.actor.frame.actor_placement->heading[0]=std::numeric_limits<float>::quiet_NaN();
+    step=player.advance_state29_actor_callback(input,&queue);
+    expect(step.status==S::Completed && step.effect_scheduled==false && step.actor && step.actor->status==F::VisibilityStopped && !step.actor->frame &&
+        player.actor_metadata().flag_15f==1 && player.actor_metadata().flag_15e==0 && player.actor_metadata().effect_wrapper==wrapper &&
+        actor_queue_snapshot(queue)==accepted_queue && holder_snapshot(player.model())==accepted_model,
+        "first visibility cull preserves old screen/effect/frame, skips unknown screen/gate/heading, and still schedules player");
+    input.actor.visibility->planes[0]->point[0]=1000;input.actor.frame.actor_placement->heading[0]=0;
+    input.actor.screen.emplace();input.actor.screen->view=awl::WorldMapModelMatrix{1,0,0,2000,0,1,0,0,0,0,1,0};input.actor.screen->half_extents[0]=1000.0f;
+    input.actor.frame.actor_placement->position[0]=42;step=player.advance_state29_actor_callback(input,&queue);
+    expect(step.status==S::Completed && step.effect_scheduled==false && player.actor_metadata().flag_15f==0 &&
+        player.actor_metadata().effect_wrapper==wrapper && actor_queue_snapshot(queue)==accepted_queue &&
+        player.model().primary().cpu().frame()->root_matrix[3]==42,"screen outside publishes new frame and effect-off flag with unread global gate/Y extent and retained queued effect");
+    input.actor.screen->view=*input.actor.visibility->view;input.actor.screen->half_extents[1]=1000.0f;input.effect_gate=uint8_t(0);
+    step=player.advance_state29_actor_callback(input,&queue);
+    expect(step.status==S::Completed && step.effect_scheduled==false && player.actor_metadata().flag_15f==1 && actor_queue_snapshot(queue)==accepted_queue,
+        "global effect gate zero still publishes screen-inside flag and player schedule");
+    expect(player.effect_node_identity()==effect && player.render_node_identity()==render && player.actor_wrapper_identity()==wrapper &&
+        player.state().counter_1368==parent.counter_1368 && player.state().state_1364==parent.state_1364 &&
+        (player.camera()?camera_snapshot(*player.camera()):0)==camera && holder_snapshot(player.model(),false)==timers,
+        "CPU actor callbacks preserve node lifetime, parent counter/camera, holders/timers and shared clock");
+}
 void normal_actor_frame_owner_checks(awl::WorldMapPlayerStartup& player,bool allocations) {
     using S=awl::WorldMapPlayerStartupActorFrameStatus;using V=awl::WorldMapPlayerActorVisibilityStatus;
     using B=awl::WorldMapPlayerActorBoundsStatus;using E=awl::WorldMapPlayerActorScreenStatus;
@@ -2784,6 +2895,7 @@ void gated_actor_frame_owner_checks(awl::WorldMapPlayerStartup& player,bool allo
         player.state().control_word_1384==parent.control_word_1384 && (player.camera()?camera_snapshot(*player.camera()):0)==camera,
         "gated CPU slice does not publish callback control, camera, queue or actor metadata effects");
     normal_actor_frame_owner_checks(player,allocations);
+    actor_callback_owner_checks(player,allocations);
 }
 void actor_placement_owner_checks(awl::WorldMapPlayerStartup& player,bool allocations=false) {
     using S=awl::WorldMapPlayerPrimaryUpdateStatus;using F=awl::WorldMapPlayerFrameStatus;
@@ -3156,6 +3268,7 @@ void local_startup(const char* disc) {
     std::cout<<"LOCAL_PLAYER_ACTOR_PLACEMENT "<<status_dispatches<<" startups / four turning and translated CPU frames each; root/features published once, prior skin output and playback/clock preserved; queue/TAM/GPU pending\n";
     std::cout<<"LOCAL_PLAYER_GATED_ACTOR_FRAME "<<status_dispatches<<" startups / four blocked-culled-visible routes each; supplied script/sphere/view/plane observations, atomic CPU frame publication; live sources/complete callback/queue pending\n";
     std::cout<<"LOCAL_PLAYER_NORMAL_ACTOR_FRAME "<<status_dispatches<<" startups / four derived-bounds/inside-screen/outside-screen CPU frames and post-frame eye/mouth shared-cache updates each; native reciprocal-sqrt seed, separate camera globals observed; metadata/effect/progression/queue/live sources pending\n";
+    std::cout<<"LOCAL_PLAYER_ACTOR_CALLBACK "<<status_dispatches<<" startups / four CPU frame+texture+metadata/scheduling updates and one first-test cull each; owned effect/player keys, observed gates; render execution, update-node completion and live sources pending\n";
 }
 void local_timer_holder(const char* disc,bool owned_clock=false,bool initial_model=false) {
     using S=awl::WorldMapPlayerTimerAssetsStatus;using B=awl::WorldMapPlayerTimerBank;using H=awl::WorldMapPlayerTimedInitialHolderStatus;

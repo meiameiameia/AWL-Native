@@ -123,6 +123,7 @@ public:
         return primary_->advance(input,primary_channel_.get(),&features);
     }
 private:
+    friend class WorldMapPlayerStartup;
     WorldMapPlayerAnimationHolder() = default;
     friend WorldMapPlayerStartupResult construct_world_map_player_startup(
         const WorldMapPlayerStartupProviders&, const WorldMapPlayerStartupQuery&, std::unique_ptr<WorldMapPlayerStartup>*);

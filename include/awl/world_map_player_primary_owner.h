@@ -56,6 +56,17 @@ public:
         const WorldMapPlayerPrimaryFrameInput& input, const WorldMapNativeAnimationChannel* channel,
         const WorldMapPlayerTextureFeatureInput* post_frame = nullptr);
 private:
+    friend class WorldMapPlayerStartup;
+    struct PreparedFrame {
+        WorldMapPlayerFrame frame;
+        std::vector<WorldMapModelMatrix> features;
+        std::vector<std::vector<WorldMapPlayerVertex>> vertices;
+        std::optional<std::array<WorldMapPlayerTextureCacheEntry,4>> cache;
+    };
+    [[nodiscard]] WorldMapPlayerPrimaryUpdateResult stage(
+        const WorldMapPlayerPrimaryFrameInput&, const WorldMapNativeAnimationChannel*,
+        const WorldMapPlayerTextureFeatureInput*, PreparedFrame*);
+    void publish(PreparedFrame&&) noexcept;
     WorldMapPlayerPrimaryOwner() = default;
     friend class WorldMapPlayerAnimationHolder;
     bool initialize_root_scale(float scale);

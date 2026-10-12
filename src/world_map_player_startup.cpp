@@ -107,8 +107,8 @@ WorldMapPlayerStartupUpdateResult WorldMapPlayerStartup::dispatch_state29_parent
     return advance_state29_parent(update, owners);
 }
 
-WorldMapPlayerStartupActorFrameResult WorldMapPlayerStartup::advance_gated_actor_frame(
-    const WorldMapPlayerStartupActorFrameInput& input) {
+WorldMapPlayerStartupActorFrameResult WorldMapPlayerStartup::prepare_actor_frame(
+    const WorldMapPlayerStartupActorFrameInput& input) const {
     using S = WorldMapPlayerStartupActorFrameStatus;
     if (state_.state_1364 != 0x29) return {S::UnsupportedState};
     WorldMapPlayerStartupActorFrameResult result;
@@ -140,8 +140,61 @@ WorldMapPlayerStartupActorFrameResult WorldMapPlayerStartup::advance_gated_actor
     }
     if (!input.frame.actor_placement) { result.status = S::RequiresActorPlacement; return result; }
     if (input.frame.root_pose) { result.status = S::InvalidInput; return result; }
+    result.status = S::Prepared;
+    return result;
+}
+WorldMapPlayerStartupActorFrameResult WorldMapPlayerStartup::advance_gated_actor_frame(
+    const WorldMapPlayerStartupActorFrameInput& input) {
+    using S = WorldMapPlayerStartupActorFrameStatus;
+    auto result = prepare_actor_frame(input);
+    if (result.status != S::Prepared) return result;
     result.frame = input.derive_normal_visibility ? model_->advance_actor_frame(input.frame) : model_->advance(input.frame);
     result.status = result.frame->status == WorldMapPlayerPrimaryUpdateStatus::Advanced ? S::FrameAdvanced : S::FrameIncomplete;
+    return result;
+}
+
+WorldMapPlayerStartupActorCallbackResult WorldMapPlayerStartup::advance_state29_actor_callback(
+    const WorldMapPlayerStartupActorCallbackInput& input, WorldMapPlayerActorQueue* queue) {
+    using S = WorldMapPlayerStartupActorCallbackStatus;
+    using F = WorldMapPlayerStartupActorFrameStatus;
+    if (state_.state_1364 != 0x29) return {S::UnsupportedState};
+    if (!input.control_word) return {S::RequiresControl};
+    WorldMapPlayerStartupActorCallbackResult result;
+    result.actor = prepare_actor_frame(input.actor);
+    auto& actor = *result.actor;
+    if (actor.gate == WorldMapPlayerActorGateStatus::BlockedByScript) {
+        state_.control_word_1384 = *input.control_word;
+        result.status = S::ScriptBlocked;
+        return result;
+    }
+    const bool culled = actor.visibility && actor.visibility->status == WorldMapPlayerActorVisibilityStatus::Culled;
+    if (actor.status != F::Prepared && !culled) { result.status = S::ActorIncomplete; return result; }
+    if (!input.actor.derive_normal_visibility) { result.status = S::InvalidInput; return result; }
+    auto& primary = *model_->primary_;
+    WorldMapPlayerPrimaryOwner::PreparedFrame staged;
+    if (!culled) {
+        const WorldMapPlayerTextureFeatureInput features{model_->state_.feature_38,model_->state_.feature_source_10,model_->timer_assets_.get()};
+        actor.frame = primary.stage(input.actor.frame,model_->primary_channel_.get(),&features,&staged);
+        if (actor.frame->status != WorldMapPlayerPrimaryUpdateStatus::Advanced) {
+            actor.status = F::FrameIncomplete; result.status = S::ActorIncomplete; return result;
+        }
+    }
+    // Original order reaches the effect after frame/texture work, and the
+    // player enqueue even when BBA0 culled. Do not validate these early.
+    if (!queue) { result.status = S::InvalidInput; return result; }
+    WorldMapPlayerActorSchedule schedule;
+    result.schedule_status = prepare_world_map_player_actor_schedule(actor_metadata_,*queue,
+        {actor.proposed_effect_flag_15f,input.effect_gate,actor_wrapper_identity(),effect_node_identity(),render_node_identity()},&schedule);
+    if (*result.schedule_status != WorldMapPlayerActorScheduleStatus::Prepared) {
+        result.status = S::ScheduleIncomplete; return result;
+    }
+    // Every operation below is nonallocating. A missing effect gate or failed
+    // queue allocation cannot leave the new frame with old scheduling state.
+    if (!culled) { primary.publish(std::move(staged)); actor.status = F::FrameAdvanced; }
+    actor_metadata_ = schedule.metadata; queue->swap(schedule.queue);
+    state_.control_word_1384 = *input.control_word;
+    result.effect_scheduled = schedule.effect_scheduled;
+    result.status = S::Completed;
     return result;
 }
 

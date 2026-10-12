@@ -4,6 +4,7 @@
 #include "awl/world_map_player_update.h"
 #include "awl/world_map_update_inputs.h"
 #include "awl/world_map_player_actor_prepare.h"
+#include "awl/world_map_player_actor_schedule.h"
 
 namespace awl {
 struct WorldMapPlayerStartupProviders {
@@ -28,7 +29,7 @@ struct WorldMapPlayerStartupState {
     int32_t state_1364 = 0x29;
     uint32_t counter_1368 = 0;
     uint8_t secondary_byte_3f0 = 1;
-    // Established only by a complete supported parent update, not startup.
+    // Established by a supported parent update or actor callback, not startup.
     std::optional<uint32_t> control_word_1384;
 };
 enum class WorldMapPlayerStartupStatus {
@@ -112,7 +113,7 @@ struct WorldMapPlayerStartupActorFrameInput {
 enum class WorldMapPlayerStartupActorFrameStatus {
     FrameAdvanced, GateStopped, VisibilityStopped, RequiresSphere,
     RequiresVisibilityOwner, RequiresActorPlacement, UnsupportedState, InvalidInput, FrameIncomplete,
-    BoundsIncomplete, RequiresScreenOwner, ScreenIncomplete
+    BoundsIncomplete, RequiresScreenOwner, ScreenIncomplete, Prepared
 };
 struct WorldMapPlayerStartupActorFrameResult {
     WorldMapPlayerStartupActorFrameStatus status = WorldMapPlayerStartupActorFrameStatus::InvalidInput;
@@ -122,9 +123,25 @@ struct WorldMapPlayerStartupActorFrameResult {
     std::optional<WorldMapPlayerActorBoundsStatus> bounds_status;
     std::optional<WorldMapPlayerActorBounds> bounds;
     std::optional<WorldMapPlayerActorScreenResult> screen;
-    // Diagnostic proposal only, including on a later frame failure. Does not
-    // publish actor +15F or execute the optional effect.
+    // Proposal, including on a later frame failure. advance_gated_actor_frame
+    // never publishes it; the complete actor callback publishes on Completed.
     std::optional<uint8_t> proposed_effect_flag_15f;
+};
+struct WorldMapPlayerStartupActorCallbackInput {
+    std::optional<uint32_t> control_word;
+    WorldMapPlayerStartupActorFrameInput actor;
+    std::optional<uint8_t> effect_gate;
+};
+enum class WorldMapPlayerStartupActorCallbackStatus {
+    Completed, ScriptBlocked, RequiresControl, ActorIncomplete, ScheduleIncomplete,
+    UnsupportedState, InvalidInput
+};
+struct WorldMapPlayerStartupActorCallbackResult {
+    WorldMapPlayerStartupActorCallbackStatus status = WorldMapPlayerStartupActorCallbackStatus::InvalidInput;
+    // Frame/metadata proposals on a later stop are diagnostic, not published.
+    std::optional<WorldMapPlayerStartupActorFrameResult> actor;
+    std::optional<WorldMapPlayerActorScheduleStatus> schedule_status;
+    std::optional<bool> effect_scheduled;
 };
 // Owns the supported CPU initial model -> no-message tail -> normal state-29
 // callback boundary. Only known parent/secondary writes are exposed;
@@ -138,6 +155,10 @@ public:
     const WorldMapPlayerAnimationHolder& model() const { return *model_; }
     const std::shared_ptr<const WorldMapPlayerStartAnimationTables>& starts() const { return starts_; }
     const std::optional<WorldMapPlayerStartupCameraState>& camera() const { return camera_; }
+    const WorldMapPlayerActorMetadata& actor_metadata() const { return actor_metadata_; }
+    uint64_t effect_node_identity() const { return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&effect_node_)); }
+    uint64_t render_node_identity() const { return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&render_node_)); }
+    uint64_t actor_wrapper_identity() const { return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(model_.get())); }
     // Explicit fresh saved-status boundary: constructor projection + B9E4
     // reset, using retained constants and the phase source at status construction.
     // Later phase observations may change before dispatch; reset never reseeds
@@ -179,6 +200,18 @@ public:
     // observed-sphere mode retains its isolated frame-only contract.
     [[nodiscard]] WorldMapPlayerStartupActorFrameResult advance_gated_actor_frame(
         const WorldMapPlayerStartupActorFrameInput& input);
+    // Supported normal 31584 callback: control -> script -> +15E -> BBA0
+    // bounds/visibility/frame/texture features -> optional effect -> player
+    // render scheduling. All reached work stages before atomic publication.
+    // A blocked script publishes only control. A first-test cull still clears
+    // +15E and queues the player, preserving its frame/+15F/effect node.
+    // Requires derived normal visibility; observations/producers stay explicit.
+    // This does not unlink the +74 update node, execute either render callback,
+    // progress holders/clocks, discover a scene or activate gameplay. Discard
+    // this owner's queued keys before destroying it. Missing later evidence
+    // preserves control, actor, frame/cache and the supplied +48 queue.
+    [[nodiscard]] WorldMapPlayerStartupActorCallbackResult advance_state29_actor_callback(
+        const WorldMapPlayerStartupActorCallbackInput& input, WorldMapPlayerActorQueue* queue);
     [[nodiscard]] WorldMapPlayerPrimaryUpdateResult advance(const WorldMapPlayerPrimaryFrameInput& input) {
         return model_->advance(input);
     }
@@ -186,12 +219,17 @@ private:
     WorldMapPlayerStartup() = default;
     [[nodiscard]] WorldMapPlayerState29CameraStep prepare_state29_camera(
         const WorldMapPlayerStartupState29Input& input) const;
+    [[nodiscard]] WorldMapPlayerStartupActorFrameResult prepare_actor_frame(
+        const WorldMapPlayerStartupActorFrameInput& input) const;
     friend WorldMapPlayerStartupResult construct_world_map_player_startup(
         const WorldMapPlayerStartupProviders&, const WorldMapPlayerStartupQuery&, std::unique_ptr<WorldMapPlayerStartup>*);
     std::shared_ptr<const WorldMapPlayerStartAnimationTables> starts_;
     std::unique_ptr<WorldMapPlayerAnimationHolder> model_;
     WorldMapPlayerStartupState state_;
     std::optional<WorldMapPlayerStartupCameraState> camera_;
+    WorldMapPlayerActorMetadata actor_metadata_;
+    // Separate owned tags provide stable keys without reproducing PPC pointers.
+    uint8_t effect_node_ = 0, render_node_ = 0;
 };
 // Fresh slot-zero / alternate -1 / type-zero startup only. Supplied phase,
 // post-setup guards/binding/item fields and audio byte remain explicit.

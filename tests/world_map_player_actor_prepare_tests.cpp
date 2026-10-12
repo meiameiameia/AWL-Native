@@ -1,4 +1,5 @@
 #include "awl/world_map_player_actor_prepare.h"
+#include "awl/world_map_player_actor_schedule.h"
 #include <cfenv>
 #include <cmath>
 #include <cstring>
@@ -211,9 +212,81 @@ void screen_dependencies() {
     const auto rounding=std::fegetround();expect(std::fesetround(FE_DOWNWARD)==0,"set screen rounding failure");
     check(S::UnsupportedNumerics);expect(std::fesetround(rounding)==0,"restore screen rounding");
 }
+void schedule_comparisons() {
+    using S = awl::WorldMapPlayerActorScheduleStatus;
+    uint64_t digest = 14695981039346656037ull;
+    constexpr uint32_t priorities[]{0,0x20,0x21,0x21,0x22,0x2001,0x2002,0x2002,0x2003,0x80000000,UINT32_MAX};
+    constexpr uint8_t enabled[]{0,1,128,255}, gates[]{0,1,255}, flags[]{0,1,129,255};
+    for (uint32_t seed = 0; seed < 1024; ++seed) {
+        const int screen = int(seed%3)-1;
+        const uint8_t enable = enabled[seed/3%4], gate = gates[seed/12%3], prior = flags[seed/36%4];
+        awl::WorldMapPlayerActorMetadata before{enable,129,prior,0x12345678};
+        awl::WorldMapPlayerActorQueue queue;
+        for (uint32_t i = 0; i < seed%12; ++i) queue.push_back({i+1,priorities[i]});
+        if (seed/12%2 && queue.size() >= 4) queue[3] = {98,0x21};
+        if (seed/24%2 && queue.size() >= 8) queue[7] = {99,0x2002};
+        awl::WorldMapPlayerActorScheduleInput input;
+        if (screen >= 0) input.screen_flag_15f = uint8_t(screen);
+        input.effect_gate = gate; input.wrapper_identity = 42; input.effect_node_identity = 98; input.render_node_identity = 99;
+        awl::WorldMapPlayerActorSchedule out;
+        expect(awl::prepare_world_map_player_actor_schedule(before,queue,input,&out) == S::Prepared,"mapped scheduling fixture prepares");
+        hash(digest,seed); hash(digest,uint32_t(screen)); hash(digest,enable); hash(digest,gate); hash(digest,prior);
+        hash(digest,seed*0x10204081u); hash(digest,out.metadata.flag_15d); hash(digest,out.metadata.flag_15e); hash(digest,out.metadata.flag_15f);
+        hash(digest,uint32_t(*out.metadata.effect_wrapper)); hash(digest,out.effect_scheduled); hash(digest,uint32_t(out.queue.size()));
+        for (const auto& entry : out.queue) { hash(digest,uint32_t(entry.node_identity)); hash(digest,entry.priority); }
+        const auto accepted = out;
+        expect(awl::prepare_world_map_player_actor_schedule(out.metadata,out.queue,input,&out) == S::Prepared &&
+            out.queue.size() == accepted.queue.size(),"repeat supports whole-output aliasing without duplicate nodes");
+        for (size_t i = 0; i < out.queue.size(); ++i)
+            expect(out.queue[i].node_identity == accepted.queue[i].node_identity && out.queue[i].priority == accepted.queue[i].priority,
+                "repeat preserves mapped queue order including existing equal-priority nodes");
+    }
+    expect(digest == 0xBA0B6E6F19C3977Cull,"1024 actual instruction effect gate/metadata/queue comparisons");
+    std::cout << "PLAYER_ACTOR_SCHEDULE_COMPARISONS 1024 " << std::hex << digest << std::dec << '\n';
+}
+void schedule_dependencies() {
+    using S = awl::WorldMapPlayerActorScheduleStatus;
+    awl::WorldMapPlayerActorMetadata before;
+    expect(before.flag_15d == 1 && before.flag_15e == 1 && before.flag_15f == 1 && !before.effect_wrapper,
+        "fresh actor constructor flags are one and effect wrapper remains unwritten");
+    awl::WorldMapPlayerActorQueue queue{{1,0},{2,0x21},{3,0x2002},{4,UINT32_MAX}};
+    awl::WorldMapPlayerActorScheduleInput input{uint8_t(1),{},42,98,99};
+    awl::WorldMapPlayerActorSchedule out{{17,18,19,20},{{21,22}},true};
+    const auto unchanged = [&](){return out.metadata.flag_15d == 17 && out.metadata.flag_15e == 18 && out.metadata.flag_15f == 19 &&
+        out.metadata.effect_wrapper == 20 && out.queue.size() == 1 && out.queue[0].node_identity == 21 && out.effect_scheduled;};
+    const auto check = [&](S status) { expect(awl::prepare_world_map_player_actor_schedule(before,queue,input,&out) == status && unchanged(),
+        "reached scheduling dependency stops without partial metadata/queue output"); };
+    check(S::RequiresEffectGate); input.effect_gate = uint8_t(255); input.effect_node_identity = 0; check(S::RequiresEffectNode);
+    input.effect_node_identity = 98; input.wrapper_identity = 0; check(S::RequiresEffectNode);
+    input.wrapper_identity = 42; input.render_node_identity = 0; check(S::RequiresRenderNode);
+    input.render_node_identity = 98; check(S::InvalidInput); input.render_node_identity = 99;
+    input.screen_flag_15f = uint8_t(2); check(S::InvalidInput); input.screen_flag_15f = uint8_t(1);
+    queue[1].node_identity = 0; check(S::InvalidQueue); queue[1].node_identity = 1; check(S::InvalidQueue);
+    queue[1].node_identity = 2; queue[0].priority = 0x22; check(S::InvalidQueue); queue[0].priority = 0;
+    queue[0].node_identity = 98; check(S::UnsupportedPriorityChange); queue[0].node_identity = 99; check(S::UnsupportedPriorityChange);
+    queue[0].node_identity = 1;
+    expect(awl::prepare_world_map_player_actor_schedule(before,queue,input,nullptr) == S::InvalidInput,"null scheduling output rejects");
+    input.screen_flag_15f.reset(); input.effect_gate.reset(); input.effect_node_identity = input.wrapper_identity = 0;
+    expect(awl::prepare_world_map_player_actor_schedule(before,queue,input,&out) == S::Prepared && !out.effect_scheduled &&
+        out.metadata.flag_15e == 0 && out.metadata.flag_15f == 1 && !out.metadata.effect_wrapper,
+        "first visibility cull keeps old screen flag and skips all effect dependencies while queuing the player");
+    input.screen_flag_15f = uint8_t(0);
+    expect(awl::prepare_world_map_player_actor_schedule(before,queue,input,&out) == S::Prepared && out.metadata.flag_15f == 0,
+        "screen outside stores zero without reading unknown global effect gate or node");
+    input.screen_flag_15f = uint8_t(1); before.flag_15d = 0;
+    expect(awl::prepare_world_map_player_actor_schedule(before,queue,input,&out) == S::Prepared && !out.effect_scheduled,
+        "disabled actor effect skips unknown global gate and node");
+    before.flag_15d = 1; input.effect_gate = uint8_t(0);
+    expect(awl::prepare_world_map_player_actor_schedule(before,queue,input,&out) == S::Prepared && !out.effect_scheduled,
+        "global gate zero skips effect node dependencies");
+    before.effect_wrapper = 77; queue.insert(queue.begin()+1,{98,0x21});
+    expect(awl::prepare_world_map_player_actor_schedule(before,queue,input,&out) == S::Prepared && out.metadata.effect_wrapper == 77 &&
+        out.queue[1].node_identity == 98,"skipped effect preserves its previous wrapper and previously queued node");
+}
 }
 int main() {
     script_comparisons(); script_dependencies(); visibility_comparisons(); visibility_dependencies();
     normal_bounds_checks();screen_comparisons();screen_dependencies();
+    schedule_comparisons();schedule_dependencies();
     return failures ? 1 : 0;
 }

@@ -63,6 +63,14 @@ WorldMapPlayerPrimaryResult construct_world_map_player_primary(
 WorldMapPlayerPrimaryUpdateResult WorldMapPlayerPrimaryOwner::advance(
     const WorldMapPlayerPrimaryFrameInput& input, const WorldMapNativeAnimationChannel* channel,
     const WorldMapPlayerTextureFeatureInput* post_frame) {
+    PreparedFrame staged;
+    auto result = stage(input,channel,post_frame,&staged);
+    if (result.status == WorldMapPlayerPrimaryUpdateStatus::Advanced) publish(std::move(staged));
+    return result;
+}
+WorldMapPlayerPrimaryUpdateResult WorldMapPlayerPrimaryOwner::stage(
+    const WorldMapPlayerPrimaryFrameInput& input, const WorldMapNativeAnimationChannel* channel,
+    const WorldMapPlayerTextureFeatureInput* post_frame, PreparedFrame* out) {
     using Status = WorldMapPlayerPrimaryUpdateStatus;
     static_assert(std::is_nothrow_move_constructible_v<WorldMapPlayerFrame>);
     if (model_->core().parent_150) return {Status::RequiresHierarchy};
@@ -124,12 +132,16 @@ WorldMapPlayerPrimaryUpdateResult WorldMapPlayerPrimaryOwner::advance(
             if (!prepare_world_map_player_texture_cache(setup(),*texture_features,texture_cache_,&cache,&texture_features->cache_writes))
                 return {Status::RequiresFeatureBindings};
         }
-        // No allocating work follows; persistent pose/features/skin/mesh publish together.
-        frame_->root_pose_ = staged.root_pose_after; frame_->features_.swap(features);
-        model_->core_.byte_1c = static_cast<uint8_t>(staged.root_pose_after[0] >> 24);
-        frame_->frame_.emplace(std::move(staged)); geometry_->vertices_.swap(vertices);
-        texture_cache_=cache;
+        *out = {std::move(staged),std::move(features),std::move(vertices),cache};
         return {Status::Advanced,{},{},texture_features};
     } catch (const std::bad_alloc&) { return {Status::AllocationFailure}; }
+}
+void WorldMapPlayerPrimaryOwner::publish(PreparedFrame&& staged) noexcept {
+    // No allocating work follows. The startup callback can stage its later
+    // effect/queue dependencies before publishing this same frame transaction.
+    frame_->root_pose_ = staged.frame.root_pose_after; frame_->features_.swap(staged.features);
+    model_->core_.byte_1c = static_cast<uint8_t>(staged.frame.root_pose_after[0] >> 24);
+    frame_->frame_.emplace(std::move(staged.frame)); geometry_->vertices_.swap(staged.vertices);
+    texture_cache_ = staged.cache;
 }
 } // namespace awl

@@ -63,6 +63,7 @@ set(SOURCES
     src/world_map_player_animation_holder.cpp
     src/world_map_player_startup.cpp
     src/world_map_player_actor_prepare.cpp
+    src/world_map_player_actor_schedule.cpp
     src/world_map_player_update.cpp
     src/world_map_player_status.cpp
     src/world_map_update_inputs.cpp
@@ -223,7 +224,7 @@ else()
 endif()
 add_test(NAME world_map_player_status_tests COMMAND world_map_player_status_tests)
 add_executable(world_map_player_actor_prepare_tests
-    tests/world_map_player_actor_prepare_tests.cpp src/world_map_player_actor_prepare.cpp)
+    tests/world_map_player_actor_prepare_tests.cpp src/world_map_player_actor_prepare.cpp src/world_map_player_actor_schedule.cpp)
 target_include_directories(world_map_player_actor_prepare_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
 if(MSVC)
     target_compile_options(world_map_player_actor_prepare_tests PRIVATE /W4)
@@ -665,6 +666,7 @@ add_executable(world_map_player_model_assets_tests
     src/world_map_player_animation_holder.cpp
     src/world_map_player_startup.cpp
     src/world_map_player_actor_prepare.cpp
+    src/world_map_player_actor_schedule.cpp
     src/world_map_player_update.cpp
     src/world_map_player_status.cpp
     src/world_map_update_inputs.cpp
