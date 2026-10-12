@@ -30,7 +30,8 @@ struct WorldMapPlayerUpdateOwners {
     // Presence establishes the owner needed by 8014FDA8 on scene type one.
     std::optional<std::array<float,3>> scene_one_position_240;
     std::vector<WorldMapPlayerUpdateQueueEntry> queue;
-    // Explicit pointed-owner snapshot, needed only without control bit 800.
+    // Supplied snapshot or explicitly initialized fresh projection, needed
+    // only without control bit 800. Other saved-owner fields remain separate.
     std::optional<WorldMapPlayerStatusState> status;
 };
 enum class WorldMapPlayerUpdateStatus {

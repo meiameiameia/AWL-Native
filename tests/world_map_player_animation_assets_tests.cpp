@@ -302,11 +302,12 @@ void local(const char* disc){
 std::vector<uint8_t> start_dol() {
     // Entirely invented section/table/descriptor contents. Only the fixed
     // lookup addresses and selector-one jump witness come from the trace.
-    std::vector<uint8_t> b(0x228);
-    constexpr uint32_t addresses[]{0x8029E4BC,0x80249238,0x8029BEF4,0x81001000,0x80282DF8,0x80346B00,0x80295394};
-    constexpr uint32_t offsets[]{0x100,0x120,0x140,0x160,0x1C0,0x1D0,0x220};
-    constexpr uint32_t sizes[]{4,8,16,96,1,0x44,8};
-    for(size_t i=0;i<7;++i){word(b,i*4,offsets[i]);word(b,0x48+i*4,addresses[i]);word(b,0x90+i*4,sizes[i]);}
+    std::vector<uint8_t> b(0x234);
+    constexpr uint32_t addresses[]{0x8029E4BC,0x80249238,0x8029BEF4,0x81001000,0x80282DF8,0x80346B00,0x80295394,0x8034A360};
+    constexpr uint32_t offsets[]{0x100,0x120,0x140,0x160,0x1C0,0x1D0,0x220,0x228};
+    constexpr uint32_t sizes[]{4,8,16,96,1,0x44,8,12};
+    for(size_t i=0;i<8;++i){word(b,i*4,offsets[i]);word(b,0x48+i*4,addresses[i]);word(b,0x90+i*4,sizes[i]);}
+    word(b,0x228,90000);word(b,0x22C,24999);word(b,0x230,1200000);
     // Invented initial status coefficients and reached big-endian rates.
     constexpr uint32_t globals[]{200000,300,1200000,1800000,75,100,60,100,uint32_t(-3),45,100,100,3};
     constexpr size_t global_offsets[]{0,4,0x10,0x14,0x20,0x24,0x28,0x2C,0x30,0x34,0x38,0x3C,0x40};
@@ -342,6 +343,17 @@ void start_animation_synthetic() {
         tables && !tables->target_verified(),"invented DOL tables decode into an immutable unverified owner");
     if(!tables)return;
     const auto* original=tables.get();
+    awl::WorldMapPlayerStatusState fresh;
+    expect(tables->prepare_fresh_status(UINT32_MAX,&fresh)==awl::WorldMapPlayerStatusCode::Prepared &&
+        fresh.word_4==90000 && fresh.word_20==24999 && fresh.word_14==1200000 && fresh.word_12c==2159999 &&
+        fresh.word_c==1 && fresh.word_8==100000 && fresh.word_1c==100 && fresh.word_18==1350000 &&
+        fresh.word_24==99999 && fresh.word_28==0 && fresh.byte_2e==1 && fresh.byte_32==1 &&
+        fresh.word_150==100 && fresh.word_154==100 && fresh.word_160==0,
+        "fresh constructor projection consumes retained invented reset words and wraps the phase stamp");
+    fresh.word_4=123;
+    expect(tables->prepare_fresh_status({},&fresh)==awl::WorldMapPlayerStatusCode::RequiresPhaseRaw && fresh.word_4==123 &&
+        tables->prepare_fresh_status(0,nullptr)==awl::WorldMapPlayerStatusCode::InvalidInput,
+        "fresh status missing phase or output cannot publish a partial constructor");
     constexpr uint32_t globals[]{200000,300,1200000,1800000,75,100,60,100,uint32_t(-3),45,100,100,3};
     for(uint32_t i=0;i<4;++i){
         const awl::WorldMapActorAnimationDescriptor descriptor{0x81001000ull+i*24,(1u<<10)|(i&1),63u|(127u<<11)|(255u<<19),0x1500+i};
@@ -385,7 +397,7 @@ void start_animation_synthetic() {
     for(size_t cut=0;cut<b.size();++cut)
         expect(awl::decode_world_map_player_start_animation_tables(b.data(),cut,&tables)==S::UnsupportedLayout && tables.get()==original,
             "every truncated selector/parameter prefix preserves the complete prior owner");
-    for(int fault=0;fault<18;++fault){
+    for(int fault=0;fault<21;++fault){
         auto bad=b;
         switch(fault){
         case 0:bad.resize(255);break;
@@ -406,6 +418,9 @@ void start_animation_synthetic() {
         case 15:word(bad,0xA8,7);break;
         case 16:word(bad,0x5C,0x80346B04);break;
         case 17:word(bad,0x60,0x80295396);break;
+        case 18:word(bad,0xAC,11);break;
+        case 19:word(bad,0x64,0x8034A364);break;
+        case 20:word(bad,0xAC,0);break;
         }
         expect(awl::decode_world_map_player_start_animation_tables(bad.data(),bad.size(),&tables)==S::UnsupportedLayout &&
             tables.get()==original,"bad DOL header/overlap/jump/index/pointer preserves the complete owner");
@@ -429,8 +444,9 @@ void start_animation_synthetic() {
     expect(private_factors.rate && private_factors.rate->value==1000 && private_factors.globals[0]==globals[0],
         "clearing source bytes preserves private rates and coefficients");
     // Independently placed low/high rows; no whole table length is inferred.
-    auto mixed=start_dol();mixed.resize(0x262);word(mixed,0x60,0x802929E0);word(mixed,0xA8,52);
-    word(mixed,7*4,0x260);word(mixed,0x48+7*4,0x80292A14);word(mixed,0x90+7*4,2);
+    auto mixed=start_dol();mixed.resize(0x270);word(mixed,0x60,0x802929E0);word(mixed,0xA8,52);
+    word(mixed,7*4,0x264);word(mixed,0x264,90000);word(mixed,0x268,24999);word(mixed,0x26C,1200000);
+    word(mixed,8*4,0x260);word(mixed,0x48+8*4,0x80292A14);word(mixed,0x90+8*4,2);
     constexpr uint32_t codes[]{0,3,25,64};constexpr size_t positions[]{0x220,0x226,0x252,0x260};
     for(size_t i=0;i<4;++i){word(mixed,0x168+i*24,codes[i]);mixed[positions[i]]=uint8_t(0x12+i);mixed[positions[i]+1]=uint8_t(0x34+i);}
     mixed[positions[0]]=mixed[positions[0]+1]=0; // Observed zero is not missing.

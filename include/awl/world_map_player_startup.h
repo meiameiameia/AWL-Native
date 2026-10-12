@@ -102,6 +102,15 @@ public:
     const WorldMapPlayerAnimationHolder& model() const { return *model_; }
     const std::shared_ptr<const WorldMapPlayerStartAnimationTables>& starts() const { return starts_; }
     const std::optional<WorldMapPlayerStartupCameraState>& camera() const { return camera_; }
+    // Explicit fresh saved-status boundary: constructor projection + B9E4
+    // reset, using retained constants and the phase source at status construction.
+    // Later phase observations may change before dispatch; reset never reseeds
+    // +12C. The original scene/phase setup order is not activated here.
+    // Requires the player's shared clock and an empty status slot. Existing
+    // status is never reset on retry. Does not initialize other saved owners,
+    // infer post-setup item/action fields, construct a scene or advance time.
+    [[nodiscard]] WorldMapPlayerStatusCode initialize_fresh_status(
+        const WorldMapUpdateInputs& inputs, WorldMapPlayerUpdateOwners* owners) const noexcept;
     // Own only the normal 34A6C callback's camera/counter result. Position and
     // reached action remain observed inputs. Failure preserves parent/camera,
     // model/frame/mesh and clock; late-stop camera results are diagnostic only.
@@ -110,7 +119,7 @@ public:
         const WorldMapPlayerStartupState29Input& input);
     // Normal 31144 state-29 path with supplied guard/scene/control/pose and
     // writable CPU owner counterparts. Without bit 0x800, the status pair
-    // requires explicit status/global/rate/phase inputs. Camera/counter/control/
+    // requires status/global/rate/phase inputs. Camera/counter/control/
     // status and owner effects commit together;
     // every stop preserves owners and the prior model/frame/camera/clock.
     // This does not discover live owners, consume the queue or schedule ticks.

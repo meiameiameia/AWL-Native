@@ -59,6 +59,9 @@ bool WorldMapPlayerStartAnimationTables::decode(const uint8_t* data, size_t size
         if (!word) return false;
         status_globals_[i] = dol_word(word);
     }
+    const auto* reset = view.read(0x8034A360,12);
+    if (!reset) return false;
+    status_reset_ = {dol_word(reset),dol_word(reset + 4),dol_word(reset + 8)};
     entries_ = entries; status_rates_ = rates; empty_item_type_ = *empty;
     return true;
 }
@@ -76,6 +79,15 @@ WorldMapPlayerStatusFactors WorldMapPlayerStartAnimationTables::status_factors(
         }
     }
     return result;
+}
+
+WorldMapPlayerStatusCode WorldMapPlayerStartAnimationTables::prepare_fresh_status(
+    std::optional<uint32_t> phase_raw, WorldMapPlayerStatusState* out) const noexcept {
+    if (!out) return WorldMapPlayerStatusCode::InvalidInput;
+    WorldMapPlayerStatusState next;
+    const auto status = construct_world_map_player_status(phase_raw, &next);
+    if (status != WorldMapPlayerStatusCode::Prepared) return status;
+    return reset_world_map_player_status(next, status_reset_, out);
 }
 
 Status WorldMapPlayerStartAnimationTables::select(const WorldMapPlayerStartAnimationCommand& command,

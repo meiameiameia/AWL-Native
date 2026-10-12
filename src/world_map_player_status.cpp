@@ -79,6 +79,33 @@ private:
     const WorldMapPlayerStatusInputs& inputs;
 };
 } // namespace
+WorldMapPlayerStatusCode construct_world_map_player_status(
+    std::optional<uint32_t> phase_raw, WorldMapPlayerStatusState* out) noexcept {
+    if (!out) return S::InvalidInput;
+    if (!phase_raw) return S::RequiresPhaseRaw;
+    WorldMapPlayerStatusState next;
+    next.word_4 = next.word_8 = 100000; next.word_c = 1;
+    next.word_14 = next.word_18 = 1350000; next.word_1c = 100;
+    next.word_20 = 50000; next.word_24 = 99999; next.word_28 = 0;
+    next.byte_2e = next.byte_32 = 1;
+    next.word_12c = *phase_raw + 2160000u;
+    next.word_150 = next.word_154 = 100; next.word_160 = 0;
+    *out = next;
+    return S::Prepared;
+}
+
+WorldMapPlayerStatusCode reset_world_map_player_status(
+    const WorldMapPlayerStatusState& before, const WorldMapPlayerStatusResetValues& values,
+    WorldMapPlayerStatusState* out) noexcept {
+    if (!out) return S::InvalidInput;
+    auto next = before;
+    next.word_4 = clamp(values.word_4, next.word_c, next.word_8);
+    next.word_20 = clamp(values.word_20, next.word_28, next.word_24);
+    next.word_14 = clamp(values.word_14, next.word_1c, next.word_18);
+    *out = next;
+    return S::Prepared;
+}
+
 WorldMapPlayerStatusCode prepare_world_map_player_status_elapsed(
     uint32_t saved_raw, uint32_t phase_raw, uint32_t* out) noexcept {
     if (!out) return S::InvalidInput;

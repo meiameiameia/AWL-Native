@@ -16,6 +16,61 @@ auto words(const awl::WorldMapPlayerStatusState& s) {
     return std::array<uint32_t,11>{s.word_4,s.word_8,s.word_c,s.word_14,s.word_18,s.word_1c,
         s.word_20,s.word_12c,s.word_150,s.word_154,s.word_160};
 }
+constexpr uint32_t awl::WorldMapPlayerStatusState::* initial_fields[]{
+    &awl::WorldMapPlayerStatusState::word_4,&awl::WorldMapPlayerStatusState::word_8,
+    &awl::WorldMapPlayerStatusState::word_c,&awl::WorldMapPlayerStatusState::word_14,
+    &awl::WorldMapPlayerStatusState::word_18,&awl::WorldMapPlayerStatusState::word_1c,
+    &awl::WorldMapPlayerStatusState::word_20,&awl::WorldMapPlayerStatusState::word_24,
+    &awl::WorldMapPlayerStatusState::word_28,&awl::WorldMapPlayerStatusState::word_12c,
+    &awl::WorldMapPlayerStatusState::word_150,&awl::WorldMapPlayerStatusState::word_154,
+    &awl::WorldMapPlayerStatusState::word_160};
+auto initial_words(const awl::WorldMapPlayerStatusState& state) {
+    std::array<uint32_t,15> result{};
+    for(size_t i=0;i<13;++i)result[i]=state.*initial_fields[i];
+    result[13]=state.byte_2e;result[14]=state.byte_32;
+    return result;
+}
+void construction_checks() {
+    constexpr uint32_t raws[]{0,1,9,10,599,600,0x7fffffff,0x80000000,0xffdf0a7f,0xffdf0a80,0xfffffffe,0xffffffff};
+    uint64_t digest=14695981039346656037ull;
+    awl::WorldMapPlayerStatusState state;
+    for(uint32_t seed=0;seed<128;++seed) {
+        const uint32_t raw=seed<24?raws[seed%12]:seed*15485863u;
+        for(auto field:initial_fields)state.*field=0xA5000000u+seed;
+        state.byte_2e=17;state.byte_32=29;
+        expect(awl::construct_world_map_player_status(raw,&state)==S::Prepared,
+            "fresh constructor overwrites the whole supported projection");
+        hash(digest,seed);hash(digest,raw);
+        for(uint32_t word:initial_words(state))hash(digest,word);
+    }
+    expect(digest==0xCB4928F9C6FE020Full,
+        "128 phase/poison cases match the entire original constructor and reached array/time helpers");
+    std::cout<<"PLAYER_STATUS_CONSTRUCTOR_COMPARISONS 128 digest "<<std::hex<<digest<<std::dec<<'\n';
+    const auto prior=initial_words(state);
+    expect(awl::construct_world_map_player_status({},&state)==S::RequiresPhaseRaw && initial_words(state)==prior &&
+        awl::construct_world_map_player_status({},nullptr)==S::InvalidInput,
+        "missing constructor phase/output rejects without changing a prior projection");
+
+    constexpr uint32_t values[]{0,1,0x7fffffff,0x80000000,0xffffffff,200000,400000};
+    digest=14695981039346656037ull;
+    for(uint32_t seed=0;seed<512;++seed) {
+        for(size_t i=0;i<13;++i)state.*initial_fields[i]=values[(seed/(i%4+1)+i)%7];
+        state.byte_2e=uint8_t(seed*17);state.byte_32=uint8_t(seed*29);
+        const awl::WorldMapPlayerStatusResetValues reset{values[seed%7],values[(seed/2+2)%7],values[(seed/3+4)%7]};
+        const auto before=initial_words(state);awl::WorldMapPlayerStatusState after;
+        expect(awl::reset_world_map_player_status(state,reset,&after)==S::Prepared && initial_words(state)==before,
+            "reset preserves the source projection");
+        hash(digest,seed);for(uint32_t word:before)hash(digest,word);
+        for(uint32_t word:{reset.word_4,reset.word_20,reset.word_14})hash(digest,word);
+        for(uint32_t word:initial_words(after))hash(digest,word);
+        expect(awl::reset_world_map_player_status(state,reset,&state)==S::Prepared && initial_words(state)==initial_words(after),
+            "reset aliasing preserves all untouched fields and matches separate output");
+    }
+    expect(digest==0xCD874A61A02CBA4Aull,
+        "512 signed/reversed-bound reset cases match actual B9E4 instructions without hooks");
+    expect(awl::reset_world_map_player_status(state,{},nullptr)==S::InvalidInput,"null reset output rejects");
+    std::cout<<"PLAYER_STATUS_RESET_COMPARISONS 512 digest "<<std::hex<<digest<<std::dec<<'\n';
+}
 void set(awl::WorldMapPlayerStatusInputs& input, G key, std::optional<uint32_t> value) {
     input.globals[static_cast<size_t>(key)] = value;
 }
@@ -32,13 +87,15 @@ void scalar_checks() {
     awl::WorldMapPlayerStatusState state;
     state.word_4 = 100000; state.word_8 = 200000; state.word_14 = 1000000; state.word_18 = 2000000;
     state.word_12c = 123455; state.word_150 = 77; state.word_154 = 88;
+    state.word_24 = 123; state.word_28 = 456;
     auto input = observations(3);
     // CC14: 500 - 300*100000/100000 = 200; decay 200*10*20/100/10=40.
     // CD30: 2499975/24999=100. CC84: 999960*75/1350000 +20=75.
     // C7E8: 1000*200*(100+75)/2000000=17.
     auto step = awl::prepare_world_map_player_status(state,3,input);
     expect(step.status == S::Prepared && step.after && step.after->word_14 == 999960 &&
-        step.after->word_4 == 100017 && step.after->word_150 == 1000 && step.after->word_154 == 88,
+        step.after->word_4 == 100017 && step.after->word_150 == 1000 && step.after->word_154 == 88 &&
+        step.after->word_24 == 123 && step.after->word_28 == 456,
         "ordered first decay and low-code calculation use updated word14 and preserve other rate");
     expect(words(state) == std::array<uint32_t,11>{100000,200000,0,1000000,2000000,0,0,123455,77,88,0},
         "preparation never mutates the supplied state");
@@ -169,6 +226,6 @@ void elapsed_checks() {
 }
 } // namespace
 int main() {
-    scalar_checks(); dependency_checks(); matrices(false); matrices(true); elapsed_checks();
+    construction_checks(); scalar_checks(); dependency_checks(); matrices(false); matrices(true); elapsed_checks();
     return failures ? 1 : 0;
 }

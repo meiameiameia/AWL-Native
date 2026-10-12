@@ -3,6 +3,18 @@
 #include <utility>
 
 namespace awl {
+WorldMapPlayerStatusCode WorldMapPlayerStartup::initialize_fresh_status(
+    const WorldMapUpdateInputs& inputs, WorldMapPlayerUpdateOwners* owners) const noexcept {
+    using S = WorldMapPlayerStatusCode;
+    if (!owners || inputs.game_clock() != model_->game_clock()) return S::InvalidInput;
+    if (owners->status) return S::AlreadyInitialized;
+    const auto phase = inputs.sources().phase ? inputs.sources().phase->raw_word_0 : std::optional<uint32_t>{};
+    WorldMapPlayerStatusState next;
+    const auto status = starts_->prepare_fresh_status(phase, &next);
+    if (status == S::Prepared) owners->status = next;
+    return status;
+}
+
 WorldMapPlayerState29CameraStep WorldMapPlayerStartup::prepare_state29_camera(
     const WorldMapPlayerStartupState29Input& input) const {
     using Status = WorldMapPlayerState29CameraStatus;

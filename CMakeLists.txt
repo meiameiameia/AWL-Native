@@ -611,6 +611,7 @@ add_executable(world_map_player_animation_assets_tests
     tests/world_map_player_animation_assets_tests.cpp
     src/world_map_player_animation_assets.cpp
     src/world_map_player_start_animation.cpp
+    src/world_map_player_status.cpp
     src/disc_identity.cpp
     src/world_map_model_initialization.cpp
     src/world_map_model_feature.cpp

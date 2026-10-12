@@ -26,7 +26,8 @@ enum class WorldMapPlayerStartAnimationStatus {
 // DOL addresses are equality keys, never host pointers. These copied words
 // do not decode the subsequent 12-byte sequence or establish playback.
 // Also retains initial DOL coefficients and the reached status halfword for
-// each of these records; this does not infer either rate table's length.
+// each of these records, plus the three initial r2 status-reset constants;
+// this does not infer either rate table's length.
 class WorldMapPlayerStartAnimationTables {
 public:
     WorldMapPlayerStartAnimationTables(const WorldMapPlayerStartAnimationTables&) = delete;
@@ -44,6 +45,10 @@ public:
     // keep the coefficients but leave the rate unknown for the ordered consumer.
     [[nodiscard]] WorldMapPlayerStatusFactors status_factors(
         const WorldMapActorAnimationDescriptor& current) const noexcept;
+    // Fresh constructor projection followed by 13AE0's B9E4 reset using the
+    // privately retained initial r2 constants. No scene setup or save restore.
+    [[nodiscard]] WorldMapPlayerStatusCode prepare_fresh_status(
+        std::optional<uint32_t> phase_raw, WorldMapPlayerStatusState* out) const noexcept;
 private:
     WorldMapPlayerStartAnimationTables() = default;
     bool decode(const uint8_t* data, size_t size);
@@ -54,12 +59,13 @@ private:
     std::array<WorldMapPlayerStartAnimationSelection,4> entries_{};
     std::array<std::optional<uint16_t>,4> status_rates_{};
     std::array<uint32_t,static_cast<size_t>(WorldMapPlayerStatusGlobal::Count)> status_globals_{};
+    WorldMapPlayerStatusResetValues status_reset_;
     uint8_t empty_item_type_ = 0;
     bool target_verified_ = false;
 };
 // Bounded DOL section/table decoder for supplied bytes, including synthetic
 // fixtures. Validates extents, overlaps, jump target, indices, pointers and
-// reached coefficient/rate words; unaddressable positive rates reject.
+// reached coefficient/rate/reset words; unaddressable positive rates reject.
 // it does NOT verify target identity. Failures preserve existing ownership.
 [[nodiscard]] WorldMapPlayerStartAnimationStatus decode_world_map_player_start_animation_tables(
     const uint8_t* data, size_t size, std::shared_ptr<const WorldMapPlayerStartAnimationTables>* out);
