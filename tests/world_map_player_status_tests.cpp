@@ -1,4 +1,5 @@
 #include "awl/world_map_player_status.h"
+#include <cfenv>
 #include <iostream>
 
 namespace {
@@ -71,7 +72,7 @@ void dependency_checks() {
     input.rate = awl::WorldMapPlayerStatusRate{64,0}; check(3,S::RequiresRate);
     check(UINT32_MAX,S::UnsupportedRateIndex);
     input.rate->descriptor_word_8 = 3; check(3,S::RequiresPhaseRaw);
-    input.phase_raw = 0; check(3,S::RequiresElapsedCurve); // phase=stamp, exact curve is reached.
+    input.phase_raw = 0; check(3,S::RequiresGlobal,G::Word7e88); // phase=stamp traverses the curve.
     input.phase_raw = 1; check(3,S::RequiresGlobal,G::Word7e88); // unsigned time wrap -> constant100.
     set(input,G::Word7e88,0); check(3,S::RequiresGlobal,G::Word7ea0);
     set(input,G::Word7ea0,0); check(3,S::Prepared);
@@ -93,7 +94,7 @@ void dependency_checks() {
     check(64,S::RequiresGlobal,G::Word7e8c);
     set(input,G::Word7e8c,0); check(64,S::Prepared);
 }
-void matrices() {
+void matrices(bool curve) {
     uint64_t digest = 14695981039346656037ull;
     size_t count = 0;
     constexpr uint32_t values[]{0,1,0x7fffffff,0x80000000,0xffffffff,200000,400000};
@@ -105,13 +106,14 @@ void matrices() {
         state.word_4=values[seed%7]; state.word_8=values[(seed/7)%7]; state.word_c=values[(seed/49)%7];
         state.word_14=values[(seed/3)%7]; state.word_18=values[(seed/21)%7]; state.word_1c=values[(seed/147)%7];
         state.word_20=scalar20[seed%8]; state.word_12c=123456u+deltas[seed%4];
+        if (curve) state.word_12c=123456u+(seed*15473u)%1584001u;
         state.word_150=777; state.word_154=888; state.word_160=modes[seed%5];
         state.byte_2e=uint8_t(seed*17); state.byte_32=uint8_t(seed*29);
         auto input=observations(code);
         if (seed%3==1) input.globals[seed%input.globals.size()]=0x80000001u+seed*100003u;
         input.rate->value=uint16_t(seed*73);
         const auto step=awl::prepare_world_map_player_status(state,code,input);
-        expect(step.status==S::Prepared && step.after.has_value(),"complete integer status matrix prepares");
+        expect(step.status==S::Prepared && step.after.has_value(),"complete status matrix prepares");
         if (!step.after) return;
         for (uint32_t word : {seed,code}) hash(digest,word);
         for (uint32_t word : words(state)) hash(digest,word);
@@ -122,24 +124,51 @@ void matrices() {
             "conditional byte inputs are preserved");
         ++count;
     }
-    expect(count==6144 && digest==0x98FDC6B3D63718B9ull,"6144 cases match complete actual DOL integer status bodies without callback hooks");
-    std::cout<<"PLAYER_STATUS_COMPARISONS "<<count<<" digest "<<std::hex<<digest<<std::dec<<'\n';
-    digest=14695981039346656037ull; count=0;
+    expect(count==6144 && digest==(curve?0xACECFF5A1AACC6E1ull:0x98FDC6B3D63718B9ull),
+        "6144 cases match complete actual DOL status bodies without callback hooks");
+    std::cout<<"PLAYER_STATUS_COMPARISONS curve "<<curve<<" cases "<<count<<" digest "<<std::hex<<digest<<std::dec<<'\n';
+}
+void elapsed_checks() {
+    uint64_t digest=14695981039346656037ull; size_t count=0;
+    uint32_t factor=0;
+    for (uint32_t remaining=57600;remaining<=216000;++remaining) {
+        const uint32_t delta=(216000-remaining)*10;
+        const auto result=awl::prepare_world_map_player_status_elapsed(delta,0,&factor);
+        expect(result==S::Prepared && factor>=100 && factor<=150,"every reachable curve input prepares a bounded factor");
+        hash(digest,remaining);hash(digest,factor);++count;
+    }
+    expect(count==158401 && digest==0x1607848EE2BE0044ull,
+        "full finite curve domain matches actual DOL sine/reduction/kernel instructions without hooks");
+    std::cout<<"PLAYER_STATUS_CURVE_COMPARISONS "<<count<<" digest "<<std::hex<<digest<<std::dec<<'\n';
+    digest=14695981039346656037ull;count=0;
     for (uint32_t raw : {0u,1u,123456u,UINT32_MAX})
         for (uint32_t delta : {0u,1u,1583999u,1584000u,1584009u,1584010u,2159999u,2160000u,UINT32_MAX}) {
-            auto input=observations(3); input.phase_raw=raw;
-            awl::WorldMapPlayerStatusState state; state.word_12c=raw+delta;
-            const auto step=awl::prepare_world_map_player_status(state,3,input);
-            const bool curve=delta/10<=158400;
-            expect(step.status==(curve?S::RequiresElapsedCurve:S::Prepared) && step.after.has_value()!=curve,
+            const auto result=awl::prepare_world_map_player_status_elapsed(raw+delta,raw,&factor);
+            expect(result==S::Prepared,
                 "elapsed threshold, wrapped subtraction and saturation agree with original branch");
-            for (uint32_t word : {raw,delta,curve?0x8004ce50u:0u,curve?0u:100u}) hash(digest,word);
+            for (uint32_t word : {raw,delta,factor}) hash(digest,word);
             ++count;
         }
-    expect(count==36 && digest==0x255F710A3851B92Bull,"36 exact elapsed branch boundaries match actual DOL instructions");
+    expect(count==36 && digest==0x72718389274C4FC3ull,"36 complete elapsed boundaries match actual DOL instructions");
+    expect(awl::prepare_world_map_player_status_elapsed(0,0,nullptr)==S::InvalidInput,"null factor output rejects");
+    const auto original_rounding=std::fegetround();
+    auto input=observations(3);input.phase_raw=0;
+    const awl::WorldMapPlayerStatusState state;
+    for (int mode : {FE_DOWNWARD,FE_UPWARD,FE_TOWARDZERO}) {
+        expect(std::fesetround(mode)==0,"nondefault rounding test setup");
+        factor=0x12345678;
+        expect(awl::prepare_world_map_player_status_elapsed(0,0,&factor)==S::UnsupportedNumerics && factor==0x12345678,
+            "reached curve rejects unsupported rounding without changing output");
+        const auto step=awl::prepare_world_map_player_status(state,3,input);
+        expect(step.status==S::UnsupportedNumerics && !step.after && std::fegetround()==mode,
+            "unsupported curve numerics expose no partial status or rounding-mode change");
+        expect(awl::prepare_world_map_player_status_elapsed(1584010,0,&factor)==S::Prepared && factor==100 && std::fegetround()==mode,
+            "integer-only elapsed branch does not require default floating-point rounding");
+    }
+    expect(std::fesetround(original_rounding)==0,"restore original rounding mode");
 }
 } // namespace
 int main() {
-    scalar_checks(); dependency_checks(); matrices();
+    scalar_checks(); dependency_checks(); matrices(false); matrices(true); elapsed_checks();
     return failures ? 1 : 0;
 }

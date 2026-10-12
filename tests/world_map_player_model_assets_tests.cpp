@@ -2252,10 +2252,12 @@ void status_parent_checks(awl::WorldMapPlayerStartup& player,awl::WorldMapPlayer
     controls.observe_control_sources({awl::WorldMapControlPhase{uint8_t{1},{},uint8_t{0}},0});
     step=player.dispatch_state29_parent(controls,input,&effects);
     expect(step.status_update && step.status_update->status==P::RequiresPhaseRaw && preserved(),"phase raw time is separate from the owned GameClock");
+    const auto node=input.player_node_identity;input.player_node_identity=0;
     controls.observe_control_sources({awl::WorldMapControlPhase{uint8_t{1},state.word_12c,uint8_t{0}},0});
     step=player.dispatch_state29_parent(controls,input,&effects);
-    expect(step.status_update && step.status_update->status==P::RequiresElapsedCurve && preserved(),"reached elapsed curve remains an atomic unsupported stop");
-    controls.observe_control_sources({awl::WorldMapControlPhase{uint8_t{1},123456u,uint8_t{0}},0});const auto node=input.player_node_identity;input.player_node_identity=0;
+    expect(step.status==S::RequiresQueueNode && step.status_update && step.status_update->status==P::Prepared && preserved(),
+        "late queue stop rolls back a complete curved status proposal and staged camera");
+    controls.observe_control_sources({awl::WorldMapControlPhase{uint8_t{1},123456u,uint8_t{0}},0});
     step=player.dispatch_state29_parent(controls,input,&effects);
     expect(step.status==S::RequiresQueueNode && step.status_update && step.status_update->status==P::Prepared && preserved(),
         "late missing queue node rolls back complete status and camera proposals");
@@ -2292,15 +2294,30 @@ void status_parent_checks(awl::WorldMapPlayerStartup& player,awl::WorldMapPlayer
         "active status publication includes one queued player node and the prepared camera position");
     input.first_camera.reset();const auto accepted=startup_snapshot(player),accepted_effects=update_owners_snapshot(effects);
     controls.observe_control_sources({awl::WorldMapControlPhase{uint8_t{1},state.word_12c,uint8_t{0}},0});
+    const int original_rounding=std::fegetround();expect(std::fesetround(FE_DOWNWARD)==0,"unsupported curve rounding setup");
     step=player.dispatch_state29_parent(controls,input,&effects);
-    expect(step.status==S::RequiresStatusUpdate && step.status_update && step.status_update->status==P::RequiresElapsedCurve &&
+    const int preserved_rounding=std::fegetround();expect(std::fesetround(original_rounding)==0,"restore parent test rounding");
+    expect(step.status==S::RequiresStatusUpdate && step.status_update && step.status_update->status==P::UnsupportedNumerics &&
+        preserved_rounding==FE_DOWNWARD &&
         startup_snapshot(player)==accepted && update_owners_snapshot(effects)==accepted_effects,
-        "late unsupported curve preserves previously accepted status/camera/queue state");
+        "unsupported curve numerics preserve previously accepted status/camera/queue and caller rounding");
     awl::WorldMapPlayerStartupUpdateInput skipped;skipped.entry={0x800u,input.guards,input.scene_child_word_4};
     skipped.pose=input.pose;skipped.action_148=0;skipped.player_node_identity=node;
     step=player.advance_state29_parent(skipped,&effects);
     expect(step.status==S::Advanced && !step.status_update && effects.status && effects.status->word_14==999960 &&
         effects.status->word_4==(code<64?100017u:99945u),"bit800 skips all missing status inputs and preserves accepted status values");
+    const auto curved_counter=player.state().counter_1368;
+    step=player.dispatch_state29_parent(controls,input,&effects);
+    expect(step.status==S::Advanced && step.status_update && step.status_update->status==P::Prepared && effects.status &&
+        effects.status->word_14==999920 && effects.status->word_4==(code<64?100029u:99885u) &&
+        effects.status->word_150==(code<64?1000u:77u) && effects.status->word_154==(code<64?88u:1000u) &&
+        player.state().counter_1368==curved_counter+1 && effects.saved_pose.position==input.pose.position &&
+        effects.position_802fc20c==input.pose.position && holder_snapshot(player.model())==model &&
+        player.model().game_clock()->state().raw_time==clock.raw_time && player.model().game_clock()->state().loop_count==clock.loop_count,
+        "second curved status update matches original instructions and atomically publishes without model/clock progression");
+    copies=0;for(const auto& entry:effects.queue)if(entry.node_identity==node)++copies;
+    expect(copies==1 && player.camera() && player.camera()->camera.target.camera.position==input.pose.position,
+        "curved status success retains a single queued player node and camera publication");
 }
 void startup_owner_checks() {
     using S=awl::WorldMapPlayerStartupStatus;using A=awl::WorldMapPlayerStartAnimationStatus;using I=awl::WorldMapAnimationInitializerStatus;
@@ -2552,7 +2569,7 @@ void local_startup(const char* disc) {
     expect(owned_dispatches==24,"all 24 actual startups pass owned blocked/allowed dispatch");
     std::cout<<"LOCAL_PLAYER_OWNED_DISPATCH "<<owned_dispatches<<" blocked/allowed cases; derived control from observed sources, real camera COL; live loop and queue consumption pending\n";
     expect(status_dispatches==24,"all 24 actual startups pass active status dispatch and rollback checks");
-    std::cout<<"LOCAL_PLAYER_STATUS_DISPATCH "<<status_dispatches<<" active cases with invented status/global/rate/phase observations, actual CPU player and camera COL; live status ownership and elapsed curve pending\n";
+    std::cout<<"LOCAL_PLAYER_STATUS_DISPATCH "<<status_dispatches<<" active cases with constant/curved status and rollback, invented status/global/rate/phase observations, actual CPU player and camera COL; live status ownership pending\n";
 }
 void local_timer_holder(const char* disc,bool owned_clock=false,bool initial_model=false) {
     using S=awl::WorldMapPlayerTimerAssetsStatus;using B=awl::WorldMapPlayerTimerBank;using H=awl::WorldMapPlayerTimedInitialHolderStatus;

@@ -1,4 +1,6 @@
 #include "awl/world_map_player_status.h"
+#include <cfenv>
+#include <cmath>
 
 namespace awl {
 namespace {
@@ -8,8 +10,8 @@ int64_t signed_word(uint32_t value) noexcept {
     return value <= INT32_MAX ? int64_t(value) : int64_t(value) - 0x100000000ll;
 }
 uint32_t divide(uint32_t numerator, uint32_t denominator) noexcept {
-    // Every signed denominator in the supported instruction branches is a
-    // fixed positive nonzero constant, including C7E8's 100 * 20000.
+    // Denominators are positive/nonzero, including C7E8's factor * 20000
+    // with the verified elapsed factor bounded to [100,150].
     return static_cast<uint32_t>(signed_word(numerator) / denominator);
 }
 uint32_t clamp(uint32_t value, uint32_t minimum, uint32_t maximum) noexcept {
@@ -26,14 +28,10 @@ public:
         if (!observed) { step.status = S::RequiresGlobal; step.required_global = key; return false; }
         value = *observed; return true;
     }
-    bool elapsed(const WorldMapPlayerStatusState& state) noexcept {
+    bool elapsed(const WorldMapPlayerStatusState& state, uint32_t& factor) noexcept {
         if (!inputs.phase_raw) { step.status = S::RequiresPhaseRaw; return false; }
-        // 10294 subtracts phase from saved time, wrapping before the unsigned
-        // minute/second getters. CDB8 saturates 216000 - elapsedSeconds at zero.
-        const uint32_t seconds = (state.word_12c - *inputs.phase_raw) / 10;
-        const uint32_t remaining = seconds < 216000 ? 216000 - seconds : 0;
-        if (remaining >= 57600) { step.status = S::RequiresElapsedCurve; return false; }
-        return true; // Reached CDB8 returns exactly 100.
+        step.status = prepare_world_map_player_status_elapsed(state.word_12c, *inputs.phase_raw, &factor);
+        return step.status == S::Prepared;
     }
     bool cc14(const WorldMapPlayerStatusState& s, uint32_t& out) noexcept {
         uint32_t a, b;
@@ -81,12 +79,37 @@ private:
     const WorldMapPlayerStatusInputs& inputs;
 };
 } // namespace
+WorldMapPlayerStatusCode prepare_world_map_player_status_elapsed(
+    uint32_t saved_raw, uint32_t phase_raw, uint32_t* out) noexcept {
+    if (!out) return S::InvalidInput;
+    // 10294 wraps before the unsigned minute/second getters. CDB8 saturates
+    // 216000 - elapsedSeconds at zero, then takes the curve at >= 57600.
+    const uint32_t seconds = (saved_raw - phase_raw) / 10;
+    const uint32_t remaining = seconds < 216000 ? 216000 - seconds : 0;
+    if (remaining < 57600) { *out = 100; return S::Prepared; }
+    if (std::fegetround() != FE_TONEAREST) return S::UnsupportedNumerics;
+    // 8004CE50..CEC4: retain each original single-precision boundary.
+    // The native double sine is an equivalent for this finite integer-output
+    // domain, verified against the original reduction and kernel instructions.
+    const float offset = static_cast<float>(remaining - 57600);
+    const float scaled = offset * 180.0f;
+    const float degrees = scaled / 21600.0f;
+    const float shifted = degrees - 90.0f;
+    const float radians = 0x1.1df46ap-6f * shifted; // DOL 8034A36C: 3C8EFA35
+    const float sine = static_cast<float>(std::sin(static_cast<double>(radians)));
+    const float product = 50.0f * sine;
+    const float half = product * 0.5f;
+    const float result = 125.0f + half;
+    if (!std::isfinite(result) || result < 100.0f || result > 150.0f) return S::UnsupportedNumerics;
+    *out = static_cast<uint32_t>(result);
+    return S::Prepared;
+}
 WorldMapPlayerStatusStep prepare_world_map_player_status(
     const WorldMapPlayerStatusState& before, uint32_t code,
     const WorldMapPlayerStatusInputs& inputs) noexcept {
     Calculation c(inputs);
     auto next = before;
-    uint32_t value, a, b;
+    uint32_t value, a, b, elapsed;
     if (!c.cc14(next, value)) return c.step;
     // Keep both low-word multiplies and unsigned divides in C87C.
     next.word_14 = clamp(next.word_14 - ((value * 10u * 20u) / 100u) / 10u, next.word_1c, next.word_18);
@@ -102,8 +125,8 @@ WorldMapPlayerStatusStep prepare_world_map_player_status(
             if (!c.get(G::Word7eac, b)) return c.step;
             value = divide((b - next.word_14) * 200u, 1350000) + 100;
         }
-        if (!c.elapsed(next)) return c.step;
-        value += a + 100;
+        if (!c.elapsed(next, elapsed)) return c.step;
+        value += a + elapsed;
         if (next.word_160 == 1 || next.word_160 == 2) {
             const auto byte = next.word_160 == 1 ? next.byte_2e : next.byte_32;
             const uint32_t factor = (0xd7au - uint32_t(byte) * 0x28au) >> 2;
@@ -113,10 +136,10 @@ WorldMapPlayerStatusStep prepare_world_map_player_status(
     } else {
         next.word_150 = inputs.rate->value;
         // C7E8 calls CDB8 BEFORE either integer getter.
-        if (!c.elapsed(next)) return c.step;
+        if (!c.elapsed(next, elapsed)) return c.step;
         if (!c.cd30(next, a) || !c.get(G::Word7ea0, b)) return c.step;
         value = divide(next.word_14 * b, 1350000) + 20;
-        next.word_4 = clamp(next.word_4 + divide(next.word_150 * 200u * (value + a), 2000000), next.word_c, next.word_8);
+        next.word_4 = clamp(next.word_4 + divide(next.word_150 * 200u * (value + a), elapsed * 20000u), next.word_c, next.word_8);
     }
     c.step.status = S::Prepared;
     c.step.after = next;

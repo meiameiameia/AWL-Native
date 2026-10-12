@@ -37,7 +37,7 @@ struct WorldMapPlayerStatusInputs : WorldMapPlayerStatusFactors {
 };
 enum class WorldMapPlayerStatusCode {
     Prepared, RequiresGlobal, RequiresRate, RequiresPhaseRaw,
-    RequiresElapsedCurve, UnsupportedRateIndex
+    UnsupportedRateIndex, InvalidInput, UnsupportedNumerics
 };
 struct WorldMapPlayerStatusStep {
     WorldMapPlayerStatusCode status = WorldMapPlayerStatusCode::RequiresGlobal;
@@ -45,9 +45,13 @@ struct WorldMapPlayerStatusStep {
     // Present only on complete preparation; never an accepted partial prefix.
     std::optional<WorldMapPlayerStatusState> after;
 };
-// Complete C87C/CC14 and the integer branches of 32074 -> C7E8/BE3C,
-// including CC4C/CC84/CCA4/CD30 and CDB8's constant-100 branch. The reached
-// elapsed curve remains explicit. Descriptor +8 comes from the retained
+// CDB8's elapsed factor, including wrapped subtraction, saturation and the
+// ordered binary32 sine curve. Curve evaluation requires FE_TONEAREST;
+// rejection preserves output and the caller's rounding mode.
+[[nodiscard]] WorldMapPlayerStatusCode prepare_world_map_player_status_elapsed(
+    uint32_t saved_raw, uint32_t phase_raw, uint32_t* out) noexcept;
+// Complete C87C/CC14 and 32074 -> C7E8/BE3C, including the elapsed factor
+// and CC4C/CC84/CCA4/CD30. Descriptor +8 comes from the retained
 // current holder record, not an animation clip index. No allocation/mutation.
 [[nodiscard]] WorldMapPlayerStatusStep prepare_world_map_player_status(
     const WorldMapPlayerStatusState& before, uint32_t descriptor_word_8,

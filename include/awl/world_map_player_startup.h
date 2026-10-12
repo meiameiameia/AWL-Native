@@ -108,8 +108,8 @@ public:
         const WorldMapPlayerStartupState29Input& input);
     // Normal 31144 state-29 path with supplied guard/scene/control/pose and
     // writable CPU owner counterparts. Without bit 0x800, the status pair
-    // requires explicit status/global/rate/phase inputs; its elapsed curve
-    // still stops. Camera/counter/control/status and owner effects commit together;
+    // requires explicit status/global/rate/phase inputs. Camera/counter/control/
+    // status and owner effects commit together;
     // every stop preserves owners and the prior model/frame/camera/clock.
     // This does not discover live owners, consume the queue or schedule ticks.
     [[nodiscard]] WorldMapPlayerStartupUpdateResult advance_state29_parent(
