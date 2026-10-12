@@ -51,4 +51,8 @@ WorldMapAnimationChannelStatus WorldMapNativeAnimationChannel::apply_settings(
     WorldMapAnimationPartialChannelStep* out) {
     return apply_world_map_native_animation_channel_settings(model, &state_, &records_, loop, rate, out);
 }
+WorldMapAnimationChannelStatus WorldMapNativeAnimationChannel::progress(
+    WorldMapNativeModel* model, WorldMapAnimationChannelProgressStep* out) {
+    return advance_world_map_native_animation_channel_progress(model, &state_, &records_, out);
+}
 } // namespace awl

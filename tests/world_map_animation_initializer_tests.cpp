@@ -1,6 +1,7 @@
 #include "awl/world_map_animation_initializer.h"
 
 #include <array>
+#include <cfenv>
 #include <cstring>
 #include <iostream>
 #include <limits>
@@ -528,5 +529,122 @@ void test_partial_initializer() {
         observations,&step)==Status::InvalidInput && step.after.animation.base_descriptor_4==prior,
         "partial initializer rejects input/output alias without overwriting evidence");
 }
+constexpr std::array<float,8> progress_positions{-3.f,-0.f,0.f,.5f,1.f,3.f,20.f,16777216.f};
+constexpr std::array<float,8> progress_rates{-4.f,-1.f,-0.f,0.f,.25f,1.f,4.f,16777216.f};
+constexpr std::array<float,8> progress_limits{-2.f,0.f,.5f,1.f,3.f,20.f,100.f,16777216.f};
+constexpr std::array<uint32_t,4> progress_loops{0,1,0x100,UINT32_MAX};
+awl::WorldMapAnimationPartialPlayback progress_record(uint32_t id,uint32_t seed,uint32_t mask) {
+    awl::WorldMapAnimationPartialPlayback p;
+    p.position_0=progress_positions[seed%8];p.rate_4=progress_rates[seed/3%8];
+    if (!(mask&1)) p.word_8=progress_loops[seed/7%4];
+    if (!(mask&2)) p.limit_c=progress_limits[seed/11%8];
+    if (!(mask&4)) p.value_18=-3.f;
+    p.clip_10=awl::WorldMapAnimationClipReference{77,id*10+4};p.link_14=id*10+5;return p;
+}
+void hash_progress_record(uint64_t& h,uint32_t id,const awl::WorldMapAnimationPartialPlayback& p) {
+    for (auto w:{id,bits(p.position_0),bits(p.rate_4),uint32_t(bool(p.word_8))|(uint32_t(bool(p.limit_c))<<1)|(uint32_t(bool(p.value_18))<<2),
+        p.word_8.value_or(0),p.limit_c?bits(*p.limit_c):0u,p.clip_10?uint32_t(p.clip_10->bank_identity):0u,
+        p.clip_10?p.clip_10->offset:0u,uint32_t(p.link_14),p.value_18?bits(*p.value_18):0u}) hash(h,w);
+}
+uint64_t progress_record_snapshot(const awl::WorldMapAnimationPartialPlayback& p) {
+    uint64_t h=14695981039346656037ull;hash_progress_record(h,0,p);return h;
+}
+void test_playback_progress() {
+    using S=awl::WorldMapAnimationChannelStatus;
+    constexpr std::array<uint32_t,6> masks{0,1,2,3,4,7};uint64_t h=14695981039346656037ull;
+    for (uint32_t seed=0;seed<1024;++seed) {
+        auto p=progress_record(1,seed,masks[seed/37%6]);const auto before=p;
+        const auto result=awl::prepare_world_map_animation_playback_progress(p,&p);
+        expect(result.status==S::Prepared || result.status==S::RequiresPlaybackFields,"finite playback matrix reaches only supported arithmetic or unknown fields");
+        for (auto w:{seed,uint32_t(result.status),uint32_t(result.boundary_crossed),result.required_fields}) hash(h,w);
+        hash_progress_record(h,1,p);
+        if (result.status!=S::Prepared) expect(progress_record_snapshot(p)==progress_record_snapshot(before),"missing playback fields preserve whole aliased output");
+    }
+    std::cout<<"PLAYBACK_PROGRESS 1024 "<<std::hex<<h<<std::dec<<'\n';
+    expect(h==0x8C4C7D51C5C4C9B4ull,"playback progression agrees with complete mapped FF08 instructions and missing-field traps");
+    auto p=progress_record(1,0,0);p.position_0=2;p.rate_4=1;p.limit_c=3.f;p.word_8.reset();p.clip_10.reset();p.value_18.reset();
+    auto result=awl::prepare_world_map_animation_playback_progress(p,&p);
+    expect(result.status==S::Prepared && !result.boundary_crossed && p.position_0==3 && !p.word_8 && !p.clip_10 && !p.value_18,
+        "exact upper equality advances even null clip without reading loop or weight");
+    result=awl::prepare_world_map_animation_playback_progress(p,&p);
+    expect(result.status==S::RequiresPlaybackFields && result.required_fields==1 && p.position_0==3,"next upper crossing requires loop before any publication");
+    p.word_8=0x100;p.rate_4=30;result=awl::prepare_world_map_animation_playback_progress(p,&p);
+    expect(result.status==S::Prepared && result.boundary_crossed && p.position_0==30,"whole nonzero loop word subtracts the limit only once even for a large jump");
+    p.position_0=-3;p.rate_4=-4;p.limit_c=20.f;result=awl::prepare_world_map_animation_playback_progress(p,&p);
+    expect(result.status==S::Prepared && result.boundary_crossed && p.position_0==13,"negative loop crossing adds duration once");
+    p.word_8=0;p.position_0=0;p.rate_4=-1;result=awl::prepare_world_map_animation_playback_progress(p,&p);
+    expect(result.status==S::Prepared && result.boundary_crossed && bits(p.position_0)==0,"negative nonloop crossing clamps to positive zero");
+    auto sentinel=p;sentinel.position_0=77;const auto sentinel_hash=progress_record_snapshot(sentinel);
+    for (unsigned field=0;field<3;++field) for (float value:{std::numeric_limits<float>::quiet_NaN(),std::numeric_limits<float>::infinity(),
+        std::numeric_limits<float>::denorm_min()}) {
+        auto bad=p;if(field==0)bad.position_0=value;else if(field==1)bad.rate_4=value;else bad.limit_c=value;
+        result=awl::prepare_world_map_animation_playback_progress(bad,&sentinel);
+        expect(result.status==S::UnsupportedNumerics && progress_record_snapshot(sentinel)==sentinel_hash,"unsupported reached playback operand preserves output");
+    }
+    auto bad=p;bad.position_0=bad.rate_4=std::numeric_limits<float>::max();
+    expect(awl::prepare_world_map_animation_playback_progress(bad,&sentinel).status==S::UnsupportedNumerics &&
+        progress_record_snapshot(sentinel)==sentinel_hash,"overflowing playback addition preserves output");
+    const int rounding=std::fegetround();
+    for(int mode:{FE_DOWNWARD,FE_UPWARD,FE_TOWARDZERO}) {
+        expect(std::fesetround(mode)==0,"select nondefault playback rounding fixture");
+        expect(awl::prepare_world_map_animation_playback_progress(p,&sentinel).status==S::UnsupportedNumerics &&
+            std::fegetround()==mode && progress_record_snapshot(sentinel)==sentinel_hash,"playback rejects and preserves nondefault rounding");
+    }
+    expect(std::fesetround(rounding)==0,"restore playback rounding fixture");
+    expect(awl::prepare_world_map_animation_playback_progress(p,nullptr).status==S::InvalidInput,"playback rejects null output");
+}
+void test_channel_progress() {
+    using S=awl::WorldMapAnimationChannelStatus;using P=awl::WorldMapAnimationPartialPlaybackRecord;
+    constexpr std::array<std::array<uint32_t,2>,8> clocks{{{0,0},{0,2},{1,2},{2,2},{UINT32_MAX-1,UINT32_MAX},{UINT32_MAX,1},{UINT32_MAX,UINT32_MAX},{UINT32_MAX-1,0}}};
+    constexpr std::array<uint32_t,6> modes{0,1,2,3,UINT32_MAX,0x80000000};
+    constexpr std::array<std::array<uint32_t,3>,6> layouts{{{2,3,4},{2,2,4},{2,3,3},{2,3,2},{1,3,4},{1,1,1}}};
+    constexpr std::array<uint32_t,5> masks{0,1,2,4,7};uint64_t h=14695981039346656037ull;
+    for (uint32_t seed=0;seed<4096;++seed) {
+        const auto clock=clocks[seed%8];const auto mode=modes[seed/8%6];const auto layout=layouts[seed/48%6];
+        const auto mask=masks[seed/288%5];const bool known=seed/1440%2==0;
+        Channel channel{clock[0],clock[1],layout[0],layout[1],layout[2],known?std::optional<float>(-3.f):std::nullopt,mode};
+        std::vector<P> pool;for(uint32_t id=1;id<=4;++id)pool.push_back({id,progress_record(id,seed+id*13,id!=1?mask:4u)});
+        awl::WorldMapAnimationChannelProgressStep step;
+        const auto status=awl::prepare_world_map_partial_animation_channel_progress(channel,pool,100,awl::WorldMapAnimationModelBinding{100,1},&step);
+        expect(status==S::Prepared || status==S::RequiresPlaybackFields || status==S::RequiresChannelFields,"channel matrix reaches supported or explicitly missing fields");
+        for(auto w:{seed,clock[0],clock[1],mode,layout[0],layout[1],layout[2],mask,uint32_t(known),uint32_t(status),uint32_t(step.completed),
+            uint32_t(step.update.required_record),step.update.required_fields,step.update.after.elapsed_0,step.update.after.duration_4}) hash(h,w);
+        for(const auto& record:step.update.records_after)hash_progress_record(h,uint32_t(record.identity),record.state);
+        if(status!=S::Prepared) {
+            expect(step.update.after.elapsed_0==channel.elapsed_0 && !step.completed,"late channel failure restores wrapped counter and invalidates completion");
+            for(size_t i=0;i<pool.size();++i)expect(progress_record_snapshot(pool[i].state)==progress_record_snapshot(step.update.records_after[i].state),
+                "late channel failure restores earlier aliased playback writes");
+        }
+    }
+    std::cout<<"CHANNEL_PROGRESS 4096 "<<std::hex<<h<<std::dec<<'\n';
+    expect(h==0xCE1AFC683F818B42ull,"complete channel progression and binding agree with mapped instructions across modes, aliases, clock wrap and unknown fields");
+    Channel channel{0,2,2,3,4,std::nullopt,1};std::vector<P> pool;
+    for(uint32_t id=1;id<=4;++id){auto p=progress_record(id,0,0);p.position_0=0;p.rate_4=1;p.limit_c=10.f;p.word_8=1;pool.push_back({id,p});}
+    pool[1].state.position_0=10;awl::WorldMapAnimationChannelProgressStep step;
+    auto status=awl::prepare_world_map_partial_animation_channel_progress(channel,pool,100,awl::WorldMapAnimationModelBinding{100,1},&step);
+    expect(status==S::Prepared && !step.completed && step.update.after.elapsed_0==1 && step.update.records_after[1].state.position_0==1 &&
+        step.update.records_after[0].state.link_14==2 && step.update.records_after[0].state.value_18==.5f,"incomplete blend ignores target crossing and publishes previous-to-target ratio");
+    channel.elapsed_0=1;status=awl::prepare_world_map_partial_animation_channel_progress(channel,pool,100,awl::WorldMapAnimationModelBinding{100,1},&step);
+    expect(status==S::Prepared && step.completed && step.update.after.elapsed_0==2 && step.update.records_after[2].state.position_0==0 &&
+        step.update.records_after[0].state.position_0==1 && step.update.records_after[0].state.link_14==0,"duration boundary advances target only and returns its crossing before direct model copy");
+    status=awl::prepare_world_map_partial_animation_channel_progress(channel,pool,100,std::nullopt,&step);
+    expect(status==S::RequiresModelBinding && step.update.after.elapsed_0==1 && step.update.records_after[1].state.position_0==10 && !step.completed,
+        "missing reached model binding rolls back target crossing and counter");
+    auto missing=pool;missing.erase(missing.begin()+1);
+    expect(awl::prepare_world_map_partial_animation_channel_progress(channel,missing,100,std::nullopt,&step)==S::RequiresPlaybackRecord &&
+        step.update.required_record==2,"missing target record precedes model lookup");
+    channel={UINT32_MAX,1,0,0,0,std::nullopt,UINT32_MAX};pool.clear();
+    const int rounding=std::fegetround();expect(std::fesetround(FE_DOWNWARD)==0,"select skipped-mode rounding fixture");
+    status=awl::prepare_world_map_partial_animation_channel_progress(channel,pool,0,std::nullopt,&step);
+    expect(status==S::Prepared && step.update.after.elapsed_0==0 && !step.completed && step.update.records_after.empty() && std::fegetround()==FE_DOWNWARD,
+        "wrapped counter with unknown signed mode skips playback, model and numerical profile");expect(std::fesetround(rounding)==0,"restore skipped-mode rounding fixture");
+    const auto elapsed=step.update.after.elapsed_0;
+    expect(awl::prepare_world_map_partial_animation_channel_progress(step.update.after,pool,0,std::nullopt,&step)==S::InvalidInput &&
+        awl::prepare_world_map_partial_animation_channel_progress(channel,step.update.records_after,0,std::nullopt,&step)==S::InvalidInput &&
+        awl::prepare_world_map_partial_animation_channel_progress(channel,pool,0,std::nullopt,nullptr)==S::InvalidInput && step.update.after.elapsed_0==elapsed,
+        "channel progression rejects output aliases/null without replacing diagnostics");
+    pool={{1,progress_record(1,0,0)},{1,progress_record(1,0,0)}};
+    expect(awl::prepare_world_map_partial_animation_channel_progress(channel,pool,0,std::nullopt,&step)==S::InvalidInput,"channel progression rejects ambiguous record keys");
+}
 } // namespace
-int main(){test_initializer();test_feature();test_actor_model_type();test_actor_model_type_matrix();test_model_links();test_secondary();test_failure_order();test_partial_settings();test_partial_initializer();test_settings_matrix();test_tail_matrix();test_feature_matrix();return failures==0?0:1;}
+int main(){test_playback_progress();test_channel_progress();test_initializer();test_feature();test_actor_model_type();test_actor_model_type_matrix();test_model_links();test_secondary();test_failure_order();test_partial_settings();test_partial_initializer();test_settings_matrix();test_tail_matrix();test_feature_matrix();return failures==0?0:1;}

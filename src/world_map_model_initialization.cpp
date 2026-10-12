@@ -300,6 +300,25 @@ WorldMapAnimationChannelStatus apply_world_map_native_animation_channel_settings
         return Status::AllocationFailure;
     }
 }
+WorldMapAnimationChannelStatus advance_world_map_native_animation_channel_progress(
+    WorldMapNativeModel* model,WorldMapAnimationChannelState* channel,
+    std::vector<WorldMapAnimationPartialPlaybackRecord>* records,WorldMapAnimationChannelProgressStep* out) {
+    using S=WorldMapAnimationChannelStatus;
+    if (!model || !channel || !records || !out || channel==&out->update.after || records==&out->update.records_after) return S::InvalidInput;
+    const auto binding=model->binding();
+    for (const auto& record:*records) if (record.identity==binding.playback_178) return S::InvalidInput;
+    try {
+        auto pool=*records;pool.push_back({binding.playback_178,model->partial_playback()});
+        WorldMapAnimationChannelProgressStep prepared;
+        const auto status=prepare_world_map_partial_animation_channel_progress(*channel,pool,binding.model_identity,binding,&prepared);
+        if (status==S::InvalidInput) return status;
+        if (status!=S::Prepared) { *out=std::move(prepared);return status; }
+        auto external=prepared.update.records_after;const auto model_after=external.back().state;external.pop_back();
+        // Finish every allocation before publishing either owner or diagnostics.
+        *out=std::move(prepared);model->set_playback(model_after);*channel=out->update.after;records->swap(external);
+        return S::Advanced;
+    } catch (const std::bad_alloc&) { return S::AllocationFailure; }
+}
 namespace {
 bool valid_model_owners(const std::vector<WorldMapNativeModel*>& owners) {
     for(size_t i=0;i<owners.size();++i) {

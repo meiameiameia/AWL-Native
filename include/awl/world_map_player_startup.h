@@ -248,6 +248,9 @@ public:
     [[nodiscard]] WorldMapTextureTimerResult advance_texture_timers() noexcept {
         return model_->advance_texture_timers();
     }
+    [[nodiscard]] WorldMapAnimationChannelStatus advance_primary_channel(WorldMapAnimationChannelProgressStep* out) {
+        return model_->advance_primary_channel(out);
+    }
 private:
     WorldMapPlayerStartup() = default;
     [[nodiscard]] WorldMapPlayerState29CameraStep prepare_state29_camera(

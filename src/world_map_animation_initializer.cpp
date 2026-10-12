@@ -1,6 +1,7 @@
 #include "awl/world_map_animation_initializer.h"
 
 #include <cmath>
+#include <cfenv>
 #include <cstring>
 #include <utility>
 #include <type_traits>
@@ -89,39 +90,21 @@ WorldMapAnimationFeatureStatus prepare_world_map_actor_model_type(
     return status;
 }
 
-WorldMapAnimationChannelStatus prepare_world_map_partial_animation_channel_settings(
-    const WorldMapAnimationChannelState& channel, const std::vector<WorldMapAnimationPartialPlaybackRecord>& records,
-    uint64_t model_identity, const std::optional<WorldMapAnimationModelBinding>& model,
-    uint32_t loop, float rate, WorldMapAnimationPartialChannelStep* out) {
+namespace {
+WorldMapAnimationChannelStatus prepare_channel_binding(
+    WorldMapAnimationPartialChannelStep& step, uint64_t model_identity,
+    const std::optional<WorldMapAnimationModelBinding>& model) {
     using Status = WorldMapAnimationChannelStatus;
-    if (out == nullptr || &channel == &out->after || &records == &out->records_after || !std::isfinite(rate)) return Status::InvalidInput;
-    for (size_t i = 0; i < records.size(); ++i) {
-        if (records[i].identity == 0) return Status::InvalidInput;
-        for (size_t j = 0; j < i; ++j) if (records[i].identity == records[j].identity) return Status::InvalidInput;
-    }
-    WorldMapAnimationPartialChannelStep step; step.after = channel; step.records_after = records;
+    const auto& channel=step.after;
     auto stop = [&](Status status, uint64_t required = 0) {
-        step.records_after = records; step.required_record = required; *out = step; return status;
+        step.required_record = required; return status;
     };
     auto find = [&](uint64_t identity) -> WorldMapAnimationPartialPlayback* {
         for (auto& record : step.records_after) if (record.identity == identity) return &record.state;
         return nullptr;
     };
-    if (channel.target_8 == 0) return Status::InvalidInput;
-    auto* target = find(channel.target_8);
-    if (!target) return stop(Status::RequiresPlaybackRecord, channel.target_8);
-    target->word_8 = loop & 0xffu; target->rate_4 = rate;
-    if (rate >= 0) target->position_0 = 0.0f;
-    else {
-        if (!target->limit_c) {
-            step.required_fields = 2; return stop(Status::RequiresPlaybackFields, channel.target_8);
-        }
-        if (!std::isfinite(*target->limit_c)) return Status::InvalidInput;
-        target->position_0 = *target->limit_c - reset_epsilon();
-        if (!std::isfinite(target->position_0)) return Status::InvalidInput;
-    }
     // Unsupported signed modes with an incomplete clock perform no model call.
-    if (channel.elapsed_0 < channel.duration_4 && channel.mode_18 > 2) { *out = step; return Status::Prepared; }
+    if (channel.elapsed_0 < channel.duration_4 && channel.mode_18 > 2) return Status::Prepared;
     if (!model) return stop(Status::RequiresModelBinding);
     if (model_identity == 0 || model->model_identity != model_identity || model->playback_178 == 0) return Status::InvalidInput;
     auto copy = [&](uint64_t source, uint64_t destination) {
@@ -172,7 +155,105 @@ WorldMapAnimationChannelStatus prepare_world_map_partial_animation_channel_setti
     }
     if (status == Status::InvalidInput) return status;
     if (status != Status::Prepared) return stop(status, step.required_record);
-    *out = std::move(step); return Status::Prepared;
+    return Status::Prepared;
+}
+bool ordinary_progress(float value) noexcept {
+    return std::isfinite(value) && std::fpclassify(value)!=FP_SUBNORMAL;
+}
+} // namespace
+
+WorldMapAnimationChannelStatus prepare_world_map_partial_animation_channel_settings(
+    const WorldMapAnimationChannelState& channel, const std::vector<WorldMapAnimationPartialPlaybackRecord>& records,
+    uint64_t model_identity, const std::optional<WorldMapAnimationModelBinding>& model,
+    uint32_t loop, float rate, WorldMapAnimationPartialChannelStep* out) {
+    using S=WorldMapAnimationChannelStatus;
+    if (!out || &channel==&out->after || &records==&out->records_after || !std::isfinite(rate)) return S::InvalidInput;
+    for (size_t i=0;i<records.size();++i) {
+        if (!records[i].identity) return S::InvalidInput;
+        for (size_t j=0;j<i;++j) if (records[i].identity==records[j].identity) return S::InvalidInput;
+    }
+    if (!channel.target_8) return S::InvalidInput;
+    WorldMapAnimationPartialChannelStep prepared;prepared.after=channel;prepared.records_after=records;
+    WorldMapAnimationPartialPlayback* target=nullptr;
+    for (auto& record:prepared.records_after) if (record.identity==channel.target_8) target=&record.state;
+    auto stop=[&](S status,uint32_t fields) {
+        prepared.records_after=records;prepared.required_record=channel.target_8;prepared.required_fields=fields;*out=std::move(prepared);return status;
+    };
+    if (!target) return stop(S::RequiresPlaybackRecord,0);
+    target->word_8=loop&0xffu;target->rate_4=rate;
+    if (rate>=0) target->position_0=0.0f;
+    else {
+        if (!target->limit_c) return stop(S::RequiresPlaybackFields,2);
+        if (!std::isfinite(*target->limit_c)) return S::InvalidInput;
+        target->position_0=*target->limit_c-reset_epsilon();
+        if (!std::isfinite(target->position_0)) return S::InvalidInput;
+    }
+    const auto status=prepare_channel_binding(prepared,model_identity,model);
+    if (status==S::InvalidInput) return status;
+    if (status!=S::Prepared) prepared.records_after=records;
+    *out=std::move(prepared);return status;
+}
+
+WorldMapAnimationPlaybackProgressResult prepare_world_map_animation_playback_progress(
+    const WorldMapAnimationPartialPlayback& playback, WorldMapAnimationPartialPlayback* out) noexcept {
+    using S=WorldMapAnimationChannelStatus;
+    if (!out) return {};
+    if (std::fegetround()!=FE_TONEAREST || !ordinary_progress(playback.position_0) || !ordinary_progress(playback.rate_4))
+        return {S::UnsupportedNumerics};
+    float position=playback.position_0+playback.rate_4;
+    if (!ordinary_progress(position)) return {S::UnsupportedNumerics};
+    if (!playback.limit_c) return {S::RequiresPlaybackFields,false,2};
+    if (!ordinary_progress(*playback.limit_c)) return {S::UnsupportedNumerics};
+    const float limit=*playback.limit_c;
+    const bool upper=position>limit;
+    const bool crossed=upper || position<0.0f;
+    if (crossed) {
+        if (!playback.word_8) return {S::RequiresPlaybackFields,false,1};
+        if (upper) position=*playback.word_8?position-limit:limit-reset_epsilon();
+        else position=*playback.word_8?position+limit:0.0f;
+        if (!ordinary_progress(position)) return {S::UnsupportedNumerics};
+    }
+    auto after=playback;after.position_0=position;*out=after;return {S::Prepared,crossed};
+}
+
+WorldMapAnimationChannelStatus prepare_world_map_partial_animation_channel_progress(
+    const WorldMapAnimationChannelState& channel, const std::vector<WorldMapAnimationPartialPlaybackRecord>& records,
+    uint64_t model_identity, const std::optional<WorldMapAnimationModelBinding>& model,
+    WorldMapAnimationChannelProgressStep* out) {
+    using S=WorldMapAnimationChannelStatus;
+    if (!out || &channel==&out->update.after || &records==&out->update.records_after) return S::InvalidInput;
+    for (size_t i=0;i<records.size();++i) {
+        if (!records[i].identity) return S::InvalidInput;
+        for (size_t j=0;j<i;++j) if (records[i].identity==records[j].identity) return S::InvalidInput;
+    }
+    WorldMapAnimationChannelProgressStep step;auto& update=step.update;update.after=channel;update.records_after=records;
+    auto stop=[&](S status) {
+        update.after=channel;update.records_after=records;step.completed=false;*out=std::move(step);return status;
+    };
+    auto advance=[&](uint64_t key) {
+        if (!key) return S::InvalidInput;
+        for (auto& record:update.records_after) if (record.identity==key) {
+            const auto result=prepare_world_map_animation_playback_progress(record.state,&record.state);
+            if (result.status!=S::Prepared) { update.required_record=key;update.required_fields=result.required_fields; }
+            step.completed=result.boundary_crossed;return result.status;
+        }
+        update.required_record=key;return S::RequiresPlaybackRecord;
+    };
+    ++update.after.elapsed_0; // Original unsigned add precedes the duration test.
+    const bool done=update.after.elapsed_0>=channel.duration_4;
+    S status=S::Prepared;
+    if (done) { update.after.elapsed_0=channel.duration_4;status=advance(channel.target_8); }
+    else {
+        if (channel.mode_18==1) status=advance(channel.previous_c);
+        if (status==S::Prepared && channel.mode_18<=2) status=advance(channel.target_8);
+        step.completed=false; // Incomplete channel ignores all FF08 return values.
+    }
+    if (status==S::InvalidInput) return status;
+    if (status!=S::Prepared) return stop(status);
+    status=prepare_channel_binding(update,model_identity,model);
+    if (status==S::InvalidInput) return status;
+    if (status!=S::Prepared) return stop(status);
+    *out=std::move(step);return S::Prepared;
 }
 
 WorldMapAnimationChannelStatus prepare_world_map_animation_channel_settings(

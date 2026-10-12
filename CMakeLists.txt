@@ -194,7 +194,7 @@ endif()
 enable_testing()
 set_source_files_properties(src/game_clock.cpp src/world_map_player_status.cpp
     src/world_map_player_frame.cpp src/world_map_secondary_model.cpp src/world_map_player_actor_prepare.cpp
-    src/world_map_player_texture_features.cpp PROPERTIES
+    src/world_map_player_texture_features.cpp src/world_map_animation_initializer.cpp PROPERTIES
     COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:strict>"
 )
 add_executable(game_clock_tests tests/game_clock_tests.cpp src/game_clock.cpp)

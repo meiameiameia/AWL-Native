@@ -120,6 +120,11 @@ public:
     // Timer pair publishes atomically; the next actor frame samples its values.
     // Keep separate from frame/queue acknowledgement until live order is owned.
     [[nodiscard]] WorldMapTextureTimerResult advance_texture_timers() noexcept;
+    // D7FC's first 69C4 call only. Holder descriptor/completion/restart and
+    // secondary progression remain pending; completed is returned, not applied.
+    [[nodiscard]] WorldMapAnimationChannelStatus advance_primary_channel(WorldMapAnimationChannelProgressStep* out) {
+        return primary_channel_->progress(&primary_->model(), out);
+    }
     // BBA0's ordered CPU frame -> F548 selection/cache update. Both publish
     // atomically after all preparation. Timer values/clocks, holder sequence,
     // actor metadata, optional effect and queues remain unchanged.

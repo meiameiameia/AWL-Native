@@ -37,6 +37,10 @@ public:
     [[nodiscard]] WorldMapAnimationChannelStatus apply_settings(
         WorldMapNativeModel* model, uint32_t loop, float rate,
         WorldMapAnimationPartialChannelStep* out);
+    // Isolated 69C4, atomically publishing this channel and model playback.
+    // Retains all banks; no holder/descriptor, clock or frame advancement.
+    [[nodiscard]] WorldMapAnimationChannelStatus progress(
+        WorldMapNativeModel* model, WorldMapAnimationChannelProgressStep* out);
 private:
     friend WorldMapNativeAnimationInitializerStatus advance_world_map_native_animation_initializer(
         WorldMapNativeAnimationInitializerMetadata*, WorldMapNativeAnimationChannel*,

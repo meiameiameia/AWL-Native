@@ -127,6 +127,14 @@ class WorldMapPlayerModelAssets;
     std::vector<WorldMapAnimationPartialPlaybackRecord>* records,
     uint32_t loop, float rate, WorldMapAnimationPartialChannelStep* out);
 
+// Whole isolated 69C4 over owned playback and external channel records.
+// Model key appears only in out.update.records_after. Failures preserve both
+// owners and all records; no banks, frame/mesh, clock or holder are advanced.
+[[nodiscard]] WorldMapAnimationChannelStatus advance_world_map_native_animation_channel_progress(
+    WorldMapNativeModel* model, WorldMapAnimationChannelState* channel,
+    std::vector<WorldMapAnimationPartialPlaybackRecord>* records,
+    WorldMapAnimationChannelProgressStep* out);
+
 // Builds the authoritative link graph from supplied live native owners and
 // applies only the supported DF68 path atomically. Links remain borrowed keys;
 // every reached child must be present in owners, never dereferenced by its key.
@@ -201,6 +209,9 @@ private:
         WorldMapNativeModel*, WorldMapAnimationChannelState*,
         std::vector<WorldMapAnimationPartialPlaybackRecord>*, uint32_t, float,
         WorldMapAnimationPartialChannelStep*);
+    friend WorldMapAnimationChannelStatus advance_world_map_native_animation_channel_progress(
+        WorldMapNativeModel*, WorldMapAnimationChannelState*,
+        std::vector<WorldMapAnimationPartialPlaybackRecord>*, WorldMapAnimationChannelProgressStep*);
     friend WorldMapModelAttachmentStatus apply_world_map_native_model_attachments(
         const std::vector<WorldMapNativeModel*>&, const WorldMapModelAttachmentRequest&, WorldMapModelAttachmentStep*);
     friend WorldMapModelAttachmentStatus apply_world_map_native_model_source_change(

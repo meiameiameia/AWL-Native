@@ -1527,7 +1527,7 @@ void local_primary(const char* disc) {
     expect(checked==6,"all six actual phase CPU primaries verified");
     std::cout<<"LOCAL_CPU_PRIMARY_STARTUP "<<checked<<" phases / 55 nodes / frame "<<std::hex<<frame_digest<<" geometry "<<geometry_digest<<std::dec<<"; CPU ownership only, holder/actor/GPU pending\n";
 }
-uint64_t holder_snapshot(const awl::WorldMapPlayerAnimationHolder& holder,bool include_primary=true,bool include_timers=true) {
+uint64_t holder_snapshot(const awl::WorldMapPlayerAnimationHolder& holder,bool include_primary=true,bool include_timers=true,bool include_playback=true) {
     uint64_t h=include_primary?primary_snapshot(holder.primary()):14695981039346656037ull;
     const auto key=[&](uint64_t v){hash(h,uint32_t(v>>32));hash(h,uint32_t(v));};
     const auto real=[&](float v){uint32_t w;std::memcpy(&w,&v,4);hash(h,w);};
@@ -1552,9 +1552,9 @@ uint64_t holder_snapshot(const awl::WorldMapPlayerAnimationHolder& holder,bool i
     if(holder.game_clock()){const auto& clock=holder.game_clock()->state();hash(h,clock.raw_time);hash(h,clock.loop_count);hash(h,clock.retrace_interval);}
     const auto partial=[&](const awl::WorldMapAnimationPartialPlayback& p){real(p.position_0);real(p.rate_4);optional_word(p.word_8);
         optional_real(p.limit_c);hash(h,p.clip_10.has_value());if(p.clip_10){key(p.clip_10->bank_identity);hash(h,p.clip_10->offset);}key(p.link_14);optional_real(p.value_18);};
-    partial(holder.primary().model().partial_playback());key(holder.primary().model().animation_banks().size());
+    if(include_playback)partial(holder.primary().model().partial_playback());key(holder.primary().model().animation_banks().size());
     for(const auto& bank:holder.primary().model().animation_banks())key(bank->identity());
-    for(const auto* channel:{&holder.primary_channel(),&holder.secondary_channel()}){const auto& c=channel->state();
+    for(const auto* channel:{&holder.primary_channel(),&holder.secondary_channel()}){if(!include_playback && channel==&holder.primary_channel())continue;const auto& c=channel->state();
         hash(h,c.elapsed_0);hash(h,c.duration_4);key(c.target_8);key(c.previous_c);key(c.older_10);optional_real(c.blend_14);hash(h,c.mode_18);
         for(const auto& r:channel->records()){key(r.identity);partial(r.state);}}
     key(holder.descriptor().identity);hash(h,holder.descriptor().word_0);hash(h,holder.descriptor().word_4);hash(h,holder.descriptor().word_8);return h;
@@ -3030,6 +3030,82 @@ void texture_timer_owner_checks(awl::WorldMapPlayerStartup& player,bool allocati
     expect(player.state().counter_1368==parent.counter_1368 && player.state().state_1364==parent.state_1364 &&
         (player.camera()?camera_snapshot(*player.camera()):0)==camera,"timer/frame composition does not execute the parent camera/status or animation-holder update");
 }
+uint64_t progression_playback_snapshot(const awl::WorldMapAnimationPartialPlayback& p) {
+    uint64_t h=14695981039346656037ull;
+    const auto key=[&](uint64_t v){hash(h,uint32_t(v>>32));hash(h,uint32_t(v));};
+    hash(h,actor_bits(p.position_0));hash(h,actor_bits(p.rate_4));hash(h,p.word_8.has_value());if(p.word_8)hash(h,*p.word_8);
+    hash(h,p.limit_c.has_value());if(p.limit_c)hash(h,actor_bits(*p.limit_c));hash(h,p.value_18.has_value());if(p.value_18)hash(h,actor_bits(*p.value_18));
+    key(p.link_14);hash(h,p.clip_10.has_value());if(p.clip_10){key(p.clip_10->bank_identity);hash(h,p.clip_10->offset);}return h;
+}
+void channel_progress_owner_checks(awl::WorldMapPlayerStartup& player,bool allocations) {
+    using S=awl::WorldMapAnimationChannelStatus;using Q=awl::WorldMapPlayerStartupQueueStatus;
+    const auto& holder=player.model();const auto& channel=holder.primary_channel();const auto& model=holder.primary().model();
+    const auto binding=model.binding();const auto parent=player.state();const auto camera=player.camera()?camera_snapshot(*player.camera()):0;
+    const auto before=startup_snapshot(player);
+    expect(player.advance_primary_channel(nullptr)==S::InvalidInput && startup_snapshot(player)==before,"owned channel rejects absent output without mutation");
+    const int rounding=std::fegetround();expect(std::fesetround(FE_UPWARD)==0,"select unsupported owned channel rounding");
+    awl::WorldMapAnimationChannelProgressStep rejected;
+    expect(player.advance_primary_channel(&rejected)==S::UnsupportedNumerics && startup_snapshot(player)==before && !rejected.completed &&
+        std::fegetround()==FE_UPWARD,"rejected owned channel arithmetic preserves all startup/frame state and caller rounding");
+    expect(std::fesetround(rounding)==0,"restore owned channel rounding");
+    awl::WorldMapUpdateInputs controls(holder.game_clock());controls.observe_control_sources({awl::WorldMapControlPhase{uint8_t{0},{},uint8_t{1}},0});
+    expect(controls.capture_control()==awl::WorldMapControlStatus::Captured,"channel integration captures current owned queue control");
+    awl::WorldMapPlayerStartupQueuedActorInput input;input.actor.saved_byte_29a01=uint8_t{0};input.actor.script.emplace();
+    input.actor.script->flag_width_4=1;input.actor.script->flag_bytes={0};input.actor.script->records.emplace();input.actor.derive_normal_visibility=true;
+    input.actor.frame.actor_placement=awl::WorldMapPlayerActorPlacement{{40,50,60},{0,0,1}};
+    input.actor.frame.node_post_transforms.resize(model.core().nodes.size());
+    input.actor.visibility.emplace();input.actor.visibility->view=awl::WorldMapModelMatrix{1,0,0,0,0,1,0,0,0,0,1,0};
+    for(size_t i=0;i<6;++i){awl::WorldMapPlayerActorPlane plane;plane.point[i/2]=i%2?-1000.f:1000.f;plane.normal[i/2]=i%2?-1.f:1.f;input.actor.visibility->planes[i]=plane;}
+    input.actor.screen.emplace();input.actor.screen->view=*input.actor.visibility->view;input.actor.screen->half_extents={1000.f,1000.f};input.effect_gate=uint8_t{0};
+    awl::WorldMapPlayerUpdateOwners updates;awl::WorldMapPlayerActorQueue render;
+    for(uint32_t tick=0;tick<16;++tick) {
+        auto pool=channel.records();pool.push_back({binding.playback_178,model.partial_playback()});awl::WorldMapAnimationChannelProgressStep expected;
+        expect(awl::prepare_world_map_partial_animation_channel_progress(channel.state(),pool,binding.model_identity,binding,&expected)==S::Prepared,
+            "retained startup channel has all inputs for the independently compared 69C4 body");
+        const auto unrelated=holder_snapshot(holder,true,true,false);awl::WorldMapAnimationChannelProgressStep actual;S status=S::InvalidInput;
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+        if(allocations && tick==0) {
+            const auto accepted=startup_snapshot(player),live=allocation_probe::live;bool reached=false;size_t failed=0;
+            actual.update.after.elapsed_0=77;actual.completed=true;
+            for(size_t fail=0;fail<32;++fail) {
+                allocation_probe::remaining=fail;allocation_probe::enabled=true;status=player.advance_primary_channel(&actual);allocation_probe::enabled=false;
+                if(status==S::Advanced){reached=true;break;}++failed;
+                expect(status==S::AllocationFailure && startup_snapshot(player)==accepted && allocation_probe::live==live &&
+                    actual.update.after.elapsed_0==77 && actual.completed && actual.update.records_after.empty(),
+                    "each owned channel allocation stop preserves model, records, counter, diagnostics and frees staging");
+            }
+            expect(reached && failed>0,"owned channel allocation sweep reaches publication");
+            std::cout<<"PLAYER_CHANNEL_PROGRESS_ALLOCATION_FAILURES "<<failed<<'\n';
+        } else
+#else
+        (void)allocations;
+#endif
+        status=player.advance_primary_channel(&actual);
+        expect(status==S::Advanced && actual.completed==expected.completed && holder_snapshot(holder,true,true,false)==unrelated &&
+            channel.state().elapsed_0==expected.update.after.elapsed_0 && channel.state().duration_4==expected.update.after.duration_4 &&
+            channel.state().mode_18==expected.update.after.mode_18 && channel.state().target_8==expected.update.after.target_8 &&
+            channel.state().previous_c==expected.update.after.previous_c && channel.state().older_10==expected.update.after.older_10 &&
+            channel.state().blend_14==expected.update.after.blend_14,"owned 69C4 publishes channel and playback without changing frame, holder, timers, providers or clock");
+        for(size_t i=0;i<channel.records().size();++i)expect(channel.records()[i].identity==expected.update.records_after[i].identity &&
+            progression_playback_snapshot(channel.records()[i].state)==progression_playback_snapshot(expected.update.records_after[i].state),
+            "owned channel retains exact ordered external record results");
+        const auto playback=progression_playback_snapshot(model.partial_playback());
+        expect(expected.update.records_after.back().identity==binding.playback_178 && playback==progression_playback_snapshot(expected.update.records_after.back().state),
+            "model receives authoritative current blend playback under its stable key");
+        updates.queue={{player.update_node_identity(),0x1010}};input.actor.script->flag_bytes[0]=1;
+        auto consumed=player.consume_state29_update(controls,input,&updates,&render);
+        expect(consumed.status==Q::Completed && consumed.callback && consumed.callback->status==awl::WorldMapPlayerStartupActorCallbackStatus::ScriptBlocked &&
+            updates.queue.empty() && progression_playback_snapshot(model.partial_playback())==playback,
+            "script-blocked queued frame does not undo or repeat the separately accepted channel update");
+        updates.queue={{player.update_node_identity(),0x1010}};input.actor.script->flag_bytes[0]=0;
+        consumed=player.consume_state29_update(controls,input,&updates,&render);
+        expect(consumed.status==Q::Completed && consumed.callback && consumed.callback->actor && consumed.callback->actor->frame &&
+            updates.queue.empty() && render.size()==1 && render[0].node_identity==player.render_node_identity() && progression_playback_snapshot(model.partial_playback())==playback &&
+            channel.state().elapsed_0==expected.update.after.elapsed_0,"queued CPU frame samples the advanced model/channel exactly once, preserves playback and completes work");
+    }
+    expect(player.state().counter_1368==parent.counter_1368 && player.state().state_1364==parent.state_1364 &&
+        (player.camera()?camera_snapshot(*player.camera()):0)==camera,"channel/frame composition does not execute parent camera or holder descriptor progression");
+}
 void normal_actor_frame_owner_checks(awl::WorldMapPlayerStartup& player,bool allocations) {
     using S=awl::WorldMapPlayerStartupActorFrameStatus;using V=awl::WorldMapPlayerActorVisibilityStatus;
     using B=awl::WorldMapPlayerActorBoundsStatus;using E=awl::WorldMapPlayerActorScreenStatus;
@@ -3182,6 +3258,7 @@ void gated_actor_frame_owner_checks(awl::WorldMapPlayerStartup& player,bool allo
     actor_callback_owner_checks(player,allocations);
     queued_actor_owner_checks(player,allocations);
     texture_timer_owner_checks(player,allocations);
+    channel_progress_owner_checks(player,allocations);
 }
 void actor_placement_owner_checks(awl::WorldMapPlayerStartup& player,bool allocations=false) {
     using S=awl::WorldMapPlayerPrimaryUpdateStatus;using F=awl::WorldMapPlayerFrameStatus;
@@ -3578,6 +3655,7 @@ void local_startup(const char* disc) {
     std::cout<<"LOCAL_PLAYER_ACTOR_CALLBACK "<<status_dispatches<<" startups / four CPU frame+texture+metadata/scheduling updates and one first-test cull each; owned effect/player keys, observed gates; render execution and live sources pending\n";
     std::cout<<"LOCAL_PLAYER_UPDATE_COMPLETION "<<status_dispatches<<" startups / parent registration, one script block, three queued CPU frames, one cull and retry/ordering checks each; front owned node only, later work pending; no live activation\n";
     std::cout<<"LOCAL_PLAYER_OWNED_TEXTURE_TIMERS "<<status_dispatches<<" startups / three explicit clock steps, atomic timer pairs, stale-control retry and queued CPU frame/texture consumption each; holder/channel and live order remain pending\n";
+    std::cout<<"LOCAL_PLAYER_CHANNEL_PROGRESS "<<status_dispatches<<" startups / sixteen atomic owned channel advances, blocked-frame preservation and queued CPU frame consumption each; holder descriptor/restart and live order remain pending\n";
 }
 void local_timer_holder(const char* disc,bool owned_clock=false,bool initial_model=false) {
     using S=awl::WorldMapPlayerTimerAssetsStatus;using B=awl::WorldMapPlayerTimerBank;using H=awl::WorldMapPlayerTimedInitialHolderStatus;

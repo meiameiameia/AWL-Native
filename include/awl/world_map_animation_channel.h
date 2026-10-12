@@ -179,6 +179,7 @@ enum class WorldMapAnimationChannelBranch { NoClip, Completed, First, Interrupte
 enum class WorldMapAnimationChannelStatus {
     Prepared, Advanced, RequiresModelBinding, RequiresPlaybackRecord, RequiresBank, InvalidInput,
     RequiresPlaybackFields, AllocationFailure, RequiresChannelFields,
+    UnsupportedNumerics,
 };
 struct WorldMapAnimationPartialChannelStep {
     WorldMapAnimationChannelState after;

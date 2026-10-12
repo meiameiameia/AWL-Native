@@ -84,6 +84,34 @@ struct WorldMapAnimationFeatureStep {
     uint64_t model_identity, const std::optional<WorldMapAnimationModelBinding>& model,
     uint32_t loop, float rate, WorldMapAnimationPartialChannelStep* out);
 
+struct WorldMapAnimationPlaybackProgressResult {
+    WorldMapAnimationChannelStatus status = WorldMapAnimationChannelStatus::InvalidInput;
+    bool boundary_crossed = false;
+    uint32_t required_fields = 0; // +8 loop word: 1; +C limit: 2.
+};
+// FF08: add rate once, then test >limit before <0. Crossings wrap once or
+// clamp to limit-epsilon/+0. Upper equality still tests <0; null clips advance.
+// Limit is required; loop word only on crossing. Link/clip/weight stay unread.
+// Finite normal/zero arithmetic and nearest rounding required. No allocation.
+// Failure preserves out; whole input/output aliasing is supported.
+[[nodiscard]] WorldMapAnimationPlaybackProgressResult prepare_world_map_animation_playback_progress(
+    const WorldMapAnimationPartialPlayback& playback, WorldMapAnimationPartialPlayback* out) noexcept;
+struct WorldMapAnimationChannelProgressStep {
+    WorldMapAnimationPartialChannelStep update;
+    bool completed = false; // 6B80 result, valid only on Prepared/Advanced.
+};
+// Whole isolated 69C4: wrapped tick increment/clamp and ordered previous/target
+// FF08 calls, followed by 6A14 model copy/link publication. Only a crossing
+// after the channel duration is reached returns completed. Record aliases
+// retain original sequential writes. Unknown signed modes skip incomplete
+// channels. No raw clock, bank lookup, descriptor or CPU frame is advanced.
+// Failure restores all proposed records/channel; InvalidInput preserves out.
+[[nodiscard]] WorldMapAnimationChannelStatus prepare_world_map_partial_animation_channel_progress(
+    const WorldMapAnimationChannelState& channel,
+    const std::vector<WorldMapAnimationPartialPlaybackRecord>& records,
+    uint64_t model_identity, const std::optional<WorldMapAnimationModelBinding>& model,
+    WorldMapAnimationChannelProgressStep* out);
+
 template<class PlaybackRecord> struct WorldMapBasicAnimationInitializerState {
     WorldMapActorAnimationState animation;
     WorldMapAnimationChannelState primary;
