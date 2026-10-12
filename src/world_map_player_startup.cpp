@@ -140,7 +140,7 @@ WorldMapPlayerStartupActorFrameResult WorldMapPlayerStartup::advance_gated_actor
     }
     if (!input.frame.actor_placement) { result.status = S::RequiresActorPlacement; return result; }
     if (input.frame.root_pose) { result.status = S::InvalidInput; return result; }
-    result.frame = model_->advance(input.frame);
+    result.frame = input.derive_normal_visibility ? model_->advance_actor_frame(input.frame) : model_->advance(input.frame);
     result.status = result.frame->status == WorldMapPlayerPrimaryUpdateStatus::Advanced ? S::FrameAdvanced : S::FrameIncomplete;
     return result;
 }

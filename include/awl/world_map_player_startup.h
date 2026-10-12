@@ -123,7 +123,7 @@ struct WorldMapPlayerStartupActorFrameResult {
     std::optional<WorldMapPlayerActorBounds> bounds;
     std::optional<WorldMapPlayerActorScreenResult> screen;
     // Diagnostic proposal only, including on a later frame failure. Does not
-    // publish actor +15F or execute the optional effect/F548 follow-up.
+    // publish actor +15F or execute the optional effect.
     std::optional<uint8_t> proposed_effect_flag_15f;
 };
 // Owns the supported CPU initial model -> no-message tail -> normal state-29
@@ -173,8 +173,10 @@ public:
     // gates before the existing placed-frame transaction. Blocked, culled,
     // unknown and failed cases preserve all player/model/camera/clock state.
     // This is NOT the full 31584/BBA0 callback: it neither publishes the
-    // earlier control/+15E stores nor publishes 197614's +15F update, F548's
-    // later TAM/features/effect, holder progression or queue acknowledgement.
+    // earlier control/+15E stores nor publishes 197614's +15F update, optional
+    // effect, holder progression or queue acknowledgement. Derived normal
+    // mode adds ordered post-frame F548 texture selection/cache publication;
+    // observed-sphere mode retains its isolated frame-only contract.
     [[nodiscard]] WorldMapPlayerStartupActorFrameResult advance_gated_actor_frame(
         const WorldMapPlayerStartupActorFrameInput& input);
     [[nodiscard]] WorldMapPlayerPrimaryUpdateResult advance(const WorldMapPlayerPrimaryFrameInput& input) {

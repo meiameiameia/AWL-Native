@@ -22,7 +22,9 @@ struct WorldMapPlayerTimerBindingResult {
 // Owns raw char_com_eye/mouth TAMs and their two-level row/column offsets.
 // Relative offsets replace 824C's packed pointer/magic relocation. Resource
 // slices end at the next physical resource or EOF (native safety policy);
-// their animation bodies, sampling and texture application are unsupported.
+// decoding these tables does not validate the animation bodies. The separate
+// texture sampler validates a reached body's count/extent and selected times.
+// Timer progression and texture drawing remain unsupported.
 class WorldMapPlayerTimerAssets {
 public:
     WorldMapPlayerTimerAssets(const WorldMapPlayerTimerAssets&) = delete;
@@ -33,6 +35,10 @@ public:
     // Invalid bank/row/column or output preserves the borrowed output view.
     [[nodiscard]] bool resource(WorldMapPlayerTimerBank bank, uint32_t row, uint32_t column,
         WorldMapPlayerTimerResourceView* out) const;
+    // Resolve only an exact key retained by this bank; no pointer dereference
+    // or guessed fallback. Aliases share the same bounded physical slice.
+    [[nodiscard]] bool find_resource(WorldMapPlayerTimerBank bank, uint64_t identity,
+        WorldMapPlayerTimerResourceView* out) const noexcept;
 private:
     WorldMapPlayerTimerAssets() = default;
     struct Table {

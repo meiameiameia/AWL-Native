@@ -59,6 +59,7 @@ set(SOURCES
     src/world_map_player_topology.cpp
     src/world_map_player_geometry.cpp
     src/world_map_player_primary_owner.cpp
+    src/world_map_player_texture_features.cpp
     src/world_map_player_animation_holder.cpp
     src/world_map_player_startup.cpp
     src/world_map_player_actor_prepare.cpp
@@ -135,6 +136,7 @@ set(HEADERS
     include/awl/world_map_player_skin_work.h
     include/awl/world_map_player_frame.h
     include/awl/world_map_player_primary_owner.h
+    include/awl/world_map_player_texture_features.h
     include/awl/world_map_player_animation_holder.h
     include/awl/world_map_player_startup.h
     include/awl/world_map_player_actor_prepare.h
@@ -659,6 +661,7 @@ add_executable(world_map_player_model_assets_tests
     src/world_map_player_topology.cpp
     src/world_map_player_geometry.cpp
     src/world_map_player_primary_owner.cpp
+    src/world_map_player_texture_features.cpp
     src/world_map_player_animation_holder.cpp
     src/world_map_player_startup.cpp
     src/world_map_player_actor_prepare.cpp

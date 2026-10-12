@@ -2,6 +2,7 @@
 #include "awl/world_map_player_frame.h"
 #include "awl/world_map_player_geometry.h"
 #include "awl/world_map_animation_channel_owner.h"
+#include "awl/world_map_player_texture_features.h"
 
 namespace awl {
 enum class WorldMapPlayerPrimaryStatus { ConstructedCpuPrimary, RequiresAssets, RequiresFrameState,
@@ -22,11 +23,12 @@ struct WorldMapPlayerPrimaryFrameInput {
     std::optional<WorldMapPlayerActorPlacement> actor_placement;
 };
 enum class WorldMapPlayerPrimaryUpdateStatus { Advanced, RequiresHierarchy, RequiresFeatureBindings, FrameFailure,
-    GeometryFailure, AllocationFailure };
+    GeometryFailure, AllocationFailure, TextureFeaturesFailure };
 struct WorldMapPlayerPrimaryUpdateResult {
     WorldMapPlayerPrimaryUpdateStatus status = WorldMapPlayerPrimaryUpdateStatus::FrameFailure;
     std::optional<WorldMapPlayerAnimationFrameResult> frame_failure;
     std::optional<WorldMapPlayerGeometryResult> geometry_failure;
+    std::optional<WorldMapPlayerTextureFeatureResult> texture_features;
 };
 // Owns actual phase-selected ACT/GPL/SKN/texture providers, CPU skin/frame/mesh
 // storage and a native model with D7B0 feature bindings, E7C4 list order and
@@ -43,11 +45,16 @@ public:
     const WorldMapPlayerFrameOwner& cpu() const { return *frame_; }
     const WorldMapPlayerGeometry& geometry() const { return *geometry_; }
     const WorldMapPlayerModelSetupPlan& setup() const { return frame_->work().drawing().setup(); }
+    const std::optional<std::array<WorldMapPlayerTextureCacheEntry,4>>& texture_cache() const { return texture_cache_; }
     // Stage authoritative playback sampling, skin/features AND mesh before
     // publication. Attached/inherited models require a full hierarchy and stop.
     // No channel/animation clock, actor movement, rendering or acknowledgement.
+    // Optional post_frame executes F548 selection/shared-cache preparation
+    // after frame/mesh staging. Any later stop preserves the complete prior
+    // frame and cache; successful publication changes neither clock nor timers.
     [[nodiscard]] WorldMapPlayerPrimaryUpdateResult advance(
-        const WorldMapPlayerPrimaryFrameInput& input, const WorldMapNativeAnimationChannel* channel);
+        const WorldMapPlayerPrimaryFrameInput& input, const WorldMapNativeAnimationChannel* channel,
+        const WorldMapPlayerTextureFeatureInput* post_frame = nullptr);
 private:
     WorldMapPlayerPrimaryOwner() = default;
     friend class WorldMapPlayerAnimationHolder;
@@ -58,6 +65,8 @@ private:
     std::unique_ptr<WorldMapPlayerFrameOwner> frame_;
     std::unique_ptr<WorldMapPlayerGeometry> geometry_;
     std::unique_ptr<WorldMapNativeModel> model_;
+    // DD44's shared cache, distinct from immutable construction commands.
+    std::optional<std::array<WorldMapPlayerTextureCacheEntry,4>> texture_cache_;
 };
 // Rebuild supported providers from immutable assets. All failures preserve
 // an existing output owner; no null-auxiliary secondary substitute is used.

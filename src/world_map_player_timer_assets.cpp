@@ -84,6 +84,17 @@ bool WorldMapPlayerTimerAssets::resource(WorldMapPlayerTimerBank bank, uint32_t 
     const auto* data = table.bytes.data() + resource.offset;
     *out = {static_cast<uint64_t>(reinterpret_cast<uintptr_t>(data)), resource.offset, resource.size, data}; return true;
 }
+bool WorldMapPlayerTimerAssets::find_resource(WorldMapPlayerTimerBank bank, uint64_t identity, WorldMapPlayerTimerResourceView* out) const noexcept {
+    if (!out || !identity || !valid_bank(bank)) return false;
+    const auto& table=tables_[static_cast<size_t>(bank)];
+    for (const auto& resource:table.resources) {
+        const auto* data=table.bytes.data()+resource.offset;
+        if (identity==static_cast<uint64_t>(reinterpret_cast<uintptr_t>(data))) {
+            *out={identity,resource.offset,resource.size,data}; return true;
+        }
+    }
+    return false;
+}
 Status decode_world_map_player_timer_assets(const std::vector<uint8_t>& eyes, const std::vector<uint8_t>& mouth,
     std::shared_ptr<const WorldMapPlayerTimerAssets>* out) {
     if (!out) return Status::InvalidInput;

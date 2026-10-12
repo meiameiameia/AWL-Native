@@ -56,11 +56,13 @@ WorldMapPlayerPrimaryResult construct_world_map_player_primary(
         if (consumed > plan.model_allocation_size()) return {Status::UnsupportedLayout};
         owner->model_ = std::unique_ptr<WorldMapNativeModel>(new WorldMapNativeModel(std::move(bank),
             std::move(*prepared.prepared), std::move(core), storage, static_cast<uint32_t>(consumed)));
+        if (plan.cache_channels()) owner->texture_cache_.emplace();
         *out = std::move(owner); return {Status::ConstructedCpuPrimary};
     } catch (const std::bad_alloc&) { return {Status::AllocationFailure}; }
 }
 WorldMapPlayerPrimaryUpdateResult WorldMapPlayerPrimaryOwner::advance(
-    const WorldMapPlayerPrimaryFrameInput& input, const WorldMapNativeAnimationChannel* channel) {
+    const WorldMapPlayerPrimaryFrameInput& input, const WorldMapNativeAnimationChannel* channel,
+    const WorldMapPlayerTextureFeatureInput* post_frame) {
     using Status = WorldMapPlayerPrimaryUpdateStatus;
     static_assert(std::is_nothrow_move_constructible_v<WorldMapPlayerFrame>);
     if (model_->core().parent_150) return {Status::RequiresHierarchy};
@@ -106,11 +108,28 @@ WorldMapPlayerPrimaryUpdateResult WorldMapPlayerPrimaryOwner::advance(
         const auto decoded = geometry_->stage_decode(frame_->work(), staged.vertex_output, &vertices);
         if (decoded.status == WorldMapPlayerGeometryStatus::AllocationFailure) return {Status::AllocationFailure, {}, decoded};
         if (decoded.status != WorldMapPlayerGeometryStatus::DecodedVertices) return {Status::GeometryFailure, {}, decoded};
+        auto cache=texture_cache_;
+        std::optional<WorldMapPlayerTextureFeatureResult> texture_features;
+        if (post_frame) {
+            texture_features=prepare_world_map_player_texture_features(*post_frame,*setup().selection().assets);
+            if (texture_features->status!=WorldMapPlayerTextureFeatureStatus::Selected)
+                return {Status::TextureFeaturesFailure,{},{},texture_features};
+            // DCD8 walks root then the E7C4 feature chain. Reject changed
+            // links instead of applying retained commands to a guessed chain.
+            const auto& order=setup().feature_node_order();
+            if (model_->core().head_50!=(order.empty()?0u:order.front()+1u)) return {Status::RequiresFeatureBindings};
+            for (size_t i=0;i<order.size();++i)
+                if (model_->core().nodes[order[i]].next_feature_14!=(i+1<order.size()?order[i+1]+1u:0u))
+                    return {Status::RequiresFeatureBindings};
+            if (!prepare_world_map_player_texture_cache(setup(),*texture_features,texture_cache_,&cache,&texture_features->cache_writes))
+                return {Status::RequiresFeatureBindings};
+        }
         // No allocating work follows; persistent pose/features/skin/mesh publish together.
         frame_->root_pose_ = staged.root_pose_after; frame_->features_.swap(features);
         model_->core_.byte_1c = static_cast<uint8_t>(staged.root_pose_after[0] >> 24);
         frame_->frame_.emplace(std::move(staged)); geometry_->vertices_.swap(vertices);
-        return {Status::Advanced};
+        texture_cache_=cache;
+        return {Status::Advanced,{},{},texture_features};
     } catch (const std::bad_alloc&) { return {Status::AllocationFailure}; }
 }
 } // namespace awl

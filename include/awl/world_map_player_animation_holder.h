@@ -115,6 +115,13 @@ public:
     [[nodiscard]] WorldMapPlayerPrimaryUpdateResult advance(const WorldMapPlayerPrimaryFrameInput& input) {
         return primary_->advance(input, primary_channel_.get());
     }
+    // BBA0's ordered CPU frame -> F548 selection/cache update. Both publish
+    // atomically after all preparation. Timer values/clocks, holder sequence,
+    // actor metadata, optional effect and queues remain unchanged.
+    [[nodiscard]] WorldMapPlayerPrimaryUpdateResult advance_actor_frame(const WorldMapPlayerPrimaryFrameInput& input) {
+        const WorldMapPlayerTextureFeatureInput features{state_.feature_38,state_.feature_source_10,timer_assets_.get()};
+        return primary_->advance(input,primary_channel_.get(),&features);
+    }
 private:
     WorldMapPlayerAnimationHolder() = default;
     friend WorldMapPlayerStartupResult construct_world_map_player_startup(
@@ -196,7 +203,7 @@ private:
 // Same fresh startup from a shared GameClock's raw snapshot, with clock
 // lifetime retained before publication. First-row/clock/second-row stops and
 // late holder failures preserve *out and never advance the shared clock.
-// Timer clock fields remain initial snapshots; TAM sampling is unsupported.
+// Timer clock fields remain initial snapshots; construction does not sample TAMs.
 [[nodiscard]] WorldMapPlayerTimedInitialHolderResult construct_world_map_player_initial_holder_with_clock(
     const std::shared_ptr<const WorldMapPlayerModelAssets>& model_assets,
     const std::shared_ptr<const WorldMapPlayerAnimationAssets>& animation_assets,
