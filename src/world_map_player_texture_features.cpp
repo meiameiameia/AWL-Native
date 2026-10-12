@@ -1,5 +1,6 @@
 #include "awl/world_map_player_texture_features.h"
 #include <cmath>
+#include <cfenv>
 #include <cstring>
 
 namespace awl {
@@ -9,6 +10,60 @@ uint32_t word(const uint8_t* p) noexcept {
 }
 float real(const uint8_t* p) noexcept { const auto w=word(p); float value; std::memcpy(&value,&w,4); return value; }
 bool ordinary(float value) noexcept { return std::isfinite(value) && std::fpclassify(value)!=FP_SUBNORMAL; }
+}
+WorldMapTextureTimerStatus prepare_world_map_texture_timer(
+    const WorldMapAnimationFeatureTimer& timer, const WorldMapPlayerTimerResourceView& resource,
+    uint32_t now, WorldMapAnimationFeatureTimer* out) noexcept {
+    using S=WorldMapTextureTimerStatus;
+    if (!out || !resource.data) return S::InvalidInput;
+    if (!timer.resource_0 || resource.identity!=timer.resource_0) return S::RequiresResource;
+    if (resource.size<8) return S::UnsupportedLayout;
+    const float duration=real(resource.data+4);
+    if (std::fegetround()!=FE_TONEAREST || !ordinary(timer.rate_c) || !ordinary(duration)) return S::UnsupportedNumerics;
+    const float elapsed=static_cast<float>(now-timer.clock_4);
+    const float scaled=timer.rate_c*elapsed;
+    float value=scaled/1000.0f; // 8034BAB8; preserve all original binary32 boundaries.
+    if (!ordinary(scaled) || !ordinary(value)) return S::UnsupportedNumerics;
+    auto after=timer;
+    if (value>=duration) {
+        value=value-duration;
+        if (!ordinary(value)) return S::UnsupportedNumerics;
+        after.clock_4=now;
+    }
+    after.value_8=value; *out=after; return S::Prepared;
+}
+WorldMapTextureTimerResult prepare_world_map_player_texture_timers(
+    const WorldMapAnimationFeature38& feature, std::optional<uint8_t> mouth_gate,
+    const WorldMapPlayerTimerAssets* assets, std::optional<uint32_t> now,
+    WorldMapAnimationFeature38* out) noexcept {
+    using S=WorldMapTextureTimerStatus;
+    if (!out) return {};
+    WorldMapTextureTimerResult result;
+    uint8_t updated_mask=0;
+    auto after=feature;
+    for (uint32_t channel=0;channel<2;++channel) {
+        const auto type=channel?feature.type_4:feature.type_0;
+        const bool typed=type<=INT32_MAX && type>=(channel?0x24u:0x3au);
+        bool update=typed;
+        if (channel && typed) {
+            if (!mouth_gate) { result.status=S::RequiresMouthGate; result.failed_timer=channel; return result; }
+            update=*mouth_gate!=0;
+        }
+        update=update || feature.index_8<=INT32_MAX;
+        if (!update) continue;
+        result.failed_timer=channel;
+        if (!now) { result.status=S::RequiresClock; return result; }
+        if (!assets) { result.status=S::RequiresTimerAssets; return result; }
+        auto& timer=channel?after.second_24:after.first_14;
+        WorldMapPlayerTimerResourceView resource;
+        if (!assets->find_resource(channel?WorldMapPlayerTimerBank::Mouth:WorldMapPlayerTimerBank::Eyes,timer.resource_0,&resource)) {
+            result.status=S::RequiresResource; return result;
+        }
+        result.status=prepare_world_map_texture_timer(timer,resource,*now,&timer);
+        if (result.status!=S::Prepared) return result;
+        updated_mask|=uint8_t(1u<<channel);
+    }
+    *out=after; result.status=S::Prepared; result.updated_mask=updated_mask; result.failed_timer.reset(); return result;
 }
 WorldMapTextureAnimationSampleStatus sample_world_map_texture_animation(
     const WorldMapPlayerTimerResourceView& resource, float value, WorldMapTextureAnimationSample* out) noexcept {

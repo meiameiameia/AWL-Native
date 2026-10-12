@@ -115,6 +115,11 @@ public:
     [[nodiscard]] WorldMapPlayerPrimaryUpdateResult advance(const WorldMapPlayerPrimaryFrameInput& input) {
         return primary_->advance(input, primary_channel_.get());
     }
+    // BA94's F6D4 timer portion, using this owner's retained raw GameClock.
+    // Does not execute preceding D7FC/channel progression or advance time.
+    // Timer pair publishes atomically; the next actor frame samples its values.
+    // Keep separate from frame/queue acknowledgement until live order is owned.
+    [[nodiscard]] WorldMapTextureTimerResult advance_texture_timers() noexcept;
     // BBA0's ordered CPU frame -> F548 selection/cache update. Both publish
     // atomically after all preparation. Timer values/clocks, holder sequence,
     // actor metadata, optional effect and queues remain unchanged.

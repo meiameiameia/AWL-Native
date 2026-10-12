@@ -46,6 +46,15 @@ template<class Result> void diagnostics(Result& out, const WorldMapNativeAnimati
     }
 }
 } // namespace
+WorldMapTextureTimerResult WorldMapPlayerAnimationHolder::advance_texture_timers() noexcept {
+    using S=WorldMapTextureTimerStatus;
+    if (!state_.feature_38) return {S::RequiresFeature};
+    WorldMapAnimationFeature38 after;
+    const auto now=game_clock_?std::optional<uint32_t>(game_clock_->state().raw_time):std::nullopt;
+    const auto result=prepare_world_map_player_texture_timers(*state_.feature_38,state_.feature_flag_34,timer_assets_.get(),now,&after);
+    if (result.status==S::Prepared) state_.feature_38=after;
+    return result;
+}
 WorldMapPlayerAnimationHolderResult construct_world_map_player_animation_holder(
     const std::shared_ptr<const WorldMapPlayerModelAssets>& model_assets,
     const std::shared_ptr<const WorldMapPlayerAnimationAssets>& animation_assets,

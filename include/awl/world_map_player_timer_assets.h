@@ -24,7 +24,8 @@ struct WorldMapPlayerTimerBindingResult {
 // slices end at the next physical resource or EOF (native safety policy);
 // decoding these tables does not validate the animation bodies. The separate
 // texture sampler validates a reached body's count/extent and selected times.
-// Timer progression and texture drawing remain unsupported.
+// The separate timer updater reads header +4's duration only. General holder
+// progression and texture drawing remain unsupported.
 class WorldMapPlayerTimerAssets {
 public:
     WorldMapPlayerTimerAssets(const WorldMapPlayerTimerAssets&) = delete;

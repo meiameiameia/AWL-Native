@@ -8,6 +8,32 @@ enum class WorldMapTextureAnimationSampleStatus { Sampled, InvalidInput, Unsuppo
 struct WorldMapTextureAnimationSample {
     uint32_t current = 0, next = 0, texture_index = 0;
 };
+enum class WorldMapTextureTimerStatus {
+    Prepared, RequiresFeature, RequiresClock, RequiresTimerAssets, RequiresResource,
+    RequiresMouthGate, UnsupportedLayout, UnsupportedNumerics, InvalidInput
+};
+struct WorldMapTextureTimerResult {
+    WorldMapTextureTimerStatus status = WorldMapTextureTimerStatus::InvalidInput;
+    std::optional<uint32_t> failed_timer; // 0 eyes, 1 mouth; absent before/after reached work.
+    uint8_t updated_mask = 0;
+};
+// E03C: rounded unsigned (now-clock)*rate/1000. At value >= resource +4's
+// duration, subtract duration ONCE and reset clock to now. Old value is unread;
+// zero/negative duration/rate are retained finite arithmetic, not repaired.
+// Only the resource header is needed here; record sampling is separate.
+// Default nearest rounding and finite normal/zero reached values required.
+// Failure preserves out; whole timer input/output aliasing is supported.
+[[nodiscard]] WorldMapTextureTimerStatus prepare_world_map_texture_timer(
+    const WorldMapAnimationFeatureTimer& timer, const WorldMapPlayerTimerResourceView& resource,
+    uint32_t now, WorldMapAnimationFeatureTimer* out) noexcept;
+// F6D4's signed type/index gates, first then second. Mouth type >=24 reads
+// byte +34 before falling back to index >=0; missing reached byte must stop.
+// Resolve exact keys from common eye/mouth banks. Unreached timers/clock/assets
+// and numerical mode are ignored. Late failure rolls back both timers.
+[[nodiscard]] WorldMapTextureTimerResult prepare_world_map_player_texture_timers(
+    const WorldMapAnimationFeature38& feature, std::optional<uint8_t> mouth_gate,
+    const WorldMapPlayerTimerAssets* assets, std::optional<uint32_t> now,
+    WorldMapAnimationFeature38* out) noexcept;
 // 82F8/E0C4: count at +0, then (texture word, time float) pairs at +8.
 // Select the first segment whose NEXT time is strictly greater than value;
 // otherwise select the last record. A single record reads no time/value.

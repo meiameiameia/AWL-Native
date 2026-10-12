@@ -244,6 +244,10 @@ public:
     [[nodiscard]] WorldMapPlayerPrimaryUpdateResult advance(const WorldMapPlayerPrimaryFrameInput& input) {
         return model_->advance(input);
     }
+    // Isolated F6D4 portion with retained raw clock, not the whole BA94 update.
+    [[nodiscard]] WorldMapTextureTimerResult advance_texture_timers() noexcept {
+        return model_->advance_texture_timers();
+    }
 private:
     WorldMapPlayerStartup() = default;
     [[nodiscard]] WorldMapPlayerState29CameraStep prepare_state29_camera(
