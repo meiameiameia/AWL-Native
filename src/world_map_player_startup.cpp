@@ -107,6 +107,26 @@ WorldMapPlayerStartupUpdateResult WorldMapPlayerStartup::dispatch_state29_parent
     return advance_state29_parent(update, owners);
 }
 
+WorldMapPlayerStartupActorFrameResult WorldMapPlayerStartup::advance_gated_actor_frame(
+    const WorldMapPlayerStartupActorFrameInput& input) {
+    using S = WorldMapPlayerStartupActorFrameStatus;
+    if (state_.state_1364 != 0x29) return {S::UnsupportedState};
+    WorldMapPlayerStartupActorFrameResult result;
+    result.gate = prepare_world_map_player_state29_actor_gate(input.saved_byte_29a01, input.script);
+    if (*result.gate != WorldMapPlayerActorGateStatus::Ready) { result.status = S::GateStopped; return result; }
+    if (!input.sphere) { result.status = S::RequiresSphere; return result; }
+    if (!input.visibility) { result.status = S::RequiresVisibilityOwner; return result; }
+    result.visibility = prepare_world_map_player_actor_visibility(*input.sphere, *input.visibility);
+    if (result.visibility->status != WorldMapPlayerActorVisibilityStatus::Visible) {
+        result.status = S::VisibilityStopped; return result;
+    }
+    if (!input.frame.actor_placement) { result.status = S::RequiresActorPlacement; return result; }
+    if (input.frame.root_pose) { result.status = S::InvalidInput; return result; }
+    result.frame = model_->advance(input.frame);
+    result.status = result.frame->status == WorldMapPlayerPrimaryUpdateStatus::Advanced ? S::FrameAdvanced : S::FrameIncomplete;
+    return result;
+}
+
 WorldMapPlayerStartupResult construct_world_map_player_startup(
     const WorldMapPlayerStartupProviders& providers, const WorldMapPlayerStartupQuery& query,
     std::unique_ptr<WorldMapPlayerStartup>* out) {

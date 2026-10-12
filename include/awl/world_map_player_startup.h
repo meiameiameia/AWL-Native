@@ -3,6 +3,7 @@
 #include "awl/world_map_camera.h"
 #include "awl/world_map_player_update.h"
 #include "awl/world_map_update_inputs.h"
+#include "awl/world_map_player_actor_prepare.h"
 
 namespace awl {
 struct WorldMapPlayerStartupProviders {
@@ -90,6 +91,26 @@ struct WorldMapPlayerStartupDispatchInput {
     // no missing fields are filled. Phase still comes from the control source.
     std::optional<WorldMapPlayerStatusFactors> status_factors_override;
 };
+struct WorldMapPlayerStartupActorFrameInput {
+    std::optional<uint8_t> saved_byte_29a01;
+    std::optional<WorldMapPlayerActorScriptOwner> script;
+    // Observed culling sphere and camera/planes; this adapter does not derive
+    // them from the pose or discover their original live producers.
+    std::optional<WorldMapPlayerActorSphere> sphere;
+    std::optional<WorldMapPlayerActorVisibilityOwner> visibility;
+    // Requires actor_placement and no explicit root_pose, only if visible.
+    WorldMapPlayerPrimaryFrameInput frame;
+};
+enum class WorldMapPlayerStartupActorFrameStatus {
+    FrameAdvanced, GateStopped, VisibilityStopped, RequiresSphere,
+    RequiresVisibilityOwner, RequiresActorPlacement, UnsupportedState, InvalidInput, FrameIncomplete
+};
+struct WorldMapPlayerStartupActorFrameResult {
+    WorldMapPlayerStartupActorFrameStatus status = WorldMapPlayerStartupActorFrameStatus::InvalidInput;
+    std::optional<WorldMapPlayerActorGateStatus> gate;
+    std::optional<WorldMapPlayerActorVisibilityResult> visibility;
+    std::optional<WorldMapPlayerPrimaryUpdateResult> frame;
+};
 // Owns the supported CPU initial model -> no-message tail -> normal state-29
 // callback boundary. Only known parent/secondary writes are exposed;
 // constructor-unwritten or untouched parent words are not invented. This is
@@ -133,6 +154,14 @@ public:
     [[nodiscard]] WorldMapPlayerStartupUpdateResult dispatch_state29_parent(
         const WorldMapUpdateInputs& inputs, const WorldMapPlayerStartupDispatchInput& input,
         WorldMapPlayerUpdateOwners* owners);
+    // CPU composition of the normal state-29 script and first visibility
+    // gates before the existing placed-frame transaction. Blocked, culled,
+    // unknown and failed cases preserve all player/model/camera/clock state.
+    // This is NOT the full 31584/BBA0 callback: it neither publishes the
+    // earlier control/+15E stores nor performs 197614's +15F update, F548's
+    // later TAM/features/effect, holder progression or queue acknowledgement.
+    [[nodiscard]] WorldMapPlayerStartupActorFrameResult advance_gated_actor_frame(
+        const WorldMapPlayerStartupActorFrameInput& input);
     [[nodiscard]] WorldMapPlayerPrimaryUpdateResult advance(const WorldMapPlayerPrimaryFrameInput& input) {
         return model_->advance(input);
     }

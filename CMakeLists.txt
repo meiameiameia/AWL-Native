@@ -61,6 +61,7 @@ set(SOURCES
     src/world_map_player_primary_owner.cpp
     src/world_map_player_animation_holder.cpp
     src/world_map_player_startup.cpp
+    src/world_map_player_actor_prepare.cpp
     src/world_map_player_update.cpp
     src/world_map_player_status.cpp
     src/world_map_update_inputs.cpp
@@ -136,6 +137,7 @@ set(HEADERS
     include/awl/world_map_player_primary_owner.h
     include/awl/world_map_player_animation_holder.h
     include/awl/world_map_player_startup.h
+    include/awl/world_map_player_actor_prepare.h
     include/awl/world_map_player_update.h
     include/awl/world_map_player_status.h
     include/awl/world_map_update_inputs.h
@@ -188,7 +190,7 @@ endif()
 # Tests
 enable_testing()
 set_source_files_properties(src/game_clock.cpp src/world_map_player_status.cpp
-    src/world_map_player_frame.cpp src/world_map_secondary_model.cpp PROPERTIES
+    src/world_map_player_frame.cpp src/world_map_secondary_model.cpp src/world_map_player_actor_prepare.cpp PROPERTIES
     COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:strict>"
 )
 add_executable(game_clock_tests tests/game_clock_tests.cpp src/game_clock.cpp)
@@ -218,6 +220,15 @@ else()
     target_compile_options(world_map_player_status_tests PRIVATE -Wall -Wextra)
 endif()
 add_test(NAME world_map_player_status_tests COMMAND world_map_player_status_tests)
+add_executable(world_map_player_actor_prepare_tests
+    tests/world_map_player_actor_prepare_tests.cpp src/world_map_player_actor_prepare.cpp)
+target_include_directories(world_map_player_actor_prepare_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+if(MSVC)
+    target_compile_options(world_map_player_actor_prepare_tests PRIVATE /W4)
+else()
+    target_compile_options(world_map_player_actor_prepare_tests PRIVATE -Wall -Wextra)
+endif()
+add_test(NAME world_map_player_actor_prepare_tests COMMAND world_map_player_actor_prepare_tests)
 add_executable(gpl_render_mesh_tests
     tests/gpl_render_mesh_tests.cpp
     src/gpl_render_mesh.cpp
@@ -650,6 +661,7 @@ add_executable(world_map_player_model_assets_tests
     src/world_map_player_primary_owner.cpp
     src/world_map_player_animation_holder.cpp
     src/world_map_player_startup.cpp
+    src/world_map_player_actor_prepare.cpp
     src/world_map_player_update.cpp
     src/world_map_player_status.cpp
     src/world_map_update_inputs.cpp
