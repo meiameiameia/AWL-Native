@@ -14,11 +14,14 @@ struct WorldMapModelResource {
     // These sizes do not execute the reached FUN_801A04E0 resource fixups.
     uint32_t core_storage_size = 0, allocation_size = 0;
 };
-enum class WorldMapModelPreparationStatus { Prepared, RequiresEulerRotation, UnsupportedLayout, InvalidInput };
+enum class WorldMapModelPreparationStatus { Prepared, RequiresEulerRotation, UnsupportedLayout, InvalidInput, UnsupportedNumerics };
 using WorldMapModelMatrix = std::array<float, 12>; // Original row-major 3x4 layout.
 // FUN_801A20B4, with a copied 0x34-byte serialized pose. Explicit matrix bit
 // 0x10 overrides every other flag. Quaternion bit 4 overrides Euler bit 2;
-// scale bit 1 and translation bit 8 follow. Nonzero Euler rotations stop.
+// scale bit 1 and translation bit 8 follow. Euler supports yaw only; reached
+// nonzero pitch/roll stop. Yaw uses rounded degrees-to-radians, native double
+// sin/cos and ordered binary32 writes, requiring FE_TONEAREST. These library
+// substitutions are not proof for every original math input/platform.
 // Native quaternion normalization uses division rather than PPC fres + one
 // Newton correction. Reached nonfinite/degenerate values reject atomically.
 [[nodiscard]] WorldMapModelPreparationStatus prepare_world_map_model_pose(

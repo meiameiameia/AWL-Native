@@ -75,9 +75,20 @@ WorldMapPlayerPrimaryUpdateResult WorldMapPlayerPrimaryOwner::advance(
     if (model_->core().feature_14 != expected_feature(std::nullopt)) return {Status::RequiresFeatureBindings};
     for (uint32_t i = 0; i < model_->core().nodes.size(); ++i)
         if (model_->core().nodes[i].feature_8 != expected_feature(i)) return {Status::RequiresFeatureBindings};
+    auto root_pose = input.root_pose;
+    if (input.actor_placement) {
+        if (root_pose) return {Status::FrameFailure, WorldMapPlayerAnimationFrameResult{WorldMapPlayerFrameStatus::InvalidInput}};
+        WorldMapAnimationPose placed;
+        const auto status = prepare_world_map_player_actor_pose(frame_->root_pose(), *input.actor_placement, &placed);
+        if (status != WorldMapPlayerActorPoseStatus::Prepared)
+            return {Status::FrameFailure, WorldMapPlayerAnimationFrameResult{
+                status == WorldMapPlayerActorPoseStatus::UnsupportedNumerics ? WorldMapPlayerFrameStatus::UnsupportedNumerics :
+                WorldMapPlayerFrameStatus::InvalidInput}};
+        root_pose = placed;
+    }
     try {
         WorldMapPlayerOwnedFrameInput supplied;
-        supplied.root_pose = input.root_pose; supplied.evaluate_nodes = input.evaluate_nodes; supplied.request_skin = input.request_skin;
+        supplied.root_pose = root_pose; supplied.evaluate_nodes = input.evaluate_nodes; supplied.request_skin = input.request_skin;
         supplied.settings = input.settings; supplied.node_post_transforms = input.node_post_transforms;
         supplied.playback = model_->partial_playback(); supplied.links.identity = model_->binding().model_identity;
         std::vector<WorldMapAnimationPartialPlaybackRecord> records;

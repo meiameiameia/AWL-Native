@@ -2,10 +2,32 @@
 #include "world_map_matrix_math.h"
 #include <cfenv>
 #include <cmath>
+#include <cstring>
 #include <new>
 #include <utility>
 
 namespace awl {
+WorldMapPlayerActorPoseStatus prepare_world_map_player_actor_pose(
+    const WorldMapAnimationPose& before, const WorldMapPlayerActorPlacement& placement,
+    WorldMapAnimationPose* out) noexcept {
+    using S = WorldMapPlayerActorPoseStatus;
+    if (!out) return S::InvalidInput;
+    for (float value : placement.position) if (!std::isfinite(value)) return S::InvalidInput;
+    if (!std::isfinite(placement.heading[0]) || !std::isfinite(placement.heading[2])) return S::InvalidInput;
+    if (std::fegetround() != FE_TONEAREST) return S::UnsupportedNumerics;
+    const float radians = static_cast<float>(std::atan2(
+        static_cast<double>(placement.heading[0]), static_cast<double>(placement.heading[2])));
+    // DOL 8034A5A0, binary32 42652EE1. Round frsp before fmuls.
+    const float degrees = 57.295780181884766f * radians;
+    auto next = before;
+    const uint32_t flags = ((before[0] >> 24) | 2u | 8u) & ~(4u | 0x10u);
+    next[0] = (before[0] & 0x00ffffffu) | (flags << 24);
+    next[4] = 0; std::memcpy(&next[5], &degrees, sizeof(degrees)); next[6] = 0;
+    for (size_t i = 0; i < 3; ++i) std::memcpy(&next[8+i], &placement.position[i], sizeof(float));
+    *out = next;
+    return S::Prepared;
+}
+
 namespace {
 bool supported(float value) { return std::isfinite(value) && std::fpclassify(value)!=FP_SUBNORMAL; }
 bool supported(const WorldMapModelMatrix& matrix) {

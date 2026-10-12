@@ -187,7 +187,8 @@ endif()
 
 # Tests
 enable_testing()
-set_source_files_properties(src/game_clock.cpp src/world_map_player_status.cpp PROPERTIES
+set_source_files_properties(src/game_clock.cpp src/world_map_player_status.cpp
+    src/world_map_player_frame.cpp src/world_map_secondary_model.cpp PROPERTIES
     COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:strict>"
 )
 add_executable(game_clock_tests tests/game_clock_tests.cpp src/game_clock.cpp)

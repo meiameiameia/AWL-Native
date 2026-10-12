@@ -2,6 +2,7 @@
 #include "world_map_flat_archive.h"
 
 #include <algorithm>
+#include <cfenv>
 #include <cmath>
 #include <cstring>
 #include <utility>
@@ -41,12 +42,26 @@ WorldMapModelPreparationStatus prepare_world_map_model_pose(
                 xy_plus*factor, nmsub(xz2,factor,1.0f), yz_minus*factor, 0,
                 xz_minus*factor, yz_plus*factor, nmsub(xx+yy,factor,1.0f), 0};
         } else if (flags & 2) {
-            // Zero rotations take the original identity branch. Preserve the
-            // explicit stop for reached nonzero rotations/trigonometric math.
+            // 20B4's normal-player profile: zero X/Z, optional nonzero Y.
             for (size_t i = 4; i <= 6; ++i) {
                 const float angle = as_float(pose[i]);
                 if (!std::isfinite(angle)) return Status::InvalidInput;
-                if (angle != 0) return Status::RequiresEulerRotation;
+                if (i != 5 && angle != 0) return Status::RequiresEulerRotation;
+            }
+            const float yaw = as_float(pose[5]);
+            if (yaw != 0) {
+                if (std::fegetround() != FE_TONEAREST || std::fpclassify(yaw) == FP_SUBNORMAL)
+                    return Status::UnsupportedNumerics;
+                // DOL 8034BD9C, binary32 3C8EFA35. Preserve the multiply's
+                // binary32 rounding before the original double-library calls.
+                const float radians = 0.01745329238474369f * yaw;
+                if (std::fpclassify(radians) == FP_SUBNORMAL) return Status::UnsupportedNumerics;
+                const float sine = static_cast<float>(std::sin(static_cast<double>(radians)));
+                const float cosine = static_cast<float>(std::cos(static_cast<double>(radians)));
+                matrix[0] = cosine;
+                matrix[1] = matrix[9] * sine; matrix[2] = matrix[10] * sine;
+                matrix[8] = -sine;
+                matrix[9] *= cosine; matrix[10] *= cosine;
             }
         }
         if (flags & 1) {

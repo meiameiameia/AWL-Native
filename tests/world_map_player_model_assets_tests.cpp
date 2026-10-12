@@ -15,6 +15,7 @@
 
 #include <chrono>
 #include <cfenv>
+#include <cmath>
 #include <limits>
 #include <cstdlib>
 #include <cstring>
@@ -48,6 +49,81 @@ int failures=0;
 void expect(bool yes,const char* why){if(!yes){++failures;std::cerr<<"FAIL: "<<why<<'\n';}}
 void word(std::vector<uint8_t>& b,size_t p,uint32_t w){for(unsigned i=0;i<4;++i)b[p+i]=uint8_t(w>>(24-i*8));}
 void hash(uint64_t& h,uint32_t w){for(unsigned i=0;i<4;++i){h^=(w>>(24-i*8))&255;h*=1099511628211ull;}}
+uint32_t actor_bits(float value) {uint32_t word;std::memcpy(&word,&value,4);return word;}
+void actor_placement_comparisons() {
+    using S=awl::WorldMapPlayerActorPoseStatus;using M=awl::WorldMapModelPreparationStatus;
+    constexpr std::array<std::array<float,2>,10> headings{{{0,1},{1,0},{0,-1},{-1,0},{-0.0f,0},{0,-0.0f},{-0.0f,-0.0f},{1,1},{-1,1},{7,-3}}};
+    uint64_t digest=14695981039346656037ull,chain_digest=digest;
+    awl::WorldMapAnimationPose before{},after{};
+    for(uint32_t seed=0;seed<256;++seed) {
+        before[0]=(seed<<24)|((seed*73)&0xffffffu);
+        constexpr float values[]{2,-3,4,7,8,9,11,12,13,14,15,16};
+        for(size_t i=0;i<12;++i)before[i+1]=actor_bits(values[i]);
+        const auto& h=headings[seed%headings.size()];
+        const awl::WorldMapPlayerActorPlacement placement{{float(seed)*0.125f-12,float(-int32_t(seed))*0.25f,float(seed)*0.375f+24},
+            {h[0],std::numeric_limits<float>::quiet_NaN(),h[1]}};
+        expect(awl::prepare_world_map_player_actor_pose(before,placement,&after)==S::Prepared,
+            "actor placement reads X/Z heading only and overwrites only the reached pose words");
+        hash(digest,seed);for(uint32_t word:before)hash(digest,word);
+        for(float value:placement.position)hash(digest,actor_bits(value));
+        hash(digest,actor_bits(h[0]));hash(digest,actor_bits(h[1]));for(uint32_t word:after)hash(digest,word);
+        awl::WorldMapModelMatrix placed;
+        expect(awl::prepare_world_map_model_pose(after,&placed)==M::Prepared,"translated actor pose feeds the reached yaw conversion");
+        hash(chain_digest,seed);for(uint32_t word:after)hash(chain_digest,word);for(float value:placed)hash(chain_digest,actor_bits(value));
+        auto alias=before;
+        expect(awl::prepare_world_map_player_actor_pose(alias,placement,&alias)==S::Prepared && alias==after,
+            "actor placement supports input/output aliasing and preserves scale/header/unused quaternion word");
+    }
+    expect(digest==0xB135E0FDC48EDDCDull,"256 actor placements match original atan2/getter/setter instructions without hooks");
+    expect(chain_digest==0xB08C355C1C9DCDD6ull,"256 connected placement/yaw matrices match the original instruction bodies without math hooks");
+    std::cout<<"PLAYER_ACTOR_PLACEMENT_COMPARISONS 256 digest "<<std::hex<<digest<<std::dec<<'\n';
+    std::cout<<"PLAYER_ACTOR_PLACED_MATRIX_COMPARISONS 256 digest "<<std::hex<<chain_digest<<std::dec<<'\n';
+    const auto saved=after;
+    awl::WorldMapPlayerActorPlacement invalid{{1,2,3},{0,0,1}};
+    expect(awl::prepare_world_map_player_actor_pose(before,invalid,nullptr)==S::InvalidInput,"null actor pose output rejects");
+    invalid.heading[0]=std::numeric_limits<float>::infinity();
+    expect(awl::prepare_world_map_player_actor_pose(before,invalid,&after)==S::InvalidInput && after==saved,
+        "nonfinite reached heading preserves pose output");
+    invalid.heading[0]=0;invalid.position[2]=std::numeric_limits<float>::quiet_NaN();
+    expect(awl::prepare_world_map_player_actor_pose(before,invalid,&after)==S::InvalidInput && after==saved,
+        "nonfinite position preserves pose output");
+    const int rounding=std::fegetround();invalid.position[2]=3;
+    for(int mode:{FE_UPWARD,FE_DOWNWARD,FE_TOWARDZERO}) {
+        expect(std::fesetround(mode)==0,"actor placement rounding setup");
+        expect(awl::prepare_world_map_player_actor_pose(before,invalid,&after)==S::UnsupportedNumerics && after==saved &&
+            std::fegetround()==mode,"unsupported placement rounding preserves output and the caller mode");
+    }
+    expect(std::fesetround(rounding)==0,"restore actor placement rounding");
+
+    constexpr float angles[]{0,-0.0f,1,-1,45,-45,90,-90,180,-180,360,-360,1230,-1230,1e6f,-1e6f};
+    constexpr uint32_t flags[]{2,3,10,11,0x8b};digest=14695981039346656037ull;
+    awl::WorldMapModelMatrix matrix{};
+    for(uint32_t seed=0;seed<512;++seed) {
+        before={(flags[(seed/16)%5]<<24)|((seed*71)&0xffffffu),actor_bits(2),actor_bits(-3),actor_bits(4),
+            actor_bits(-0.0f),actor_bits(angles[seed%16]),actor_bits(0),0x12345678,actor_bits(7),actor_bits(8),actor_bits(9),0xdeadbeef,0xffffffff};
+        expect(awl::prepare_world_map_model_pose(before,&matrix)==M::Prepared,"supported yaw-only Euler pose prepares");
+        hash(digest,seed);for(uint32_t word:before)hash(digest,word);for(float value:matrix)hash(digest,actor_bits(value));
+    }
+    expect(digest==0xA6B583872FB75587ull,"512 yaw matrices match original conversion/sine/cosine/scale/translation instructions without hooks");
+    std::cout<<"PLAYER_ACTOR_YAW_COMPARISONS 512 digest "<<std::hex<<digest<<std::dec<<'\n';
+    const auto saved_matrix=matrix;
+    before[4]=actor_bits(1);
+    expect(awl::prepare_world_map_model_pose(before,&matrix)==M::RequiresEulerRotation && matrix==saved_matrix,
+        "nonzero pitch remains an explicit unsupported dependency");
+    before[4]=0;before[6]=actor_bits(1);
+    expect(awl::prepare_world_map_model_pose(before,&matrix)==M::RequiresEulerRotation && matrix==saved_matrix,
+        "nonzero roll remains an explicit unsupported dependency");
+    before[6]=0;before[5]=1; // Smallest subnormal binary32 yaw.
+    expect(awl::prepare_world_map_model_pose(before,&matrix)==M::UnsupportedNumerics && matrix==saved_matrix,
+        "subnormal yaw rejects without changing matrix output");
+    before[5]=actor_bits(90);
+    for(int mode:{FE_UPWARD,FE_DOWNWARD,FE_TOWARDZERO}) {
+        expect(std::fesetround(mode)==0,"yaw conversion rounding setup");
+        expect(awl::prepare_world_map_model_pose(before,&matrix)==M::UnsupportedNumerics && matrix==saved_matrix &&
+            std::fegetround()==mode,"reached yaw math rejects unsupported rounding atomically");
+    }
+    expect(std::fesetround(rounding)==0,"restore yaw conversion rounding");
+}
 
 // Invented bounded payloads. GPL/SKN/TAM bytes deliberately have no format
 // meaning: retaining an opaque extent cannot establish an auxiliary model.
@@ -1447,8 +1523,8 @@ void local_primary(const char* disc) {
     expect(checked==6,"all six actual phase CPU primaries verified");
     std::cout<<"LOCAL_CPU_PRIMARY_STARTUP "<<checked<<" phases / 55 nodes / frame "<<std::hex<<frame_digest<<" geometry "<<geometry_digest<<std::dec<<"; CPU ownership only, holder/actor/GPU pending\n";
 }
-uint64_t holder_snapshot(const awl::WorldMapPlayerAnimationHolder& holder) {
-    uint64_t h=primary_snapshot(holder.primary());
+uint64_t holder_snapshot(const awl::WorldMapPlayerAnimationHolder& holder,bool include_primary=true) {
+    uint64_t h=include_primary?primary_snapshot(holder.primary()):14695981039346656037ull;
     const auto key=[&](uint64_t v){hash(h,uint32_t(v>>32));hash(h,uint32_t(v));};
     const auto real=[&](float v){uint32_t w;std::memcpy(&w,&v,4);hash(h,w);};
     const auto optional_word=[&](const auto& v){hash(h,v.has_value());if(v)hash(h,uint32_t(*v));};
@@ -2445,6 +2521,69 @@ void fresh_status_parent_checks(awl::WorldMapPlayerStartup& player,const awl::Wo
         player.model().game_clock()->state().raw_time==clock.raw_time && player.model().game_clock()->state().loop_count==clock.loop_count,
         "fresh status updates publish one queued node and pose while preserving model/frame/time");
 }
+void actor_placement_owner_checks(awl::WorldMapPlayerStartup& player,bool allocations=false) {
+    using S=awl::WorldMapPlayerPrimaryUpdateStatus;using F=awl::WorldMapPlayerFrameStatus;
+    const auto& primary=player.model().primary();const auto& cpu=primary.cpu();
+    expect(cpu.frame().has_value(),"actor placement integration starts from an accepted CPU frame");if(!cpu.frame())return;
+    const auto before=holder_snapshot(player.model()),timers=holder_snapshot(player.model(),false);
+    const auto root_before=cpu.root_pose();const auto vertices_before=cpu.frame()->vertex_output;
+    const auto parent=player.state();const auto camera=player.camera()?camera_snapshot(*player.camera()):0;
+    const auto preserved=[&](){return holder_snapshot(player.model())==before;};
+    awl::WorldMapPlayerPrimaryFrameInput input;input.node_post_transforms.resize(primary.model().core().nodes.size());
+    input.actor_placement=awl::WorldMapPlayerActorPlacement{{10,20,30},{0,0,1}};
+    input.root_pose=root_before;auto step=player.advance(input);
+    expect(step.status==S::FrameFailure && step.frame_failure && step.frame_failure->status==F::InvalidInput && preserved(),
+        "conflicting explicit/actor root sources preserve all CPU state");input.root_pose.reset();
+    input.actor_placement->position[0]=std::numeric_limits<float>::quiet_NaN();step=player.advance(input);
+    expect(step.status==S::FrameFailure && step.frame_failure && step.frame_failure->status==F::InvalidInput && preserved(),
+        "invalid actor placement preserves model/root/features/frame/mesh");input.actor_placement->position[0]=10;
+    const int rounding=std::fegetround();expect(std::fesetround(FE_UPWARD)==0,"actor frame rounding setup");
+    step=player.advance(input);const auto kept=std::fegetround();expect(std::fesetround(rounding)==0,"restore actor frame rounding");
+    expect(step.status==S::FrameFailure && step.frame_failure && step.frame_failure->status==F::UnsupportedNumerics &&
+        kept==FE_UPWARD && preserved(),"actor frame rejects unsupported rounding before publishing the translated root");
+    awl::WorldMapModelMatrix invalid{1,0,0,0,0,1,0,0,0,0,1,0};invalid[11]=std::numeric_limits<float>::quiet_NaN();
+    input.node_post_transforms.back()=invalid;step=player.advance(input);
+    expect(step.status==S::FrameFailure && step.frame_failure && preserved(),
+        "late last-node failure rolls back earlier actor placement and all frame/mesh effects");input.node_post_transforms.back().reset();
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    if(allocations) {
+        const auto live=allocation_probe::live;size_t rejected=0;bool reached=false;
+        for(size_t fail=0;fail<128;++fail) {
+            allocation_probe::remaining=fail;allocation_probe::enabled=true;step=player.advance(input);allocation_probe::enabled=false;
+            if(step.status==S::Advanced){reached=true;break;}++rejected;
+            expect(step.status==S::AllocationFailure && preserved() && allocation_probe::live==live,
+                "every placed-frame allocation failure preserves root/features/skin/mesh and releases staging");
+        }
+        expect(reached && rejected>5,"placed-frame allocation sweep covers sampling, skin/features and geometry staging");
+        std::cout<<"PLAYER_ACTOR_FRAME_ALLOCATION_FAILURES "<<rejected<<'\n';
+    }
+#else
+    (void)allocations;
+#endif
+    constexpr std::array<std::array<float,3>,4> headings{{{0,0,1},{1,0,0},{0,0,-1},{-1,0,0}}};
+    constexpr float cosines[]{1,0,-1,0},sines[]{0,1,0,-1};
+    float scales[3];for(size_t i=0;i<3;++i)std::memcpy(&scales[i],&root_before[i+1],4);
+    for(size_t tick=0;tick<4;++tick) {
+        input.actor_placement->position={10+float(tick),20+float(tick),30+float(tick)};
+        input.actor_placement->heading=headings[tick];input.actor_placement->heading[1]=std::numeric_limits<float>::quiet_NaN();
+        step=player.advance(input);const auto& frame=*cpu.frame();
+        const awl::WorldMapModelMatrix expected{cosines[tick]*scales[0],0,sines[tick]*scales[2],10+float(tick),
+            0,scales[1],0,20+float(tick),-sines[tick]*scales[0],0,cosines[tick]*scales[2],30+float(tick)};
+        bool same=true;for(size_t i=0;i<12;++i)if(std::abs(frame.root_matrix[i]-expected[i])>1e-5f)same=false;
+        expect(step.status==S::Advanced && same && frame.root_pose_after==cpu.root_pose() &&
+            primary.model().core().byte_1c==uint8_t(cpu.root_pose()[0]>>24) &&
+            (cpu.root_pose()[0]&0x00ffffffu)==(root_before[0]&0x00ffffffu),
+            "four placed CPU frames turn with the actor heading, preserve scale/header and retain translated root state");
+        expect(frame.vertex_output==vertices_before && holder_snapshot(player.model(),false)==timers,
+            "world placement is applied through root/features once; skin vertices and playback/timers/clock remain unchanged");
+        for(size_t i=0;i<primary.setup().features().size();++i)if(!primary.setup().features()[i].node)
+            expect(cpu.feature_matrices()[i]==frame.root_matrix,"retained root feature publishes the placed world matrix");
+    }
+    expect(player.state().counter_1368==parent.counter_1368 && player.state().state_1364==parent.state_1364 &&
+        player.state().control_word_1384==parent.control_word_1384 &&
+        (player.camera()?camera_snapshot(*player.camera()):0)==camera,
+        "CPU actor placement does not acknowledge parent/camera updates or queue consumption");
+}
 void startup_owner_checks() {
     using S=awl::WorldMapPlayerStartupStatus;using A=awl::WorldMapPlayerStartAnimationStatus;using I=awl::WorldMapAnimationInitializerStatus;
     Fixture fixture;auto payloads=files();payloads[0]=setup_model();payloads[1]=geometry_gpl();payloads[2]=execution_skin(1);
@@ -2548,7 +2687,8 @@ void startup_owner_checks() {
             input.first_camera=awl::WorldMapPlayerStartupCameraSeed{camera,camera_query};
             status_parent_checks(*status_player,effects,input,true);
             owned_status_parent_checks(*status_player,effects,input);
-            fresh_status_parent_checks(*status_player,effects,input);}
+            fresh_status_parent_checks(*status_player,effects,input);
+            actor_placement_owner_checks(*status_player,true);}
     }
     callback.first_camera->camera.target.distance_30=0;
     expect(owner->advance_state29_camera(callback).status==C::CameraFailure && startup_snapshot(*owner)==no_camera,"degenerate seed does not bind provider or consume counter");
@@ -2716,7 +2856,8 @@ void local_startup(const char* disc) {
                 ++owned_dispatches;
                 status_parent_checks(*owner,effects,dispatch);
                 owned_status_parent_checks(*owner,effects,dispatch);
-                fresh_status_parent_checks(*owner,effects,dispatch);++status_dispatches;
+                fresh_status_parent_checks(*owner,effects,dispatch);
+                actor_placement_owner_checks(*owner);++status_dispatches;
             }
             owner.reset();if(last)expect(clock_lifetime.expired() && starts_lifetime.expired() && models_lifetime.expired() && camera_lifetime.expired(),"last actual startup releases retained caller providers and camera terrain");++checked;
         }
@@ -2734,6 +2875,7 @@ void local_startup(const char* disc) {
     std::cout<<"LOCAL_PLAYER_STATUS_DISPATCH "<<status_dispatches<<" active cases with constant/curved status and rollback, invented status/global/rate/phase observations, actual CPU player and camera COL; live status ownership pending\n";
     std::cout<<"LOCAL_PLAYER_OWNED_STATUS_DISPATCH "<<status_dispatches<<" active cases with retained initial DOL coefficients/rates and rollback; mutable status/phase supplied, live writers pending\n";
     std::cout<<"LOCAL_PLAYER_FRESH_STATUS_DISPATCH "<<status_dispatches<<" fresh constructor/reset cases with three active updates through phase wrap and late rollback; phase observed, live saved-owner activation pending\n";
+    std::cout<<"LOCAL_PLAYER_ACTOR_PLACEMENT "<<status_dispatches<<" startups / four turning and translated CPU frames each; root/features published once, prior skin output and playback/clock preserved; queue/culling/TAM/GPU pending\n";
 }
 void local_timer_holder(const char* disc,bool owned_clock=false,bool initial_model=false) {
     using S=awl::WorldMapPlayerTimerAssetsStatus;using B=awl::WorldMapPlayerTimerBank;using H=awl::WorldMapPlayerTimedInitialHolderStatus;
@@ -3538,7 +3680,7 @@ int main(int argc,char** argv){
         _CrtSetReportMode(kind,_CRTDBG_MODE_FILE);_CrtSetReportFile(kind,_CRTDBG_FILE_STDERR);
     }
 #endif
-    embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();skin_execution_checks();awl::filesystem_shutdown();frame_checks();awl::filesystem_shutdown();animation_frame_checks();awl::filesystem_shutdown();attachment_frame_checks();awl::filesystem_shutdown();hierarchy_frame_checks();awl::filesystem_shutdown();partial_frame_sampling_checks();owned_hierarchy_frame_checks();awl::filesystem_shutdown();primary_frame_owner_checks();awl::filesystem_shutdown();topology_checks();awl::filesystem_shutdown();geometry_checks();awl::filesystem_shutdown();primary_owner_checks();awl::filesystem_shutdown();holder_checks();awl::filesystem_shutdown();initial_root_scale_checks();initial_input_checks();awl::filesystem_shutdown();timer_asset_checks();awl::filesystem_shutdown();state29_camera_checks();parent_update_checks();startup_owner_checks();awl::filesystem_shutdown();feature_draw_state_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
+    actor_placement_comparisons();embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();skin_execution_checks();awl::filesystem_shutdown();frame_checks();awl::filesystem_shutdown();animation_frame_checks();awl::filesystem_shutdown();attachment_frame_checks();awl::filesystem_shutdown();hierarchy_frame_checks();awl::filesystem_shutdown();partial_frame_sampling_checks();owned_hierarchy_frame_checks();awl::filesystem_shutdown();primary_frame_owner_checks();awl::filesystem_shutdown();topology_checks();awl::filesystem_shutdown();geometry_checks();awl::filesystem_shutdown();primary_owner_checks();awl::filesystem_shutdown();holder_checks();awl::filesystem_shutdown();initial_root_scale_checks();initial_input_checks();awl::filesystem_shutdown();timer_asset_checks();awl::filesystem_shutdown();state29_camera_checks();parent_update_checks();startup_owner_checks();awl::filesystem_shutdown();feature_draw_state_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
     if(argc==3 && std::string(argv[1])=="--player-model-local")local(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-frame-local")local(argv[2],true);
     else if(argc==3 && std::string(argv[1])=="--player-primary-local")local_primary(argv[2]);

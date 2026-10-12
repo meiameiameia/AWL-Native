@@ -3,6 +3,20 @@
 #include "awl/world_map_animation_channel.h"
 
 namespace awl {
+struct WorldMapPlayerActorPlacement {
+    std::array<float,3> position{}, heading{};
+};
+enum class WorldMapPlayerActorPoseStatus { Prepared, InvalidInput, UnsupportedNumerics };
+// Normal player's BBA0 BC98..BCD8: atan2(heading.x, heading.z), rounded
+// radians-to-degrees, 1FEC Euler writes with pitch/roll zero, then 2058 XYZ.
+// Preserve scale, other header bits and every unwritten word. Heading.y is
+// unread. Native double atan2 substitutes for the original library; finite
+// reached input and FE_TONEAREST are required. Aliasing is supported.
+// This is placement only, not culling, frame evaluation or queue completion.
+[[nodiscard]] WorldMapPlayerActorPoseStatus prepare_world_map_player_actor_pose(
+    const WorldMapAnimationPose& before, const WorldMapPlayerActorPlacement& placement,
+    WorldMapAnimationPose* out) noexcept;
+
 struct WorldMapPlayerInheritedRoot {
     // Supplied model +150/+154/+158/+120 snapshot, independent of retained setup.
     // A null parent skips all other fields. Identities are native stable keys.

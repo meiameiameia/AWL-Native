@@ -16,6 +16,10 @@ struct WorldMapPlayerPrimaryFrameInput {
     bool evaluate_nodes = true, request_skin = true;
     WorldMapAnimationPoseSettings settings;
     std::vector<std::optional<WorldMapModelMatrix>> node_post_transforms;
+    // Translated normal-player placement using the retained root as the
+    // before-pose. Mutually exclusive with an explicit root_pose. No culling,
+    // holder/TAM progression or work-queue completion is acknowledged.
+    std::optional<WorldMapPlayerActorPlacement> actor_placement;
 };
 enum class WorldMapPlayerPrimaryUpdateStatus { Advanced, RequiresHierarchy, RequiresFeatureBindings, FrameFailure,
     GeometryFailure, AllocationFailure };
