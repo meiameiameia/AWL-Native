@@ -83,6 +83,9 @@ public:
     // undo capture; retry uses its retained word. This is an input boundary,
     // not acknowledgement that the whole loop or its work queues completed.
     [[nodiscard]] WorldMapControlStatus capture_control() noexcept;
+    // D018/D260's update-queue pass uses the captured control directly,
+    // without primary-list group filtering. Reject absent or stale snapshots.
+    [[nodiscard]] WorldMapDispatchInput queue_control() const noexcept;
     // 17CE48/CEB0/D05C: priority >> 12 selects a bit. Unsupported keys >=24
     // stop instead of reading outside the original three-byte storage.
     // Filtered nodes expose no callback control and need no callback inputs.

@@ -2746,6 +2746,143 @@ void actor_callback_owner_checks(awl::WorldMapPlayerStartup& player,bool allocat
         (player.camera()?camera_snapshot(*player.camera()):0)==camera && holder_snapshot(player.model(),false)==timers,
         "CPU actor callbacks preserve node lifetime, parent counter/camera, holders/timers and shared clock");
 }
+void queued_actor_owner_checks(awl::WorldMapPlayerStartup& player,bool allocations) {
+    using S=awl::WorldMapPlayerStartupQueueStatus;using C=awl::WorldMapPlayerStartupActorCallbackStatus;
+    using P=awl::WorldMapPlayerPrimaryUpdateStatus;using Q=awl::WorldMapPlayerActorScheduleStatus;
+    const auto key=player.update_node_identity();
+    expect(key && key!=player.effect_node_identity() && key!=player.render_node_identity() && key!=player.actor_wrapper_identity(),
+        "update node owns a distinct stable key for registration through completion");
+    awl::WorldMapUpdateInputs controls(player.model().game_clock()),missing({});
+    awl::WorldMapPlayerStartupQueuedActorInput input;
+    awl::WorldMapPlayerUpdateOwners owners;owners.saved_pose={7,{8,9,10},{11,12,13}};
+    owners.position_802fc20c={14,15,16};owners.scene_one_position_240=std::array<float,3>{17,18,19};
+    owners.status.emplace();owners.status->word_4=12345;
+    awl::WorldMapPlayerActorQueue render{{1,0},{2,0x21},{3,0x2002},{4,UINT32_MAX}};
+    const auto initial=startup_snapshot(player),initial_owners=update_owners_snapshot(owners);
+    auto step=player.consume_state29_update(missing,input,&owners,nullptr);
+    expect(step.status==S::Empty && !step.callback && !step.completed_node && startup_snapshot(player)==initial &&
+        update_owners_snapshot(owners)==initial_owners,"empty update queue skips clock/control, actor and render dependencies");
+    expect(player.consume_state29_update(controls,input,nullptr,&render).status==S::InvalidInput && startup_snapshot(player)==initial,
+        "absent update owner rejects without publishing anything");
+    const auto rejected=[&](S status,const awl::WorldMapUpdateInputs& source){
+        const auto before=startup_snapshot(player),effects=update_owners_snapshot(owners),draw=actor_queue_snapshot(render);
+        auto result=player.consume_state29_update(source,input,&owners,&render);
+        expect(result.status==status && !result.completed_node && startup_snapshot(player)==before &&
+            update_owners_snapshot(owners)==effects && actor_queue_snapshot(render)==draw,
+            "rejected queue work preserves player, update owner and render queue for retry");return result;};
+    for(const auto& entries:std::vector<std::vector<awl::WorldMapPlayerUpdateQueueEntry>>{
+        {{0,0x1010}},{{key,0x1010},{1,0}},{{key,0x1010},{key,0x1010}}}){
+        owners.queue=entries;rejected(S::InvalidQueue,controls);}
+    owners.queue={{1,0x100f},{key,0x1010}};step=rejected(S::UnsupportedNode,controls);
+    expect(!step.callback,"unknown earlier work is not skipped to reach the supported player");
+    owners.queue={{key,0x1011}};rejected(S::UnsupportedPriority,controls);
+    owners.queue={{key,0x1010}};rejected(S::RequiresControl,controls);
+    awl::WorldMapUpdateInputs foreign(std::make_shared<awl::GameClock>());rejected(S::InvalidInput,foreign);
+    controls.observe_control_sources({awl::WorldMapControlPhase{uint8_t{0},{},uint8_t{1}},0});
+    expect(controls.capture_control()==awl::WorldMapControlStatus::Captured && controls.queue_control().control_word==0x800u,
+        "queue uses a fresh captured control from the retained shared clock");
+    // Invented keys/fields; expected digest independently obtained by executing
+    // actual first-node D018/D260/31584 and CFD4/D2C8/C8/989C prefixes.
+    input.actor.saved_byte_29a01=uint8_t{0};input.actor.script.emplace();
+    input.actor.script->flag_width_4=1;input.actor.script->flag_bytes={1};input.actor.script->records.emplace();
+    input.actor.frame.node_post_transforms.resize(player.model().primary().model().core().nodes.size());
+    input.actor.frame.actor_placement=awl::WorldMapPlayerActorPlacement{{std::numeric_limits<float>::quiet_NaN(),0,0},{0,0,1}};
+    constexpr uint32_t priorities[]{0x1010,0x1010,0x1011,0x80000000,UINT32_MAX};
+    const auto model=holder_snapshot(player.model()),draw=actor_queue_snapshot(render);
+    uint64_t digest=14695981039346656037ull;
+    for(uint32_t seed=0;seed<(allocations?512u:1u);++seed){owners.queue={{key,0x1010}};
+        for(uint32_t i=0;i<seed%6;++i)owners.queue.push_back({i+1,priorities[i]});
+        auto expected=owners;expected.queue.erase(expected.queue.begin());
+        step=player.consume_state29_update(controls,input,&owners,nullptr);
+        expect(step.status==S::Completed && step.callback && step.callback->status==C::ScriptBlocked && step.completed_node==key &&
+            player.state().control_word_1384==0x800u && update_owners_snapshot(owners)==update_owners_snapshot(expected) &&
+            holder_snapshot(player.model())==model && actor_queue_snapshot(render)==draw,
+            "script-blocked front node completes without frame/render inputs and preserves all other owner fields and later entries");
+        for(uint32_t w:{seed,*player.state().control_word_1384,step.completed_node==key?99u:0u,uint32_t(owners.queue.size())})hash(digest,w);
+        for(const auto& entry:owners.queue){hash(digest,uint32_t(entry.node_identity));hash(digest,entry.priority);}
+        rejected(owners.queue.empty()?S::Empty:S::UnsupportedNode,controls);
+    }
+    if(allocations){expect(digest==0x9ED5FD5A76E91798ull,"512 first-node script-block/completion prefixes agree with actual mapped instructions");
+        std::cout<<"PLAYER_UPDATE_COMPLETION_PREFIX 512 digest "<<std::hex<<digest<<std::dec<<'\n';}
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    owners.queue={{key,0x1010}};allocation_probe::remaining=0;allocation_probe::enabled=true;
+    step=player.consume_state29_update(controls,input,&owners,nullptr);allocation_probe::enabled=false;
+    expect(step.status==S::Completed && owners.queue.empty(),"blocked script and completion allocate nothing even with retained frame observations");
+#endif
+    owners.queue={{1,0x1010},{2,0x1011},{3,UINT32_MAX}};
+    awl::WorldMapPlayerStartupDispatchInput parent;parent.guards=awl::WorldMapPlayerUpdateGuards{-1,0};
+    parent.scene_child_word_4=0;parent.pose={0,{40,50,60},{0,0,1}};parent.action_148=0;parent.player_node_identity=key;
+    const auto requeue=[&](){expect(player.dispatch_state29_parent(controls,parent,&owners).status==awl::WorldMapPlayerUpdateStatus::Advanced &&
+        owners.queue.front().node_identity==key && owners.queue.front().priority==0x1010,
+        "existing owned parent callback registers the same update node before equal priorities");};
+    requeue();
+    input.actor.saved_byte_29a01=uint8_t{1};step=rejected(S::CallbackIncomplete,controls);
+    expect(step.callback && step.callback->status==C::ActorIncomplete,"untranslated auxiliary callback retains pending update work");
+    input.actor.saved_byte_29a01=uint8_t{0};input.actor.script->flag_bytes[0]=0;input.actor.derive_normal_visibility=true;
+    input.actor.frame.actor_placement->position=parent.pose.position;
+    step=rejected(S::CallbackIncomplete,controls);
+    expect(step.callback && !step.callback->schedule_status,"missing visibility stops before render scheduling");
+    input.actor.visibility.emplace();input.actor.visibility->view=awl::WorldMapModelMatrix{1,0,0,0,0,1,0,0,0,0,1,0};
+    for(size_t i=0;i<6;++i){awl::WorldMapPlayerActorPlane plane;plane.point[i/2]=i%2?-1000.0f:1000.0f;
+        plane.normal[i/2]=i%2?-1.0f:1.0f;input.actor.visibility->planes[i]=plane;}
+    input.actor.screen.emplace();input.actor.screen->view=*input.actor.visibility->view;input.actor.screen->half_extents={1000.0f,1000.0f};
+    step=rejected(S::CallbackIncomplete,controls);
+    expect(step.callback && step.callback->schedule_status==Q::RequiresEffectGate,"late missing effect gate retains the update node and staged CPU frame");
+    input.effect_gate=uint8_t{255};render[1].node_identity=1;step=rejected(S::CallbackIncomplete,controls);
+    expect(step.callback && step.callback->schedule_status==Q::InvalidQueue,"invalid render queue cannot consume the update node");render[1].node_identity=2;
+    {const auto before=startup_snapshot(player),effects=update_owners_snapshot(owners),draw_before=actor_queue_snapshot(render);
+        step=player.consume_state29_update(controls,input,&owners,nullptr);
+        expect(step.status==S::CallbackIncomplete && step.callback && step.callback->status==C::InvalidInput &&
+            startup_snapshot(player)==before && update_owners_snapshot(owners)==effects && actor_queue_snapshot(render)==draw_before,
+            "absent reached render owner retains the prepared frame and update node for retry");}
+    input.actor.frame.node_post_transforms.back()=awl::WorldMapModelMatrix{1,0,0,0,0,1,0,0,0,0,1,std::numeric_limits<float>::quiet_NaN()};
+    step=rejected(S::CallbackIncomplete,controls);
+    expect(step.callback && step.callback->actor && step.callback->actor->frame && step.callback->actor->frame->status!=P::Advanced,
+        "late CPU frame failure cannot consume the update node");input.actor.frame.node_post_transforms.back().reset();
+    const auto pending=startup_snapshot(player),pending_owners=update_owners_snapshot(owners),pending_render=actor_queue_snapshot(render);
+    const auto preserved=[&](){return startup_snapshot(player)==pending && update_owners_snapshot(owners)==pending_owners && actor_queue_snapshot(render)==pending_render;};
+    auto expected=owners;expected.queue.erase(expected.queue.begin());bool completed=false;
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    if(allocations){size_t frame_failures=0,queue_failures=0;const auto live=allocation_probe::live;
+        for(size_t fail=0;fail<128;++fail){allocation_probe::remaining=fail;allocation_probe::enabled=true;
+            step=player.consume_state29_update(controls,input,&owners,&render);allocation_probe::enabled=false;
+            if(step.status==S::Completed){completed=true;break;}
+            expect(step.status==S::CallbackIncomplete && step.callback && preserved() && allocation_probe::live==live,
+                "every allocation stop keeps the update pending, preserves both queues/player and releases staging");
+            if(step.callback && step.callback->status==C::ActorIncomplete){++frame_failures;expect(step.callback->actor && step.callback->actor->frame &&
+                step.callback->actor->frame->status==P::AllocationFailure,"queued frame stop retains allocation cause");}
+            else {++queue_failures;expect(step.callback && step.callback->schedule_status==Q::AllocationFailure,"queued schedule stop retains allocation cause");}}
+        expect(completed && frame_failures>5 && queue_failures>0,"queued allocation sweep reaches CPU and later scheduling failures through successful completion");
+        std::cout<<"PLAYER_QUEUED_CALLBACK_ALLOCATION_FAILURES "<<frame_failures<<" frame / "<<queue_failures<<" queue\n";}
+#else
+    (void)allocations;(void)preserved;
+#endif
+    if(!completed)step=player.consume_state29_update(controls,input,&owners,&render);
+    expect(step.status==S::Completed && step.completed_node==key && step.callback && step.callback->status==C::Completed &&
+        step.callback->effect_scheduled==true && update_owners_snapshot(owners)==update_owners_snapshot(expected) && render.size()==6 &&
+        render[1].node_identity==player.effect_node_identity() && render[3].node_identity==player.render_node_identity() &&
+        player.model().primary().cpu().frame()->root_matrix[3]==40,"handled visible callback publishes frame/render work and removes only its owned update node");
+    rejected(S::UnsupportedNode,controls);
+    const auto accepted_render=actor_queue_snapshot(render);input.actor.frame.actor_placement->position[0]=41;requeue();
+    step=player.consume_state29_update(controls,input,&owners,&render);
+    expect(step.status==S::Completed && actor_queue_snapshot(render)==accepted_render && player.model().primary().cpu().frame()->root_matrix[3]==41,
+        "parent can requeue after completion and next callback advances without duplicate render entries");
+    requeue();const auto accepted_model=holder_snapshot(player.model());input.actor.visibility->planes[0]->point[0]=0;
+    input.actor.screen.reset();input.effect_gate.reset();input.actor.frame.actor_placement->heading[0]=std::numeric_limits<float>::quiet_NaN();
+    step=player.consume_state29_update(controls,input,&owners,&render);
+    expect(step.status==S::Completed && step.callback && step.callback->status==C::Completed && step.callback->effect_scheduled==false &&
+        holder_snapshot(player.model())==accepted_model && actor_queue_snapshot(render)==accepted_render,
+        "first visibility cull still schedules player and completes its update while skipping unread frame/effect inputs");
+    requeue();input.actor.visibility->planes[0]->point[0]=1000;input.actor.frame.actor_placement->heading[0]=0;
+    input.actor.frame.actor_placement->position[0]=42;input.actor.screen.emplace();
+    input.actor.screen->view=awl::WorldMapModelMatrix{1,0,0,2000,0,1,0,0,0,0,1,0};input.actor.screen->half_extents[0]=1000.0f;
+    step=player.consume_state29_update(controls,input,&owners,&render);
+    expect(step.status==S::Completed && step.callback && step.callback->effect_scheduled==false &&
+        player.actor_metadata().flag_15f==0 && player.model().primary().cpu().frame()->root_matrix[3]==42 && actor_queue_snapshot(render)==accepted_render,
+        "screen-outside callback advances its CPU frame and completes without the unread effect gate");
+    owners.queue.clear();rejected(S::Empty,missing);
+    expect(player.update_node_identity()==key,"owned update key survives callback completion and reinsertion");
+}
 void normal_actor_frame_owner_checks(awl::WorldMapPlayerStartup& player,bool allocations) {
     using S=awl::WorldMapPlayerStartupActorFrameStatus;using V=awl::WorldMapPlayerActorVisibilityStatus;
     using B=awl::WorldMapPlayerActorBoundsStatus;using E=awl::WorldMapPlayerActorScreenStatus;
@@ -2896,6 +3033,7 @@ void gated_actor_frame_owner_checks(awl::WorldMapPlayerStartup& player,bool allo
         "gated CPU slice does not publish callback control, camera, queue or actor metadata effects");
     normal_actor_frame_owner_checks(player,allocations);
     actor_callback_owner_checks(player,allocations);
+    queued_actor_owner_checks(player,allocations);
 }
 void actor_placement_owner_checks(awl::WorldMapPlayerStartup& player,bool allocations=false) {
     using S=awl::WorldMapPlayerPrimaryUpdateStatus;using F=awl::WorldMapPlayerFrameStatus;
@@ -3268,7 +3406,8 @@ void local_startup(const char* disc) {
     std::cout<<"LOCAL_PLAYER_ACTOR_PLACEMENT "<<status_dispatches<<" startups / four turning and translated CPU frames each; root/features published once, prior skin output and playback/clock preserved; queue/TAM/GPU pending\n";
     std::cout<<"LOCAL_PLAYER_GATED_ACTOR_FRAME "<<status_dispatches<<" startups / four blocked-culled-visible routes each; supplied script/sphere/view/plane observations, atomic CPU frame publication; live sources/complete callback/queue pending\n";
     std::cout<<"LOCAL_PLAYER_NORMAL_ACTOR_FRAME "<<status_dispatches<<" startups / four derived-bounds/inside-screen/outside-screen CPU frames and post-frame eye/mouth shared-cache updates each; native reciprocal-sqrt seed, separate camera globals observed; metadata/effect/progression/queue/live sources pending\n";
-    std::cout<<"LOCAL_PLAYER_ACTOR_CALLBACK "<<status_dispatches<<" startups / four CPU frame+texture+metadata/scheduling updates and one first-test cull each; owned effect/player keys, observed gates; render execution, update-node completion and live sources pending\n";
+    std::cout<<"LOCAL_PLAYER_ACTOR_CALLBACK "<<status_dispatches<<" startups / four CPU frame+texture+metadata/scheduling updates and one first-test cull each; owned effect/player keys, observed gates; render execution and live sources pending\n";
+    std::cout<<"LOCAL_PLAYER_UPDATE_COMPLETION "<<status_dispatches<<" startups / parent registration, one script block, three queued CPU frames, one cull and retry/ordering checks each; front owned node only, later work pending; no live activation\n";
 }
 void local_timer_holder(const char* disc,bool owned_clock=false,bool initial_model=false) {
     using S=awl::WorldMapPlayerTimerAssetsStatus;using B=awl::WorldMapPlayerTimerBank;using H=awl::WorldMapPlayerTimedInitialHolderStatus;

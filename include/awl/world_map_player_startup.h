@@ -143,6 +143,19 @@ struct WorldMapPlayerStartupActorCallbackResult {
     std::optional<WorldMapPlayerActorScheduleStatus> schedule_status;
     std::optional<bool> effect_scheduled;
 };
+struct WorldMapPlayerStartupQueuedActorInput {
+    WorldMapPlayerStartupActorFrameInput actor;
+    std::optional<uint8_t> effect_gate;
+};
+enum class WorldMapPlayerStartupQueueStatus {
+    Completed, Empty, UnsupportedNode, UnsupportedPriority, InvalidQueue,
+    RequiresControl, CallbackIncomplete, InvalidInput
+};
+struct WorldMapPlayerStartupQueueResult {
+    WorldMapPlayerStartupQueueStatus status = WorldMapPlayerStartupQueueStatus::InvalidInput;
+    std::optional<WorldMapPlayerStartupActorCallbackResult> callback;
+    std::optional<uint64_t> completed_node;
+};
 // Owns the supported CPU initial model -> no-message tail -> normal state-29
 // callback boundary. Only known parent/secondary writes are exposed;
 // constructor-unwritten or untouched parent words are not invented. This is
@@ -156,6 +169,7 @@ public:
     const std::shared_ptr<const WorldMapPlayerStartAnimationTables>& starts() const { return starts_; }
     const std::optional<WorldMapPlayerStartupCameraState>& camera() const { return camera_; }
     const WorldMapPlayerActorMetadata& actor_metadata() const { return actor_metadata_; }
+    uint64_t update_node_identity() const { return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&update_node_)); }
     uint64_t effect_node_identity() const { return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&effect_node_)); }
     uint64_t render_node_identity() const { return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&render_node_)); }
     uint64_t actor_wrapper_identity() const { return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(model_.get())); }
@@ -212,6 +226,21 @@ public:
     // preserves control, actor, frame/cache and the supplied +48 queue.
     [[nodiscard]] WorldMapPlayerStartupActorCallbackResult advance_state29_actor_callback(
         const WorldMapPlayerStartupActorCallbackInput& input, WorldMapPlayerActorQueue* queue);
+    // Bounded D018/D260 -> 31584 -> CFD4/D2C8/C8/989C composition. The
+    // front of manager +74 must be this owner's update key at priority 1010,
+    // registered by the existing parent API. Use the fresh captured control
+    // without primary group filtering; callers cannot override it here.
+    // Complete only this node after Completed OR ScriptBlocked; an empty queue
+    // needs no callback/control inputs. Unknown earlier work is never skipped.
+    // Failure preserves the player and both queues for retry. Other update
+    // owner fields remain unchanged. Removing a handled front node immediately
+    // is a checked native difference from the original two full passes; later
+    // unknown nodes stay pending. No full queue drain, render execution, clock
+    // progression or live scene activation is claimed. Discard borrowed keys
+    // before destroying this owner.
+    [[nodiscard]] WorldMapPlayerStartupQueueResult consume_state29_update(
+        const WorldMapUpdateInputs& inputs, const WorldMapPlayerStartupQueuedActorInput& input,
+        WorldMapPlayerUpdateOwners* updates, WorldMapPlayerActorQueue* render_queue);
     [[nodiscard]] WorldMapPlayerPrimaryUpdateResult advance(const WorldMapPlayerPrimaryFrameInput& input) {
         return model_->advance(input);
     }
@@ -221,6 +250,9 @@ private:
         const WorldMapPlayerStartupState29Input& input) const;
     [[nodiscard]] WorldMapPlayerStartupActorFrameResult prepare_actor_frame(
         const WorldMapPlayerStartupActorFrameInput& input) const;
+    [[nodiscard]] WorldMapPlayerStartupActorCallbackResult advance_actor_callback(
+        std::optional<uint32_t> control, const WorldMapPlayerStartupActorFrameInput& actor,
+        std::optional<uint8_t> effect_gate, WorldMapPlayerActorQueue* queue);
     friend WorldMapPlayerStartupResult construct_world_map_player_startup(
         const WorldMapPlayerStartupProviders&, const WorldMapPlayerStartupQuery&, std::unique_ptr<WorldMapPlayerStartup>*);
     std::shared_ptr<const WorldMapPlayerStartAnimationTables> starts_;
@@ -229,7 +261,7 @@ private:
     std::optional<WorldMapPlayerStartupCameraState> camera_;
     WorldMapPlayerActorMetadata actor_metadata_;
     // Separate owned tags provide stable keys without reproducing PPC pointers.
-    uint8_t effect_node_ = 0, render_node_ = 0;
+    uint8_t update_node_ = 0, effect_node_ = 0, render_node_ = 0;
 };
 // Fresh slot-zero / alternate -1 / type-zero startup only. Supplied phase,
 // post-setup guards/binding/item fields and audio byte remain explicit.

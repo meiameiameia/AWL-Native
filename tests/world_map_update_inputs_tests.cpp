@@ -89,8 +89,11 @@ void owner_checks() {
     using C = awl::WorldMapControlStatus; using F = awl::WorldMapSceneFilterStatus; using D = awl::WorldMapDispatchStatus;
     awl::WorldMapUpdateInputs missing({});
     expect(missing.capture_control() == C::RequiresClock && missing.dispatch(0x5001).status == D::RequiresControl, "clock owner cannot be guessed");
+    expect(missing.queue_control().status == D::RequiresControl && !missing.queue_control().control_word,
+        "update queue also requires its clock and captured control");
     auto clock = std::make_shared<awl::GameClock>(); const auto lifetime = std::weak_ptr<awl::GameClock>(clock);
     awl::WorldMapUpdateInputs owner(clock);
+    expect(owner.queue_control().status == D::RequiresControl, "update queue cannot use an uncaptured constructor word");
     expect(owner.blocked_groups() == 0 && !owner.control() && owner.scene().previous_mode_5c == -1 &&
         owner.capture_control() == C::RequiresPhaseOwner, "fresh owner retains constructor fields without inventing phase or stage");
     owner.request_scene_mode(4, 9);
@@ -115,6 +118,8 @@ void owner_checks() {
         "override replaces accumulated events but successful capture still consumes both");
     expect(owner.dispatch(0x5001).status == D::Filtered && !owner.dispatch(0x5001).control_word &&
         owner.dispatch(0).control_word == 0x800u, "group five filters without exposing callback control; other groups keep the same captured word");
+    expect(owner.queue_control().status == D::Ready && owner.queue_control().control_word == 0x800u,
+        "D018 queue retains captured control even when the primary-list group is filtered");
     owner.request_scene_mode(6, 1);
     owner.observe_control_sources({awl::WorldMapControlPhase{uint8_t{1},11u,uint8_t{0}},5});
     expect(owner.capture_control() == C::AlreadyCaptured && owner.control()->dispatch_word == 0x800 && owner.scene().global_flag_59af == 1 &&
@@ -125,6 +130,12 @@ void owner_checks() {
         owner.scene().transition_flags_7c == 0x55, "no pending request preserves mask/flags without requiring +79");
     expect(clock->advance() && owner.dispatch(0x5001).status == D::RequiresControl && !owner.dispatch(0x5001).control_word,
         "advanced shared clock makes prior control unusable for dispatch");
+    expect(owner.queue_control().status == D::RequiresControl && !owner.queue_control().control_word,
+        "update queue rejects stale control after the shared clock advances");
+    awl::WorldMapUpdateInputs zero(clock);
+    zero.observe_control_sources({awl::WorldMapControlPhase{uint8_t{1},11u,uint8_t{0}},0});
+    expect(zero.capture_control() == C::Captured && zero.queue_control().status == D::Ready && zero.queue_control().control_word == 0u,
+        "captured zero is valid queue control, distinct from an absent snapshot");
     expect(owner.capture_control() == C::Captured && owner.control()->loop_count == 1 && owner.control()->dispatch_word == 0x2140 &&
         owner.scene().global_flag_59af == 0 && owner.scene().global_flag_59b0 == 0,
         "next loop captures late phase/stage observations and newer requests exactly once");
@@ -148,6 +159,7 @@ void owner_checks() {
     owner.observe_control_sources({awl::WorldMapControlPhase{uint8_t{0},{},uint8_t{0}},0});
     expect(owner.capture_control() == C::Captured && owner.control()->dispatch_word == 0x2800 && owner.scene().global_flag_59af == 0,
         "successful retry consumes the preserved event once");
+    expect(owner.queue_control().control_word == 0x2800u, "update queue uses the successful recapture after a failed loop capture");
     owner.request_scene_mode(-2, 0);
     expect(owner.commit_scene_fields(2, uint8_t{0}, &commit) == F::CommittedFields && commit.swapped && commit.mode == 6 && owner.blocked_groups() == 0,
         "swap selects the restored committed mode for the new mask");

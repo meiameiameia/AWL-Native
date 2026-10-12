@@ -1,5 +1,6 @@
 #include "awl/world_map_player_startup.h"
 #include <new>
+#include <type_traits>
 #include <utility>
 
 namespace awl {
@@ -155,26 +156,31 @@ WorldMapPlayerStartupActorFrameResult WorldMapPlayerStartup::advance_gated_actor
 
 WorldMapPlayerStartupActorCallbackResult WorldMapPlayerStartup::advance_state29_actor_callback(
     const WorldMapPlayerStartupActorCallbackInput& input, WorldMapPlayerActorQueue* queue) {
+    return advance_actor_callback(input.control_word,input.actor,input.effect_gate,queue);
+}
+WorldMapPlayerStartupActorCallbackResult WorldMapPlayerStartup::advance_actor_callback(
+    std::optional<uint32_t> control, const WorldMapPlayerStartupActorFrameInput& input,
+    std::optional<uint8_t> effect_gate, WorldMapPlayerActorQueue* queue) {
     using S = WorldMapPlayerStartupActorCallbackStatus;
     using F = WorldMapPlayerStartupActorFrameStatus;
     if (state_.state_1364 != 0x29) return {S::UnsupportedState};
-    if (!input.control_word) return {S::RequiresControl};
+    if (!control) return {S::RequiresControl};
     WorldMapPlayerStartupActorCallbackResult result;
-    result.actor = prepare_actor_frame(input.actor);
+    result.actor = prepare_actor_frame(input);
     auto& actor = *result.actor;
     if (actor.gate == WorldMapPlayerActorGateStatus::BlockedByScript) {
-        state_.control_word_1384 = *input.control_word;
+        state_.control_word_1384 = *control;
         result.status = S::ScriptBlocked;
         return result;
     }
     const bool culled = actor.visibility && actor.visibility->status == WorldMapPlayerActorVisibilityStatus::Culled;
     if (actor.status != F::Prepared && !culled) { result.status = S::ActorIncomplete; return result; }
-    if (!input.actor.derive_normal_visibility) { result.status = S::InvalidInput; return result; }
+    if (!input.derive_normal_visibility) { result.status = S::InvalidInput; return result; }
     auto& primary = *model_->primary_;
     WorldMapPlayerPrimaryOwner::PreparedFrame staged;
     if (!culled) {
         const WorldMapPlayerTextureFeatureInput features{model_->state_.feature_38,model_->state_.feature_source_10,model_->timer_assets_.get()};
-        actor.frame = primary.stage(input.actor.frame,model_->primary_channel_.get(),&features,&staged);
+        actor.frame = primary.stage(input.frame,model_->primary_channel_.get(),&features,&staged);
         if (actor.frame->status != WorldMapPlayerPrimaryUpdateStatus::Advanced) {
             actor.status = F::FrameIncomplete; result.status = S::ActorIncomplete; return result;
         }
@@ -184,7 +190,7 @@ WorldMapPlayerStartupActorCallbackResult WorldMapPlayerStartup::advance_state29_
     if (!queue) { result.status = S::InvalidInput; return result; }
     WorldMapPlayerActorSchedule schedule;
     result.schedule_status = prepare_world_map_player_actor_schedule(actor_metadata_,*queue,
-        {actor.proposed_effect_flag_15f,input.effect_gate,actor_wrapper_identity(),effect_node_identity(),render_node_identity()},&schedule);
+        {actor.proposed_effect_flag_15f,effect_gate,actor_wrapper_identity(),effect_node_identity(),render_node_identity()},&schedule);
     if (*result.schedule_status != WorldMapPlayerActorScheduleStatus::Prepared) {
         result.status = S::ScheduleIncomplete; return result;
     }
@@ -192,8 +198,42 @@ WorldMapPlayerStartupActorCallbackResult WorldMapPlayerStartup::advance_state29_
     // queue allocation cannot leave the new frame with old scheduling state.
     if (!culled) { primary.publish(std::move(staged)); actor.status = F::FrameAdvanced; }
     actor_metadata_ = schedule.metadata; queue->swap(schedule.queue);
-    state_.control_word_1384 = *input.control_word;
+    state_.control_word_1384 = *control;
     result.effect_scheduled = schedule.effect_scheduled;
+    result.status = S::Completed;
+    return result;
+}
+
+WorldMapPlayerStartupQueueResult WorldMapPlayerStartup::consume_state29_update(
+    const WorldMapUpdateInputs& inputs, const WorldMapPlayerStartupQueuedActorInput& input,
+    WorldMapPlayerUpdateOwners* updates, WorldMapPlayerActorQueue* render_queue) {
+    using S = WorldMapPlayerStartupQueueStatus;
+    if (!updates) return {S::InvalidInput};
+    const auto& queue = updates->queue;
+    for (size_t i = 0; i < queue.size(); ++i) {
+        if (!queue[i].node_identity || (i && queue[i-1].priority > queue[i].priority)) return {S::InvalidQueue};
+        for (size_t j = 0; j < i; ++j) if (queue[j].node_identity == queue[i].node_identity) return {S::InvalidQueue};
+    }
+    if (queue.empty()) return {S::Empty};
+    const auto key = update_node_identity();
+    if (queue.front().node_identity != key) return {S::UnsupportedNode};
+    if (queue.front().priority != 0x1010) return {S::UnsupportedPriority};
+    if (inputs.game_clock() != model_->game_clock()) return {S::InvalidInput};
+    const auto control = inputs.queue_control();
+    if (control.status != WorldMapDispatchStatus::Ready || !control.control_word) return {S::RequiresControl};
+    WorldMapPlayerStartupQueueResult result;
+    // Borrow observations without copying/allocating before the script gate.
+    result.callback = advance_actor_callback(control.control_word,input.actor,input.effect_gate,render_queue);
+    const auto handled = result.callback->status;
+    if (handled != WorldMapPlayerStartupActorCallbackStatus::Completed &&
+        handled != WorldMapPlayerStartupActorCallbackStatus::ScriptBlocked) {
+        result.status = S::CallbackIncomplete; return result;
+    }
+    // 989C removes links/membership without destroying the owner. Typed erase
+    // preserves every remaining key/priority and cannot fail after publication.
+    static_assert(std::is_nothrow_move_assignable_v<WorldMapPlayerUpdateQueueEntry>);
+    updates->queue.erase(updates->queue.begin());
+    result.completed_node = key;
     result.status = S::Completed;
     return result;
 }

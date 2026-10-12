@@ -100,12 +100,17 @@ WorldMapControlStatus WorldMapUpdateInputs::capture_control() noexcept {
     return S::Captured;
 }
 
+WorldMapDispatchInput WorldMapUpdateInputs::queue_control() const noexcept {
+    if (!clock_ || !control_ || control_->loop_count != clock_->state().loop_count) return {};
+    return {WorldMapDispatchStatus::Ready, control_->dispatch_word};
+}
 WorldMapDispatchInput WorldMapUpdateInputs::dispatch(uint32_t priority) const noexcept {
     using S = WorldMapDispatchStatus;
-    if (!clock_ || !control_ || control_->loop_count != clock_->state().loop_count) return {};
+    const auto captured = queue_control();
+    if (captured.status != S::Ready) return captured;
     const auto group = priority >> 12;
     if (group >= 24) return {S::UnsupportedPriority, {}};
     if ((blocked_groups_ & (1u << group)) != 0) return {S::Filtered, {}};
-    return {S::Ready, control_->dispatch_word};
+    return captured;
 }
 } // namespace awl
