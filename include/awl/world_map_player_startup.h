@@ -85,8 +85,10 @@ struct WorldMapPlayerStartupDispatchInput {
     std::optional<int32_t> action_148;
     std::optional<WorldMapPlayerStartupCameraSeed> first_camera;
     uint64_t player_node_identity = 0;
-    // Phase raw is reread from the same retained source as control generation.
-    WorldMapPlayerStatusFactors status_factors;
+    // Normally use the retained startup tables' initial DOL parameters.
+    // An explicit diagnostic override (even empty) replaces that whole snapshot;
+    // no missing fields are filled. Phase still comes from the control source.
+    std::optional<WorldMapPlayerStatusFactors> status_factors_override;
 };
 // Owns the supported CPU initial model -> no-message tail -> normal state-29
 // callback boundary. Only known parent/secondary writes are exposed;

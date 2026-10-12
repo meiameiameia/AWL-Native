@@ -1,6 +1,7 @@
 #pragma once
 #include "awl/world_map_player_start.h"
 #include "awl/world_map_player_animation_assets.h"
+#include "awl/world_map_player_status.h"
 
 namespace awl {
 struct WorldMapPlayerStartItemType { uint32_t item = 0; uint8_t type = 0; };
@@ -24,6 +25,8 @@ enum class WorldMapPlayerStartAnimationStatus {
 // Immutable first records of selector 1's four descriptor choices. Logical
 // DOL addresses are equality keys, never host pointers. These copied words
 // do not decode the subsequent 12-byte sequence or establish playback.
+// Also retains initial DOL coefficients and the reached status halfword for
+// each of these records; this does not infer either rate table's length.
 class WorldMapPlayerStartAnimationTables {
 public:
     WorldMapPlayerStartAnimationTables(const WorldMapPlayerStartAnimationTables&) = delete;
@@ -36,6 +39,11 @@ public:
         const WorldMapPlayerStartAnimationCommand& command,
         const std::optional<WorldMapPlayerStartItemType>& item_type,
         WorldMapPlayerStartAnimationSelection* out) const;
+    // Initial DOL parameter snapshot, not later mutable global observations.
+    // Only an exact retained first record gets a rate. Unknown/spoofed records
+    // keep the coefficients but leave the rate unknown for the ordered consumer.
+    [[nodiscard]] WorldMapPlayerStatusFactors status_factors(
+        const WorldMapActorAnimationDescriptor& current) const noexcept;
 private:
     WorldMapPlayerStartAnimationTables() = default;
     bool decode(const uint8_t* data, size_t size);
@@ -44,11 +52,14 @@ private:
     friend WorldMapPlayerStartAnimationStatus load_world_map_player_start_animation_tables(
         std::shared_ptr<const WorldMapPlayerStartAnimationTables>*);
     std::array<WorldMapPlayerStartAnimationSelection,4> entries_{};
+    std::array<std::optional<uint16_t>,4> status_rates_{};
+    std::array<uint32_t,static_cast<size_t>(WorldMapPlayerStatusGlobal::Count)> status_globals_{};
     uint8_t empty_item_type_ = 0;
     bool target_verified_ = false;
 };
 // Bounded DOL section/table decoder for supplied bytes, including synthetic
-// fixtures. Validates extents, overlaps, jump target, indices and pointers;
+// fixtures. Validates extents, overlaps, jump target, indices, pointers and
+// reached coefficient/rate words; unaddressable positive rates reject.
 // it does NOT verify target identity. Failures preserve existing ownership.
 [[nodiscard]] WorldMapPlayerStartAnimationStatus decode_world_map_player_start_animation_tables(
     const uint8_t* data, size_t size, std::shared_ptr<const WorldMapPlayerStartAnimationTables>* out);

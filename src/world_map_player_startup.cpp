@@ -83,8 +83,12 @@ WorldMapPlayerStartupUpdateResult WorldMapPlayerStartup::dispatch_state29_parent
     update.action_148 = input.action_148;
     update.first_camera = input.first_camera;
     update.player_node_identity = input.player_node_identity;
-    update.status_inputs.globals = input.status_factors.globals;
-    update.status_inputs.rate = input.status_factors.rate;
+    if ((*dispatch.control_word & 0x800u) == 0) {
+        const auto factors = input.status_factors_override ? *input.status_factors_override :
+            starts_->status_factors(model_->descriptor());
+        update.status_inputs.globals = factors.globals;
+        update.status_inputs.rate = factors.rate;
+    }
     // CDB8 rereads this owner at callback time; do not substitute GameClock
     // or let a supplied rate/global observation introduce another phase owner.
     if (inputs.sources().phase) update.status_inputs.phase_raw = inputs.sources().phase->raw_word_0;

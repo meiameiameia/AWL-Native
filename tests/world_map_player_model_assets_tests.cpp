@@ -1482,10 +1482,15 @@ uint64_t holder_snapshot(const awl::WorldMapPlayerAnimationHolder& holder) {
 std::vector<uint8_t> holder_start_tables() {
     // Invented DOL sections, four descriptors and indices. Trace-derived
     // addresses only locate the existing checked selector-one decoder.
-    std::vector<uint8_t> b(0x1C1);
-    constexpr uint32_t addresses[]{0x8029E4BC,0x80249238,0x8029BEF4,0x81001000,0x80282DF8};
-    constexpr uint32_t offsets[]{0x100,0x120,0x140,0x160,0x1C0},sizes[]{4,8,16,96,1};
-    for(size_t i=0;i<5;++i){word(b,i*4,offsets[i]);word(b,0x48+i*4,addresses[i]);word(b,0x90+i*4,sizes[i]);}
+    std::vector<uint8_t> b(0x228);
+    constexpr uint32_t addresses[]{0x8029E4BC,0x80249238,0x8029BEF4,0x81001000,0x80282DF8,0x80346B00,0x80295394};
+    constexpr uint32_t offsets[]{0x100,0x120,0x140,0x160,0x1C0,0x1D0,0x220},sizes[]{4,8,16,96,1,0x44,8};
+    for(size_t i=0;i<7;++i){word(b,i*4,offsets[i]);word(b,0x48+i*4,addresses[i]);word(b,0x90+i*4,sizes[i]);}
+    // Invented initial status coefficients and reached big-endian rates.
+    constexpr uint32_t globals[]{200000,300,1200000,1800000,75,100,60,100,uint32_t(-3),45,100,100,3};
+    constexpr size_t global_offsets[]{0,4,0x10,0x14,0x20,0x24,0x28,0x2C,0x30,0x34,0x38,0x3C,0x40};
+    for(size_t i=0;i<13;++i)word(b,0x1D0+global_offsets[i],globals[i]);
+    for(size_t i=0;i<4;++i){b[0x220+i*2]=uint8_t((1000+i)>>8);b[0x221+i*2]=uint8_t(1000+i);}
     word(b,0x100,0x800289A8);
     constexpr uint32_t modes[]{1,3,2,0};
     for(uint32_t i=0;i<4;++i){b[0x121+i*2]=uint8_t(10+i);word(b,0x140+i*4,0x81001000+i*24);
@@ -2234,21 +2239,21 @@ void status_parent_checks(awl::WorldMapPlayerStartup& player,awl::WorldMapPlayer
         update_owners_snapshot(effects)==without_status,"missing pointed status owner stops after staged camera without publishing");
     awl::WorldMapPlayerStatusState state;state.word_4=100000;state.word_8=200000;
     state.word_14=1000000;state.word_18=2000000;state.word_12c=123455;state.word_150=77;state.word_154=88;
-    effects.status=state;const auto pending=update_owners_snapshot(effects);
+    effects.status=state;input.status_factors_override.emplace();const auto pending=update_owners_snapshot(effects);
     const auto preserved=[&](){return startup_snapshot(player)==before && update_owners_snapshot(effects)==pending;};
     step=player.dispatch_state29_parent(controls,input,&effects);
     expect(step.status==S::RequiresStatusUpdate && step.status_update && step.status_update->status==P::RequiresGlobal &&
         step.status_update->required_global==G::Word7ec0 && !step.status_update->after && preserved(),
         "active dispatch retains exact global dependency without accepting first decay/camera/counter");
     constexpr uint32_t coefficients[]{200000,300,1200000,1800000,75,100,60,100,uint32_t(-3),45,100,100,3};
-    for(size_t i=0;i<input.status_factors.globals.size();++i)input.status_factors.globals[i]=coefficients[i];
+    for(size_t i=0;i<input.status_factors_override->globals.size();++i)input.status_factors_override->globals[i]=coefficients[i];
     step=player.dispatch_state29_parent(controls,input,&effects);
     expect(step.status_update && step.status_update->status==P::RequiresRate && preserved(),"rate table word is an explicit keyed dependency after first decay");
     const auto code=player.model().descriptor().word_8;
-    input.status_factors.rate=awl::WorldMapPlayerStatusRate{code^1u,1000};
+    input.status_factors_override->rate=awl::WorldMapPlayerStatusRate{code^1u,1000};
     step=player.dispatch_state29_parent(controls,input,&effects);
     expect(step.status_update && step.status_update->status==P::RequiresRate && preserved(),"supplied rate cannot replace the current retained descriptor code");
-    input.status_factors.rate->descriptor_word_8=code;
+    input.status_factors_override->rate->descriptor_word_8=code;
     controls.observe_control_sources({awl::WorldMapControlPhase{uint8_t{1},{},uint8_t{0}},0});
     step=player.dispatch_state29_parent(controls,input,&effects);
     expect(step.status_update && step.status_update->status==P::RequiresPhaseRaw && preserved(),"phase raw time is separate from the owned GameClock");
@@ -2318,6 +2323,64 @@ void status_parent_checks(awl::WorldMapPlayerStartup& player,awl::WorldMapPlayer
     copies=0;for(const auto& entry:effects.queue)if(entry.node_identity==node)++copies;
     expect(copies==1 && player.camera() && player.camera()->camera.target.camera.position==input.pose.position,
         "curved status success retains a single queued player node and camera publication");
+}
+auto status_words(const awl::WorldMapPlayerStatusState& s) {
+    return std::array<uint32_t,11>{s.word_4,s.word_8,s.word_c,s.word_14,s.word_18,s.word_1c,
+        s.word_20,s.word_12c,s.word_150,s.word_154,s.word_160};
+}
+void owned_status_parent_checks(awl::WorldMapPlayerStartup& player,awl::WorldMapPlayerUpdateOwners& effects,
+    awl::WorldMapPlayerStartupDispatchInput input) {
+    using S=awl::WorldMapPlayerUpdateStatus;using P=awl::WorldMapPlayerStatusCode;
+    awl::WorldMapUpdateInputs controls(player.model().game_clock());
+    controls.observe_control_sources({awl::WorldMapControlPhase{uint8_t{1},11u,uint8_t{0}},0});
+    expect(controls.capture_control()==awl::WorldMapControlStatus::Captured,"owned status parameter test captures active control");
+    input.first_camera.reset();input.status_factors_override.reset();
+    awl::WorldMapPlayerStatusState state;state.word_4=100000;state.word_8=200000;
+    state.word_14=1000000;state.word_18=2000000;state.word_12c=123455;state.word_150=77;state.word_154=88;
+    effects.status=state;
+    const auto before=startup_snapshot(player),pending=update_owners_snapshot(effects),model=holder_snapshot(player.model());
+    const auto clock=player.model().game_clock()->state();const auto counter=player.state().counter_1368;
+    const auto preserved=[&](){return startup_snapshot(player)==before && update_owners_snapshot(effects)==pending;};
+    controls.observe_control_sources({awl::WorldMapControlPhase{uint8_t{1},{},uint8_t{0}},0});
+    auto step=player.dispatch_state29_parent(controls,input,&effects);
+    expect(step.status==S::RequiresStatusUpdate && step.status_update && step.status_update->status==P::RequiresPhaseRaw && preserved(),
+        "owned DOL parameters do not fabricate the separate phase source");
+    controls.observe_control_sources({awl::WorldMapControlPhase{uint8_t{1},state.word_12c,uint8_t{0}},0});
+    input.status_factors_override.emplace();step=player.dispatch_state29_parent(controls,input,&effects);
+    expect(step.status_update && step.status_update->status==P::RequiresGlobal &&
+        step.status_update->required_global==awl::WorldMapPlayerStatusGlobal::Word7ec0 && preserved(),
+        "explicit empty diagnostic override is never filled from owned DOL parameters");
+    input.status_factors_override->globals[0]=300000;step=player.dispatch_state29_parent(controls,input,&effects);
+    expect(step.status_update && step.status_update->status==P::RequiresGlobal &&
+        step.status_update->required_global==awl::WorldMapPlayerStatusGlobal::Word7ebc && preserved(),
+        "partial diagnostic override preserves its own next reached dependency");
+    input.status_factors_override.reset();const auto node=input.player_node_identity;input.player_node_identity=0;
+    step=player.dispatch_state29_parent(controls,input,&effects);
+    expect(step.status==S::RequiresQueueNode && step.status_update && step.status_update->status==P::Prepared && preserved(),
+        "late queue stop rolls back status prepared from retained parameters");
+    input.player_node_identity=node;
+    const int rounding=std::fegetround();expect(std::fesetround(FE_UPWARD)==0,"owned parameter rounding rejection setup");
+    step=player.dispatch_state29_parent(controls,input,&effects);
+    const int kept=std::fegetround();expect(std::fesetround(rounding)==0,"restore owned parameter rounding");
+    expect(step.status_update && step.status_update->status==P::UnsupportedNumerics && kept==FE_UPWARD && preserved(),
+        "owned parameter curve failure preserves all accepted state and caller rounding");
+    const auto factors=player.starts()->status_factors(player.model().descriptor());
+    const bool actual=player.starts()->target_verified();
+    step=player.dispatch_state29_parent(controls,input,&effects);
+    expect(step.status==S::Advanced && step.status_update && effects.status && factors.rate &&
+        effects.status->word_4==(actual?100003u:99940u) && effects.status->word_14==(actual?999980u:999960u) &&
+        effects.status->word_150==(actual?uint32_t(factors.rate->value):77u) && effects.status->word_154==(actual?88u:uint32_t(factors.rate->value)) &&
+        player.state().counter_1368==counter+1,"default dispatch uses retained actual or invented DOL coefficients/rate for the curved status update");
+    controls.observe_control_sources({awl::WorldMapControlPhase{uint8_t{1},state.word_12c+1,uint8_t{0}},0});
+    step=player.dispatch_state29_parent(controls,input,&effects);
+    expect(step.status==S::Advanced && effects.status && effects.status->word_4==(actual?100008u:99885u) &&
+        effects.status->word_14==(actual?999960u:999920u) && player.state().counter_1368==counter+2 &&
+        effects.saved_pose.position==input.pose.position && effects.position_802fc20c==input.pose.position &&
+        player.camera() && player.camera()->camera.target.camera.position==input.pose.position && holder_snapshot(player.model())==model &&
+        player.model().game_clock()->state().raw_time==clock.raw_time && player.model().game_clock()->state().loop_count==clock.loop_count,
+        "second owned constant status update publishes pose/camera/counter together without model or clock progression");
+    size_t copies=0;for(const auto& entry:effects.queue)if(entry.node_identity==node)++copies;
+    expect(copies==1,"owned parameter updates preserve one queued player node");
 }
 void startup_owner_checks() {
     using S=awl::WorldMapPlayerStartupStatus;using A=awl::WorldMapPlayerStartAnimationStatus;using I=awl::WorldMapAnimationInitializerStatus;
@@ -2420,7 +2483,8 @@ void startup_owner_checks() {
             awl::WorldMapPlayerStartupDispatchInput input;input.guards=awl::WorldMapPlayerUpdateGuards{-1,0};input.scene_child_word_4=0;
             input.pose={1,{2,0,0},{-0.0f,0,2}};input.action_148=0;input.player_node_identity=99;
             input.first_camera=awl::WorldMapPlayerStartupCameraSeed{camera,camera_query};
-            status_parent_checks(*status_player,effects,input,true);}
+            status_parent_checks(*status_player,effects,input,true);
+            owned_status_parent_checks(*status_player,effects,input);}
     }
     callback.first_camera->camera.target.distance_30=0;
     expect(owner->advance_state29_camera(callback).status==C::CameraFailure && startup_snapshot(*owner)==no_camera,"degenerate seed does not bind provider or consume counter");
@@ -2466,6 +2530,37 @@ void startup_owner_checks() {
         "CPU startup retains model, both static input owners and clock after all caller handles drop");owner.reset();
     expect(model_lifetime.expired() && inputs_lifetime.expired() && starts_lifetime.expired() && clock_lifetime.expired() && camera_lifetime.expired(),"last startup releases model, camera providers and shared clock");
 }
+void local_status_parameters(const awl::WorldMapPlayerStartAnimationTables& tables) {
+    uint64_t digest=14695981039346656037ull;size_t count=0;
+    constexpr uint32_t values[]{0,1,0x7fffffff,0x80000000,0xffffffff,200000,400000};
+    constexpr uint32_t scalar20[]{0,24999,25000,74999,75000,0xffffffff,0x80000000,18000000};
+    constexpr uint32_t modes[]{0,1,2,3,0xffffffff};
+    for(uint32_t choice=0;choice<4;++choice){awl::WorldMapPlayerStartAnimationCommand command;
+        std::optional<awl::WorldMapPlayerStartItemType> item;
+        if(choice==1 || choice==3){command.item=1;item=awl::WorldMapPlayerStartItemType{1,uint8_t(choice==1?5:1)};}
+        if(choice==2)command.action=1;
+        awl::WorldMapPlayerStartAnimationSelection selection;
+        expect(tables.select(command,item,&selection)==awl::WorldMapPlayerStartAnimationStatus::Selected && selection.choice==choice,
+            "all four actual selector-one first records select for status parameter comparison");
+        const auto factors=tables.status_factors(selection.descriptor);
+        expect(factors.rate.has_value(),"actual retained first record resolves its owned rate");if(!factors.rate)return;
+        for(uint32_t seed=0;seed<64;++seed){awl::WorldMapPlayerStatusState state;
+            state.word_4=values[seed%7];state.word_8=values[(seed/7)%7];state.word_c=values[(seed/49)%7];
+            state.word_14=values[(seed/3)%7];state.word_18=values[(seed/21)%7];state.word_1c=values[(seed/147)%7];
+            state.word_20=scalar20[seed%8];state.word_12c=123456+(seed*15473)%1584001;
+            state.word_150=777;state.word_154=888;state.word_160=modes[seed%5];
+            state.byte_2e=uint8_t(seed*17);state.byte_32=uint8_t(seed*29);
+            awl::WorldMapPlayerStatusInputs input;input.globals=factors.globals;input.rate=factors.rate;input.phase_raw=123456;
+            const auto step=awl::prepare_world_map_player_status(state,selection.descriptor.word_8,input);
+            expect(step.status==awl::WorldMapPlayerStatusCode::Prepared && step.after,"owned actual parameter case prepares");if(!step.after)return;
+            for(uint32_t word:{choice,seed,uint32_t(selection.descriptor.identity),selection.descriptor.word_0,selection.descriptor.word_4,selection.descriptor.word_8})hash(digest,word);
+            for(const auto& global:factors.globals){expect(global.has_value(),"all initial coefficient words are owned");if(!global)return;hash(digest,*global);}
+            hash(digest,factors.rate->value);for(uint32_t word:status_words(state))hash(digest,word);for(uint32_t word:status_words(*step.after))hash(digest,word);++count;
+        }
+    }
+    expect(count==256 && digest==0x41B8FA0C40C6DBDAull,"actual DOL initial coefficients/rates and full status updates match original instructions");
+    std::cout<<"LOCAL_OWNED_STATUS_PARAMETERS "<<count<<" digest "<<std::hex<<digest<<std::dec<<'\n';
+}
 void local_startup(const char* disc) {
     using S=awl::WorldMapPlayerStartupStatus;using A=awl::WorldMapPlayerStartAnimationStatus;using B=awl::WorldMapPlayerTimerBank;
     expect(awl::filesystem_mount("/",disc),"local player startup disc mounts");awl::WorldMapPlayerStartupProviders p;
@@ -2474,6 +2569,7 @@ void local_startup(const char* disc) {
         awl::load_world_map_player_timer_assets(&p.timers)==awl::WorldMapPlayerTimerAssetsStatus::Loaded &&
         awl::load_world_map_player_start_animation_tables(&p.starts)==A::Loaded,"verified actual constructor static, animation, timer and selector providers load");
     if(!p.initial || !p.animations || !p.timers || !p.starts)return;
+    local_status_parameters(*p.starts);
     p.clock=std::make_shared<awl::GameClock>();p.clock->set_retrace_interval(2);
     auto camera_collision=std::make_shared<awl::WorldMapCameraCollisionAsset>();awl::WorldMapCameraInitialProfile profile;
     expect(camera_collision->load() && awl::make_world_map_camera_initial_profile(&profile),"actual slot-one camera terrain and supplied constructor profile prepare");
@@ -2554,7 +2650,8 @@ void local_startup(const char* disc) {
                     inputs.scene().global_flag_59af==1 && owner->model().game_clock()->state().loop_count==clock_before.loop_count,
                     "actual startup uses derived control and retained filter for parent update; later event, model and clock remain untouched");
                 ++owned_dispatches;
-                status_parent_checks(*owner,effects,dispatch);++status_dispatches;
+                status_parent_checks(*owner,effects,dispatch);
+                owned_status_parent_checks(*owner,effects,dispatch);++status_dispatches;
             }
             owner.reset();if(last)expect(clock_lifetime.expired() && starts_lifetime.expired() && models_lifetime.expired() && camera_lifetime.expired(),"last actual startup releases retained caller providers and camera terrain");++checked;
         }
@@ -2570,6 +2667,7 @@ void local_startup(const char* disc) {
     std::cout<<"LOCAL_PLAYER_OWNED_DISPATCH "<<owned_dispatches<<" blocked/allowed cases; derived control from observed sources, real camera COL; live loop and queue consumption pending\n";
     expect(status_dispatches==24,"all 24 actual startups pass active status dispatch and rollback checks");
     std::cout<<"LOCAL_PLAYER_STATUS_DISPATCH "<<status_dispatches<<" active cases with constant/curved status and rollback, invented status/global/rate/phase observations, actual CPU player and camera COL; live status ownership pending\n";
+    std::cout<<"LOCAL_PLAYER_OWNED_STATUS_DISPATCH "<<status_dispatches<<" active cases with retained initial DOL coefficients/rates and rollback; mutable status/phase supplied, live writers pending\n";
 }
 void local_timer_holder(const char* disc,bool owned_clock=false,bool initial_model=false) {
     using S=awl::WorldMapPlayerTimerAssetsStatus;using B=awl::WorldMapPlayerTimerBank;using H=awl::WorldMapPlayerTimedInitialHolderStatus;

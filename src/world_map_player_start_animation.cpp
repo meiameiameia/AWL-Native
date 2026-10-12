@@ -29,6 +29,7 @@ bool WorldMapPlayerStartAnimationTables::decode(const uint8_t* data, size_t size
     const auto* empty = view.read(0x80282DF8,1);
     if (!jump || dol_word(jump) != 0x800289A8 || !row || !empty) return false;
     std::array<WorldMapPlayerStartAnimationSelection,4> entries;
+    std::array<std::optional<uint16_t>,4> rates;
     for (uint32_t i = 0; i < 4; ++i) {
         const uint16_t index = static_cast<uint16_t>((uint16_t(row[i * 2]) << 8) | row[i * 2 + 1]);
         const auto* slot = view.read(0x8029BECC + uint32_t(index) * 4,4);
@@ -38,9 +39,43 @@ bool WorldMapPlayerStartAnimationTables::decode(const uint8_t* data, size_t size
         const auto* descriptor = view.read(address,12);
         if (!descriptor) return false;
         entries[i] = {i,index,{address,dol_word(descriptor),dol_word(descriptor + 4),dol_word(descriptor + 8)}};
+        const uint32_t code = entries[i].descriptor.word_8;
+        // Preserve unsupported negative descriptors for the later status
+        // consumer; they cannot authorize a read before a rate table.
+        if (code <= INT32_MAX) {
+            const uint64_t rate_address = code < 64 ? 0x802929E0ull + uint64_t(code) * 2 :
+                0x80292A14ull + uint64_t(code - 64) * 2;
+            if (rate_address > UINT32_MAX) return false;
+            const auto* rate = view.read(static_cast<uint32_t>(rate_address),2);
+            if (!rate) return false;
+            rates[i] = static_cast<uint16_t>((uint16_t(rate[0]) << 8) | rate[1]);
+        }
     }
-    entries_ = entries; empty_item_type_ = *empty;
+    constexpr uint32_t addresses[]{0x80346B00,0x80346B04,0x80346B10,0x80346B14,0x80346B20,
+        0x80346B24,0x80346B28,0x80346B2C,0x80346B30,0x80346B34,0x80346B38,0x80346B3C,0x80346B40};
+    static_assert(sizeof(addresses) / sizeof(addresses[0]) == static_cast<size_t>(WorldMapPlayerStatusGlobal::Count));
+    for (size_t i = 0; i < status_globals_.size(); ++i) {
+        const auto* word = view.read(addresses[i],4);
+        if (!word) return false;
+        status_globals_[i] = dol_word(word);
+    }
+    entries_ = entries; status_rates_ = rates; empty_item_type_ = *empty;
     return true;
+}
+
+WorldMapPlayerStatusFactors WorldMapPlayerStartAnimationTables::status_factors(
+    const WorldMapActorAnimationDescriptor& current) const noexcept {
+    WorldMapPlayerStatusFactors result;
+    for (size_t i = 0; i < result.globals.size(); ++i) result.globals[i] = status_globals_[i];
+    for (size_t i = 0; i < entries_.size(); ++i) {
+        const auto& known = entries_[i].descriptor;
+        if (known.identity == current.identity && known.word_0 == current.word_0 &&
+            known.word_4 == current.word_4 && known.word_8 == current.word_8 && status_rates_[i]) {
+            result.rate = WorldMapPlayerStatusRate{current.word_8,*status_rates_[i]};
+            break;
+        }
+    }
+    return result;
 }
 
 Status WorldMapPlayerStartAnimationTables::select(const WorldMapPlayerStartAnimationCommand& command,
