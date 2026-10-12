@@ -114,11 +114,29 @@ WorldMapPlayerStartupActorFrameResult WorldMapPlayerStartup::advance_gated_actor
     WorldMapPlayerStartupActorFrameResult result;
     result.gate = prepare_world_map_player_state29_actor_gate(input.saved_byte_29a01, input.script);
     if (*result.gate != WorldMapPlayerActorGateStatus::Ready) { result.status = S::GateStopped; return result; }
-    if (!input.sphere) { result.status = S::RequiresSphere; return result; }
+    auto sphere = input.sphere;
+    if (input.derive_normal_visibility) {
+        if (sphere) { result.status = S::InvalidInput; return result; }
+        if (!input.frame.actor_placement) { result.status = S::RequiresActorPlacement; return result; }
+        WorldMapPlayerActorBounds bounds;
+        result.bounds_status = prepare_world_map_player_normal_actor_bounds(input.frame.actor_placement->position,&bounds);
+        if (*result.bounds_status != WorldMapPlayerActorBoundsStatus::Prepared) { result.status = S::BoundsIncomplete; return result; }
+        result.bounds = bounds; sphere = bounds.sphere;
+    }
+    if (!sphere) { result.status = S::RequiresSphere; return result; }
     if (!input.visibility) { result.status = S::RequiresVisibilityOwner; return result; }
-    result.visibility = prepare_world_map_player_actor_visibility(*input.sphere, *input.visibility);
+    result.visibility = prepare_world_map_player_actor_visibility(*sphere, *input.visibility);
     if (result.visibility->status != WorldMapPlayerActorVisibilityStatus::Visible) {
         result.status = S::VisibilityStopped; return result;
+    }
+    if (input.derive_normal_visibility) {
+        if (!input.screen) { result.status = S::RequiresScreenOwner; return result; }
+        result.screen = prepare_world_map_player_actor_screen(*sphere,*input.screen);
+        const auto screen = result.screen->status;
+        if (screen != WorldMapPlayerActorScreenStatus::Inside && screen != WorldMapPlayerActorScreenStatus::Outside) {
+            result.status = S::ScreenIncomplete; return result;
+        }
+        result.proposed_effect_flag_15f = screen == WorldMapPlayerActorScreenStatus::Inside ? uint8_t(1) : uint8_t(0);
     }
     if (!input.frame.actor_placement) { result.status = S::RequiresActorPlacement; return result; }
     if (input.frame.root_pose) { result.status = S::InvalidInput; return result; }

@@ -33,6 +33,22 @@ struct WorldMapPlayerActorSphere {
     std::array<float,3> center{};
     float radius = 0;
 };
+struct WorldMapPlayerActorBounds {
+    WorldMapPlayerActorSphere sphere;
+    float height_10 = 0, horizontal_radius_14 = 0;
+};
+enum class WorldMapPlayerActorBoundsStatus { Prepared, InvalidInput, UnsupportedNumerics };
+// BBA0's position + (-1,0,-1)/(1,2,1), then 17BD64 -> 17BD94.
+// Endpoint adds, ordered min/max, half extents, center, both lengths and
+// doubled half-height retain binary32 order. This cannot be replaced by
+// position+(0,1,0) and a constant radius: endpoint rounding changes extents.
+// Lengths use native double 1/sqrt as the frsqrte seed, then the original
+// rounded Newton correction. The hardware estimate table remains unmodeled;
+// this explicit native profile does not establish original radius equality.
+// Nearest rounding and normal/zero finite data/intermediates are required.
+// Failure preserves output; the observed position may alias its center.
+[[nodiscard]] WorldMapPlayerActorBoundsStatus prepare_world_map_player_normal_actor_bounds(
+    const std::array<float,3>& position, WorldMapPlayerActorBounds* out) noexcept;
 struct WorldMapPlayerActorPlane {
     std::array<float,3> point{}, normal{};
 };
@@ -59,4 +75,25 @@ struct WorldMapPlayerActorVisibilityResult {
 // This function is allocation-free and never mutates its observations.
 [[nodiscard]] WorldMapPlayerActorVisibilityResult prepare_world_map_player_actor_visibility(
     const WorldMapPlayerActorSphere& sphere, const WorldMapPlayerActorVisibilityOwner& owner) noexcept;
+
+struct WorldMapPlayerActorScreenOwner {
+    // Separate globals: 12B9FC returns 802FC020, 12B9F0 returns 802FC010.
+    // Neither is inferred from the first visibility owner's camera matrix.
+    std::optional<WorldMapModelMatrix> view;
+    std::array<std::optional<float>,2> half_extents;
+};
+enum class WorldMapPlayerActorScreenStatus {
+    Inside, Outside, RequiresView, RequiresExtent, InvalidInput, UnsupportedNumerics
+};
+struct WorldMapPlayerActorScreenResult {
+    WorldMapPlayerActorScreenStatus status = WorldMapPlayerActorScreenStatus::InvalidInput;
+    std::optional<uint32_t> axis; // First outside, unknown or invalid X/Y extent.
+};
+// 197614: transform the center, then reject (coordinate+radius <= -extent)
+// or (coordinate-radius >= extent), X before Y. Tangency is outside. This
+// selects actor +15F/effects; Outside does NOT cull the model's CPU frame.
+// The Y extent is unread after an X rejection. Native arithmetic limits are
+// the same as the first visibility test. Does not publish actor metadata.
+[[nodiscard]] WorldMapPlayerActorScreenResult prepare_world_map_player_actor_screen(
+    const WorldMapPlayerActorSphere& sphere, const WorldMapPlayerActorScreenOwner& owner) noexcept;
 } // namespace awl

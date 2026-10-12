@@ -94,22 +94,37 @@ struct WorldMapPlayerStartupDispatchInput {
 struct WorldMapPlayerStartupActorFrameInput {
     std::optional<uint8_t> saved_byte_29a01;
     std::optional<WorldMapPlayerActorScriptOwner> script;
-    // Observed culling sphere and camera/planes; this adapter does not derive
-    // them from the pose or discover their original live producers.
+    // Observed sphere mode is retained for isolated comparisons. Camera and
+    // planes remain observations in both modes, not discovered live owners.
     std::optional<WorldMapPlayerActorSphere> sphere;
     std::optional<WorldMapPlayerActorVisibilityOwner> visibility;
-    // Requires actor_placement and no explicit root_pose, only if visible.
+    // Observed sphere mode reads placement only if visible. Normal mode
+    // reads its position before culling; heading remains unread until visible.
+    // An explicit root_pose is unsupported at the reached frame boundary.
     WorldMapPlayerPrimaryFrameInput frame;
+    // Translate normal BBA0 bounds from frame.actor_placement.position, then
+    // run BOTH visibility tests. Mutually exclusive with an observed sphere.
+    // The first test can skip the frame; the screen test only proposes +15F.
+    // Camera/plane/script producers still remain supplied observations.
+    bool derive_normal_visibility = false;
+    std::optional<WorldMapPlayerActorScreenOwner> screen;
 };
 enum class WorldMapPlayerStartupActorFrameStatus {
     FrameAdvanced, GateStopped, VisibilityStopped, RequiresSphere,
-    RequiresVisibilityOwner, RequiresActorPlacement, UnsupportedState, InvalidInput, FrameIncomplete
+    RequiresVisibilityOwner, RequiresActorPlacement, UnsupportedState, InvalidInput, FrameIncomplete,
+    BoundsIncomplete, RequiresScreenOwner, ScreenIncomplete
 };
 struct WorldMapPlayerStartupActorFrameResult {
     WorldMapPlayerStartupActorFrameStatus status = WorldMapPlayerStartupActorFrameStatus::InvalidInput;
     std::optional<WorldMapPlayerActorGateStatus> gate;
     std::optional<WorldMapPlayerActorVisibilityResult> visibility;
     std::optional<WorldMapPlayerPrimaryUpdateResult> frame;
+    std::optional<WorldMapPlayerActorBoundsStatus> bounds_status;
+    std::optional<WorldMapPlayerActorBounds> bounds;
+    std::optional<WorldMapPlayerActorScreenResult> screen;
+    // Diagnostic proposal only, including on a later frame failure. Does not
+    // publish actor +15F or execute the optional effect/F548 follow-up.
+    std::optional<uint8_t> proposed_effect_flag_15f;
 };
 // Owns the supported CPU initial model -> no-message tail -> normal state-29
 // callback boundary. Only known parent/secondary writes are exposed;
@@ -158,7 +173,7 @@ public:
     // gates before the existing placed-frame transaction. Blocked, culled,
     // unknown and failed cases preserve all player/model/camera/clock state.
     // This is NOT the full 31584/BBA0 callback: it neither publishes the
-    // earlier control/+15E stores nor performs 197614's +15F update, F548's
+    // earlier control/+15E stores nor publishes 197614's +15F update, F548's
     // later TAM/features/effect, holder progression or queue acknowledgement.
     [[nodiscard]] WorldMapPlayerStartupActorFrameResult advance_gated_actor_frame(
         const WorldMapPlayerStartupActorFrameInput& input);
