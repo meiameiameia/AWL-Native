@@ -1,6 +1,7 @@
 #include "awl/world_map_player_context.h"
 #include "awl/disc_identity.h"
 #include "awl/filesystem.h"
+#include "awl/world_map_scene_index.h"
 #include "world_map_dol_view.h"
 #include <cfenv>
 #include <cmath>
@@ -92,8 +93,10 @@ T load_world_map_player_context_tables(std::shared_ptr<const WorldMapPlayerConte
         next->target_verified_=true;*out=std::move(next);return T::Loaded;
     }catch(const std::bad_alloc&){return T::AllocationFailure;}
 }
-WorldMapPlayerContextStep query_world_map_player_context(const WorldMapPlayerContextTables* tables,
-    const std::vector<WorldMapPlayerContextList>& lists,const WorldMapPlayerContextQuery& input,WorldMapPlayerContextResult* out) noexcept {
+namespace {
+template<class Find,class Read>
+WorldMapPlayerContextStep query_context(const WorldMapPlayerContextTables* tables,
+    Find find,Read read,const WorldMapPlayerContextQuery& input,WorldMapPlayerContextResult* out) noexcept {
     WorldMapPlayerContextStep step;
     if(!out)return step;
     WorldMapPlayerContextResult next;
@@ -110,11 +113,11 @@ WorldMapPlayerContextStep query_world_map_player_context(const WorldMapPlayerCon
     const auto scan=[&](int32_t key) {
         if(key==0 || key==-1)return S::Prepared;
         step.required_list=key;if(key<0)return S::InvalidInput;
-        const WorldMapPlayerContextList* list=nullptr;
-        for(const auto& candidate:lists)if(candidate.key==key){if(list)return S::InvalidInput;list=&candidate;}
+        S status=S::Prepared;const auto* list=find(key,status);
+        if(status!=S::Prepared)return status;
         if(!list)return S::RequiresList;
-        ++step.scanned_lists;const WorldMapPlayerContextCandidate* selected=nullptr;size_t selected_index=0;
-        for(size_t i=0;i<list->candidates.size();++i){const auto& candidate=list->candidates[i];step.required_candidate=i;++step.visited_candidates;
+        ++step.scanned_lists;std::optional<WorldMapPlayerContextCandidate> selected;size_t selected_index=0;
+        for(size_t i=0;i<list->size();++i){const auto candidate=read((*list)[i]);step.required_candidate=i;++step.visited_candidates;
             if(input.excluded_kinds){if(!candidate.owner_kind_8)return S::RequiresOwnerKind;
                 const auto shift=*candidate.owner_kind_8&63u;const uint32_t mask=shift<32?1u<<shift:0u;if(input.excluded_kinds&mask)continue;}
             if(!input.origin)return S::RequiresOrigin;if(!candidate.position_1c)return S::RequiresPosition;
@@ -131,7 +134,7 @@ WorldMapPlayerContextStep query_world_map_player_context(const WorldMapPlayerCon
             if(!candidate.facing_28)return S::RequiresFacing;if(!ordinary(*candidate.facing_28))return S::UnsupportedNumerics;
             V reverse;for(size_t axis=0;axis<3;++axis)reverse[axis]=-delta[axis];
             if(!dot(*candidate.facing_28,reverse,angle))return S::UnsupportedNumerics;if(*candidate.facing_threshold_38>angle)continue;
-            selected=&candidate;selected_index=i;next.nearest_squared_distance=squared;
+            selected=candidate;selected_index=i;next.nearest_squared_distance=squared;
         }
         if(selected){step.required_candidate=selected_index;
             if(!selected->owner_code_4)return S::RequiresOwnerCode;if(!selected->owner_kind_8)return S::RequiresOwnerKind;
@@ -147,5 +150,31 @@ WorldMapPlayerContextStep query_world_map_player_context(const WorldMapPlayerCon
         step.status=scan(key);if(step.status!=S::Prepared)return step;}
     next.found=next.nearest_squared_distance<input.max_distance*input.max_distance;
     step.required_list.reset();step.required_candidate.reset();*out=next;return step;
+}
+}
+WorldMapPlayerContextStep query_world_map_player_context(const WorldMapPlayerContextTables* tables,
+    const std::vector<WorldMapPlayerContextList>& lists,const WorldMapPlayerContextQuery& input,WorldMapPlayerContextResult* out) noexcept {
+    return query_context(tables,[&](int32_t key,S& status){
+        const std::vector<WorldMapPlayerContextCandidate>* result=nullptr;
+        for(const auto& list:lists)if(list.key==key){if(result){status=S::InvalidInput;return result;}result=&list.candidates;}
+        return result;
+    },[](const WorldMapPlayerContextCandidate& candidate){return candidate;},input,out);
+}
+namespace detail {
+struct WorldMapPlayerContextRegistryAccess {
+    static const std::vector<WorldMapSceneObject>* bucket(const WorldMapSceneBucketRegistry& registry,int32_t key) noexcept {
+        return key>=-1 && key<=58?&registry.buckets_[static_cast<size_t>(key+1)]:nullptr;
+    }
+};
+}
+WorldMapPlayerContextStep query_world_map_player_scene_context(const WorldMapPlayerContextTables* tables,
+    const WorldMapSceneBucketRegistry* registry,const WorldMapPlayerContextQuery& input,WorldMapPlayerContextResult* out) noexcept {
+    return query_context(tables,[&](int32_t key,S& status)->const std::vector<WorldMapSceneObject>* {
+        if(!registry){status=S::RequiresSceneRegistry;return nullptr;}
+        return detail::WorldMapPlayerContextRegistryAccess::bucket(*registry,key);
+    },[](const WorldMapSceneObject& object){WorldMapPlayerContextCandidate candidate;
+        static_cast<WorldMapPlayerContextMetadata&>(candidate)=object.context;
+        candidate.position_1c=object.position;return candidate;
+    },input,out);
 }
 } // namespace awl

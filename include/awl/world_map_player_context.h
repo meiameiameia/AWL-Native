@@ -39,11 +39,14 @@ private:
 // Observed live record fields in original list order. Missing fields are
 // required only when reached. Payload is owner virtual +10's resolved two
 // output words; its producer remains a separate scene-owner dependency.
-struct WorldMapPlayerContextCandidate {
+struct WorldMapPlayerContextMetadata {
     std::optional<uint32_t> owner_code_4,owner_kind_8;
-    std::optional<WorldMapPlayerContextVector> position_1c,facing_28;
+    std::optional<WorldMapPlayerContextVector> facing_28;
     std::optional<float> facing_threshold_38,max_squared_distance_3c;
     std::optional<std::array<uint32_t,2>> payload;
+};
+struct WorldMapPlayerContextCandidate : WorldMapPlayerContextMetadata {
+    std::optional<WorldMapPlayerContextVector> position_1c;
 };
 struct WorldMapPlayerContextList {
     int32_t key=0;
@@ -68,7 +71,7 @@ struct WorldMapPlayerContextResult {
     bool found=false;
 };
 enum class WorldMapPlayerContextStatus {
-    Prepared, RequiresTables, RequiresList, RequiresOrigin, RequiresOwnerKind,
+    Prepared, RequiresTables, RequiresList, RequiresSceneRegistry, RequiresOrigin, RequiresOwnerKind,
     RequiresPosition, RequiresRange, RequiresFacingThreshold, RequiresFacing,
     RequiresOwnerCode, RequiresPayload, InvalidInput, UnsupportedNumerics
 };
@@ -89,5 +92,15 @@ struct WorldMapPlayerContextStep {
 // lists are never treated as empty. No active state-0 callback is acknowledged.
 [[nodiscard]] WorldMapPlayerContextStep query_world_map_player_context(
     const WorldMapPlayerContextTables*,const std::vector<WorldMapPlayerContextList>&,
+    const WorldMapPlayerContextQuery&,WorldMapPlayerContextResult* out) noexcept;
+
+class WorldMapSceneBucketRegistry;
+// Same query over the registry's current intrusive-list equivalent. Positions
+// and order come only from the registry; no snapshot/allocation or duplicate
+// position storage. Missing reached metadata remains an explicit dependency.
+// Null registry is required only when a nonzero/non-minus-one list is reached.
+// Registry and observations must stay unchanged for this synchronous call.
+[[nodiscard]] WorldMapPlayerContextStep query_world_map_player_scene_context(
+    const WorldMapPlayerContextTables*,const WorldMapSceneBucketRegistry*,
     const WorldMapPlayerContextQuery&,WorldMapPlayerContextResult* out) noexcept;
 } // namespace awl

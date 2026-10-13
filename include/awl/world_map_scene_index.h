@@ -4,8 +4,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <vector>
+#include "awl/world_map_player_context.h"
 
 namespace awl {
+namespace detail { struct WorldMapPlayerContextRegistryAccess; }
 
 struct WorldMapScenePositionUpdate {
     std::array<float, 3> position{};
@@ -30,11 +32,15 @@ struct WorldMapSceneObject {
     int32_t scene_type = 0;
     std::array<float, 3> position{};
     int32_t bucket = -1;
+    // Same node's +28/+38/+3C and pointed owner +4/+8/virtual +10.
+    // Explicit observations only; registration does not invent live metadata.
+    WorldMapPlayerContextMetadata context;
 };
 
 // Caller-supplied scene objects start in the constructor's -1 bucket, then
 // move to a supported 0..58 spatial bucket on the first position update.
-// FUN_8000C2BC inserts at a bucket's front. FUN_800107A4 writes XYZ on
+// FUN_800113EC passes the bucket's tail to FUN_8000C2BC, which appends
+// after that link. FUN_800107A4 writes XYZ on
 // every supported position update and relinks only when the key changes.
 // This registry does not discover scene objects or update live gameplay.
 class WorldMapSceneBucketRegistry {
@@ -52,17 +58,30 @@ public:
         int32_t scene_type,
         const std::array<float, 3>& position,
         WorldMapScenePositionUpdate* update);
+    // Message 1F writes context position/type and then heading (+28), which
+    // is the same facing read by context queries. Native publication is atomic.
+    [[nodiscard]] bool update_pose(
+        uint64_t identity,int32_t scene_type,
+        const std::array<float,3>& position,const std::array<float,3>& heading,
+        WorldMapScenePositionUpdate* update);
     [[nodiscard]] bool unregister_object(uint64_t identity);
+    // Copies reached-field observations onto an existing node without changing
+    // its position, bucket or order. Empty metadata clears prior observations.
+    // This is native storage, not translation of the live metadata producers.
+    [[nodiscard]] bool set_context_metadata(
+        uint64_t identity,const WorldMapPlayerContextMetadata&) noexcept;
     void clear();
     [[nodiscard]] size_t size(int32_t bucket) const;
     [[nodiscard]] std::vector<WorldMapSceneObject> snapshot(int32_t bucket) const;
 
 private:
+    friend struct detail::WorldMapPlayerContextRegistryAccess;
     [[nodiscard]] bool update_object(uint64_t identity,
                                      bool replace_type,
                                      int32_t scene_type,
                                      const std::array<float, 3>& position,
-                                     WorldMapScenePositionUpdate* update);
+                                     WorldMapScenePositionUpdate* update,
+                                     const std::array<float,3>* heading = nullptr);
     // Array index zero is the constructor's key -1; indices 1..59 are 0..58.
     std::array<std::vector<WorldMapSceneObject>, 60> buckets_{};
 };

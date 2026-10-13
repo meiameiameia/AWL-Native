@@ -4556,10 +4556,10 @@ void test_world_map_scene_bucket_registry() {
                registry.register_object(22, 2, start) &&
                registry.register_object(33, 1, across_x),
            "scene objects register in the constructor's unpositioned bucket");
-    expect(registry.size(-1) == 3 && registry.snapshot(-1)[0].identity == 33 &&
+    expect(registry.size(-1) == 3 && registry.snapshot(-1)[0].identity == 11 &&
                registry.snapshot(-1)[1].identity == 22 &&
-               registry.snapshot(-1)[2].identity == 11,
-           "constructor bucket insertion keeps newest object first");
+               registry.snapshot(-1)[2].identity == 33,
+           "constructor bucket insertion appends after the original tail");
 
     awl::WorldMapScenePositionUpdate update;
     expect(registry.update_position(11, start, &update) &&
@@ -4569,25 +4569,26 @@ void test_world_map_scene_bucket_registry() {
                registry.update_position(33, across_x, &update) &&
                registry.size(-1) == 0 &&
                registry.size(1) == 2 && registry.size(5) == 1 &&
-               registry.snapshot(1)[0].identity == 22 &&
-               registry.snapshot(1)[1].identity == 11,
+               registry.snapshot(1)[0].identity == 11 &&
+               registry.snapshot(1)[1].identity == 22,
            "first position writes move objects into computed spatial buckets");
 
     expect(registry.update_position(11, same_bucket, &update) &&
                !update.relink_required && update.next_bucket == 1 &&
-               registry.snapshot(1)[0].identity == 22 &&
-               registry.snapshot(1)[1].position == same_bucket,
+               registry.snapshot(1)[0].identity == 11 &&
+               registry.snapshot(1)[0].position == same_bucket,
            "same-bucket position write preserves list order");
     expect(registry.update_position(11, across_x, &update) &&
                update.relink_required && update.previous_bucket == 1 &&
                update.next_bucket == 5 && registry.size(1) == 1 &&
-               registry.snapshot(5)[0].identity == 11 &&
-               registry.snapshot(5)[1].identity == 33,
-           "crossing a bin detaches and inserts at the new bucket head");
-    expect(registry.update_position(22, across_x, &update) &&
-               registry.snapshot(5)[0].identity == 22 &&
+               registry.snapshot(5)[0].identity == 33 &&
                registry.snapshot(5)[1].identity == 11,
-           "a later crossing moves ahead of existing destination entries");
+           "crossing a bin detaches and appends at the new bucket tail");
+    expect(registry.update_position(22, across_x, &update) &&
+               registry.snapshot(5)[0].identity == 33 &&
+               registry.snapshot(5)[1].identity == 11 &&
+               registry.snapshot(5)[2].identity == 22,
+           "a later crossing follows existing destination entries");
 
     expect(registry.register_object(44, 0, start) &&
                registry.size(-1) == 1 &&
@@ -4617,7 +4618,7 @@ void test_world_map_scene_bucket_registry() {
            "invalid registration and position updates leave buckets unchanged");
     expect(registry.unregister_object(11) &&
                !registry.unregister_object(11) && registry.size(5) == 2 &&
-               registry.snapshot(5)[0].identity == 22,
+               registry.snapshot(5)[0].identity == 33,
            "unregister removes exactly one scene node");
     registry.clear();
     expect(registry.size(-1) == 0 && registry.size(0) == 0 &&
@@ -4641,7 +4642,7 @@ void test_world_map_player_scene_message_1f() {
                registry.update_position(22, start, &update) &&
                registry.update_type_and_position(11, 2, start, &update) &&
                update.previous_bucket == -1 && update.next_bucket == 1 &&
-               registry.snapshot(1)[0].scene_type == 2,
+               registry.snapshot(1)[1].scene_type == 2,
            "constructor's saved scene type and position place player node");
 
     const awl::WorldMapPlayerSceneMessage1F same_key{
@@ -4651,9 +4652,9 @@ void test_world_map_player_scene_message_1f() {
                !update.relink_required && update.next_bucket == 1 &&
                pose.scene_type == 1 && pose.position == same_key.position &&
                pose.heading == same_key.heading &&
-               registry.snapshot(1)[0].identity == 11 &&
-               registry.snapshot(1)[0].scene_type == 1 &&
-               registry.snapshot(1)[1].identity == 22,
+               registry.snapshot(1)[0].identity == 22 &&
+               registry.snapshot(1)[1].scene_type == 1 &&
+               registry.snapshot(1)[1].identity == 11,
            "message updates type, position, and heading without needless relink");
 
     const awl::WorldMapPlayerSceneMessage1F cross_key{

@@ -82,9 +82,8 @@ bool WorldMapSceneBucketRegistry::register_object(
     // FUN_800110D4 initializes the bucket key to -1; FUN_800109C0
     // registers that node before the first FUN_800107A4 position write.
     auto& initial_bucket = buckets_[0];
-    initial_bucket.insert(initial_bucket.begin(),
-                          WorldMapSceneObject{identity, scene_type, position,
-                                              -1});
+    initial_bucket.push_back(WorldMapSceneObject{identity, scene_type, position,
+                                                -1, {}});
     return true;
 }
 
@@ -108,7 +107,8 @@ bool WorldMapSceneBucketRegistry::update_object(
     bool replace_type,
     int32_t scene_type,
     const std::array<float, 3>& position,
-    WorldMapScenePositionUpdate* update) {
+    WorldMapScenePositionUpdate* update,
+    const std::array<float,3>* heading) {
     if (update != nullptr) {
         *update = {};
     }
@@ -133,6 +133,7 @@ bool WorldMapSceneBucketRegistry::update_object(
         if (!planned.relink_required) {
             found->scene_type = next_type;
             found->position = position;
+            if(heading)found->context.facing_28=*heading;
         } else {
             auto& next = buckets_[static_cast<size_t>(planned.next_bucket) + 1];
             next.reserve(next.size() + 1);
@@ -140,13 +141,25 @@ bool WorldMapSceneBucketRegistry::update_object(
             moved.scene_type = next_type;
             moved.position = position;
             moved.bucket = planned.next_bucket;
+            if(heading)moved.context.facing_28=*heading;
             bucket.erase(found);
-            next.insert(next.begin(), moved);
+            next.push_back(moved);
         }
         *update = planned;
         return true;
     }
     return false;
+}
+
+bool WorldMapSceneBucketRegistry::update_pose(
+    uint64_t identity,int32_t scene_type,
+    const std::array<float,3>& position,const std::array<float,3>& heading,
+    WorldMapScenePositionUpdate* update) {
+    for(float component:heading)if(!std::isfinite(component)){
+        if(update)*update={};
+        return false;
+    }
+    return update_object(identity,true,scene_type,position,update,&heading);
 }
 
 bool apply_world_map_player_scene_message_1f(
@@ -164,8 +177,8 @@ bool apply_world_map_player_scene_message_1f(
         !std::isfinite(message.heading[2])) {
         return false;
     }
-    if (!registry->update_type_and_position(scene_identity, message.scene_type,
-                                            message.position, update)) {
+    if (!registry->update_pose(scene_identity, message.scene_type,
+                               message.position, message.heading, update)) {
         return false;
     }
     *pose = {message.scene_type, message.position, message.heading};
@@ -294,6 +307,16 @@ void WorldMapSceneBucketRegistry::clear() {
     for (auto& bucket : buckets_) {
         bucket.clear();
     }
+}
+
+bool WorldMapSceneBucketRegistry::set_context_metadata(
+    uint64_t identity,const WorldMapPlayerContextMetadata& metadata) noexcept {
+    if(identity==0)return false;
+    for(auto& bucket:buckets_)for(auto& object:bucket)if(object.identity==identity){
+        object.context=metadata;
+        return true;
+    }
+    return false;
 }
 
 size_t WorldMapSceneBucketRegistry::size(int32_t bucket) const {

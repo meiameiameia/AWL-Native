@@ -14,6 +14,7 @@
 #include "awl/world_map_fade.h"
 #include "awl/world_map_phase.h"
 #include "awl/world_map_player_context.h"
+#include "awl/world_map_scene_index.h"
 #include "awl/filesystem.h"
 
 #include <chrono>
@@ -3060,6 +3061,97 @@ void context_matrix(const awl::WorldMapPlayerContextTables& tables,uint64_t expe
     expect(digest==expected,"512 complete context results match original query instructions under the explicit native numerical substitutions");
     std::cout<<"PLAYER_CONTEXT_QUERY_NATIVE_PROFILE 512 "<<std::hex<<digest<<std::dec<<'\n';
 }
+void context_registry_sequence(const awl::WorldMapPlayerContextTables& tables) {
+    using S=awl::WorldMapPlayerContextStatus;
+    const std::array<awl::WorldMapPlayerContextVector,4> forwards{{{0,0,1},{1,0,0},{0,0,0},{1,0,1}}};
+    const std::array<awl::WorldMapPlayerContextVector,4> facings{{{0,0,-1},{0,0,0},{1,0,0},{0,1,0}}};
+    uint64_t digest=14695981039346656037ull;
+    for(uint32_t seed=0;seed<128;++seed){awl::WorldMapSceneBucketRegistry registry;awl::WorldMapScenePositionUpdate update;
+        const int32_t scene_type=seed%2?3:1;
+        for(uint32_t i=0;i<3;++i){awl::WorldMapPlayerContextMetadata metadata;metadata.owner_code_4=101+i;metadata.owner_kind_8=1+i;
+            metadata.facing_28=facings[(seed/8+i)%4];metadata.facing_threshold_38=seed/32%2?0.0f:-1.0f;metadata.max_squared_distance_3c=10000.0f;
+            metadata.payload=std::array<uint32_t,2>{UINT32_MAX,UINT32_MAX};
+            expect(registry.register_object(i+1,scene_type,{10,0,11.0f+float(i)}) && registry.set_context_metadata(i+1,metadata),"sequence registers explicit context observations without positioning the node");}
+        awl::WorldMapPlayerContextQuery query;query.current_key=seed%2?17:1;query.origin=awl::WorldMapPlayerContextVector{10,0,10};query.forward=forwards[seed%4];
+        query.angle_radians=std::array<float,3>{0x1.921fb6p-1f,0x1.921fb6p+0f,0x1.921fb6p+1f}[seed/4%3];
+        query.min_distance=float(seed/12%2);query.max_distance=std::array<float,3>{2,4,80}[seed/24%3];query.excluded_kinds=std::array<uint32_t,3>{0,2,8}[seed/16%3];
+        for(uint32_t stage=0;stage<9;++stage){
+            if(stage==1){for(uint32_t i=0;i<3;++i)expect(registry.update_position(i+1,{10,0,11.0f+float(i)},&update),"sequence positions each node through its original bin rule");}
+            else if(stage==2)expect(registry.update_position(1,{10,0,12},&update),"same-bucket write creates a strict distance tie without reordering");
+            else if(stage==3)expect(registry.update_type_and_position(3,4,{10,0,10.5f},&update),"fixed-type move preserves context metadata");
+            else if(stage==4)expect(registry.update_type_and_position(2,1,{10,0,64},&update),"exact Z threshold moves into neighboring bin two");
+            else if(stage==5)expect(registry.update_position(1,{10,0,90},&update),"later position update preserves metadata and uses current scene type");
+            else if(stage==6)expect(registry.update_type_and_position(2,scene_type,{10,0,11},&update),"returning node appends after the destination tail");
+            else if(stage==7)expect(registry.unregister_object(2),"selected node removal is visible to the next query");
+            else if(stage==8)registry.clear();
+            awl::WorldMapPlayerContextResult result;
+            expect(awl::query_world_map_player_scene_context(&tables,&registry,query,&result).status==S::Prepared,"owned scene registry query completes without copied list observations");
+            std::vector<uint32_t> words{seed,stage};for(auto value:context_words(result))words.push_back(value);
+            for(int32_t key=-1;key<=58;++key){const auto objects=registry.snapshot(key);words.push_back(uint32_t(key));words.push_back(uint32_t(objects.size()));
+                for(const auto& object:objects){const auto& metadata=object.context;words.push_back(uint32_t(object.identity));words.push_back(uint32_t(object.scene_type));
+                    for(float value:object.position)words.push_back(actor_bits(value));words.push_back(*metadata.owner_code_4);words.push_back(*metadata.owner_kind_8);
+                    for(float value:*metadata.facing_28)words.push_back(actor_bits(value));words.push_back(actor_bits(*metadata.facing_threshold_38));words.push_back(actor_bits(*metadata.max_squared_distance_3c));}}
+            for(auto value:words)hash(digest,value);
+            if(std::getenv("AWL_CONTEXT_REGISTRY_TRACE")){uint64_t row=14695981039346656037ull;for(auto value:words)hash(row,value);
+                std::cout<<"CONTEXT_REGISTRY_ROW "<<seed<<' '<<stage<<' '<<std::hex<<row<<std::dec<<'\n';}
+        }
+    }
+    expect(digest==0xf1aee0cf021596dfull,"1152 complete registry/query samples agree with actual insertion, position, rebin, removal and query instructions under the native numerical profile");
+    std::cout<<"PLAYER_CONTEXT_REGISTRY_SEQUENCE 1152 "<<std::hex<<digest<<std::dec<<'\n';
+}
+void context_registry_checks(const awl::WorldMapPlayerContextTables& tables) {
+    using S=awl::WorldMapPlayerContextStatus;awl::WorldMapSceneBucketRegistry registry;awl::WorldMapScenePositionUpdate update;
+    awl::WorldMapPlayerContextQuery query;query.current_key=17;query.origin=awl::WorldMapPlayerContextVector{0,0,0};query.forward={0,0,1};query.max_distance=4;
+    awl::WorldMapPlayerContextResult result;result.record.owner_code=999;const auto prior=context_words(result);
+    expect(awl::query_world_map_player_scene_context(&tables,nullptr,query,&result).status==S::RequiresSceneRegistry && context_words(result)==prior,"missing reached registry preserves output");
+    expect(awl::query_world_map_player_scene_context(&tables,&registry,query,&result).status==S::Prepared && !result.found,"owned empty bucket is known empty");
+    expect(registry.register_object(1,3,{0,0,1}) && awl::query_world_map_player_scene_context(&tables,&registry,query,&result).status==S::Prepared && !result.found,
+        "unpositioned node stays in constructor minus-one bucket and cannot become a target");
+    expect(registry.update_position(1,{0,0,1},&update) && awl::query_world_map_player_scene_context(&tables,&registry,query,&result).status==S::RequiresRange,"positioned node's reached metadata is never fabricated");
+    awl::WorldMapPlayerContextMetadata metadata;metadata.owner_code_4=101u;metadata.owner_kind_8=1u;metadata.facing_28=awl::WorldMapPlayerContextVector{0,0,-1};
+    metadata.facing_threshold_38=1.0f;metadata.max_squared_distance_3c=16.0f;metadata.payload=std::array<uint32_t,2>{5,6};
+    expect(registry.set_context_metadata(1,metadata),"existing node owns explicit context observations");metadata.owner_code_4=102u;
+    expect(registry.register_object(2,3,{0,0,1}) && registry.set_context_metadata(2,metadata) && registry.update_position(2,{0,0,1},&update),"second equal target appends to existing bucket");
+    expect(awl::query_world_map_player_scene_context(&tables,&registry,query,&result).status==S::Prepared && result.record.owner_code==101 && result.record.payload==std::array<uint32_t,2>{5,6},
+        "equal-distance winner follows original tail insertion and metadata was copied from its source");
+    expect(registry.update_position(1,{0,0,2},&update) && !update.relink_required && awl::query_world_map_player_scene_context(&tables,&registry,query,&result).status==S::Prepared &&
+        result.record.owner_code==102,"query immediately uses same-bucket position writes");
+    expect(registry.update_type_and_position(2,4,{0,0,1},&update) && awl::query_world_map_player_scene_context(&tables,&registry,query,&result).status==S::Prepared && result.record.owner_code==101,
+        "rebin removes the prior winner from the reached bucket");
+    expect(registry.update_type_and_position(2,3,{0,0,2},&update) && awl::query_world_map_player_scene_context(&tables,&registry,query,&result).status==S::Prepared && result.record.owner_code==101,
+        "returning equal target appends behind the retained node");
+    awl::WorldMapPlayerScenePose pose;awl::WorldMapPlayerSceneMessage1F message{3,{0,0,2},{0,0,1}};
+    expect(awl::apply_world_map_player_scene_message_1f(1,message,&registry,&pose,&update) && awl::query_world_map_player_scene_context(&tables,&registry,query,&result).status==S::Prepared &&
+        result.record.owner_code==102 && registry.snapshot(17)[0].context.facing_28==std::optional<awl::WorldMapPlayerContextVector>{{0,0,1}},
+        "message heading writes reach the same facing field used by the context query");
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    {const auto saved=registry.snapshot(17);const auto live=allocation_probe::live;bool failed=false;
+        allocation_probe::remaining=0;allocation_probe::enabled=true;
+        try{(void)registry.update_pose(1,5,{0,0,3},{1,0,0},&update);}catch(const std::bad_alloc&){failed=true;}
+        allocation_probe::enabled=false;const bool released=allocation_probe::live==live;const auto current=registry.snapshot(17);
+        expect(failed && released && registry.size(19)==0 && current.size()==saved.size() && current[0].identity==saved[0].identity &&
+            current[0].position==saved[0].position && current[0].scene_type==saved[0].scene_type && current[0].context.facing_28==saved[0].context.facing_28 &&
+            current[0].context.payload==saved[0].context.payload,"destination allocation failure preserves pose, context observations, bucket/order and storage");
+        std::cout<<"PLAYER_CONTEXT_POSE_ALLOCATION_FAILURES 1\n";}
+#endif
+    const auto retained=context_words(result);const auto before=registry.snapshot(17);const float nan=std::numeric_limits<float>::quiet_NaN();
+    expect(!registry.update_pose(1,4,{0,0,3},{nan,0,1},&update) && !registry.update_position(1,{nan,0,3},&update) &&
+        !registry.set_context_metadata(0,metadata) && !registry.set_context_metadata(99,metadata) && registry.snapshot(17)[0].position==before[0].position &&
+        registry.snapshot(17)[0].context.facing_28==before[0].context.facing_28 && registry.size(18)==0,"invalid pose/identity preserves geometry, metadata, membership and order");
+    metadata={};metadata.owner_kind_8=1u;expect(registry.set_context_metadata(1,metadata),"metadata can be cleared without moving the node");query.excluded_kinds=2;
+    // Second kind is also one: both entries are excluded before missing fields.
+    allocation_probe::remaining=0;allocation_probe::enabled=true;
+    const bool stored=registry.set_context_metadata(1,metadata);const auto step=awl::query_world_map_player_scene_context(&tables,&registry,query,&result);allocation_probe::enabled=false;
+    expect(stored && step.status==S::Prepared && !result.found,"metadata publication and registry query allocate nothing; masked unknown geometry/payload is unread");
+    query.excluded_kinds=0;result.record.owner_code=retained[2];const auto stopped=context_words(result);
+    expect(awl::query_world_map_player_scene_context(&tables,&registry,query,&result).status==S::RequiresRange && context_words(result)==stopped,"missing reached metadata preserves the previous complete result");
+    query.current_key=59;expect(awl::query_world_map_player_scene_context(&tables,&registry,query,&result).status==S::RequiresList && context_words(result)==stopped,"unowned bucket cannot masquerade as empty");
+    query.forward={0,0,0};query.origin.reset();expect(awl::query_world_map_player_scene_context(nullptr,nullptr,query,&result).status==S::Prepared && !result.found,"zero heading skips even absent registry/tables");
+    expect(registry.unregister_object(1) && registry.register_object(1,3,{0,0,1}) && !registry.snapshot(-1)[0].context.owner_code_4 && !registry.snapshot(-1)[0].context.facing_28,
+        "reused identity starts with unknown metadata instead of restoring stale observations");
+    registry.clear();expect(registry.size(-1)==0 && registry.size(17)==0,"clear removes every owned context node");
+    std::cout<<"PLAYER_CONTEXT_REGISTRY owned positions/order/metadata, message heading and lifecycle failures\n";
+}
 void context_checks() {
     using D=awl::WorldMapPlayerContextTablesStatus;using S=awl::WorldMapPlayerContextStatus;
     auto bytes=context_tables_dol();std::shared_ptr<const awl::WorldMapPlayerContextTables> tables;
@@ -3084,6 +3176,7 @@ void context_checks() {
         expect(decoded && failed==2,"context provider publishes only after object and shared-control allocation");std::cout<<"PLAYER_CONTEXT_TABLE_ALLOCATION_FAILURES "<<failed<<'\n';}
 #endif
     context_matrix(*tables,0xa0da16549db546e1ull);
+    context_registry_sequence(*tables);context_registry_checks(*tables);
     awl::WorldMapPlayerContextQuery query;query.forward={0,0,1};query.origin=awl::WorldMapPlayerContextVector{0,0,0};query.angle_radians=0;query.max_distance=4;query.current_key=1;
     std::vector<awl::WorldMapPlayerContextList> lists{{1,{}},{2,{}}};
     awl::WorldMapPlayerContextCandidate first;first.owner_code_4=100u;first.owner_kind_8=1u;first.position_1c=awl::WorldMapPlayerContextVector{0,0,1};
