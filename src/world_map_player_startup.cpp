@@ -239,6 +239,41 @@ WorldMapPlayerAnimationLoopResult WorldMapPlayerStartup::advance_animation_for_l
     animation_loop_=WorldMapPlayerAnimationLoop{clock.loop_count,clock.raw_time};
     result.status=S::Advanced;return result;
 }
+WorldMapPlayerStartupQueueResult WorldMapPlayerStartup::consume_state29_update_after_primary_passes(
+    const WorldMapUpdateInputs& inputs,const WorldMapPlayerStartupQueuedActorInput& input,
+    WorldMapPlayerUpdateOwners* updates,WorldMapPlayerActorQueue* render_queue) {
+    return consume_update(inputs,input,updates,render_queue,QueuePrerequisite::Passes);
+}
+WorldMapPlayerPrimaryPassesResult WorldMapPlayerStartup::complete_state29_primary_passes(
+    const WorldMapUpdateInputs& inputs,const WorldMapPlayerState29SecondaryInput& secondary,
+    const std::optional<WorldMapPlayerUpdateGuards>& tertiary_guards) noexcept {
+    using S=WorldMapPlayerPrimaryPassesStatus;using F=WorldMapPlayerFollowupStatus;
+    if (!model_->game_clock() || inputs.game_clock()!=model_->game_clock()) return {S::InvalidInput};
+    const auto control=inputs.queue_control();
+    if (control.status!=WorldMapDispatchStatus::Ready || !control.control_word) return {S::RequiresControl};
+    const auto& clock=model_->game_clock()->state();
+    const auto current=[&](const auto& receipt) {
+        return receipt && receipt->valid && receipt->loop_count==clock.loop_count && receipt->raw_time==clock.raw_time;
+    };
+    if (!current(primary_loop_)) return {S::RequiresPrimary};
+    if (!current(animation_loop_)) return {S::RequiresAnimation};
+    if (primary_loop_->followups_completed) return {S::AlreadyCompleted};
+    WorldMapPlayerPrimaryPassesResult result;
+    const auto dispatch=inputs.dispatch(primary_registration()[0].priority);
+    if (dispatch.status==WorldMapDispatchStatus::Filtered) result.filtered=true;
+    else {
+        if (dispatch.status!=WorldMapDispatchStatus::Ready || state_.state_1364!=0x29) return {S::InvalidInput};
+        result.secondary=prepare_world_map_player_state29_secondary(secondary);
+        const auto status=result.secondary->status;
+        if (status==F::TransitionRequired) {result.status=S::TransitionRequired;return result;}
+        if (status!=F::RetainedState && status!=F::SkippedByGuard) {result.status=S::SecondaryIncomplete;return result;}
+        result.tertiary=prepare_world_map_player_state29_tertiary(tertiary_guards);
+        if (*result.tertiary!=F::RetainedState && *result.tertiary!=F::SkippedByGuard) {result.status=S::TertiaryIncomplete;return result;}
+        state_.control_word_1384=*control.control_word;
+    }
+    primary_loop_->followups_completed=true;
+    result.status=S::Completed;return result;
+}
 WorldMapPlayerAnimationLoopResult WorldMapPlayerStartup::dispatch_animation_for_loop(const WorldMapUpdateInputs& inputs) {
     using S=WorldMapPlayerAnimationLoopStatus;
     if (!model_->game_clock() || inputs.game_clock()!=model_->game_clock()) return {S::InvalidInput};
@@ -304,13 +339,15 @@ WorldMapPlayerStartupQueueResult WorldMapPlayerStartup::consume_update(
     if (inputs.game_clock() != model_->game_clock()) return {S::InvalidInput};
     const auto control = inputs.queue_control();
     if (control.status != WorldMapDispatchStatus::Ready || !control.control_word) return {S::RequiresControl};
-    if (prerequisite==QueuePrerequisite::Primary && (!primary_loop_ || !primary_loop_->valid ||
+    const bool needs_primary=prerequisite==QueuePrerequisite::Primary || prerequisite==QueuePrerequisite::Passes;
+    if (needs_primary && (!primary_loop_ || !primary_loop_->valid ||
         primary_loop_->loop_count!=model_->game_clock()->state().loop_count || primary_loop_->raw_time!=model_->game_clock()->state().raw_time))
         return {S::RequiresPrimary};
-    if (prerequisite==QueuePrerequisite::Primary && primary_loop_->updates_owner &&
+    if (needs_primary && primary_loop_->updates_owner &&
         primary_loop_->updates_owner!=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(updates))) return {S::InvalidInput};
     if (prerequisite!=QueuePrerequisite::None && (!animation_loop_ || !animation_loop_->valid || animation_loop_->loop_count!=model_->game_clock()->state().loop_count ||
         animation_loop_->raw_time!=model_->game_clock()->state().raw_time)) return {S::RequiresAnimation};
+    if (prerequisite==QueuePrerequisite::Passes && !primary_loop_->followups_completed) return {S::RequiresPrimaryPasses};
     WorldMapPlayerStartupQueueResult result;
     // Borrow observations without copying/allocating before the script gate.
     result.callback = advance_actor_callback(control.control_word,input.actor,input.effect_gate,render_queue);

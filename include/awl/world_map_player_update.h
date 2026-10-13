@@ -48,6 +48,38 @@ enum class WorldMapPlayerUpdateStatus {
 [[nodiscard]] WorldMapPlayerUpdateStatus prepare_world_map_player_state29_update_entry(
     const WorldMapPlayerUpdateEntry& entry);
 
+// Observations reached by 31484 -> state-29 row +18 -> 34B44. These
+// globals are distinct owners even where their field offsets are equal.
+struct WorldMapPlayerState29SecondaryInput {
+    std::optional<WorldMapPlayerUpdateGuards> guards;
+    std::optional<int32_t> mode_word_60; // r13-5808; 189338 tests == 1
+    std::optional<int32_t> scene_mode_60; // r13-57B8
+    std::optional<int32_t> secondary_word_c, secondary_word_20; // r13-582C
+    std::optional<uint8_t> saved_byte_14d35; // r13-57F4
+    std::optional<uint8_t> secondary_byte_3f2; // r13-582C
+    std::optional<bool> item_present; // (r13-5854)->+4 != null
+    // Resolved save-record +6 reached through 79C10/5D034/DC24, not a
+    // classification inferred from an item name or the startup descriptor.
+    std::optional<uint8_t> item_type_6;
+};
+enum class WorldMapPlayerFollowupStatus {
+    RetainedState, SkippedByGuard, TransitionRequired, RequiresGuards,
+    RequiresGuardWord58c, RequiresModeWord, RequiresSceneMode,
+    RequiresSecondaryWordC, RequiresSecondaryWord20, RequiresSavedByte,
+    RequiresSecondaryByte, RequiresItemOwner, RequiresItemType
+};
+struct WorldMapPlayerState29SecondaryResult {
+    WorldMapPlayerFollowupStatus status = WorldMapPlayerFollowupStatus::RequiresGuards;
+    // Argument to 31D7C, BEFORE its remaps, state initializer and model work.
+    // No transition or write is accepted when this field is present.
+    std::optional<int32_t> requested_state;
+};
+[[nodiscard]] WorldMapPlayerState29SecondaryResult prepare_world_map_player_state29_secondary(
+    const WorldMapPlayerState29SecondaryInput&) noexcept;
+// 31504 -> row +24 -> 34CA8 (blr), including its earlier guard decisions.
+[[nodiscard]] WorldMapPlayerFollowupStatus prepare_world_map_player_state29_tertiary(
+    const std::optional<WorldMapPlayerUpdateGuards>&) noexcept;
+
 // Only 313C4..31464 on state 29, including the complete position-copy
 // callees and 17CFB4/D324/D37C/C3F4 sorted insertion. Unsigned priorities
 // insert before equals. The pose is observed at tail entry, not a movement

@@ -5,6 +5,45 @@
 #include <utility>
 
 namespace awl {
+WorldMapPlayerFollowupStatus prepare_world_map_player_state29_tertiary(
+    const std::optional<WorldMapPlayerUpdateGuards>& guards) noexcept {
+    using S=WorldMapPlayerFollowupStatus;
+    if (!guards) return S::RequiresGuards;
+    if (guards->word_680!=-1) return S::SkippedByGuard;
+    if (!guards->word_58c) return S::RequiresGuardWord58c;
+    return *guards->word_58c==0?S::RetainedState:S::SkippedByGuard;
+}
+WorldMapPlayerState29SecondaryResult prepare_world_map_player_state29_secondary(
+    const WorldMapPlayerState29SecondaryInput& input) noexcept {
+    using S=WorldMapPlayerFollowupStatus;
+    const auto guard=prepare_world_map_player_state29_tertiary(input.guards);
+    if (guard!=S::RetainedState) return {guard,{}};
+    if (!input.mode_word_60) return {S::RequiresModeWord,{}};
+    if (*input.mode_word_60==1) return {S::RetainedState,{}};
+    if (!input.scene_mode_60) return {S::RequiresSceneMode,{}};
+    const auto transition=[](int32_t state) { return WorldMapPlayerState29SecondaryResult{S::TransitionRequired,state}; };
+    switch (*input.scene_mode_60) {
+    case 0x1d:
+        if (!input.saved_byte_14d35) return {S::RequiresSavedByte,{}};
+        return transition(*input.saved_byte_14d35?0xe1:0);
+    case 0x23: return transition(0xce);
+    case 0x25:
+        if (!input.secondary_word_c) return {S::RequiresSecondaryWordC,{}};
+        return transition(*input.secondary_word_c==0?0xcc:0);
+    case 0x26: return transition(0xd9);
+    case 0x28:
+        if (!input.secondary_word_20) return {S::RequiresSecondaryWord20,{}};
+        return transition(*input.secondary_word_20==0?0xce:0);
+    default:
+        if (!input.secondary_byte_3f2) return {S::RequiresSecondaryByte,{}};
+        if (*input.secondary_byte_3f2) return transition(0x12);
+        if (!input.item_present) return {S::RequiresItemOwner,{}};
+        if (!*input.item_present) return transition(0);
+        if (!input.item_type_6) return {S::RequiresItemType,{}};
+        return transition(*input.item_type_6==7?0xb0:0);
+    }
+}
+
 WorldMapPlayerUpdateStatus prepare_world_map_player_state29_update_entry(
     const WorldMapPlayerUpdateEntry& entry) {
     using S = WorldMapPlayerUpdateStatus;

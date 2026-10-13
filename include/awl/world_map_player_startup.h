@@ -172,6 +172,9 @@ struct WorldMapPlayerPrimaryLoop {
     // Borrowed identity only. Keep this update owner's storage alive through
     // queued completion; no pointer is reconstructed or dereferenced by key.
     uint64_t updates_owner = 0;
+    // Only this owned player's second/third callbacks and the manager's
+    // empty second/third callbacks; not other nodes or scene work.
+    bool followups_completed = false;
 };
 struct WorldMapPlayerPrimarySliceResult {
     WorldMapPlayerPrimarySliceStatus status = WorldMapPlayerPrimarySliceStatus::InvalidInput;
@@ -179,9 +182,20 @@ struct WorldMapPlayerPrimarySliceResult {
     std::optional<WorldMapPlayerAnimationLoopResult> animation;
     bool parent_reused = false;
 };
+enum class WorldMapPlayerPrimaryPassesStatus {
+    Completed, AlreadyCompleted, RequiresControl, RequiresPrimary,
+    RequiresAnimation, SecondaryIncomplete, TertiaryIncomplete,
+    TransitionRequired, InvalidInput
+};
+struct WorldMapPlayerPrimaryPassesResult {
+    WorldMapPlayerPrimaryPassesStatus status = WorldMapPlayerPrimaryPassesStatus::InvalidInput;
+    std::optional<WorldMapPlayerState29SecondaryResult> secondary;
+    std::optional<WorldMapPlayerFollowupStatus> tertiary;
+    bool filtered = false;
+};
 enum class WorldMapPlayerStartupQueueStatus {
     Completed, Empty, UnsupportedNode, UnsupportedPriority, InvalidQueue,
-    RequiresControl, CallbackIncomplete, InvalidInput, RequiresAnimation, RequiresPrimary
+    RequiresControl, CallbackIncomplete, InvalidInput, RequiresAnimation, RequiresPrimary, RequiresPrimaryPasses
 };
 struct WorldMapPlayerStartupQueueResult {
     WorldMapPlayerStartupQueueStatus status = WorldMapPlayerStartupQueueStatus::InvalidInput;
@@ -304,6 +318,15 @@ public:
     // secondary/tertiary passes, scene callbacks and render/clock work remain.
     [[nodiscard]] WorldMapPlayerPrimarySliceResult advance_state29_primary_slice(
         const WorldMapUpdateInputs&,const WorldMapPlayerStartupDispatchInput&,WorldMapPlayerUpdateOwners*);
+    // After the accepted first-pass pair, handle the owned player 31484/31504
+    // callbacks in order. The model-manager callbacks 9540/9538 are empty.
+    // Independent guard observations allow changes between the two passes.
+    // Reached transitions stop BEFORE 31D7C; no state initializer is invented.
+    // Unknown later dependencies preserve control and the completion receipt.
+    // This does not acknowledge other primary nodes/pool slots or scene work.
+    [[nodiscard]] WorldMapPlayerPrimaryPassesResult complete_state29_primary_passes(
+        const WorldMapUpdateInputs&,const WorldMapPlayerState29SecondaryInput&,
+        const std::optional<WorldMapPlayerUpdateGuards>& tertiary_guards) noexcept;
     // Same bounded front-node callback/completion, additionally requiring the
     // owned animation slot's accepted receipt for this loop. Empty queues still
     // skip every dependency; invalid/foreign earlier nodes are never skipped.
@@ -316,6 +339,11 @@ public:
     // front-node frame/scheduling transaction. Other primary nodes/passes are
     // not acknowledged by these two owned receipts.
     [[nodiscard]] WorldMapPlayerStartupQueueResult consume_state29_update_after_primary_slice(
+        const WorldMapUpdateInputs&,const WorldMapPlayerStartupQueuedActorInput&,
+        WorldMapPlayerUpdateOwners*,WorldMapPlayerActorQueue*);
+    // Additionally require the owned second/third callbacks. The weaker APIs
+    // above remain isolated diagnostics, not complete loop-prefix evidence.
+    [[nodiscard]] WorldMapPlayerStartupQueueResult consume_state29_update_after_primary_passes(
         const WorldMapUpdateInputs&,const WorldMapPlayerStartupQueuedActorInput&,
         WorldMapPlayerUpdateOwners*,WorldMapPlayerActorQueue*);
     [[nodiscard]] WorldMapPlayerPrimaryUpdateResult advance(const WorldMapPlayerPrimaryFrameInput& input) {
@@ -344,7 +372,7 @@ public:
         return model_->configure_repeats(kind,value);
     }
 private:
-    enum class QueuePrerequisite { None, Animation, Primary };
+    enum class QueuePrerequisite { None, Animation, Primary, Passes };
     [[nodiscard]] WorldMapPlayerStartupQueueResult consume_update(
         const WorldMapUpdateInputs&,const WorldMapPlayerStartupQueuedActorInput&,
         WorldMapPlayerUpdateOwners*,WorldMapPlayerActorQueue*,QueuePrerequisite);
