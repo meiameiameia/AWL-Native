@@ -11,6 +11,8 @@ public:
     [[nodiscard]] bool labels(uint32_t classification,uint32_t context,std::array<uint32_t,2>* out) const noexcept;
     uint32_t item_class(uint8_t type) const noexcept {return type<item_classes_.size()?item_classes_[type]:0;}
     float probe_distance() const noexcept {return probe_distance_;}
+    // Optional on bounded synthetic label-only decodes; present in target DOL.
+    [[nodiscard]] bool icon(uint32_t label,uint8_t* out) const noexcept;
 private:
     WorldMapPlayerContextLabelTables()=default;
     bool decode(const uint8_t*,size_t) noexcept;
@@ -21,6 +23,7 @@ private:
     std::array<std::array<uint8_t,172>,31> rows_{};
     std::array<uint8_t,31> item_classes_{};
     float probe_distance_=0;
+    std::optional<std::array<uint8_t,103>> icons_;
     bool target_verified_=false;
 };
 [[nodiscard]] WorldMapPlayerContextLabelTablesStatus decode_world_map_player_context_label_tables(
@@ -100,4 +103,31 @@ struct WorldMapPlayerContextLabelStep {
 [[nodiscard]] WorldMapPlayerContextLabelStep prepare_world_map_player_context_labels_from_target(
     const WorldMapPlayerContextLabelTables*,const WorldMapPlayerContextResult&,
     const WorldMapPlayerContextLabelInput&,WorldMapPlayerContextLabels* out) noexcept;
+
+struct WorldMapPlayerContextIconState {
+    std::optional<uint64_t> resource_manager_1278;
+    std::array<std::optional<uint32_t>,4> labels_60;
+};
+enum class WorldMapPlayerContextIconStatus {
+    Prepared, RequiresResourceManager, RequiresPreviousLabel, RequiresIconMap,
+    RequiresIconAssets, UnsupportedLabel, InvalidInput
+};
+struct WorldMapPlayerContextIconStep {
+    WorldMapPlayerContextIconStatus status=WorldMapPlayerContextIconStatus::InvalidInput;
+    uint32_t channel=0,prepared_mask=0;
+    std::optional<uint8_t> previous_icon,next_icon;
+};
+// 83378 through equal-label/equal-mapped-icon completion. Changed icon stops
+// before 18124C/resource setup; it cannot acknowledge UI delivery. Manager and
+// previous labels are observed retained state, not fabricated constructor state.
+// Every stop preserves *out; no allocation or resource-manager dereference.
+[[nodiscard]] WorldMapPlayerContextIconStep prepare_world_map_player_context_icon(
+    const WorldMapPlayerContextLabelTables*,const WorldMapPlayerContextIconState&,
+    uint32_t channel,uint32_t label,WorldMapPlayerContextIconState* out) noexcept;
+// 43120's channel order is 0,1,3,2 for primary,zero,secondary,tertiary.
+// All four retained-icon updates publish atomically; a late changed icon keeps
+// the caller's entire previous state. Original intermediate writes are deferred.
+[[nodiscard]] WorldMapPlayerContextIconStep prepare_world_map_player_context_icons(
+    const WorldMapPlayerContextLabelTables*,const WorldMapPlayerContextIconState&,
+    const WorldMapPlayerContextLabels&,WorldMapPlayerContextIconState* out) noexcept;
 } // namespace awl

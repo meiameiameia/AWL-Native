@@ -104,7 +104,14 @@ bool WorldMapPlayerContextLabelTables::decode(const uint8_t* data,size_t size) n
         const uint32_t word=detail::dol_word(instruction);if((word&0xffff0000u)!=0x38600000u || (word&0xffff)>30)return false;
         item_classes_[i]=static_cast<uint8_t>(word&0xffff);}
     const uint32_t bits=detail::dol_word(distance);std::memcpy(&probe_distance_,&bits,4);
+    // Label-only fixtures remain valid. Missing icon metadata cannot authorize
+    // a later mapped-icon comparison; the icon API reports that dependency.
+    if(const auto* icons=view.read(0x8024f694,103)){std::array<uint8_t,103> copy;std::memcpy(copy.data(),icons,copy.size());icons_=copy;}
     return ordinary(probe_distance_) && probe_distance_>0;
+}
+bool WorldMapPlayerContextLabelTables::icon(uint32_t label,uint8_t* out) const noexcept {
+    if(!out || !icons_ || label>=icons_->size())return false;
+    *out=(*icons_)[label];return true;
 }
 bool WorldMapPlayerContextLabelTables::labels(uint32_t classification,uint32_t context,std::array<uint32_t,2>* out) const noexcept {
     if(!out || classification>=rows_.size() || context>=86)return false;
@@ -183,5 +190,32 @@ WorldMapPlayerContextLabelStep prepare_world_map_player_context_labels_from_targ
     std::memcpy(&bound.target_payload,&target.record.payload[1],4);
     bound.direction=target.record.direction;
     return prepare_world_map_player_context_labels(tables,bound,out);
+}
+WorldMapPlayerContextIconStep prepare_world_map_player_context_icon(const WorldMapPlayerContextLabelTables* tables,
+    const WorldMapPlayerContextIconState& input,uint32_t channel,uint32_t label,WorldMapPlayerContextIconState* out) noexcept {
+    using I=WorldMapPlayerContextIconStatus;WorldMapPlayerContextIconStep step;step.channel=channel;
+    if(!out || channel>=4)return step;
+    if(!input.resource_manager_1278){step.status=I::RequiresResourceManager;return step;}
+    if(!input.labels_60[channel]){step.status=I::RequiresPreviousLabel;return step;}
+    const uint32_t previous=*input.labels_60[channel];
+    if(previous!=label){
+        if(previous>=103 || label>=103){step.status=I::UnsupportedLabel;return step;}
+        uint8_t old_icon,new_icon;
+        if(!tables || !tables->icon(label,&new_icon) || !tables->icon(previous,&old_icon)){step.status=I::RequiresIconMap;return step;}
+        step.previous_icon=old_icon;step.next_icon=new_icon;
+        if(old_icon!=new_icon){step.status=I::RequiresIconAssets;return step;}
+    }
+    auto next=input;next.labels_60[channel]=label;*out=next;step.prepared_mask=1u<<channel;step.status=I::Prepared;return step;
+}
+WorldMapPlayerContextIconStep prepare_world_map_player_context_icons(const WorldMapPlayerContextLabelTables* tables,
+    const WorldMapPlayerContextIconState& input,const WorldMapPlayerContextLabels& labels,WorldMapPlayerContextIconState* out) noexcept {
+    using I=WorldMapPlayerContextIconStatus;WorldMapPlayerContextIconStep step;if(!out)return step;
+    auto next=input;uint32_t mask=0;
+    for(const auto channel:{0u,1u,3u,2u}){
+        const auto label=channel==0?labels.labels[0]:channel==1?0u:channel==3?labels.labels[1]:labels.labels[2];
+        step=prepare_world_map_player_context_icon(tables,next,channel,label,&next);step.prepared_mask|=mask;
+        if(step.status!=I::Prepared)return step;mask=step.prepared_mask;
+    }
+    *out=next;return step;
 }
 } // namespace awl

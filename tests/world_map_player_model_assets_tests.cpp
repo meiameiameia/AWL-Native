@@ -3218,6 +3218,46 @@ void context_label_classification_checks(const awl::WorldMapPlayerContextLabelTa
     }
     expect(count==3328 && digest==0x68082f4c104c6b25ull,"all action flag bytes/boundaries agree with original 4F25C mask selection");std::cout<<"PLAYER_CONTEXT_ACTION_FLAGS "<<count<<' '<<std::hex<<digest<<std::dec<<'\n';
 }
+void context_icon_matrix(const awl::WorldMapPlayerContextLabelTables& tables,uint64_t expected) {
+    using S=awl::WorldMapPlayerContextIconStatus;uint64_t digest=14695981039346656037ull;uint32_t count=0;
+    for(uint32_t old=0;old<103;++old)for(uint32_t label=0;label<103;++label)for(uint32_t channel=0;channel<4;++channel){
+        awl::WorldMapPlayerContextIconState state;state.resource_manager_1278=uint64_t(0x12345678);state.labels_60={11u,22u,33u,44u};state.labels_60[channel]=old;auto next=state;
+        const auto step=awl::prepare_world_map_player_context_icon(&tables,state,channel,label,&next);
+        expect(step.status==S::Prepared || step.status==S::RequiresIconAssets,"every bounded icon pair completes retained state or stops before changed-resource selection");
+        for(uint32_t value:{old,label,channel,uint32_t(step.status==S::RequiresIconAssets)})hash(digest,value);
+        for(const auto& value:next.labels_60)hash(digest,*value);hash(digest,step.previous_icon?uint32_t(*step.previous_icon):256u);hash(digest,step.next_icon?uint32_t(*step.next_icon):256u);++count;
+    }
+    expect(count==42436 && digest==expected,"all bounded label/icon pairs and four channels agree with actual original retained paths/resource stops");
+    std::cout<<"PLAYER_CONTEXT_ICON_RETENTION "<<count<<' '<<std::hex<<digest<<std::dec<<'\n';
+}
+void context_icon_checks(const std::vector<uint8_t>& label_bytes) {
+    using D=awl::WorldMapPlayerContextLabelTablesStatus;using S=awl::WorldMapPlayerContextIconStatus;
+    auto bytes=label_bytes;bytes.resize(0x16bf);word(bytes,4*4,0x1658);word(bytes,0x48+4*4,0x8024f694);word(bytes,0x90+4*4,103);
+    for(uint32_t i=0;i<103;++i)bytes[0x1658+i]=uint8_t(i%7);
+    std::shared_ptr<const awl::WorldMapPlayerContextLabelTables> tables;
+    expect(awl::decode_world_map_player_context_label_tables(bytes.data(),bytes.size(),&tables)==D::Decoded,"bounded icon map decodes beside label metadata");if(!tables)return;
+    context_icon_matrix(*tables,0xe3c75fc6ac068975ull);
+    awl::WorldMapPlayerContextIconState state,output;output.resource_manager_1278=uint64_t(999);output.labels_60={99u,88u,77u,66u};const auto prior=output;
+    const auto preserved=[&](){return output.labels_60==prior.labels_60 && output.resource_manager_1278==prior.resource_manager_1278;};
+    expect(awl::prepare_world_map_player_context_icon(nullptr,state,0,0,&output).status==S::RequiresResourceManager && preserved(),"resource-manager pointer observation precedes even equal-label completion");
+    state.resource_manager_1278=uint64_t(0);expect(awl::prepare_world_map_player_context_icon(nullptr,state,0,0,&output).status==S::RequiresPreviousLabel && preserved(),"known null manager is not dereferenced on retained paths; previous label is still required");
+    state.labels_60[0]=7u;expect(awl::prepare_world_map_player_context_icon(nullptr,state,0,0,&output).status==S::RequiresIconMap && preserved(),"changed label needs mapping before icon comparison");
+    {std::shared_ptr<const awl::WorldMapPlayerContextLabelTables> label_only;uint8_t icon=255;
+        expect(awl::decode_world_map_player_context_label_tables(label_bytes.data(),label_bytes.size(),&label_only)==D::Decoded && !label_only->icon(0,&icon) && icon==255 &&
+            awl::prepare_world_map_player_context_icon(label_only.get(),state,0,0,&output).status==S::RequiresIconMap && preserved(),"label-only metadata never claims an absent icon section is validated");}
+    auto step=awl::prepare_world_map_player_context_icon(tables.get(),state,0,1,&output);expect(step.status==S::RequiresIconAssets && step.previous_icon==uint8_t(0) && step.next_icon==uint8_t(1) && preserved(),"different mapped icon stops before asset setup without changing any label or manager field");
+    expect(awl::prepare_world_map_player_context_icon(tables.get(),state,4,0,&output).status==S::InvalidInput && preserved() && awl::prepare_world_map_player_context_icon(tables.get(),state,0,0,nullptr).status==S::InvalidInput,"invalid icon output/channel rejects");
+    state.labels_60[0]=103u;expect(awl::prepare_world_map_player_context_icon(tables.get(),state,0,0,&output).status==S::UnsupportedLabel && preserved(),"reached unsupported previous label cannot index the map");
+    expect(awl::prepare_world_map_player_context_icon(nullptr,state,0,103,&output).status==S::Prepared && output.labels_60[0]==103u && !output.labels_60[1],"equal label skips mapping/bounds and leaves unrelated unknown fields intact");output=prior;
+    state.labels_60={7u,0u,14u,21u};awl::WorldMapPlayerContextLabels labels;labels.labels={0,0,1};
+    step=awl::prepare_world_map_player_context_icons(tables.get(),state,labels,&output);expect(step.status==S::RequiresIconAssets && step.channel==2 && step.prepared_mask==0xbu && preserved(),"late channel2 resource stop follows 0,1,3 order and preserves all staged label changes");
+    state.labels_60[1].reset();step=awl::prepare_world_map_player_context_icons(tables.get(),state,labels,&output);expect(step.status==S::RequiresPreviousLabel && step.channel==1 && step.prepared_mask==1 && preserved(),"missing channel1 stops before channel3/2 without publishing accepted channel0");
+    state.labels_60[1]=0u;labels.labels={0,7,14};allocation_probe::remaining=0;allocation_probe::enabled=true;
+    step=awl::prepare_world_map_player_context_icons(tables.get(),state,labels,&state);allocation_probe::enabled=false;
+    expect(step.status==S::Prepared && step.prepared_mask==15 && state.labels_60==std::array<std::optional<uint32_t>,4>{0u,0u,14u,7u} && state.resource_manager_1278==uint64_t(0),"all four retained-icon channels publish in their original slots atomically without allocation and support aliasing");
+    uint8_t icon=255;bytes.clear();expect(tables->icon(102,&icon) && icon==4 && !tables->icon(103,&icon) && icon==4,"owned icon map outlives source bytes and bounds preserve output");
+    std::cout<<"PLAYER_CONTEXT_ICON_BATCH retained labels, ordered changed-resource stops and atomic publication\n";
+}
 void context_label_checks() {
     using D=awl::WorldMapPlayerContextLabelTablesStatus;using S=awl::WorldMapPlayerContextLabelStatus;
     auto bytes=context_label_dol();std::shared_ptr<const awl::WorldMapPlayerContextLabelTables> tables;
@@ -3234,6 +3274,7 @@ void context_label_checks() {
 #endif
     context_label_matrix(*tables,0x9ca42ae922786a33ull);
     context_label_classification_checks(*tables);
+    context_icon_checks(bytes);
     awl::WorldMapPlayerContextLabelInput input;input.query_mode=1;input.facing={0,0,1};awl::WorldMapPlayerContextLabels output;output.labels={777,888,999};
     auto prior=context_label_words(output);const auto stopped=[&](S status){const auto step=awl::prepare_world_map_player_context_labels(tables.get(),input,&output);
         expect(step.status==status && context_label_words(output)==prior,"reached context-label dependency preserves every previous descriptor word");return step;};
@@ -5266,6 +5307,7 @@ void local_animation_loops(const char* disc) {
     std::shared_ptr<const awl::WorldMapPlayerContextLabelTables> context_labels;
     expect(awl::load_world_map_player_context_label_tables(&context_labels)==awl::WorldMapPlayerContextLabelTablesStatus::Loaded && context_labels && context_labels->target_verified(),"local context labels load only from target-verified DOL metadata");
     if(context_labels)context_label_matrix(*context_labels,0x5d00b3cdd08c3bf9ull);
+    if(context_labels)context_icon_matrix(*context_labels,0xcd1975f29e8238f5ull);
     awl::WorldMapPlayerStartupProviders providers;
     expect(awl::load_world_map_player_animation_assets(&providers.animations)==awl::WorldMapPlayerAnimationAssetsStatus::Loaded &&
         awl::load_world_map_player_start_animation_tables(&providers.starts)==awl::WorldMapPlayerStartAnimationStatus::Loaded && providers.starts->target_verified() &&
