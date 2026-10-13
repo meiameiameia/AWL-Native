@@ -12,6 +12,7 @@
 #include "awl/world_map_player_animation_holder.h"
 #include "awl/world_map_player_startup.h"
 #include "awl/world_map_fade.h"
+#include "awl/world_map_phase.h"
 #include "awl/filesystem.h"
 
 #include <chrono>
@@ -2845,7 +2846,9 @@ uint64_t startup_snapshot(const awl::WorldMapPlayerStartup& owner) {
         hash(h,owner.primary_loop()->followups_completed);
         hash(h,uint32_t(owner.primary_loop()->fade_owner>>32));hash(h,uint32_t(owner.primary_loop()->fade_owner));
         hash(h,owner.primary_loop()->queued_completed);
-        hash(h,uint32_t(owner.primary_loop()->inputs_owner>>32));hash(h,uint32_t(owner.primary_loop()->inputs_owner));}
+        hash(h,uint32_t(owner.primary_loop()->inputs_owner>>32));hash(h,uint32_t(owner.primary_loop()->inputs_owner));
+        hash(h,owner.primary_loop()->pending_state_request.has_value());hash(h,uint32_t(owner.primary_loop()->pending_state_request.value_or(-1)));
+        hash(h,owner.primary_loop()->state0_transition_completed);}
     const auto key=reinterpret_cast<uintptr_t>(owner.starts().get());hash(h,uint32_t(uint64_t(key)>>32));hash(h,uint32_t(key));
     hash(h,owner.camera().has_value());if(owner.camera()){const auto camera=camera_snapshot(*owner.camera());hash(h,uint32_t(camera>>32));hash(h,uint32_t(camera));}
     const auto& actor=owner.actor_metadata();hash(h,actor.flag_15d);hash(h,actor.flag_15e);hash(h,actor.flag_15f);
@@ -3012,6 +3015,36 @@ void fade_checks() {
     }
     expect(digest==0xb77643c95bdf85e5ull && first_transition==63,"64-loop fade/player/clock sequence matches original state-zero request at loop63");
     std::cout<<"WORLD_MAP_FADE_PLAYER_SEQUENCE 64 "<<std::hex<<digest<<std::dec<<" first state-zero request "<<first_transition<<'\n';
+}
+void state0_initializer_checks() {
+    using S=awl::WorldMapPlayerState0TransitionStatus;
+    uint64_t digest=14695981039346656037ull;
+    for(uint32_t seed=0;seed<432;++seed){awl::WorldMapPlayerState0TransitionInput input;
+        input.item_144=seed%2?7u:0u;input.item_binding_1454=seed/2%2!=0;input.action_148=seed/4%2?-1:0;input.action_binding_3ec=seed/8%2!=0;
+        const auto completed=std::array<uint8_t,3>{0,1,255}[seed/16%3],flag=std::array<uint8_t,3>{0,1,255}[seed/48%3],prior=std::array<uint8_t,3>{0,1,255}[seed/144%3];
+        const auto step=awl::prepare_world_map_player_state0_initializer(input,completed,flag,prior);
+        const uint32_t route=step.status==S::RequiresItemAttachment?1u:step.status==S::RequiresActionAttachment?2u:0u;
+        expect(step.status==S::Prepared || route!=0,"complete initializer observations prepare the no-attachment path or stop before the reached attachment body");
+        for(uint32_t word:{seed,*input.item_144,uint32_t(*input.item_binding_1454),uint32_t(*input.action_148),uint32_t(*input.action_binding_3ec),
+            uint32_t(completed),uint32_t(flag),uint32_t(prior),route,uint32_t(step.secondary_byte_3f0.value_or(prior))})hash(digest,word);
+    }
+    expect(digest==0x0ae35e9eaad42101ull,"432 initializer/holder-tail paths match actual original instructions and attachment precedence");
+    std::cout<<"PLAYER_STATE0_INITIALIZER 432 "<<std::hex<<digest<<std::dec<<'\n';
+    awl::WorldMapPlayerState0TransitionInput input;
+    const auto prepare=[&](std::optional<uint8_t> complete={},std::optional<uint8_t> flag={}){
+        return awl::prepare_world_map_player_state0_initializer(input,complete,flag,255);};
+    expect(prepare().status==S::RequiresItem,"initializer reads item before action or holder flags");
+    input.item_144=0u;expect(prepare().status==S::RequiresAction,"zero item skips its unknown binding");
+    input.action_148=0;expect(prepare().status==S::RequiresHolderCompleted,"no attachments reaches holder completed byte");
+    expect(prepare(uint8_t{0}).status==S::RequiresHolderFlag,"clear completion reaches second flag");
+    expect(prepare(uint8_t{255}).status==S::Prepared && prepare(uint8_t{255}).secondary_byte_3f0==0,"nonzero completed byte skips unknown second flag and clears secondary byte");
+    expect(prepare(uint8_t{0},uint8_t{255}).secondary_byte_3f0==255,"clear completion and nonzero flag preserve raw prior secondary byte");
+    input.item_144=7u;input.action_148.reset();expect(prepare().status==S::RequiresItemBinding,"nonzero item requires its binding before action");
+    input.item_binding_1454=true;expect(prepare().status==S::RequiresItemAttachment,"reached item attachment stops without reading unknown action");
+    input.item_binding_1454=false;expect(prepare().status==S::RequiresAction,"null item binding falls through to action");
+    input.action_148=-1;expect(prepare().status==S::RequiresActionBinding,"all nonzero action words reach their independent binding");
+    input.action_binding_3ec=true;expect(prepare().status==S::RequiresActionAttachment,"action attachment remains untranslated");
+    input.action_binding_3ec=false;expect(prepare(uint8_t{0},uint8_t{0}).status==S::Prepared,"two observed null bindings permit the complete no-attachment initializer path");
 }
 void followup_decision_checks() {
     using S=awl::WorldMapPlayerFollowupStatus;
@@ -4654,7 +4687,9 @@ void startup_tick_owner_checks(const awl::WorldMapPlayerStartupProviders& source
     awl::WorldMapFade fade(providers.clock),other_fade(providers.clock),foreign_fade(std::make_shared<awl::GameClock>());
     expect(fade.start_world_map_entry()==F::Started,"startup-tick fade starts from the bounded clear setup branch");
     awl::WorldMapUpdateInputs inputs(providers.clock),missing(providers.clock);
-    inputs.observe_control_sources({awl::WorldMapControlPhase{uint8_t{1},123456u,uint8_t{0}},0});
+    constexpr std::array<uint32_t,6> phase_origins{0,34560000,103680000,207360000,276480000,311040000};
+    const awl::WorldMapControlSources phase_sources{awl::WorldMapControlPhase{uint8_t{1},phase_origins[query.initial.phase]+123456u,uint8_t{0}},0};
+    inputs.observe_control_sources(phase_sources);
     awl::WorldMapPlayerUpdateOwners owners;owners.scene_one_position_240=std::array<float,3>{};owners.queue={{900,0x1011}};
     expect(player->initialize_fresh_status(inputs,&owners)==awl::WorldMapPlayerStatusCode::Prepared,"startup tick initializes pointed status using the retained phase source");
     awl::WorldMapPlayerActorQueue render{{11,0x2002},{12,0xcffe},{13,UINT32_MAX}};
@@ -4671,6 +4706,8 @@ void startup_tick_owner_checks(const awl::WorldMapPlayerStartupProviders& source
     auto tick=player->advance_state29_startup_tick(missing,input,&fade,&owners,&render);
     expect(tick.status==S::PrimaryIncomplete && tick.primary && !tick.fade && preserved(),"missing captured control stops before parent/model/fade work");
     expect(inputs.capture_control()==awl::WorldMapControlStatus::Captured,"startup tick captures active control once");
+    expect(player->advance_pending_state0_transition(inputs,{},&fade,&owners).status==awl::WorldMapPlayerState0TransitionStatus::RequiresPendingTransition,
+        "state-zero transition cannot precede its owned second-pass request");
     tick=player->advance_state29_startup_tick(inputs,input,&fade,&owners,nullptr);
     expect(tick.status==S::FadeIncomplete && tick.primary && tick.primary->status==awl::WorldMapPlayerPrimarySliceStatus::Completed &&
         tick.fade==F::RequiresRenderQueue && player->primary_loop()->fade_owner==fade.primary_node_identity() && !fade.loop() &&
@@ -4771,6 +4808,76 @@ void startup_tick_owner_checks(const awl::WorldMapPlayerStartupProviders& source
     before=startup_snapshot(*player);fade_before=fade_snapshot(fade);effects=update_owners_snapshot(owners);draw=actor_queue_snapshot(render);
     tick=player->advance_state29_startup_tick(inputs,input,&fade,&owners,&render);
     expect(tick.status==S::TransitionRequired && preserved(),"transition stop retries never repeat accepted parent, animation or final fade color");
+    {awl::WorldMapPlayerStartupTickInput changed;changed.secondary.guards=awl::WorldMapPlayerUpdateGuards{0,{}};changed.secondary.mode_word_60=99;
+        tick=player->advance_state29_startup_tick(inputs,changed,&fade,&owners,&render);
+        expect(tick.status==S::TransitionRequired && tick.passes && tick.passes->secondary && tick.passes->secondary->requested_state==0 && preserved(),
+            "accepted state request stays fixed when retry observations try to skip or replace the requesting callback");}
+    using T=awl::WorldMapPlayerState0TransitionStatus;
+    awl::WorldMapPlayerState0TransitionInput transition;
+    const auto stopped=[&](T status){const auto step=player->advance_pending_state0_transition(inputs,transition,&fade,&owners);
+        expect(step.status==status && preserved(),"stopped state-zero preparation preserves parent/model/fade/status/queues and pending request");return step;};
+    expect(player->advance_pending_state0_transition(missing,transition,&fade,&owners).status==T::RequiresControl &&
+        player->advance_pending_state0_transition(inputs,transition,nullptr,&owners).status==T::InvalidInput && preserved(),"state-zero owner/control preflight preserves accepted startup work");
+    stopped(T::RequiresSavedRemapByte);transition.saved_byte_14d35=uint8_t{0};stopped(T::RequiresSecondaryRemapByte);
+    uint64_t remap_digest=14695981039346656037ull;
+    for(uint32_t seed=0;seed<512;++seed){transition.saved_byte_14d35=uint8_t(seed%256);transition.secondary_byte_3f1=uint8_t(seed/256*255);
+        const auto step=stopped(seed%256 || seed/256?T::UnsupportedRemappedState:T::RequiresSceneType);
+        expect(step.remapped_state.has_value(),"complete saved remap bytes prepare an explicit state number");
+        for(uint32_t word:{seed,uint32_t(*transition.saved_byte_14d35),uint32_t(*transition.secondary_byte_3f1),uint32_t(step.remapped_state.value_or(-1))})hash(remap_digest,word);}
+    expect(remap_digest==0xc5e7f32d12a63e76ull,"512 requested-zero remaps match the original saved-byte precedence");
+    transition.saved_byte_14d35=uint8_t{0};transition.secondary_byte_3f1=uint8_t{0};transition.scene_type_68=1;
+    stopped(T::RequiresAudioByte);transition.audio_byte_90=uint8_t{255};stopped(T::RequiresAudioStop);transition.audio_byte_90=uint8_t{0};
+    stopped(T::RequiresModelByte);transition.saved_subobject_byte_14c=uint8_t{0};
+    {const auto status=owners.status;owners.status.reset();effects=update_owners_snapshot(owners);stopped(T::RequiresStatus);owners.status=status;effects=update_owners_snapshot(owners);}
+    const auto previous_sources=inputs.sources();auto unknown_phase=previous_sources;unknown_phase.phase->raw_word_0.reset();inputs.observe_control_sources(unknown_phase);
+    stopped(T::RequiresPhaseRaw);inputs.observe_control_sources(previous_sources);
+    const auto old_word20=owners.status->word_20;
+    for(const auto& choice:std::array<std::pair<uint32_t,uint32_t>,4>{{{0,7},{24999,7},{25000,0},{75000,1}}}){
+        owners.status->word_20=choice.first;effects=update_owners_snapshot(owners);const auto step=stopped(T::RequiresItem);
+        expect(step.model_row && step.model_row->selector==choice.second && step.model && step.model->after.index_8==player->model().state().feature_38->index_8,
+            "transition selector reads the pointed owned status and preserves feature index through prepared model refresh");}
+    owners.status->word_20=old_word20;effects=update_owners_snapshot(owners);
+    transition.saved_subobject_byte_14c=uint8_t{255};
+    {const auto status=owners.status;owners.status.reset();effects=update_owners_snapshot(owners);const auto step=stopped(T::RequiresItem);
+        expect(step.model_row && step.model_row->selector==0x24,"nonzero pointed byte skips even an absent status word20");owners.status=status;effects=update_owners_snapshot(owners);}
+    transition.saved_subobject_byte_14c=uint8_t{0};
+    const int rounding=std::fegetround();expect(std::fesetround(FE_UPWARD)==0,"state-zero test selects unsupported selector arithmetic");
+    stopped(T::UnsupportedNumerics);expect(std::fesetround(rounding)==0,"state-zero test restores nearest arithmetic");
+    transition.item_144=0u;stopped(T::RequiresAction);transition.item_144=7u;stopped(T::RequiresItemBinding);
+    transition.item_binding_1454=true;stopped(T::RequiresItemAttachment);transition.item_binding_1454=false;stopped(T::RequiresAction);
+    transition.action_148=-1;stopped(T::RequiresActionBinding);transition.action_binding_3ec=true;stopped(T::RequiresActionAttachment);
+    transition.scene_type_68=0;transition.audio_byte_90.reset();stopped(T::RequiresActionAttachment);
+    transition.item_144=0u;transition.action_148=0;transition.scene_type_68=query.tail.inputs.start.saved_pose.scene_type;transition.audio_byte_90=uint8_t{0};
+    auto transition_sources=previous_sources;const auto transition_phase=allocations?(query.initial.phase+2)%6:query.initial.phase;
+    transition_sources.phase->raw_word_0=phase_origins[transition_phase]+123456u;inputs.observe_control_sources(transition_sources);
+    const auto prior_feature=*player->model().state().feature_38;const auto prior_secondary=player->state().secondary_byte_3f0;
+    const auto prior_counter=player->state().counter_1368;const auto frame_before=primary_snapshot(player->model().primary());
+    awl::WorldMapPlayerState0TransitionResult transitioned;bool applied=false;
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    if(allocations){const auto live=allocation_probe::live;size_t failed=0;
+        for(size_t fail=0;fail<8;++fail){allocation_probe::remaining=fail;allocation_probe::enabled=true;
+            transitioned=player->advance_pending_state0_transition(inputs,transition,&fade,&owners);allocation_probe::enabled=false;
+            if(transitioned.status==T::Advanced){applied=true;break;}++failed;
+            expect(transitioned.status==T::AllocationFailure && preserved() && allocation_probe::live==live,"state-zero model timer staging failures preserve the entire pending transition and release rows");}
+        expect(applied && failed==2,"both reached timer-row allocations precede atomic state-zero publication");std::cout<<"PLAYER_STATE0_TRANSITION_ALLOCATION_FAILURES "<<failed<<'\n';}
+#endif
+    if(!applied)transitioned=player->advance_pending_state0_transition(inputs,transition,&fade,&owners);
+    expect(transitioned.status==T::Advanced && transitioned.model_row && transitioned.model && player->state().state_1364==0 &&
+        player->state().counter_1368==prior_counter && player->primary_loop()->state0_transition_completed && !player->primary_loop()->pending_state_request &&
+        !player->primary_loop()->followups_completed && !player->primary_loop()->queued_completed &&
+        primary_snapshot(player->model().primary())==frame_before && fade_snapshot(fade)==fade_before && update_owners_snapshot(owners)==effects && actor_queue_snapshot(render)==draw,
+        "no-attachment state-zero transition publishes model/parent/secondary fields while preserving counter, frame, pending queue, fade and clock");
+    const auto expected_selector=old_word20>=75000?1u:old_word20>=25000?0u:7u;
+    awl::WorldMapPlayerModelTypeRow expected_row;expect(player->model().initial_inputs()->select_model_type(transition_phase,expected_selector,&expected_row) && transitioned.model_row &&
+        transitioned.model_row->slot==expected_row.slot && player->model().state().feature_38->type_0==expected_row.type_0 && player->model().state().feature_38->type_4==expected_row.type_4,
+        "state-zero model table follows the current raw phase owner, including a supplied change since construction");
+    const auto& holder=player->model().state();const auto expected_secondary=*holder.completed_20 || !*holder.flag_21?uint8_t{0}:prior_secondary;
+    expect(player->state().secondary_byte_3f0==expected_secondary && holder.feature_38->index_8==prior_feature.index_8 && holder.feature_38->table_c==prior_feature.table_c,
+        "state-zero holder-tail result and preserved feature index/table match the independently compared original branches");
+    before=startup_snapshot(*player);
+    expect(player->advance_pending_state0_transition(inputs,{},&fade,&owners).status==T::AlreadyAdvanced && preserved(),"repeated accepted transition ignores missing replacement observations");
+    tick=player->advance_state29_startup_tick(inputs,input,&fade,&owners,&render);
+    expect(tick.status==S::PassesIncomplete && !tick.queued && preserved(),"state zero cannot reuse state29's third/queued callback as accepted normal gameplay");
     expect(fade.start_world_map_entry()==F::Started,"diagnostic restart invalidates a handled fade proof");
     before=startup_snapshot(*player);fade_before=fade_snapshot(fade);
     tick=player->advance_state29_startup_tick(inputs,input,&fade,&owners,&render);
@@ -4782,7 +4889,7 @@ void startup_tick_owner_checks(const awl::WorldMapPlayerStartupProviders& source
     if(fresh){const auto unchanged=startup_snapshot(*fresh);
         expect(fresh->advance_state29_startup_tick(inputs,input,&fade,&owners,&render).status==S::RequiresNextLoop && startup_snapshot(*fresh)==unchanged,
             "unbound handled fade prevents retroactive parent/model startup ordering");}
-    std::cout<<"PLAYER_STARTUP_TICK 64 ordered active-control samples / fade-to-state-zero stop / owned queue retries\n";
+    std::cout<<"PLAYER_STARTUP_TICK 64 ordered active-control samples / owned no-attachment state-zero transition / later callbacks still stopped\n";
 }
 void local_animation_loops(const char* disc) {
     using S=awl::WorldMapPlayerStartupStatus;
@@ -4820,7 +4927,7 @@ void local_animation_loops(const char* disc) {
     std::cout<<"LOCAL_PLAYER_ANIMATION_LOOPS "<<checked<<" startups / "<<paired<<" pairs / "<<checked*5<<" eligible loop samples / "<<blocked
         <<" action-only constructor message stops; actual timers/clips, supplied script/visibility/pose, CPU only\n";
     std::cout<<"LOCAL_PLAYER_PRIMARY_SLICES "<<checked<<" ordered parent/model and second/third callbacks with checked queued completions; supplied guards/mode/phase/pose, CPU only\n";
-    std::cout<<"LOCAL_PLAYER_STARTUP_TICKS "<<checked<<" owners / "<<checked*64<<" active-control parent/model/fade samples / explicit state-zero stops; observed guards/scene/script/pose, CPU only\n";
+    std::cout<<"LOCAL_PLAYER_STARTUP_TICKS "<<checked<<" owners / "<<checked*64<<" active-control parent/model/fade samples / no-attachment state-zero transitions; observed guards/scene/script/pose, CPU only\n";
 }
 void local_status_parameters(const awl::WorldMapPlayerStartAnimationTables& tables) {
     uint64_t digest=14695981039346656037ull;size_t count=0;
@@ -5824,7 +5931,7 @@ int main(int argc,char** argv){
     }
 #endif
     actor_placement_comparisons();embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();skin_execution_checks();awl::filesystem_shutdown();frame_checks();awl::filesystem_shutdown();animation_frame_checks();awl::filesystem_shutdown();attachment_frame_checks();awl::filesystem_shutdown();hierarchy_frame_checks();awl::filesystem_shutdown();partial_frame_sampling_checks();owned_hierarchy_frame_checks();awl::filesystem_shutdown();primary_frame_owner_checks();awl::filesystem_shutdown();topology_checks();awl::filesystem_shutdown();geometry_checks();awl::filesystem_shutdown();primary_owner_checks();awl::filesystem_shutdown();holder_checks();awl::filesystem_shutdown();initial_root_scale_checks();initial_input_checks();awl::filesystem_shutdown();timer_asset_checks();awl::filesystem_shutdown();texture_feature_checks();awl::filesystem_shutdown();state29_camera_checks();parent_update_checks();startup_owner_checks();awl::filesystem_shutdown();feature_draw_state_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
-    fade_checks();followup_decision_checks();holder_policy_checks();holder_pair_checks();awl::filesystem_shutdown();holder_lifecycle_checks();awl::filesystem_shutdown();
+    fade_checks();state0_initializer_checks();followup_decision_checks();holder_policy_checks();holder_pair_checks();awl::filesystem_shutdown();holder_lifecycle_checks();awl::filesystem_shutdown();
     if(argc==3 && std::string(argv[1])=="--player-model-local")local(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-frame-local")local(argv[2],true);
     else if(argc==3 && std::string(argv[1])=="--player-primary-local")local_primary(argv[2]);

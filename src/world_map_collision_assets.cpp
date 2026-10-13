@@ -1,4 +1,5 @@
 #include "awl/world_map_collision_assets.h"
+#include "awl/world_map_phase.h"
 
 #include "awl/filesystem.h"
 #include "awl/platform.h"
@@ -10,8 +11,8 @@ namespace awl {
 
 namespace {
 
-constexpr std::array<uint32_t, 6> kPhaseTable{1u, 2u, 3u, 2u, 1u, 1u};
-constexpr uint32_t kCounterUnit = 34560000u;
+constexpr auto kPhaseTable=detail::world_map_phase_lengths;
+constexpr uint32_t kCounterUnit=detail::world_map_phase_unit;
 
 uint32_t phase_boundary_counter(uint32_t table_prefix_count) {
     uint32_t table_units = 0;
@@ -123,18 +124,7 @@ bool derive_world_map_collision_selection(
     if (selection == nullptr || source.terrain_variant_byte > 1) {
         return false;
     }
-    // FUN_8000FFB0's unsigned division, followed by FUN_8000FEE8's
-    // six ordered unsigned subtract-and-compare thresholds at 0x8023DF70.
-    uint32_t remaining = source.phase_counter_word / kCounterUnit;
-    uint32_t phase = 0;
-    for (const uint32_t threshold : kPhaseTable) {
-        if (remaining < threshold) {
-            break;
-        }
-        remaining -= threshold;
-        ++phase;
-    }
-    selection->phase_index = phase < 6 ? phase : 5;
+    selection->phase_index = derive_world_map_phase(source.phase_counter_word);
     selection->alternate_terrain = source.terrain_variant_byte == 1;
     return true;
 }

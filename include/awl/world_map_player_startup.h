@@ -179,6 +179,8 @@ struct WorldMapPlayerPrimaryLoop {
     uint64_t fade_owner = 0; // bounded startup-tick source binding
     bool queued_completed = false;
     uint64_t inputs_owner = 0; // same captured-control owner through completion
+    std::optional<int32_t> pending_state_request;
+    bool state0_transition_completed = false;
 };
 struct WorldMapPlayerPrimarySliceResult {
     WorldMapPlayerPrimarySliceStatus status = WorldMapPlayerPrimarySliceStatus::InvalidInput;
@@ -224,6 +226,43 @@ struct WorldMapPlayerStartupTickResult {
     std::optional<WorldMapPlayerStartupQueueResult> queued;
     bool queue_reused = false;
 };
+struct WorldMapPlayerState0TransitionInput {
+    std::optional<uint8_t> saved_byte_14d35, secondary_byte_3f1;
+    std::optional<int32_t> scene_type_68;
+    std::optional<uint8_t> audio_byte_90;
+    std::optional<uint8_t> saved_subobject_byte_14c;
+    std::optional<uint32_t> item_144;
+    std::optional<bool> item_binding_1454;
+    std::optional<int32_t> action_148;
+    std::optional<bool> action_binding_3ec;
+};
+enum class WorldMapPlayerState0TransitionStatus {
+    Prepared, Advanced, AlreadyAdvanced, RequiresControl, RequiresPendingTransition,
+    RequiresAnimation, RequiresFade, RequiresSavedRemapByte, RequiresSecondaryRemapByte,
+    UnsupportedRemappedState, RequiresSceneType, RequiresAudioByte, RequiresAudioStop,
+    RequiresModelByte, RequiresStatus, RequiresPhaseRaw, RequiresModelType,
+    RequiresTimerRow, RequiresItem, RequiresItemBinding, RequiresItemAttachment,
+    RequiresAction, RequiresActionBinding, RequiresActionAttachment,
+    RequiresHolderCompleted, RequiresHolderFlag, InvalidInput, AllocationFailure,
+    UnsupportedNumerics
+};
+struct WorldMapPlayerState0TransitionResult {
+    WorldMapPlayerState0TransitionStatus status = WorldMapPlayerState0TransitionStatus::InvalidInput;
+    std::optional<int32_t> remapped_state;
+    std::optional<WorldMapPlayerModelTypeRow> model_row;
+    // Preparation on a late dependency stop is diagnostic, not published.
+    std::optional<WorldMapAnimationFeatureStep> model;
+};
+struct WorldMapPlayerState0InitializerResult {
+    WorldMapPlayerState0TransitionStatus status = WorldMapPlayerState0TransitionStatus::InvalidInput;
+    std::optional<uint8_t> secondary_byte_3f0;
+};
+// 42B18's no-reached-attachment path, then 31F1C..31F60 for state zero.
+// Remap/audio/model observations in input are unused here. Item attachment
+// takes precedence over action; completed flag can skip the holder +21 read.
+[[nodiscard]] WorldMapPlayerState0InitializerResult prepare_world_map_player_state0_initializer(
+    const WorldMapPlayerState0TransitionInput&,std::optional<uint8_t> completed_20,
+    std::optional<uint8_t> flag_21,uint8_t prior_secondary_byte_3f0) noexcept;
 // Owns the supported CPU initial model -> no-message tail -> normal state-29
 // callback boundary. Only known parent/secondary writes are exposed;
 // constructor-unwritten or untouched parent words are not invented. This is
@@ -382,6 +421,16 @@ public:
     [[nodiscard]] WorldMapPlayerStartupTickResult advance_state29_startup_tick(
         const WorldMapUpdateInputs&,const WorldMapPlayerStartupTickInput&,
         WorldMapFade*,WorldMapPlayerUpdateOwners*,WorldMapPlayerActorQueue*);
+    // Only a zero request retained by the composed startup tick. Owns the
+    // no-remap/no-audio-stop/no-reached-attachment 31D7C -> 42B18 transition.
+    // Derives model selector from the owned pointed status +20 and supplied
+    // reached +14C; phase comes from the current input owner's raw phase.
+    // Model type/timers, parent state/control and secondary +3F0 publish
+    // atomically. Counter, playback, pose, CPU mesh, queues and clock survive.
+    // State zero's changed third/queued callbacks remain separate dependencies.
+    [[nodiscard]] WorldMapPlayerState0TransitionResult advance_pending_state0_transition(
+        const WorldMapUpdateInputs&,const WorldMapPlayerState0TransitionInput&,
+        const WorldMapFade*,WorldMapPlayerUpdateOwners*);
     [[nodiscard]] WorldMapPlayerPrimaryUpdateResult advance(const WorldMapPlayerPrimaryFrameInput& input) {
         return model_->advance(input);
     }

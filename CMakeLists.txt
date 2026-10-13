@@ -147,6 +147,7 @@ set(HEADERS
     include/awl/world_map_player_status.h
     include/awl/world_map_update_inputs.h
     include/awl/world_map_fade.h
+    include/awl/world_map_phase.h
     include/awl/world_map_player_initial_animation.h
     include/awl/world_map_player_timer_assets.h
     include/awl/game_clock.h
