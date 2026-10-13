@@ -4,6 +4,10 @@
 
 namespace awl {
 WorldMapPlayerActorGateStatus prepare_world_map_player_state29_actor_gate(
+    std::optional<uint8_t> saved,const std::optional<WorldMapPlayerActorScriptOwner>& script) noexcept {
+    return prepare_world_map_player_normal_actor_gate(saved,script);
+}
+WorldMapPlayerActorGateStatus prepare_world_map_player_normal_actor_gate(
     std::optional<uint8_t> saved, const std::optional<WorldMapPlayerActorScriptOwner>& script) noexcept {
     using S = WorldMapPlayerActorGateStatus;
     if (!saved) return S::RequiresSavedFlag;

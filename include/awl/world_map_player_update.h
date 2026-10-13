@@ -40,12 +40,16 @@ enum class WorldMapPlayerUpdateStatus {
     RequiresSceneTransition, RequiresStatusUpdate, RequiresEffectOwners,
     RequiresScenePositionOwner, RequiresQueueNode, InvalidQueue,
     UnsupportedQueuePriorityChange, CameraIncomplete, UnsupportedState, InvalidInput,
-    AllocationFailure, SkippedByDispatchFilter, RequiresDispatchControl
+    AllocationFailure, SkippedByDispatchFilter, RequiresDispatchControl, AppearanceIncomplete
 };
 // FUN_80031144's pre-callback decisions, restricted to state 29. The guard
 // transition and scene transition are separate, ordered dependencies.
 // No state F request, callback or write is acknowledged here.
 [[nodiscard]] WorldMapPlayerUpdateStatus prepare_world_map_player_state29_update_entry(
+    const WorldMapPlayerUpdateEntry& entry);
+// The same normal branches also apply to state zero. The caller must check
+// its supported state; this helper cannot authorize other state callbacks.
+[[nodiscard]] WorldMapPlayerUpdateStatus prepare_world_map_player_normal_update_entry(
     const WorldMapPlayerUpdateEntry& entry);
 
 // Observations reached by 31484 -> state-29 row +18 -> 34B44. These
@@ -76,6 +80,22 @@ struct WorldMapPlayerState29SecondaryResult {
 };
 [[nodiscard]] WorldMapPlayerState29SecondaryResult prepare_world_map_player_state29_secondary(
     const WorldMapPlayerState29SecondaryInput&) noexcept;
+enum class WorldMapPlayerState0SecondaryStatus {
+    RetainedState,SkippedByGuard,RequiresGuards,RequiresGuardWord58c,
+    RequiresHolderCompleted,RequiresHolderFlag,RequiresMovement,TransitionRequired,
+    RequiresControl,RequiresPrimary,RequiresAnimation,AlreadyCompleted,Filtered,InvalidInput
+};
+struct WorldMapPlayerState0SecondaryResult {
+    WorldMapPlayerState0SecondaryStatus status=WorldMapPlayerState0SecondaryStatus::InvalidInput;
+    std::optional<int32_t> requested_state;
+};
+// 31484 -> state-zero row +18 -> 42BBC. Owned holder +20/+21 byte getters;
+// completed wins without reading +21. The reached 3083C movement body or
+// state-one transition stops before execution. Control bit 800 does not skip
+// this body. No control/holder/state writes or queue/pass acknowledgement.
+[[nodiscard]] WorldMapPlayerState0SecondaryResult prepare_world_map_player_state0_secondary(
+    const std::optional<WorldMapPlayerUpdateGuards>&,std::optional<uint8_t> completed_20,
+    std::optional<uint8_t> flag_21) noexcept;
 // 31504 -> row +24 -> 34CA8 (blr), including its earlier guard decisions.
 [[nodiscard]] WorldMapPlayerFollowupStatus prepare_world_map_player_state29_tertiary(
     const std::optional<WorldMapPlayerUpdateGuards>&) noexcept;
@@ -89,4 +109,9 @@ struct WorldMapPlayerState29SecondaryResult {
 [[nodiscard]] WorldMapPlayerUpdateStatus prepare_world_map_player_state29_update_tail(
     const WorldMapPlayerUpdateOwners& owners, const WorldMapPlayerScenePose& pose,
     uint64_t player_node_identity, WorldMapPlayerUpdateOwners* after);
+// Shared tail for supported states zero and 29 (neither is the state-two
+// enqueue exclusion). Same atomic/native queue contract as the alias above.
+[[nodiscard]] WorldMapPlayerUpdateStatus prepare_world_map_player_normal_update_tail(
+    const WorldMapPlayerUpdateOwners&,const WorldMapPlayerScenePose&,
+    uint64_t player_node_identity,WorldMapPlayerUpdateOwners* after);
 } // namespace awl

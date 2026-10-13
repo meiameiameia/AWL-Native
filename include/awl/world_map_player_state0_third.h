@@ -17,7 +17,7 @@ enum class WorldMapPlayerState0ThirdStatus {
     Prepared,Filtered,SkippedByGuard,AlreadyCompleted,RequiresControl,RequiresGuards,
     RequiresGuardWord58c,RequiresContextInput,RequiresPrefixProfile,RequiresPrefixAction,
     RequiresContextState,ContextIncomplete,RequiresPad,RequiresButtonAction,
-    RequiresPrimary,RequiresAnimation,InvalidInput
+    RequiresPrimary,RequiresAnimation,RequiresSecondary,InvalidInput
 };
 struct WorldMapPlayerState0ThirdResult {
     WorldMapPlayerState0ThirdStatus status=WorldMapPlayerState0ThirdStatus::InvalidInput;

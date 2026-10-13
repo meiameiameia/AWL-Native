@@ -114,11 +114,11 @@ WorldMapPlayerStartupUpdateResult WorldMapPlayerStartup::dispatch_state29_parent
 }
 
 WorldMapPlayerStartupActorFrameResult WorldMapPlayerStartup::prepare_actor_frame(
-    const WorldMapPlayerStartupActorFrameInput& input) const {
+    const WorldMapPlayerStartupActorFrameInput& input,bool state0) const {
     using S = WorldMapPlayerStartupActorFrameStatus;
-    if (state_.state_1364 != 0x29) return {S::UnsupportedState};
+    if (state_.state_1364 != 0x29 && !(state0 && state_.state_1364==0)) return {S::UnsupportedState};
     WorldMapPlayerStartupActorFrameResult result;
-    result.gate = prepare_world_map_player_state29_actor_gate(input.saved_byte_29a01, input.script);
+    result.gate = prepare_world_map_player_normal_actor_gate(input.saved_byte_29a01, input.script);
     if (*result.gate != WorldMapPlayerActorGateStatus::Ready) { result.status = S::GateStopped; return result; }
     auto sphere = input.sphere;
     if (input.derive_normal_visibility) {
@@ -165,13 +165,13 @@ WorldMapPlayerStartupActorCallbackResult WorldMapPlayerStartup::advance_state29_
 }
 WorldMapPlayerStartupActorCallbackResult WorldMapPlayerStartup::advance_actor_callback(
     std::optional<uint32_t> control, const WorldMapPlayerStartupActorFrameInput& input,
-    std::optional<uint8_t> effect_gate, WorldMapPlayerActorQueue* queue) {
+    std::optional<uint8_t> effect_gate, WorldMapPlayerActorQueue* queue,bool state0) {
     using S = WorldMapPlayerStartupActorCallbackStatus;
     using F = WorldMapPlayerStartupActorFrameStatus;
-    if (state_.state_1364 != 0x29) return {S::UnsupportedState};
+    if (state_.state_1364 != 0x29 && !(state0 && state_.state_1364==0)) return {S::UnsupportedState};
     if (!control) return {S::RequiresControl};
     WorldMapPlayerStartupActorCallbackResult result;
-    result.actor = prepare_actor_frame(input);
+    result.actor = prepare_actor_frame(input,state0);
     auto& actor = *result.actor;
     if (actor.gate == WorldMapPlayerActorGateStatus::BlockedByScript) {
         state_.control_word_1384 = *control;
@@ -349,7 +349,7 @@ WorldMapPlayerStartupQueueResult WorldMapPlayerStartup::consume_update(
     if (inputs.game_clock() != model_->game_clock()) return {S::InvalidInput};
     const auto control = inputs.queue_control();
     if (control.status != WorldMapDispatchStatus::Ready || !control.control_word) return {S::RequiresControl};
-    const bool needs_primary=prerequisite==QueuePrerequisite::Primary || prerequisite==QueuePrerequisite::Passes;
+    const bool needs_primary=prerequisite==QueuePrerequisite::Primary || prerequisite==QueuePrerequisite::Passes || prerequisite==QueuePrerequisite::State0Third;
     if (needs_primary && (!primary_loop_ || !primary_loop_->valid ||
         primary_loop_->loop_count!=model_->game_clock()->state().loop_count || primary_loop_->raw_time!=model_->game_clock()->state().raw_time))
         return {S::RequiresPrimary};
@@ -361,7 +361,7 @@ WorldMapPlayerStartupQueueResult WorldMapPlayerStartup::consume_update(
     if (prerequisite==QueuePrerequisite::Passes && !primary_loop_->followups_completed) return {S::RequiresPrimaryPasses};
     WorldMapPlayerStartupQueueResult result;
     // Borrow observations without copying/allocating before the script gate.
-    result.callback = advance_actor_callback(control.control_word,input.actor,input.effect_gate,render_queue);
+    result.callback = advance_actor_callback(control.control_word,input.actor,input.effect_gate,render_queue,prerequisite==QueuePrerequisite::State0Third);
     const auto handled = result.callback->status;
     if (handled != WorldMapPlayerStartupActorCallbackStatus::Completed &&
         handled != WorldMapPlayerStartupActorCallbackStatus::ScriptBlocked) {
@@ -457,7 +457,7 @@ WorldMapPlayerState0InitializerResult prepare_world_map_player_state0_initialize
 WorldMapPlayerState0TransitionResult WorldMapPlayerStartup::advance_pending_state0_transition(
     const WorldMapUpdateInputs& inputs,const WorldMapPlayerState0TransitionInput& input,
     const WorldMapFade* fade,WorldMapPlayerUpdateOwners* owners) {
-    using S=WorldMapPlayerState0TransitionStatus;using F=WorldMapAnimationFeatureStatus;
+    using S=WorldMapPlayerState0TransitionStatus;
     static_assert(std::is_nothrow_move_constructible_v<WorldMapPlayerState0TransitionResult>);
     static_assert(std::is_nothrow_move_assignable_v<WorldMapPlayerState0TransitionResult>);
     if (!fade || !owners || !model_->game_clock() || inputs.game_clock()!=model_->game_clock() || fade->game_clock()!=model_->game_clock()) return {S::InvalidInput};
@@ -483,10 +483,25 @@ WorldMapPlayerState0TransitionResult WorldMapPlayerStartup::advance_pending_stat
         if (!input.audio_byte_90) return stop(S::RequiresAudioByte);
         if (*input.audio_byte_90) return stop(S::RequiresAudioStop);
     }
-    if (!input.saved_subobject_byte_14c) return stop(S::RequiresModelByte);
+    const auto appearance=prepare_state0_appearance(inputs,input.saved_subobject_byte_14c,owners);
+    result.model_row=appearance.model_row;result.model=appearance.model;
+    if(appearance.status!=S::Prepared)return stop(appearance.status);
+    auto& holder=*model_;
+    const auto initialized=prepare_world_map_player_state0_initializer(input,holder.state_.completed_20,holder.state_.flag_21,state_.secondary_byte_3f0);
+    if (initialized.status!=S::Prepared) return stop(initialized.status);
+    holder.state_.feature_38=result.model->after;
+    state_.state_1364=0;state_.control_word_1384=*control.control_word;state_.secondary_byte_3f0=*initialized.secondary_byte_3f0;
+    primary_loop_->pending_state_request.reset();primary_loop_->state0_transition_completed=true;
+    result.status=S::Advanced;return result;
+}
+WorldMapPlayerState0TransitionResult WorldMapPlayerStartup::prepare_state0_appearance(
+    const WorldMapUpdateInputs& inputs,std::optional<uint8_t> byte14c,const WorldMapPlayerUpdateOwners* owners) const {
+    using S=WorldMapPlayerState0TransitionStatus;using F=WorldMapAnimationFeatureStatus;
+    WorldMapPlayerState0TransitionResult result;const auto stop=[&](S status){result.status=status;return result;};
+    if (!byte14c) return stop(S::RequiresModelByte);
     uint32_t selector=0x24;
-    if (*input.saved_subobject_byte_14c==0) {
-        if (!owners->status) return stop(S::RequiresStatus);
+    if (*byte14c==0) {
+        if (!owners || !owners->status) return stop(S::RequiresStatus);
         if (std::fegetround()!=FE_TONEAREST) return stop(S::UnsupportedNumerics);
         int32_t word20;std::memcpy(&word20,&owners->status->word_20,sizeof(word20));
         selector=select_world_map_player_model_type(0,word20);
@@ -499,7 +514,7 @@ WorldMapPlayerState0TransitionResult WorldMapPlayerStartup::advance_pending_stat
         !holder.initial_inputs()->select_model_type(derive_world_map_phase(*raw),selector,&row)) return stop(S::RequiresModelType);
     result.model_row=row;
     try {
-        WorldMapAnimationInitializerObservations observations;observations.clock=clock.raw_time;
+        WorldMapAnimationInitializerObservations observations;observations.clock=holder.game_clock()->state().raw_time;
         if (!holder.timer_assets()) return stop(S::RequiresTimerRow);
         observations.fallback_table_38=holder.timer_assets()->table_identity(WorldMapPlayerTimerBank::Eyes);
         observations.fallback_table_24=holder.timer_assets()->table_identity(WorldMapPlayerTimerBank::Mouth);
@@ -518,18 +533,119 @@ WorldMapPlayerState0TransitionResult WorldMapPlayerStartup::advance_pending_stat
             if(!holder.timer_assets()->resource(bank,required.index,required.column,&resource))return stop(S::RequiresTimerRow);
             observations.rows.push_back({required.table_identity,required.index,required.column,resource.identity});
         }
-        const auto initialized=prepare_world_map_player_state0_initializer(input,holder.state_.completed_20,holder.state_.flag_21,state_.secondary_byte_3f0);
-        if (initialized.status!=S::Prepared) return stop(initialized.status);
-        holder.state_.feature_38=model.after;
-        state_.state_1364=0;state_.control_word_1384=*control.control_word;state_.secondary_byte_3f0=*initialized.secondary_byte_3f0;
-        primary_loop_->pending_state_request.reset();primary_loop_->state0_transition_completed=true;
-        result.status=S::Advanced;return result;
+        result.status=S::Prepared;return result;
     } catch(const std::bad_alloc&) {return stop(S::AllocationFailure);}
 }
 
 bool WorldMapPlayerStartup::seed_state0_context(const WorldMapPlayerContextUpdateState& context) noexcept {
     if(state_.state_1364!=0 || state0_context_ || state0_third_loop_)return false;
     state0_context_=context;return true;
+}
+WorldMapPlayerState0ParentResult WorldMapPlayerStartup::dispatch_state0_parent(
+    const WorldMapUpdateInputs& inputs,const WorldMapPlayerState0ParentInput& input,WorldMapPlayerUpdateOwners* owners) {
+    using S=WorldMapPlayerUpdateStatus;using A=WorldMapPlayerState0TransitionStatus;
+    if(!model_->game_clock() || inputs.game_clock()!=model_->game_clock())return {S::InvalidInput};
+    const auto dispatch=inputs.dispatch(primary_registration()[0].priority);
+    if(dispatch.status==WorldMapDispatchStatus::RequiresControl)return {S::RequiresDispatchControl};
+    if(dispatch.status==WorldMapDispatchStatus::Filtered)return {S::SkippedByDispatchFilter};
+    if(dispatch.status!=WorldMapDispatchStatus::Ready || !dispatch.control_word)return {S::InvalidInput};
+    if(state_.state_1364!=0)return {S::UnsupportedState};
+    WorldMapPlayerState0ParentResult result;
+    result.status=prepare_world_map_player_normal_update_entry({dispatch.control_word,input.guards,input.scene_child_word_4});
+    if(result.status!=S::Prepared)return result;
+    result.appearance=prepare_state0_appearance(inputs,input.saved_subobject_byte_14c,owners);
+    if(result.appearance->status!=A::Prepared){
+        result.status=result.appearance->status==A::AllocationFailure?S::AllocationFailure:S::AppearanceIncomplete;return result;
+    }
+    if((*dispatch.control_word&0x800u)==0){
+        if(!owners || !owners->status){result.status=S::RequiresStatusUpdate;return result;}
+        WorldMapPlayerStatusInputs status;
+        const auto factors=input.status_factors_override?*input.status_factors_override:starts_->status_factors(model_->descriptor());
+        status.globals=factors.globals;status.rate=factors.rate;
+        if(inputs.sources().phase)status.phase_raw=inputs.sources().phase->raw_word_0;
+        result.status_update=prepare_world_map_player_status(*owners->status,model_->descriptor().word_8,status);
+        if(result.status_update->status!=WorldMapPlayerStatusCode::Prepared){result.status=S::RequiresStatusUpdate;return result;}
+    }
+    if(!owners){result.status=S::RequiresEffectOwners;return result;}
+    WorldMapPlayerUpdateOwners next;
+    result.status=prepare_world_map_player_normal_update_tail(*owners,input.pose,update_node_identity(),&next);
+    if(result.status!=S::Prepared)return result;
+    if(result.status_update)next.status=result.status_update->after;
+    model_->state_.feature_38=result.appearance->model->after;
+    state_.control_word_1384=*dispatch.control_word;*owners=std::move(next);
+    if(primary_loop_)primary_loop_->valid=false;
+    result.status=S::Advanced;return result;
+}
+WorldMapPlayerState0PrimarySliceResult WorldMapPlayerStartup::advance_state0_primary_slice(
+    const WorldMapUpdateInputs& inputs,const WorldMapPlayerState0ParentInput& input,WorldMapPlayerUpdateOwners* owners) {
+    using S=WorldMapPlayerPrimarySliceStatus;using P=WorldMapPlayerUpdateStatus;using A=WorldMapPlayerAnimationLoopStatus;
+    if(!model_->game_clock() || inputs.game_clock()!=model_->game_clock())return {S::InvalidInput};
+    if(inputs.queue_control().status!=WorldMapDispatchStatus::Ready)return {S::RequiresControl};
+    if(state_.state_1364!=0)return {S::InvalidInput};
+    const auto& clock=model_->game_clock()->state();
+    const auto same=[&](const auto& receipt){return receipt && receipt->loop_count==clock.loop_count && receipt->raw_time==clock.raw_time;};
+    if((same(primary_loop_) && (!primary_loop_->valid || !primary_loop_->state0_parent_completed)) ||
+        (same(animation_loop_) && !same(primary_loop_)))return {S::RequiresNextLoop};
+    const auto owner=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&inputs));
+    if(same(primary_loop_) && primary_loop_->inputs_owner!=owner)return {S::InvalidInput};
+    if(same(primary_loop_) && primary_loop_->updates_owner && owners &&
+        primary_loop_->updates_owner!=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(owners)))return {S::InvalidInput};
+    WorldMapPlayerState0PrimarySliceResult result;
+    if(same(primary_loop_))result.parent_reused=true;
+    else {
+        result.parent=dispatch_state0_parent(inputs,input,owners);
+        if(result.parent->status!=P::Advanced && result.parent->status!=P::SkippedByDispatchFilter){result.status=S::ParentIncomplete;return result;}
+        primary_loop_=WorldMapPlayerPrimaryLoop{clock.loop_count,clock.raw_time,true,
+            result.parent->status==P::Advanced?static_cast<uint64_t>(reinterpret_cast<uintptr_t>(owners)):0};
+        primary_loop_->inputs_owner=owner;primary_loop_->state0_parent_completed=true;
+    }
+    result.animation=dispatch_animation_for_loop(inputs);
+    if(result.animation->status==A::RequiresNextLoop)result.status=S::RequiresNextLoop;
+    else if(result.animation->status!=A::Advanced && result.animation->status!=A::AlreadyAdvanced)result.status=S::AnimationIncomplete;
+    else result.status=S::Completed;
+    return result;
+}
+WorldMapPlayerState0SecondaryResult WorldMapPlayerStartup::advance_state0_secondary(
+    const WorldMapUpdateInputs& inputs,const std::optional<WorldMapPlayerUpdateGuards>& guards) noexcept {
+    using S=WorldMapPlayerState0SecondaryStatus;
+    if(!model_->game_clock() || inputs.game_clock()!=model_->game_clock())return {S::InvalidInput};
+    if(inputs.queue_control().status!=WorldMapDispatchStatus::Ready)return {S::RequiresControl};
+    const auto& clock=model_->game_clock()->state();
+    const auto current=[&](const auto& receipt){return receipt && receipt->valid && receipt->loop_count==clock.loop_count && receipt->raw_time==clock.raw_time;};
+    if(state_.state_1364!=0 || !current(primary_loop_) || !primary_loop_->state0_parent_completed)return {S::RequiresPrimary};
+    if(primary_loop_->inputs_owner!=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&inputs)))return {S::InvalidInput};
+    if(!current(animation_loop_))return {S::RequiresAnimation};
+    if(primary_loop_->state0_secondary_completed)return {S::AlreadyCompleted};
+    const auto dispatch=inputs.dispatch(primary_registration()[0].priority);
+    WorldMapPlayerState0SecondaryResult result;
+    if(dispatch.status==WorldMapDispatchStatus::Filtered)result.status=S::Filtered;
+    else {
+        if(dispatch.status!=WorldMapDispatchStatus::Ready || !dispatch.control_word)return {S::InvalidInput};
+        result=prepare_world_map_player_state0_secondary(guards,model_->state_.completed_20,model_->state_.flag_21);
+        if(result.status!=S::RetainedState && result.status!=S::SkippedByGuard)return result;
+        state_.control_word_1384=*dispatch.control_word;
+    }
+    primary_loop_->state0_secondary_completed=true;return result;
+}
+WorldMapPlayerStartupQueueResult WorldMapPlayerStartup::consume_state0_update_after_third(
+    const WorldMapUpdateInputs& inputs,const WorldMapPlayerStartupQueuedActorInput& input,
+    WorldMapPlayerUpdateOwners* updates,WorldMapPlayerActorQueue* render_queue) {
+    using S=WorldMapPlayerStartupQueueStatus;
+    if(!updates || !model_->game_clock() || inputs.game_clock()!=model_->game_clock())return {S::InvalidInput};
+    if(inputs.queue_control().status!=WorldMapDispatchStatus::Ready)return {S::RequiresControl};
+    const auto& clock=model_->game_clock()->state();
+    const auto current=[&](const auto& receipt){return receipt && receipt->valid && receipt->loop_count==clock.loop_count && receipt->raw_time==clock.raw_time;};
+    if(state_.state_1364!=0 || !current(primary_loop_))return {S::RequiresPrimary};
+    const auto owner=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&inputs));
+    if(primary_loop_->inputs_owner!=owner || (primary_loop_->updates_owner &&
+        primary_loop_->updates_owner!=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(updates))))return {S::InvalidInput};
+    if(!current(animation_loop_))return {S::RequiresAnimation};
+    if(!state0_third_loop_ || state0_third_loop_->loop_count!=clock.loop_count || state0_third_loop_->raw_time!=clock.raw_time ||
+        state0_third_loop_->inputs_owner!=owner)return {S::RequiresThird};
+    if(primary_loop_->queued_completed)return {S::AlreadyCompleted};
+    auto result=consume_update(inputs,input,updates,render_queue,QueuePrerequisite::State0Third);
+    if(result.status==S::Completed || result.status==S::Empty)primary_loop_->queued_completed=true;
+    return result;
 }
 WorldMapPlayerState0ThirdResult WorldMapPlayerStartup::advance_state0_third(
     const WorldMapUpdateInputs& inputs,const WorldMapPlayerContextUpdateSources& sources,
@@ -542,9 +658,10 @@ WorldMapPlayerState0ThirdResult WorldMapPlayerStartup::advance_state0_third(
     const auto owner=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&inputs));
     const auto current=[&](const auto& receipt){return receipt && receipt->valid &&
         receipt->loop_count==clock.loop_count && receipt->raw_time==clock.raw_time;};
-    if(!current(primary_loop_) || !primary_loop_->state0_transition_completed)return {S::RequiresPrimary};
+    if(!current(primary_loop_) || (!primary_loop_->state0_transition_completed && !primary_loop_->state0_parent_completed))return {S::RequiresPrimary};
     if(primary_loop_->inputs_owner!=owner)return {S::InvalidInput};
     if(!current(animation_loop_))return {S::RequiresAnimation};
+    if(primary_loop_->state0_parent_completed && !primary_loop_->state0_secondary_completed)return {S::RequiresSecondary};
     if(state0_third_loop_ && state0_third_loop_->loop_count==clock.loop_count &&
         state0_third_loop_->raw_time==clock.raw_time){
         if(state0_third_loop_->inputs_owner!=owner)return {S::InvalidInput};
@@ -555,6 +672,7 @@ WorldMapPlayerState0ThirdResult WorldMapPlayerStartup::advance_state0_third(
     if(result.status!=S::Prepared && result.status!=S::SkippedByGuard && result.status!=S::Filtered)return result;
     state_.control_word_1384=next.control_word_1384;state0_context_=std::move(next.context);
     state0_third_loop_=WorldMapPlayerState0ThirdLoop{clock.loop_count,clock.raw_time,owner,result.status};
+    if(primary_loop_->state0_parent_completed)primary_loop_->followups_completed=true;
     return result;
 }
 

@@ -182,6 +182,7 @@ struct WorldMapPlayerPrimaryLoop {
     uint64_t inputs_owner = 0; // same captured-control owner through completion
     std::optional<int32_t> pending_state_request;
     bool state0_transition_completed = false;
+    bool state0_parent_completed = false, state0_secondary_completed = false;
 };
 struct WorldMapPlayerPrimarySliceResult {
     WorldMapPlayerPrimarySliceStatus status = WorldMapPlayerPrimarySliceStatus::InvalidInput;
@@ -202,7 +203,8 @@ struct WorldMapPlayerPrimaryPassesResult {
 };
 enum class WorldMapPlayerStartupQueueStatus {
     Completed, Empty, UnsupportedNode, UnsupportedPriority, InvalidQueue,
-    RequiresControl, CallbackIncomplete, InvalidInput, RequiresAnimation, RequiresPrimary, RequiresPrimaryPasses
+    RequiresControl, CallbackIncomplete, InvalidInput, RequiresAnimation, RequiresPrimary, RequiresPrimaryPasses,
+    RequiresThird, AlreadyCompleted
 };
 struct WorldMapPlayerStartupQueueResult {
     WorldMapPlayerStartupQueueStatus status = WorldMapPlayerStartupQueueStatus::InvalidInput;
@@ -258,6 +260,24 @@ struct WorldMapPlayerState0InitializerResult {
     WorldMapPlayerState0TransitionStatus status = WorldMapPlayerState0TransitionStatus::InvalidInput;
     std::optional<uint8_t> secondary_byte_3f0;
 };
+struct WorldMapPlayerState0ParentInput {
+    std::optional<WorldMapPlayerUpdateGuards> guards;
+    std::optional<int32_t> scene_child_word_4;
+    WorldMapPlayerScenePose pose;
+    std::optional<uint8_t> saved_subobject_byte_14c;
+    std::optional<WorldMapPlayerStatusFactors> status_factors_override;
+};
+struct WorldMapPlayerState0ParentResult {
+    WorldMapPlayerUpdateStatus status=WorldMapPlayerUpdateStatus::InvalidInput;
+    std::optional<WorldMapPlayerState0TransitionResult> appearance;
+    std::optional<WorldMapPlayerStatusStep> status_update;
+};
+struct WorldMapPlayerState0PrimarySliceResult {
+    WorldMapPlayerPrimarySliceStatus status=WorldMapPlayerPrimarySliceStatus::InvalidInput;
+    std::optional<WorldMapPlayerState0ParentResult> parent;
+    std::optional<WorldMapPlayerAnimationLoopResult> animation;
+    bool parent_reused=false;
+};
 // 42B18's no-reached-attachment path, then 31F1C..31F60 for state zero.
 // Remap/audio/model observations in input are unused here. Item attachment
 // takes precedence over action; completed flag can skip the holder +21 read.
@@ -284,12 +304,33 @@ public:
     // One explicit observed context projection after the supported transition,
     // before any third-pass receipt. Does not translate UI construction.
     [[nodiscard]] bool seed_state0_context(const WorldMapPlayerContextUpdateState&) noexcept;
-    // Current owned parent/model/transition prerequisites, same input owner,
-    // guarded idle third callback and once-per-loop completion. Does not mark
-    // the unimplemented state-zero first/second/queued passes complete.
+    // Current startup transition OR normal parent/model/second prerequisites,
+    // same input owner, guarded idle third and once-per-loop completion.
+    // Normal completion acknowledges only this owned pair's later passes;
+    // queued execution and other nodes/scene work remain separate.
     [[nodiscard]] WorldMapPlayerState0ThirdResult advance_state0_third(
         const WorldMapUpdateInputs&,const WorldMapPlayerContextUpdateSources&,
         const WorldMapPlayerState0ThirdInput&) noexcept;
+    // Supported 31144 -> 42B80 model refresh -> status pair -> pose/queue
+    // tail, followed by owned F000 progression. Current status/phase select
+    // appearance before the status changes. Every callback is atomic; a late
+    // model failure reuses the accepted parent. No movement/camera update.
+    [[nodiscard]] WorldMapPlayerState0ParentResult dispatch_state0_parent(
+        const WorldMapUpdateInputs&,const WorldMapPlayerState0ParentInput&,WorldMapPlayerUpdateOwners*);
+    [[nodiscard]] WorldMapPlayerState0PrimarySliceResult advance_state0_primary_slice(
+        const WorldMapUpdateInputs&,const WorldMapPlayerState0ParentInput&,WorldMapPlayerUpdateOwners*);
+    // Normal state-zero first/model receipts must precede this second pass.
+    // Holder bytes come from the owned model. Only retention/guard/filter
+    // completes; movement and state-one requests preserve state explicitly.
+    [[nodiscard]] WorldMapPlayerState0SecondaryResult advance_state0_secondary(
+        const WorldMapUpdateInputs&,const std::optional<WorldMapPlayerUpdateGuards>&) noexcept;
+    // Either the startup transition's completed idle third or the normal
+    // first/second/third sequence must precede the shared 31584 actor path.
+    // Saved +29A01 != 0 still requires untranslated UI delivery. Successful
+    // completion removes only this owned front node and retains a retry receipt.
+    [[nodiscard]] WorldMapPlayerStartupQueueResult consume_state0_update_after_third(
+        const WorldMapUpdateInputs&,const WorldMapPlayerStartupQueuedActorInput&,
+        WorldMapPlayerUpdateOwners*,WorldMapPlayerActorQueue*);
     // Fixed primary-list registrations observed at 14448 and 12B58. Keys
     // represent this bounded native parent/model-manager pair; this does not
     // register the original manager's other models or activate a shared list.
@@ -469,7 +510,7 @@ public:
         return model_->configure_repeats(kind,value);
     }
 private:
-    enum class QueuePrerequisite { None, Animation, Primary, Passes };
+    enum class QueuePrerequisite { None, Animation, Primary, Passes, State0Third };
     [[nodiscard]] WorldMapPlayerStartupQueueResult consume_update(
         const WorldMapUpdateInputs&,const WorldMapPlayerStartupQueuedActorInput&,
         WorldMapPlayerUpdateOwners*,WorldMapPlayerActorQueue*,QueuePrerequisite);
@@ -477,10 +518,12 @@ private:
     [[nodiscard]] WorldMapPlayerState29CameraStep prepare_state29_camera(
         const WorldMapPlayerStartupState29Input& input) const;
     [[nodiscard]] WorldMapPlayerStartupActorFrameResult prepare_actor_frame(
-        const WorldMapPlayerStartupActorFrameInput& input) const;
+        const WorldMapPlayerStartupActorFrameInput& input,bool state0=false) const;
     [[nodiscard]] WorldMapPlayerStartupActorCallbackResult advance_actor_callback(
         std::optional<uint32_t> control, const WorldMapPlayerStartupActorFrameInput& actor,
-        std::optional<uint8_t> effect_gate, WorldMapPlayerActorQueue* queue);
+        std::optional<uint8_t> effect_gate, WorldMapPlayerActorQueue* queue,bool state0=false);
+    [[nodiscard]] WorldMapPlayerState0TransitionResult prepare_state0_appearance(
+        const WorldMapUpdateInputs&,std::optional<uint8_t>,const WorldMapPlayerUpdateOwners*) const;
     friend WorldMapPlayerStartupResult construct_world_map_player_startup(
         const WorldMapPlayerStartupProviders&, const WorldMapPlayerStartupQuery&, std::unique_ptr<WorldMapPlayerStartup>*);
     std::shared_ptr<const WorldMapPlayerStartAnimationTables> starts_;

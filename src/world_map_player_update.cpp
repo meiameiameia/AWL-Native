@@ -5,6 +5,19 @@
 #include <utility>
 
 namespace awl {
+WorldMapPlayerState0SecondaryResult prepare_world_map_player_state0_secondary(
+    const std::optional<WorldMapPlayerUpdateGuards>& guards,std::optional<uint8_t> completed,
+    std::optional<uint8_t> flag) noexcept {
+    using S=WorldMapPlayerState0SecondaryStatus;
+    if(!guards)return {S::RequiresGuards};
+    if(guards->word_680!=-1)return {S::SkippedByGuard};
+    if(!guards->word_58c)return {S::RequiresGuardWord58c};
+    if(*guards->word_58c!=0)return {S::SkippedByGuard};
+    if(!completed)return {S::RequiresHolderCompleted};
+    if(*completed)return {S::TransitionRequired,1};
+    if(!flag)return {S::RequiresHolderFlag};
+    return {*flag?S::RetainedState:S::RequiresMovement};
+}
 WorldMapPlayerFollowupStatus prepare_world_map_player_state29_tertiary(
     const std::optional<WorldMapPlayerUpdateGuards>& guards) noexcept {
     using S=WorldMapPlayerFollowupStatus;
@@ -46,6 +59,10 @@ WorldMapPlayerState29SecondaryResult prepare_world_map_player_state29_secondary(
 
 WorldMapPlayerUpdateStatus prepare_world_map_player_state29_update_entry(
     const WorldMapPlayerUpdateEntry& entry) {
+    return prepare_world_map_player_normal_update_entry(entry);
+}
+WorldMapPlayerUpdateStatus prepare_world_map_player_normal_update_entry(
+    const WorldMapPlayerUpdateEntry& entry) {
     using S = WorldMapPlayerUpdateStatus;
     if (!entry.control_word) return S::RequiresControlWord;
     if (!entry.guards) return S::RequiresGuardOwner;
@@ -58,6 +75,11 @@ WorldMapPlayerUpdateStatus prepare_world_map_player_state29_update_entry(
 }
 
 WorldMapPlayerUpdateStatus prepare_world_map_player_state29_update_tail(
+    const WorldMapPlayerUpdateOwners& owners,const WorldMapPlayerScenePose& pose,
+    uint64_t player_node_identity,WorldMapPlayerUpdateOwners* after) {
+    return prepare_world_map_player_normal_update_tail(owners,pose,player_node_identity,after);
+}
+WorldMapPlayerUpdateStatus prepare_world_map_player_normal_update_tail(
     const WorldMapPlayerUpdateOwners& owners, const WorldMapPlayerScenePose& pose,
     uint64_t player_node_identity, WorldMapPlayerUpdateOwners* after) {
     using S = WorldMapPlayerUpdateStatus;
