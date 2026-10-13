@@ -11,6 +11,7 @@
 #include "awl/world_map_player_start_animation.h"
 #include "awl/world_map_player_animation_holder.h"
 #include "awl/world_map_player_startup.h"
+#include "awl/world_map_fade.h"
 #include "awl/filesystem.h"
 
 #include <chrono>
@@ -2865,6 +2866,146 @@ uint64_t update_owners_snapshot(const awl::WorldMapPlayerUpdateOwners& owners) {
             uint32_t(s.byte_2e),uint32_t(s.byte_32),s.word_12c,s.word_150,s.word_154,s.word_160})hash(h,v);}
     hash(h,uint32_t(owners.queue.size()));for(const auto& e:owners.queue){hash(h,uint32_t(e.node_identity>>32));hash(h,uint32_t(e.node_identity));hash(h,e.priority);}return h;
 }
+uint32_t fade_color_word(const awl::WorldMapFadeColor& color) {
+    uint32_t word=0;for(auto byte:color)word=(word<<8)|byte;return word;
+}
+uint64_t actor_queue_snapshot(const awl::WorldMapPlayerActorQueue& queue);
+uint64_t fade_snapshot(const awl::WorldMapFade& fade) {
+    uint64_t h=14695981039346656037ull;const auto& s=fade.state();
+    for(uint32_t word:{fade_color_word(s.from_4c),fade_color_word(s.to_50),uint32_t(s.color_54.has_value()),
+        s.color_54?fade_color_word(*s.color_54):0u,actor_bits(s.duration_58),uint32_t(s.started_5c.has_value()),s.started_5c.value_or(0),
+        uint32_t(s.mode_60),uint32_t(s.hold_64.has_value()),uint32_t(s.hold_64.value_or(0)),s.render_priority_68,uint32_t(s.registered)})hash(h,word);
+    hash(h,fade.loop().has_value());if(fade.loop()){hash(h,fade.loop()->loop_count);hash(h,fade.loop()->raw_time);hash(h,fade.loop()->valid);
+        hash(h,uint32_t(fade.loop()->render_owner>>32));hash(h,uint32_t(fade.loop()->render_owner));}return h;
+}
+void fade_checks() {
+    using S=awl::WorldMapFadeStatus;
+    const std::array<float,8> durations{0,.1f,1,7,1000,1000.0f/60.0f,std::numeric_limits<float>::max(),1.e-20f};
+    const std::array<uint32_t,12> elapsed_values{0,1,99,100,101,999,1000,1001,UINT32_MAX,16777216,16777217,250000};
+    uint64_t digest=14695981039346656037ull;
+    for(uint32_t seed=0;seed<2304;++seed) {
+        awl::WorldMapFadeState state;state.mode_60=int32_t(seed%3);state.duration_58=durations[seed/3%8];
+        const auto elapsed=elapsed_values[seed/24%12];state.hold_64=uint8_t(seed/288%2?255:0);
+        state.started_5c=std::array<uint32_t,3>{0,0xfffffff5,1000}[seed%3];state.registered=true;
+        state.color_54=awl::WorldMapFadeColor{0xaa,0xbb,0xcc,0xdd};
+        for(size_t i=0;i<4;++i){state.from_4c[i]=uint8_t(seed*37+i*71);state.to_50[i]=uint8_t(seed*53+i*19);}
+        awl::WorldMapFadeStep step;
+        const auto status=awl::prepare_world_map_fade_update(state,*state.started_5c+elapsed,&step);
+        expect(status==(state.mode_60==0?S::Idle:S::Prepared) && step.after.color_54,"complete fade sample prepares or preserves its supplied color");
+        for(uint32_t word:{seed,uint32_t(state.mode_60),elapsed,actor_bits(state.duration_58),uint32_t(*state.hold_64),uint32_t(step.after.mode_60),
+            uint32_t(step.after.registered),step.after.color_54?fade_color_word(*step.after.color_54):0u,uint32_t(step.schedule_render)})hash(digest,word);
+    }
+    expect(digest==0x28fd93479cc69424ull,"2304 original fade updates match timing, color, primary removal and render scheduling");
+    std::cout<<"WORLD_MAP_FADE_UPDATE 2304 "<<std::hex<<digest<<std::dec<<'\n';
+    digest=14695981039346656037ull;
+    const std::array<float,8> seconds{0,.001f,.1f,1,7,1000,1.0f/60.0f,16777.217f};
+    for(uint32_t seed=0;seed<1024;++seed) {
+        awl::WorldMapFadeState state;state.color_54=awl::WorldMapFadeColor{0xaa,0xbb,0xcc,0xdd};
+        awl::WorldMapFadeColor from,to;for(size_t i=0;i<4;++i){from[i]=uint8_t(seed*37+i*71);to[i]=uint8_t(seed*53+i*19);}
+        const auto duration=seconds[seed%8];const auto now=std::array<uint32_t,4>{0,1,0xfffffffe,16777217}[seed/8%4];
+        const auto hold=uint8_t(seed/32%2?255:0),front=uint8_t(seed/64%2?2:0);
+        expect(awl::prepare_world_map_fade_start(state,duration,from,to,hold,front,now,&state)==S::Prepared,"fade start permits whole-state aliases");
+        for(uint32_t word:{seed,actor_bits(duration),now,uint32_t(hold),uint32_t(front),fade_color_word(state.from_4c),fade_color_word(state.to_50),
+            fade_color_word(*state.color_54),actor_bits(state.duration_58),*state.started_5c,uint32_t(state.mode_60),uint32_t(*state.hold_64),
+            state.render_priority_68,uint32_t(state.registered),0x10000u})hash(digest,word);
+    }
+    expect(digest==0xcd5a9c9373a103e5ull,"1024 fade starts match original fields and primary registration");
+    auto clock=std::make_shared<awl::GameClock>();awl::WorldMapFade fade(clock);awl::WorldMapUpdateInputs inputs(clock),missing(clock),foreign(std::make_shared<awl::GameClock>());
+    expect(fade.state().mode_60==0 && !fade.state().registered && !fade.state().color_54 && !fade.state().started_5c && !fade.state().hold_64 &&
+        fade.state().duration_58==0 && fade.state().render_priority_68==0xcffe && fade.advance_for_loop(missing,nullptr)==S::Idle,
+        "fresh fade preserves constructor-unwritten fields and inactive membership skips capture/queue");
+    expect(fade.start_world_map_entry()==S::Started && fade.state().from_4c==awl::WorldMapFadeColor{0,0,0,255} &&
+        fade.state().to_50==awl::WorldMapFadeColor{} && fade.state().duration_58==1000 && fade.state().mode_60==1,
+        "world-map setup starts one-second opaque-to-transparent black with no hold");
+    auto before=fade_snapshot(fade);awl::WorldMapPlayerActorQueue queue{{7,0x2002},{8,0xcffe},{9,UINT32_MAX}};
+    const auto queue_before=actor_queue_snapshot(queue);
+    expect(fade.advance_for_loop(missing,&queue)==S::RequiresControl && fade.advance_for_loop(foreign,&queue)==S::InvalidInput &&
+        fade_snapshot(fade)==before && actor_queue_snapshot(queue)==queue_before,"missing or foreign fade control preserves state and render queue");
+    inputs.observe_control_sources({awl::WorldMapControlPhase{uint8_t{0},{},uint8_t{0}},0});
+    expect(inputs.capture_control()==awl::WorldMapControlStatus::Captured,"fade uses the same captured raw-loop boundary as player/model");
+    expect(fade.advance_for_loop(inputs,nullptr)==S::RequiresRenderQueue && fade_snapshot(fade)==before,"reached queue is required before publishing fade color or membership");
+    awl::WorldMapPlayerActorQueue bad{{0,0}};
+    expect(fade.advance_for_loop(inputs,&bad)==S::InvalidQueue && fade_snapshot(fade)==before,"invalid render queue cannot consume the fade sample");
+    bool accepted=false;
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    const auto live=allocation_probe::live;size_t failed=0;
+    for(size_t fail=0;fail<8;++fail){allocation_probe::remaining=fail;allocation_probe::enabled=true;const auto status=fade.advance_for_loop(inputs,&queue);allocation_probe::enabled=false;
+        if(status==S::Advanced){accepted=true;break;}++failed;
+        expect(status==S::AllocationFailure && fade_snapshot(fade)==before && actor_queue_snapshot(queue)==queue_before && allocation_probe::live==live,
+            "all fade queue allocation failures preserve state/receipt/queue and release staging");}
+    expect(accepted && failed==2,"fade render queue stages copying and growth before publication");
+    std::cout<<"WORLD_MAP_FADE_ALLOCATION_FAILURES "<<failed<<'\n';
+#endif
+    if(!accepted)expect(fade.advance_for_loop(inputs,&queue)==S::Advanced,"first eligible fade update publishes");
+    expect(fade.state().color_54==awl::WorldMapFadeColor{0,0,0,255} && queue.size()==4 && queue[1].node_identity==fade.render_node_identity() &&
+        queue[1].priority==0xcffe && queue[2].node_identity==8,"fade starts at source color and inserts before equal-priority render work");
+    before=fade_snapshot(fade);const auto retained_queue=actor_queue_snapshot(queue);auto other=queue;
+    expect(fade.advance_for_loop(inputs,&other)==S::InvalidInput && fade.advance_for_loop(inputs,nullptr)==S::AlreadyAdvanced &&
+        fade_snapshot(fade)==before && actor_queue_snapshot(queue)==retained_queue,"same-loop receipt prevents repeat work and rejects a different queue owner");
+    const int rounding=std::fegetround();expect(std::fesetround(FE_UPWARD)==0,"fade test selects unsupported arithmetic");
+    expect(fade.start_world_map_entry()==S::UnsupportedNumerics && fade_snapshot(fade)==before,"unsupported start arithmetic preserves accepted fade/receipt");
+    expect(std::fesetround(rounding)==0,"fade test restores caller rounding");
+    expect(fade.start(-1,{},{},0,0)==S::InvalidInput && fade.start(std::numeric_limits<float>::max(),{},{},0,0)==S::InvalidInput &&
+        fade_snapshot(fade)==before,"invalid/overflowing durations preserve previous fade");
+    // 60 retraces produce an exactly represented raw increment of 1000.
+    clock->set_retrace_interval(60);expect(clock->advance() && inputs.capture_control()==awl::WorldMapControlStatus::Captured,"fade fixture reaches exact duration");
+    expect(fade.advance_for_loop(inputs,&queue)==S::Advanced && fade.state().mode_60==1 && fade.state().registered && fade.state().color_54==awl::WorldMapFadeColor{},
+        "exactly 100 percent keeps active mode one while color reaches the endpoint");
+    clock->set_retrace_interval(1);expect(clock->advance() && inputs.capture_control()==awl::WorldMapControlStatus::Captured,"fade fixture moves strictly beyond duration");
+    expect(fade.advance_for_loop(inputs,&queue)==S::Advanced && fade.state().mode_60==0 && !fade.state().registered && fade.state().color_54==awl::WorldMapFadeColor{} &&
+        queue.size()==4 && fade.advance_for_loop(inputs,nullptr)==S::AlreadyAdvanced,"first sample above duration unregisters primary but queues final color exactly once");
+    expect(clock->advance() && fade.advance_for_loop(inputs,nullptr)==S::Idle,"later inactive loops skip stale capture and render work");
+    expect(fade.start(0,{1,2,3,4},{5,6,7,8},255,2)==S::Started && inputs.capture_control()==awl::WorldMapControlStatus::Captured,
+        "zero-time held fade can restart with front render priority");
+    before=fade_snapshot(fade);
+    expect(fade.advance_for_loop(inputs,&queue)==S::UnsupportedPriorityChange && fade_snapshot(fade)==before,"unconsumed same-node render priority changes stop explicitly");
+    queue.clear();expect(fade.advance_for_loop(inputs,&queue)==S::Advanced && fade.state().mode_60==2 && fade.state().registered &&
+        fade.state().color_54==awl::WorldMapFadeColor{5,6,7,8} && queue[0].priority==0xdfff,"zero-time hold clamps endpoint and retains active membership");
+    expect(fade.start_world_map_entry()==S::Started && fade.advance_for_loop(inputs,&queue)==S::RequiresNextLoop,"restart after an accepted callback cannot run retroactively in the same loop");
+    awl::WorldMapFadeState state;state.mode_60=1;state.duration_58=0;awl::WorldMapFadeStep step;step.after.mode_60=77;
+    expect(awl::prepare_world_map_fade_update(state,{},&step)==S::RequiresHold && step.after.mode_60==77,"zero duration skips clock/start but needs hold at completion");
+    state.duration_58=1;expect(awl::prepare_world_map_fade_update(state,{},&step)==S::RequiresClock && step.after.mode_60==77,"nonzero duration needs raw time before start time");
+    expect(awl::prepare_world_map_fade_update(state,0,&step)==S::RequiresStartTime && step.after.mode_60==77,"missing constructor-unwritten start time preserves output");
+    state.mode_60=2;state.duration_58=std::numeric_limits<float>::quiet_NaN();
+    expect(awl::prepare_world_map_fade_update(state,{},&step)==S::Prepared && step.after.color_54==state.to_50,"held mode never reads old duration/start/hold");
+    state.mode_60=1;state.duration_58=1000;state.started_5c=0;
+    expect(awl::prepare_world_map_fade_update(state,1000,&step)==S::Prepared && step.after.mode_60==1,
+        "exact duration does not read constructor-unwritten hold byte");
+    expect(awl::prepare_world_map_fade_update(state,1001,&step)==S::RequiresHold,"first sample beyond exact duration requires hold before mode/membership writes");
+    state.duration_58=-1;step.after.mode_60=77;
+    expect(awl::prepare_world_map_fade_update(state,1001,&step)==S::InvalidInput && step.after.mode_60==77,"negative reached duration is explicitly unsupported without mutation");
+    state.mode_60=0;
+    expect(awl::prepare_world_map_fade_update(state,{},&step)==S::Idle && !step.schedule_render,"idle mode skips invalid duration and missing timing fields");
+    state.mode_60=-1;expect(awl::prepare_world_map_fade_update(state,{},&step)==S::UnsupportedMode,"unknown original mode cannot use an undefined incoming float register");
+    awl::WorldMapFade no_clock(nullptr);expect(no_clock.start_world_map_entry()==S::RequiresClock && !no_clock.state().registered,"missing owned raw clock cannot activate the fade");
+    expect(fade.primary_node_identity()!=fade.render_node_identity(),"fade retains distinct stable primary/render keys");
+    clock->set_retrace_interval(0);expect(clock->advance() && inputs.capture_control()==awl::WorldMapControlStatus::Captured,"restarted fade samples a distinct zero-time loop");
+    inputs.request_scene_mode(4,0);awl::WorldMapSceneModeCommit commit;
+    expect(inputs.commit_scene_fields(0,uint8_t{1},&commit)==awl::WorldMapSceneFilterStatus::CommittedFields &&
+        inputs.dispatch(0x5001).status==awl::WorldMapDispatchStatus::Filtered && inputs.dispatch(0x10000).status==awl::WorldMapDispatchStatus::Ready,
+        "scene filtering may block the player while fade group16 remains eligible");
+    queue.clear();expect(fade.advance_for_loop(inputs,&queue)==S::Advanced && fade.state().mode_60==1 && fade.state().color_54==awl::WorldMapFadeColor{0,0,0,255},
+        "restarted fade progresses in the next eligible zero-time loop without inheriting old completion or player filtering");
+    auto sequence_clock=std::make_shared<awl::GameClock>();awl::WorldMapFade sequence(sequence_clock);awl::WorldMapUpdateInputs sequence_inputs(sequence_clock);
+    sequence_inputs.observe_control_sources({awl::WorldMapControlPhase{uint8_t{0},{},uint8_t{0}},0});
+    expect(sequence.start_world_map_entry()==S::Started,"bounded fade/player sequence starts on the justified clear setup branch");
+    awl::WorldMapPlayerActorQueue sequence_queue;digest=14695981039346656037ull;uint32_t first_transition=UINT32_MAX;
+    for(uint32_t tick=0;tick<64;++tick) {
+        expect(sequence_inputs.capture_control()==awl::WorldMapControlStatus::Captured && sequence.advance_for_loop(sequence_inputs,&sequence_queue)==S::Advanced,
+            "each eligible sequence loop updates fade before the player secondary decision");
+        awl::WorldMapPlayerState29SecondaryInput secondary;secondary.guards=awl::WorldMapPlayerUpdateGuards{-1,0};
+        secondary.mode_word_60=sequence.state().mode_60;secondary.scene_mode_60=0;secondary.secondary_byte_3f2=uint8_t{0};secondary.item_present=false;
+        const auto decision=awl::prepare_world_map_player_state29_secondary(secondary);
+        const auto request=uint32_t(decision.requested_state.value_or(-1));
+        if(request!=UINT32_MAX && first_transition==UINT32_MAX)first_transition=tick;
+        for(uint32_t word:{tick,sequence_clock->state().raw_time,uint32_t(sequence.state().mode_60),fade_color_word(*sequence.state().color_54),
+            uint32_t(sequence.state().registered),request,uint32_t(!sequence_queue.empty())})hash(digest,word);
+        sequence_queue.clear(); // Supplied render completion, not a presented frame.
+        expect(sequence_clock->advance(),"bounded sequence advances the raw clock after supplied queue completion");
+    }
+    expect(digest==0xb77643c95bdf85e5ull && first_transition==63,"64-loop fade/player/clock sequence matches original state-zero request at loop63");
+    std::cout<<"WORLD_MAP_FADE_PLAYER_SEQUENCE 64 "<<std::hex<<digest<<std::dec<<" first state-zero request "<<first_transition<<'\n';
+}
 void followup_decision_checks() {
     using S=awl::WorldMapPlayerFollowupStatus;
     awl::WorldMapPlayerState29SecondaryInput input;
@@ -5529,7 +5670,7 @@ int main(int argc,char** argv){
     }
 #endif
     actor_placement_comparisons();embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();skin_execution_checks();awl::filesystem_shutdown();frame_checks();awl::filesystem_shutdown();animation_frame_checks();awl::filesystem_shutdown();attachment_frame_checks();awl::filesystem_shutdown();hierarchy_frame_checks();awl::filesystem_shutdown();partial_frame_sampling_checks();owned_hierarchy_frame_checks();awl::filesystem_shutdown();primary_frame_owner_checks();awl::filesystem_shutdown();topology_checks();awl::filesystem_shutdown();geometry_checks();awl::filesystem_shutdown();primary_owner_checks();awl::filesystem_shutdown();holder_checks();awl::filesystem_shutdown();initial_root_scale_checks();initial_input_checks();awl::filesystem_shutdown();timer_asset_checks();awl::filesystem_shutdown();texture_feature_checks();awl::filesystem_shutdown();state29_camera_checks();parent_update_checks();startup_owner_checks();awl::filesystem_shutdown();feature_draw_state_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
-    followup_decision_checks();holder_policy_checks();holder_pair_checks();awl::filesystem_shutdown();holder_lifecycle_checks();awl::filesystem_shutdown();
+    fade_checks();followup_decision_checks();holder_policy_checks();holder_pair_checks();awl::filesystem_shutdown();holder_lifecycle_checks();awl::filesystem_shutdown();
     if(argc==3 && std::string(argv[1])=="--player-model-local")local(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-frame-local")local(argv[2],true);
     else if(argc==3 && std::string(argv[1])=="--player-primary-local")local_primary(argv[2]);
