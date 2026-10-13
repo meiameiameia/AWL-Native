@@ -13,6 +13,7 @@
 #include "awl/world_map_player_startup.h"
 #include "awl/world_map_fade.h"
 #include "awl/world_map_phase.h"
+#include "awl/world_map_player_context.h"
 #include "awl/filesystem.h"
 
 #include <chrono>
@@ -3016,6 +3017,136 @@ void fade_checks() {
     expect(digest==0xb77643c95bdf85e5ull && first_transition==63,"64-loop fade/player/clock sequence matches original state-zero request at loop63");
     std::cout<<"WORLD_MAP_FADE_PLAYER_SEQUENCE 64 "<<std::hex<<digest<<std::dec<<" first state-zero request "<<first_transition<<'\n';
 }
+std::vector<uint8_t> context_tables_dol() {
+    std::vector<uint8_t> bytes(0x504,0);
+    for(const auto& section:std::array<std::array<uint32_t,3>,3>{{{{0x100,0x8023df88,0x3f0}},{{0x4f0,0x80349e98,8}},{{0x4f8,0x8025113c,12}}}}){
+        const auto i=section[0]==0x100?0u:section[0]==0x4f0?1u:2u;
+        word(bytes,i*4,section[0]);word(bytes,0x48+i*4,section[1]);word(bytes,0x90+i*4,section[2]);}
+    for(uint32_t slot=0;slot<8;++slot)word(bytes,0x100+slot*4,slot);
+    for(uint32_t key=1;key<=16;++key){const auto base=0x2b0+(key-1)*36;word(bytes,base,key);
+        for(uint32_t slot=0;slot<8;++slot)word(bytes,base+4+slot*4,slot==0?key%16+1:slot==2?key:slot%2?0u:UINT32_MAX);}
+    word(bytes,0x4f0,0xbf3504f3);word(bytes,0x4f4,0x3f3504f3);return bytes;
+}
+std::array<uint32_t,13> context_words(const awl::WorldMapPlayerContextResult& result) {
+    const auto& r=result.record;return {uint32_t(result.found),actor_bits(result.nearest_squared_distance),r.owner_code,r.owner_kind,r.payload[0],r.payload[1],
+        actor_bits(r.position[0]),actor_bits(r.position[1]),actor_bits(r.position[2]),actor_bits(r.facing[0]),actor_bits(r.facing[1]),actor_bits(r.facing[2]),r.direction};
+}
+void context_matrix(const awl::WorldMapPlayerContextTables& tables,uint64_t expected) {
+    using S=awl::WorldMapPlayerContextStatus;
+    uint64_t digest=14695981039346656037ull;
+    const std::array<awl::WorldMapPlayerContextVector,4> forwards{{{0,0,1},{1,0,0},{0,0,0},{1,0,1}}};
+    const std::array<awl::WorldMapPlayerContextVector,4> facings{{{0,0,-1},{0,0,0},{1,0,0},{0,1,0}}};
+    for(uint32_t seed=0;seed<512;++seed){awl::WorldMapPlayerContextQuery query;query.forward=forwards[seed%4];
+        query.origin=awl::WorldMapPlayerContextVector{float(int(seed%3)-1),0,float(int(seed/3%3)-1)};
+        query.angle_radians=std::array<float,4>{0,0x1.921fb6p-1f,0x1.921fb6p+0f,0x1.921fb6p+1f}[seed/4%4];
+        query.min_distance=float(seed/16%2);query.max_distance=float(1+seed/32%4);query.excluded_kinds=std::array<uint32_t,4>{0,1,2,1u<<31}[seed/128%4];query.current_key=1+int32_t(seed%16);
+        std::vector<awl::WorldMapPlayerContextList> lists;
+        for(uint32_t group=1;group<=16;++group){awl::WorldMapPlayerContextList list;list.key=int32_t(group);
+            for(uint32_t i=0;i<3;++i){const auto n=seed*17+group*13+i*7;awl::WorldMapPlayerContextCandidate candidate;
+                candidate.position_1c=awl::WorldMapPlayerContextVector{float(int(n%7)-3),float(int(n/7%3)-1),float(int(n/21%7)-3)};
+                candidate.facing_28=facings[n%4];candidate.facing_threshold_38=std::array<float,5>{-1,-.5f,0,.5f,1}[n/4%5];
+                candidate.max_squared_distance_3c=std::array<float,5>{1,4,9,16,100}[n/20%5];candidate.owner_kind_8=std::array<uint32_t,5>{0,1,31,32,64}[n%5];
+                candidate.owner_code_4=1000+group*10+i;candidate.payload=std::array<uint32_t,2>{UINT32_MAX,UINT32_MAX};
+                const auto shift=*candidate.owner_kind_8&63u;
+                if(query.excluded_kinds && shift<32 && (query.excluded_kinds&(1u<<shift))){candidate.position_1c.reset();candidate.facing_28.reset();
+                    candidate.facing_threshold_38.reset();candidate.max_squared_distance_3c.reset();candidate.owner_code_4.reset();candidate.payload.reset();}
+                list.candidates.push_back(candidate);}
+            lists.push_back(std::move(list));}
+        awl::WorldMapPlayerContextResult result;
+        expect(awl::query_world_map_player_context(&tables,lists,query,&result).status==S::Prepared,"supplied context scene prepares under the documented native numerical profile");
+        if(std::getenv("AWL_CONTEXT_TRACE")){std::cout<<"CONTEXT_ROW "<<seed;for(auto value:context_words(result))std::cout<<' '<<std::hex<<value<<std::dec;std::cout<<'\n';}
+        hash(digest,seed);for(auto word_value:context_words(result))hash(digest,word_value);
+    }
+    expect(digest==expected,"512 complete context results match original query instructions under the explicit native numerical substitutions");
+    std::cout<<"PLAYER_CONTEXT_QUERY_NATIVE_PROFILE 512 "<<std::hex<<digest<<std::dec<<'\n';
+}
+void context_checks() {
+    using D=awl::WorldMapPlayerContextTablesStatus;using S=awl::WorldMapPlayerContextStatus;
+    auto bytes=context_tables_dol();std::shared_ptr<const awl::WorldMapPlayerContextTables> tables;
+    expect(awl::decode_world_map_player_context_tables(bytes.data(),bytes.size(),&tables)==D::Decoded && tables && !tables->target_verified(),"context decoder owns all reached invented metadata without claiming target identity");if(!tables)return;
+    const auto* old=tables.get();
+    for(size_t size=0;size<bytes.size();++size)expect(awl::decode_world_map_player_context_tables(bytes.data(),size,&tables)==D::UnsupportedLayout && tables.get()==old,
+        "every truncated context-table prefix rejects before replacing the retained provider");
+    auto bad=bytes;word(bad,0x100,8);expect(awl::decode_world_map_player_context_tables(bad.data(),bad.size(),&tables)==D::UnsupportedLayout && tables.get()==old,"unsupported neighbor slot cannot index beyond the eight entries");
+    bad=bytes;word(bad,0x4f8,1);expect(awl::decode_world_map_player_context_tables(bad.data(),bad.size(),&tables)==D::UnsupportedLayout && tables.get()==old,"changed constructor-vector layout rejects");
+    bad=bytes;word(bad,0x4f0,0x7fc00000);expect(awl::decode_world_map_player_context_tables(bad.data(),bad.size(),&tables)==D::UnsupportedLayout && tables.get()==old,"nonfinite facing thresholds reject");
+    int32_t neighbor=99;expect(!tables->neighbor(1,8,&neighbor) && neighbor==99 && !tables->neighbor(1,0,nullptr),"invalid lookup preserves output");
+    expect(tables->neighbor(999,0,&neighbor) && neighbor==-1,"missing static key returns the original minus-one result");
+    bad=bytes;word(bad,0x2b0+36,1);std::shared_ptr<const awl::WorldMapPlayerContextTables> duplicate;
+    expect(awl::decode_world_map_player_context_tables(bad.data(),bad.size(),&duplicate)==D::Decoded && duplicate->neighbor(1,0,&neighbor) && neighbor==2,
+        "duplicate lookup rows preserve first-match behavior rather than rejecting or sorting the original table");
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    {const auto live=allocation_probe::live;size_t failed=0;bool decoded=false;
+        for(size_t fail=0;fail<8;++fail){allocation_probe::remaining=fail;allocation_probe::enabled=true;
+            const auto status=awl::decode_world_map_player_context_tables(bytes.data(),bytes.size(),&tables);allocation_probe::enabled=false;
+            if(status==D::Decoded){decoded=true;break;}++failed;
+            expect(status==D::AllocationFailure && tables.get()==old && allocation_probe::live==live,"context metadata allocation failures preserve owner and release storage");}
+        expect(decoded && failed==2,"context provider publishes only after object and shared-control allocation");std::cout<<"PLAYER_CONTEXT_TABLE_ALLOCATION_FAILURES "<<failed<<'\n';}
+#endif
+    context_matrix(*tables,0xa0da16549db546e1ull);
+    awl::WorldMapPlayerContextQuery query;query.forward={0,0,1};query.origin=awl::WorldMapPlayerContextVector{0,0,0};query.angle_radians=0;query.max_distance=4;query.current_key=1;
+    std::vector<awl::WorldMapPlayerContextList> lists{{1,{}},{2,{}}};
+    awl::WorldMapPlayerContextCandidate first;first.owner_code_4=100u;first.owner_kind_8=1u;first.position_1c=awl::WorldMapPlayerContextVector{0,0,1};
+    first.facing_28=awl::WorldMapPlayerContextVector{0,0,-1};first.facing_threshold_38=1.0f;first.max_squared_distance_3c=16.0f;first.payload=std::array<uint32_t,2>{5,6};
+    lists[0].candidates={first};lists[1].candidates={first};lists[1].candidates[0].owner_code_4=200u;
+    awl::WorldMapPlayerContextResult result;result.record.owner_code=999;const auto prior=context_words(result);
+    const auto stopped=[&](S status){const auto step=awl::query_world_map_player_context(tables.get(),lists,query,&result);
+        expect(step.status==status && context_words(result)==prior,"context dependency/numeric stops preserve the complete previous result");return step;};
+    expect(awl::query_world_map_player_context(tables.get(),lists,query,nullptr).status==S::InvalidInput,"null context output rejects");
+    expect(awl::query_world_map_player_context(nullptr,lists,query,&result).status==S::RequiresTables && context_words(result)==prior,"nonzero heading requires lookup ownership");
+    lists.pop_back();auto step=stopped(S::RequiresList);expect(step.required_list==2,"missing neighbor remains a reached dependency after selecting the current list");lists.push_back({2,{first}});
+    query.origin.reset();stopped(S::RequiresOrigin);query.origin=awl::WorldMapPlayerContextVector{0,0,0};
+    lists[0].candidates[0].position_1c.reset();stopped(S::RequiresPosition);lists[0].candidates[0]=first;
+    lists[0].candidates[0].max_squared_distance_3c.reset();stopped(S::RequiresRange);lists[0].candidates[0]=first;
+    lists[0].candidates[0].facing_threshold_38.reset();stopped(S::RequiresFacingThreshold);lists[0].candidates[0]=first;
+    lists[0].candidates[0].facing_28.reset();stopped(S::RequiresFacing);lists[0].candidates[0]=first;
+    lists[0].candidates[0].owner_code_4.reset();stopped(S::RequiresOwnerCode);lists[0].candidates[0]=first;
+    lists[0].candidates[0].owner_kind_8.reset();stopped(S::RequiresOwnerKind);lists[0].candidates[0]=first;
+    lists[0].candidates[0].payload.reset();stopped(S::RequiresPayload);lists[0].candidates[0]=first;
+    query.excluded_kinds=2;lists[0].candidates[0]={};stopped(S::RequiresOwnerKind);
+    lists[0].candidates[0].owner_kind_8=1u;lists[1].candidates[0]={};lists[1].candidates[0].owner_kind_8=1u;
+    expect(awl::query_world_map_player_context(tables.get(),lists,query,&result).status==S::Prepared && !result.found,"excluded owners skip all unknown geometry and payload fields");
+    query.excluded_kinds=0;lists[0].candidates={first};lists[1].candidates={first};lists[1].candidates[0].owner_code_4=200u;
+    expect(awl::query_world_map_player_context(tables.get(),lists,query,&result).status==S::Prepared && result.found && result.record.owner_code==100 &&
+        result.record.payload==std::array<uint32_t,2>{5,6} && result.record.direction==0 && result.nearest_squared_distance==1,"strict ties retain the current list's earlier candidate and complete payload/direction");
+    lists[1].candidates[0].position_1c=awl::WorldMapPlayerContextVector{0,0,.5f};
+    expect(awl::query_world_map_player_context(tables.get(),lists,query,&result).status==S::Prepared && result.record.owner_code==200,"closer neighbor replaces the prior result");
+    lists[0].candidates[0].payload.reset();const auto retained=context_words(result);
+    expect(awl::query_world_map_player_context(tables.get(),lists,query,&result).status==S::RequiresPayload && context_words(result)==retained,
+        "earlier list's selected payload is required before visiting a later closer list");
+    lists[0].candidates[0].position_1c=awl::WorldMapPlayerContextVector{0,0,2};lists[0].candidates.push_back(first);
+    expect(awl::query_world_map_player_context(tables.get(),lists,query,&result).status==S::Prepared,"unselected earlier candidate payload is unread within one list");
+    query.forward={0,0,0};query.origin.reset();
+    expect(awl::query_world_map_player_context(nullptr,{},query,&result).status==S::Prepared && !result.found && result.record.payload==std::array<uint32_t,2>{UINT32_MAX,UINT32_MAX},
+        "zero forward returns the complete original default record without tables, lists or origin");
+    query.forward={0,0,1};query.current_key=0;
+    expect(awl::query_world_map_player_context(tables.get(),{},query,&result).status==S::Prepared && !result.found,"zero list key and missing static neighbors skip origin/list reads");
+    query.current_key=-2;expect(awl::query_world_map_player_context(tables.get(),{},query,&result).status==S::InvalidInput,"unsupported negative list key cannot index before runtime storage");
+    query.current_key=1;query.origin=awl::WorldMapPlayerContextVector{0,0,0};lists={{1,{first}},{2,{}}};
+    query.min_distance=1;expect(awl::query_world_map_player_context(tables.get(),lists,query,&result).status==S::Prepared && !result.found,"equal lower distance is excluded");
+    query.min_distance=0;query.max_distance=1;lists[0].candidates[0].max_squared_distance_3c.reset();
+    expect(awl::query_world_map_player_context(tables.get(),lists,query,&result).status==S::Prepared && !result.found,"equal global upper distance skips even missing candidate range");
+    query.max_distance=4;lists[0].candidates[0]=first;lists[0].candidates[0].max_squared_distance_3c=1.0f;lists[0].candidates[0].facing_28.reset();
+    expect(awl::query_world_map_player_context(tables.get(),lists,query,&result).status==S::Prepared && !result.found,"equal per-candidate range skips missing facing data");
+    lists[0].candidates[0]=first;lists.push_back({1,{}});
+    expect(awl::query_world_map_player_context(tables.get(),lists,query,&result).status==S::InvalidInput,"duplicate reached runtime list keys cannot fabricate a direct-index owner");lists.pop_back();
+    allocation_probe::remaining=0;allocation_probe::enabled=true;const auto no_allocation=awl::query_world_map_player_context(tables.get(),lists,query,&result);allocation_probe::enabled=false;
+    expect(no_allocation.status==S::Prepared && result.found,"complete context query requires no dynamic allocation");
+    const int rounding=std::fegetround();expect(std::fesetround(FE_UPWARD)==0,"context test selects unsupported arithmetic");
+    expect(awl::query_world_map_player_context(tables.get(),lists,query,&result).status==S::UnsupportedNumerics,"context query rejects unsupported rounding");
+    expect(std::fesetround(rounding)==0,"context test restores caller rounding");
+    lists[0].candidates[0].position_1c=awl::WorldMapPlayerContextVector{0,std::numeric_limits<float>::infinity(),1};
+    expect(awl::query_world_map_player_context(tables.get(),lists,query,&result).status==S::UnsupportedNumerics,"reached nonfinite geometry is explicit unsupported input");
+    {Fixture fixture;const auto* retained_tables=tables.get();
+        expect(awl::load_world_map_player_context_tables(&tables)==D::ReadFailure && tables.get()==retained_tables,"missing DOL preserves the unverified retained decoder owner");
+        std::filesystem::create_directory(fixture.root/"sys");
+        {std::ofstream file(fixture.root/"sys"/"main.dol",std::ios::binary);file.write(reinterpret_cast<const char*>(bytes.data()),std::streamsize(bytes.size()));
+            expect(bool(file),"invented context-only DOL fixture writes");}
+        expect(awl::load_world_map_player_context_tables(&tables)==D::WrongDol && tables.get()==retained_tables,"valid invented layout cannot bypass target SHA1 at the mounted loader");
+        awl::filesystem_shutdown();}
+    bytes.clear();expect(tables->neighbor(1,0,&neighbor) && neighbor==2,"context metadata owns its rows after source bytes are released");
+    std::cout<<"PLAYER_CONTEXT supplied ordered lists, dependencies, strict ties, payload timing and native profile\n";
+}
 void state0_initializer_checks() {
     using S=awl::WorldMapPlayerState0TransitionStatus;
     uint64_t digest=14695981039346656037ull;
@@ -4894,6 +5025,13 @@ void startup_tick_owner_checks(const awl::WorldMapPlayerStartupProviders& source
 void local_animation_loops(const char* disc) {
     using S=awl::WorldMapPlayerStartupStatus;
     expect(awl::filesystem_mount("/",disc),"local coordinated animation disc mounts");
+    std::shared_ptr<const awl::WorldMapPlayerContextTables> context_tables;
+    expect(awl::load_world_map_player_context_tables(&context_tables)==awl::WorldMapPlayerContextTablesStatus::Loaded && context_tables && context_tables->target_verified(),
+        "local context lookup metadata loads only from the verified target DOL");
+    if(context_tables){uint64_t digest=14695981039346656037ull;for(int32_t key=1;key<=16;++key)for(uint32_t slot=0;slot<8;++slot){int32_t neighbor;
+        expect(context_tables->neighbor(key,slot,&neighbor),"all verified context key/slot lookups resolve");for(uint32_t w:{uint32_t(key),slot,uint32_t(neighbor)})hash(digest,w);}
+        expect(digest==0x2f3276d5d8b5b6f5ull,"all 128 local context neighbors match actual original lookup instructions");
+        std::cout<<"LOCAL_PLAYER_CONTEXT_NEIGHBORS 128 "<<std::hex<<digest<<std::dec<<'\n';context_matrix(*context_tables,0x542f2a040b6b50b0ull);}
     awl::WorldMapPlayerStartupProviders providers;
     expect(awl::load_world_map_player_animation_assets(&providers.animations)==awl::WorldMapPlayerAnimationAssetsStatus::Loaded &&
         awl::load_world_map_player_start_animation_tables(&providers.starts)==awl::WorldMapPlayerStartAnimationStatus::Loaded && providers.starts->target_verified() &&
@@ -5931,7 +6069,7 @@ int main(int argc,char** argv){
     }
 #endif
     actor_placement_comparisons();embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();skin_execution_checks();awl::filesystem_shutdown();frame_checks();awl::filesystem_shutdown();animation_frame_checks();awl::filesystem_shutdown();attachment_frame_checks();awl::filesystem_shutdown();hierarchy_frame_checks();awl::filesystem_shutdown();partial_frame_sampling_checks();owned_hierarchy_frame_checks();awl::filesystem_shutdown();primary_frame_owner_checks();awl::filesystem_shutdown();topology_checks();awl::filesystem_shutdown();geometry_checks();awl::filesystem_shutdown();primary_owner_checks();awl::filesystem_shutdown();holder_checks();awl::filesystem_shutdown();initial_root_scale_checks();initial_input_checks();awl::filesystem_shutdown();timer_asset_checks();awl::filesystem_shutdown();texture_feature_checks();awl::filesystem_shutdown();state29_camera_checks();parent_update_checks();startup_owner_checks();awl::filesystem_shutdown();feature_draw_state_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
-    fade_checks();state0_initializer_checks();followup_decision_checks();holder_policy_checks();holder_pair_checks();awl::filesystem_shutdown();holder_lifecycle_checks();awl::filesystem_shutdown();
+    fade_checks();context_checks();state0_initializer_checks();followup_decision_checks();holder_policy_checks();holder_pair_checks();awl::filesystem_shutdown();holder_lifecycle_checks();awl::filesystem_shutdown();
     if(argc==3 && std::string(argv[1])=="--player-model-local")local(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-frame-local")local(argv[2],true);
     else if(argc==3 && std::string(argv[1])=="--player-primary-local")local_primary(argv[2]);

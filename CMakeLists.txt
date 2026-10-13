@@ -68,6 +68,7 @@ set(SOURCES
     src/world_map_player_status.cpp
     src/world_map_update_inputs.cpp
     src/world_map_fade.cpp
+    src/world_map_player_context.cpp
     src/world_map_player_initial_animation.cpp
     src/world_map_player_timer_assets.cpp
     src/game_clock.cpp
@@ -148,6 +149,7 @@ set(HEADERS
     include/awl/world_map_update_inputs.h
     include/awl/world_map_fade.h
     include/awl/world_map_phase.h
+    include/awl/world_map_player_context.h
     include/awl/world_map_player_initial_animation.h
     include/awl/world_map_player_timer_assets.h
     include/awl/game_clock.h
@@ -677,6 +679,7 @@ add_executable(world_map_player_model_assets_tests
     src/world_map_player_status.cpp
     src/world_map_update_inputs.cpp
     src/world_map_fade.cpp
+    src/world_map_player_context.cpp
     src/world_map_scene_index.cpp
     src/world_map_player_start.cpp
     src/collision_asset.cpp
