@@ -256,6 +256,7 @@ WorldMapPlayerPrimaryPassesResult WorldMapPlayerStartup::complete_state29_primar
         return receipt && receipt->valid && receipt->loop_count==clock.loop_count && receipt->raw_time==clock.raw_time;
     };
     if (!current(primary_loop_)) return {S::RequiresPrimary};
+    if (primary_loop_->inputs_owner!=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&inputs))) return {S::InvalidInput};
     if (!current(animation_loop_)) return {S::RequiresAnimation};
     if (primary_loop_->followups_completed) return {S::AlreadyCompleted};
     WorldMapPlayerPrimaryPassesResult result;
@@ -298,6 +299,7 @@ WorldMapPlayerPrimarySliceResult WorldMapPlayerStartup::advance_state29_primary_
     // or repeat an accepted parent changed by an isolated diagnostic call.
     if ((same(primary_loop_) && !primary_loop_->valid) || (same(animation_loop_) && !same(primary_loop_)))
         return {S::RequiresNextLoop};
+    if (same(primary_loop_) && primary_loop_->inputs_owner!=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&inputs))) return {S::InvalidInput};
     if (same(primary_loop_) && primary_loop_->updates_owner && owners &&
         primary_loop_->updates_owner!=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(owners))) return {S::InvalidInput};
     WorldMapPlayerPrimarySliceResult result;
@@ -315,6 +317,7 @@ WorldMapPlayerPrimarySliceResult WorldMapPlayerStartup::advance_state29_primary_
         }
         primary_loop_=WorldMapPlayerPrimaryLoop{clock.loop_count,clock.raw_time,true,
             result.parent->status==P::Advanced?static_cast<uint64_t>(reinterpret_cast<uintptr_t>(owners)):0};
+        primary_loop_->inputs_owner=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&inputs));
     }
     result.animation=dispatch_animation_for_loop(inputs);
     if (result.animation->status==A::RequiresNextLoop) result.status=S::RequiresNextLoop;
@@ -345,6 +348,7 @@ WorldMapPlayerStartupQueueResult WorldMapPlayerStartup::consume_update(
         return {S::RequiresPrimary};
     if (needs_primary && primary_loop_->updates_owner &&
         primary_loop_->updates_owner!=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(updates))) return {S::InvalidInput};
+    if (needs_primary && primary_loop_->inputs_owner!=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&inputs))) return {S::InvalidInput};
     if (prerequisite!=QueuePrerequisite::None && (!animation_loop_ || !animation_loop_->valid || animation_loop_->loop_count!=model_->game_clock()->state().loop_count ||
         animation_loop_->raw_time!=model_->game_clock()->state().raw_time)) return {S::RequiresAnimation};
     if (prerequisite==QueuePrerequisite::Passes && !primary_loop_->followups_completed) return {S::RequiresPrimaryPasses};
@@ -362,6 +366,62 @@ WorldMapPlayerStartupQueueResult WorldMapPlayerStartup::consume_update(
     updates->queue.erase(updates->queue.begin());
     result.completed_node = key;
     result.status = S::Completed;
+    return result;
+}
+
+WorldMapPlayerStartupTickResult WorldMapPlayerStartup::advance_state29_startup_tick(
+    const WorldMapUpdateInputs& inputs,const WorldMapPlayerStartupTickInput& input,
+    WorldMapFade* fade,WorldMapPlayerUpdateOwners* updates,WorldMapPlayerActorQueue* render_queue) {
+    using S=WorldMapPlayerStartupTickStatus;using F=WorldMapFadeStatus;using P=WorldMapPlayerPrimaryPassesStatus;
+    static_assert(std::is_nothrow_move_constructible_v<WorldMapPlayerStartupTickResult>);
+    static_assert(std::is_nothrow_move_assignable_v<WorldMapPlayerStartupTickResult>);
+    if (!fade || !updates || !model_->game_clock() || inputs.game_clock()!=model_->game_clock() || fade->game_clock()!=model_->game_clock())
+        return {S::InvalidInput};
+    if (!fade->state().started_5c) {
+        WorldMapPlayerStartupTickResult result;result.status=S::FadeIncomplete;result.fade=F::RequiresStartTime;return result;
+    }
+    const auto clock=model_->game_clock()->state();
+    const auto fade_key=fade->primary_node_identity();
+    const bool same=primary_loop_ && primary_loop_->loop_count==clock.loop_count && primary_loop_->raw_time==clock.raw_time;
+    if (same && primary_loop_->fade_owner && primary_loop_->fade_owner!=fade_key) return {S::InvalidInput};
+    if (same && primary_loop_->followups_completed && !primary_loop_->fade_owner) return {S::RequiresNextLoop};
+    const bool fade_handled=fade->loop() && fade->loop()->loop_count==clock.loop_count && fade->loop()->raw_time==clock.raw_time;
+    if (fade_handled && (!same || !primary_loop_->fade_owner)) return {S::RequiresNextLoop};
+    WorldMapPlayerStartupTickResult result;
+    result.primary=advance_state29_primary_slice(inputs,input.parent,updates);
+    if (result.primary->status!=WorldMapPlayerPrimarySliceStatus::Completed) {
+        result.status=result.primary->status==WorldMapPlayerPrimarySliceStatus::RequiresNextLoop?S::RequiresNextLoop:S::PrimaryIncomplete;
+        return result;
+    }
+    // Native source binding after the accepted first pass, before fade work.
+    primary_loop_->fade_owner=fade_key;
+    result.fade=fade->advance_for_loop(inputs,render_queue);
+    if (*result.fade!=F::Advanced && *result.fade!=F::AlreadyAdvanced && *result.fade!=F::Idle) {
+        result.status=*result.fade==F::RequiresNextLoop?S::RequiresNextLoop:S::FadeIncomplete;return result;
+    }
+    auto secondary=input.secondary;
+    if (!primary_loop_->followups_completed) {
+        const auto dispatch=inputs.dispatch(primary_registration()[0].priority);
+        // The original guard can skip 34B44, including its mode read. The
+        // caller's optional diagnostic override is checked only if reached.
+        const bool reaches_mode=dispatch.status==WorldMapDispatchStatus::Ready &&
+            prepare_world_map_player_state29_tertiary(secondary.guards)==WorldMapPlayerFollowupStatus::RetainedState;
+        if (reaches_mode && secondary.mode_word_60 && *secondary.mode_word_60!=fade->state().mode_60) {
+            result.status=S::InvalidInput;return result;
+        }
+        secondary.mode_word_60=fade->state().mode_60;
+    }
+    result.passes=complete_state29_primary_passes(inputs,secondary,input.tertiary_guards);
+    if (result.passes->status==P::TransitionRequired) {result.status=S::TransitionRequired;return result;}
+    if (result.passes->status!=P::Completed && result.passes->status!=P::AlreadyCompleted) {result.status=S::PassesIncomplete;return result;}
+    if (primary_loop_->queued_completed) {result.queue_reused=true;result.status=S::Completed;return result;}
+    result.queued=consume_state29_update_after_primary_passes(inputs,input.actor,updates,render_queue);
+    const auto queued=result.queued->status;
+    result.status=queued==WorldMapPlayerStartupQueueStatus::Completed || queued==WorldMapPlayerStartupQueueStatus::Empty?S::Completed:S::QueueIncomplete;
+    if (result.status==S::Completed) {
+        primary_loop_->queued_completed=true;
+        if (!primary_loop_->updates_owner) primary_loop_->updates_owner=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(updates));
+    }
     return result;
 }
 

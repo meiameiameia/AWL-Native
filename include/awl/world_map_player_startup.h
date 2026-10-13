@@ -5,6 +5,7 @@
 #include "awl/world_map_update_inputs.h"
 #include "awl/world_map_player_actor_prepare.h"
 #include "awl/world_map_player_actor_schedule.h"
+#include "awl/world_map_fade.h"
 
 namespace awl {
 struct WorldMapPlayerStartupProviders {
@@ -175,6 +176,9 @@ struct WorldMapPlayerPrimaryLoop {
     // Only this owned player's second/third callbacks and the manager's
     // empty second/third callbacks; not other nodes or scene work.
     bool followups_completed = false;
+    uint64_t fade_owner = 0; // bounded startup-tick source binding
+    bool queued_completed = false;
+    uint64_t inputs_owner = 0; // same captured-control owner through completion
 };
 struct WorldMapPlayerPrimarySliceResult {
     WorldMapPlayerPrimarySliceStatus status = WorldMapPlayerPrimarySliceStatus::InvalidInput;
@@ -201,6 +205,24 @@ struct WorldMapPlayerStartupQueueResult {
     WorldMapPlayerStartupQueueStatus status = WorldMapPlayerStartupQueueStatus::InvalidInput;
     std::optional<WorldMapPlayerStartupActorCallbackResult> callback;
     std::optional<uint64_t> completed_node;
+};
+struct WorldMapPlayerStartupTickInput {
+    WorldMapPlayerStartupDispatchInput parent;
+    WorldMapPlayerState29SecondaryInput secondary;
+    std::optional<WorldMapPlayerUpdateGuards> tertiary_guards;
+    WorldMapPlayerStartupQueuedActorInput actor;
+};
+enum class WorldMapPlayerStartupTickStatus {
+    Completed, PrimaryIncomplete, FadeIncomplete, PassesIncomplete,
+    TransitionRequired, QueueIncomplete, RequiresNextLoop, InvalidInput
+};
+struct WorldMapPlayerStartupTickResult {
+    WorldMapPlayerStartupTickStatus status = WorldMapPlayerStartupTickStatus::InvalidInput;
+    std::optional<WorldMapPlayerPrimarySliceResult> primary;
+    std::optional<WorldMapFadeStatus> fade;
+    std::optional<WorldMapPlayerPrimaryPassesResult> passes;
+    std::optional<WorldMapPlayerStartupQueueResult> queued;
+    bool queue_reused = false;
 };
 // Owns the supported CPU initial model -> no-message tail -> normal state-29
 // callback boundary. Only known parent/secondary writes are exposed;
@@ -346,6 +368,20 @@ public:
     [[nodiscard]] WorldMapPlayerStartupQueueResult consume_state29_update_after_primary_passes(
         const WorldMapUpdateInputs&,const WorldMapPlayerStartupQueuedActorInput&,
         WorldMapPlayerUpdateOwners*,WorldMapPlayerActorQueue*);
+    // Bounded startup tick: player5001 -> modelF000 -> fade10000 -> owned
+    // second/third player callbacks -> owned-front queued actor completion.
+    // All owners share one captured clock sample. Secondary mode is derived
+    // from fade, with a contradictory reached diagnostic override rejected.
+    // Each accepted earlier callback survives late failure; retries reuse it.
+    // Fade must already have a justified start; constructor mode zero alone
+    // cannot bypass the world-map entry fade. Keep fade/update/render storage
+    // and captured-input storage alive through the loop's completion.
+    // A separately completed later pass cannot be retroactively preceded by
+    // fade. Reached state transitions stop before initialization. Completed
+    // does not acknowledge other primary nodes, scene work, drawing or time.
+    [[nodiscard]] WorldMapPlayerStartupTickResult advance_state29_startup_tick(
+        const WorldMapUpdateInputs&,const WorldMapPlayerStartupTickInput&,
+        WorldMapFade*,WorldMapPlayerUpdateOwners*,WorldMapPlayerActorQueue*);
     [[nodiscard]] WorldMapPlayerPrimaryUpdateResult advance(const WorldMapPlayerPrimaryFrameInput& input) {
         return model_->advance(input);
     }

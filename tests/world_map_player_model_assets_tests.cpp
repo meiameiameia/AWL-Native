@@ -2842,7 +2842,10 @@ uint64_t startup_snapshot(const awl::WorldMapPlayerStartup& owner) {
     hash(h,owner.primary_loop().has_value());if(owner.primary_loop()){
         hash(h,owner.primary_loop()->loop_count);hash(h,owner.primary_loop()->raw_time);hash(h,owner.primary_loop()->valid);
         hash(h,uint32_t(owner.primary_loop()->updates_owner>>32));hash(h,uint32_t(owner.primary_loop()->updates_owner));
-        hash(h,owner.primary_loop()->followups_completed);}
+        hash(h,owner.primary_loop()->followups_completed);
+        hash(h,uint32_t(owner.primary_loop()->fade_owner>>32));hash(h,uint32_t(owner.primary_loop()->fade_owner));
+        hash(h,owner.primary_loop()->queued_completed);
+        hash(h,uint32_t(owner.primary_loop()->inputs_owner>>32));hash(h,uint32_t(owner.primary_loop()->inputs_owner));}
     const auto key=reinterpret_cast<uintptr_t>(owner.starts().get());hash(h,uint32_t(uint64_t(key)>>32));hash(h,uint32_t(key));
     hash(h,owner.camera().has_value());if(owner.camera()){const auto camera=camera_snapshot(*owner.camera());hash(h,uint32_t(camera>>32));hash(h,uint32_t(camera));}
     const auto& actor=owner.actor_metadata();hash(h,actor.flag_15d);hash(h,actor.flag_15e);hash(h,actor.flag_15f);
@@ -2876,7 +2879,8 @@ uint64_t fade_snapshot(const awl::WorldMapFade& fade) {
         s.color_54?fade_color_word(*s.color_54):0u,actor_bits(s.duration_58),uint32_t(s.started_5c.has_value()),s.started_5c.value_or(0),
         uint32_t(s.mode_60),uint32_t(s.hold_64.has_value()),uint32_t(s.hold_64.value_or(0)),s.render_priority_68,uint32_t(s.registered)})hash(h,word);
     hash(h,fade.loop().has_value());if(fade.loop()){hash(h,fade.loop()->loop_count);hash(h,fade.loop()->raw_time);hash(h,fade.loop()->valid);
-        hash(h,uint32_t(fade.loop()->render_owner>>32));hash(h,uint32_t(fade.loop()->render_owner));}return h;
+        hash(h,uint32_t(fade.loop()->render_owner>>32));hash(h,uint32_t(fade.loop()->render_owner));
+        hash(h,uint32_t(fade.loop()->inputs_owner>>32));hash(h,uint32_t(fade.loop()->inputs_owner));}return h;
 }
 void fade_checks() {
     using S=awl::WorldMapFadeStatus;
@@ -2940,6 +2944,9 @@ void fade_checks() {
     expect(fade.state().color_54==awl::WorldMapFadeColor{0,0,0,255} && queue.size()==4 && queue[1].node_identity==fade.render_node_identity() &&
         queue[1].priority==0xcffe && queue[2].node_identity==8,"fade starts at source color and inserts before equal-priority render work");
     before=fade_snapshot(fade);const auto retained_queue=actor_queue_snapshot(queue);auto other=queue;
+    awl::WorldMapUpdateInputs alternate_inputs(clock);alternate_inputs.observe_control_sources({awl::WorldMapControlPhase{uint8_t{0},{},uint8_t{0}},0});
+    expect(alternate_inputs.capture_control()==awl::WorldMapControlStatus::Captured && fade.advance_for_loop(alternate_inputs,&queue)==S::InvalidInput && fade_snapshot(fade)==before,
+        "a second captured-control owner on the same clock cannot replace an accepted fade sample");
     expect(fade.advance_for_loop(inputs,&other)==S::InvalidInput && fade.advance_for_loop(inputs,nullptr)==S::AlreadyAdvanced &&
         fade_snapshot(fade)==before && actor_queue_snapshot(queue)==retained_queue,"same-loop receipt prevents repeat work and rejects a different queue owner");
     const int rounding=std::fegetround();expect(std::fesetround(FE_UPWARD)==0,"fade test selects unsupported arithmetic");
@@ -4303,6 +4310,8 @@ void actor_placement_owner_checks(awl::WorldMapPlayerStartup& player,bool alloca
 }
 void primary_slice_owner_checks(const awl::WorldMapPlayerStartupProviders&,const awl::WorldMapPlayerStartupQuery&,
     const std::shared_ptr<awl::WorldMapCameraCollisionAsset>&,const awl::WorldMapCameraViewQuery&,bool);
+void startup_tick_owner_checks(const awl::WorldMapPlayerStartupProviders&,const awl::WorldMapPlayerStartupQuery&,
+    const std::shared_ptr<awl::WorldMapCameraCollisionAsset>&,const awl::WorldMapCameraViewQuery&,bool);
 void startup_owner_checks() {
     using S=awl::WorldMapPlayerStartupStatus;using A=awl::WorldMapPlayerStartAnimationStatus;using I=awl::WorldMapAnimationInitializerStatus;
     Fixture fixture;auto payloads=files();payloads[0]=setup_model();payloads[1]=geometry_gpl();payloads[2]=execution_skin(1);
@@ -4406,10 +4415,12 @@ void startup_owner_checks() {
     parent_owner_checks(p,q,frame,camera,camera_query);
     dispatch_owner_checks(p,q,frame,camera,camera_query);
     primary_slice_owner_checks(p,q,camera,camera_query,true);
+    startup_tick_owner_checks(p,q,camera,camera_query,true);
     {
         auto paired=p;auto bytes=start_bytes;word(bytes,0x164,63u|(1u<<11)|(255u<<19));
         expect(awl::decode_world_map_player_start_animation_tables(bytes.data(),bytes.size(),&paired.starts)==A::Decoded,"ordered paired selector decodes");
         primary_slice_owner_checks(paired,q,camera,camera_query,true);
+        startup_tick_owner_checks(paired,q,camera,camera_query,true);
     }
     {
         // This fixture now advances its shared clock. Isolate it from the
@@ -4632,6 +4643,147 @@ void primary_slice_owner_checks(const awl::WorldMapPlayerStartupProviders& sourc
     expect(step.status==S::RequiresNextLoop && startup_snapshot(*player)==before,"ordered primary facade rejects executing a parent retroactively after independent model progression");
     std::cout<<"PLAYER_PRIMARY_SLICE ordered parent/model, secondary/tertiary callbacks, transition stop, filtered passes and retry preservation\n";
 }
+void startup_tick_owner_checks(const awl::WorldMapPlayerStartupProviders& source,const awl::WorldMapPlayerStartupQuery& query,
+    const std::shared_ptr<awl::WorldMapCameraCollisionAsset>& camera,const awl::WorldMapCameraViewQuery& view,bool allocations) {
+    using S=awl::WorldMapPlayerStartupTickStatus;using F=awl::WorldMapFadeStatus;using P=awl::WorldMapPlayerPrimaryPassesStatus;
+    using Q=awl::WorldMapPlayerStartupQueueStatus;
+    auto providers=source;providers.clock=std::make_shared<awl::GameClock>();
+    std::unique_ptr<awl::WorldMapPlayerStartup> player;
+    expect(awl::construct_world_map_player_startup(providers,query,&player).status==awl::WorldMapPlayerStartupStatus::ConstructedCpuStartup && player,
+        "startup-tick fixture owns primary/secondary models on a private shared clock");if(!player)return;
+    awl::WorldMapFade fade(providers.clock),other_fade(providers.clock),foreign_fade(std::make_shared<awl::GameClock>());
+    expect(fade.start_world_map_entry()==F::Started,"startup-tick fade starts from the bounded clear setup branch");
+    awl::WorldMapUpdateInputs inputs(providers.clock),missing(providers.clock);
+    inputs.observe_control_sources({awl::WorldMapControlPhase{uint8_t{1},123456u,uint8_t{0}},0});
+    awl::WorldMapPlayerUpdateOwners owners;owners.scene_one_position_240=std::array<float,3>{};owners.queue={{900,0x1011}};
+    expect(player->initialize_fresh_status(inputs,&owners)==awl::WorldMapPlayerStatusCode::Prepared,"startup tick initializes pointed status using the retained phase source");
+    awl::WorldMapPlayerActorQueue render{{11,0x2002},{12,0xcffe},{13,UINT32_MAX}};
+    awl::WorldMapPlayerStartupTickInput input;input.parent.guards=awl::WorldMapPlayerUpdateGuards{-1,0};input.parent.scene_child_word_4=0;
+    input.parent.pose={1,{2,0,0},{0,0,1}};input.parent.action_148=0;input.parent.first_camera=awl::WorldMapPlayerStartupCameraSeed{camera,view};
+    auto before=startup_snapshot(*player),fade_before=fade_snapshot(fade),effects=update_owners_snapshot(owners),draw=actor_queue_snapshot(render);
+    const auto preserved=[&](){return startup_snapshot(*player)==before && fade_snapshot(fade)==fade_before && update_owners_snapshot(owners)==effects && actor_queue_snapshot(render)==draw;};
+    expect(player->advance_state29_startup_tick(inputs,input,nullptr,&owners,&render).status==S::InvalidInput &&
+        player->advance_state29_startup_tick(inputs,input,&foreign_fade,&owners,&render).status==S::InvalidInput &&
+        player->advance_state29_startup_tick(inputs,input,&fade,nullptr,&render).status==S::InvalidInput && preserved(),
+        "absent/foreign required tick owners reject before any callback");
+    expect(player->advance_state29_startup_tick(inputs,input,&other_fade,&owners,&render).status==S::FadeIncomplete && preserved(),
+        "unstarted constructor fade cannot silently bypass the justified world-map entry sequence");
+    auto tick=player->advance_state29_startup_tick(missing,input,&fade,&owners,&render);
+    expect(tick.status==S::PrimaryIncomplete && tick.primary && !tick.fade && preserved(),"missing captured control stops before parent/model/fade work");
+    expect(inputs.capture_control()==awl::WorldMapControlStatus::Captured,"startup tick captures active control once");
+    tick=player->advance_state29_startup_tick(inputs,input,&fade,&owners,nullptr);
+    expect(tick.status==S::FadeIncomplete && tick.primary && tick.primary->status==awl::WorldMapPlayerPrimarySliceStatus::Completed &&
+        tick.fade==F::RequiresRenderQueue && player->primary_loop()->fade_owner==fade.primary_node_identity() && !fade.loop() &&
+        player->state().counter_1368==1 && owners.queue.size()==2,"late fade dependency preserves accepted parent/model and binds the owned retention source");
+    input.parent={};input.parent.pose.position[0]=std::numeric_limits<float>::quiet_NaN();input.parent.player_node_identity=99;
+    before=startup_snapshot(*player);fade_before=fade_snapshot(fade);effects=update_owners_snapshot(owners);draw=actor_queue_snapshot(render);
+    awl::WorldMapUpdateInputs alternate_inputs(providers.clock);
+    alternate_inputs.observe_control_sources({awl::WorldMapControlPhase{uint8_t{0},{},uint8_t{0}},0});
+    expect(alternate_inputs.capture_control()==awl::WorldMapControlStatus::Captured &&
+        player->advance_state29_startup_tick(alternate_inputs,input,&fade,&owners,&render).status==S::PrimaryIncomplete && preserved(),
+        "a second control capture on the same clock cannot replace the accepted tick's original control owner");
+    expect(other_fade.start_world_map_entry()==F::Started,"replacement fixture uses a complete started fade on the same clock");
+    expect(player->advance_state29_startup_tick(inputs,input,&other_fade,&owners,&render).status==S::InvalidInput && preserved(),
+        "accepted startup prefix cannot rebind its fade source before retry");
+    bool fade_accepted=false;
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    if(allocations){const auto live=allocation_probe::live;size_t failed=0;
+        for(size_t fail=0;fail<8;++fail){allocation_probe::remaining=fail;allocation_probe::enabled=true;
+            tick=player->advance_state29_startup_tick(inputs,input,&fade,&owners,&render);allocation_probe::enabled=false;
+            if(tick.status==S::PassesIncomplete){fade_accepted=true;break;}++failed;
+            expect(tick.status==S::FadeIncomplete && tick.fade==F::AllocationFailure && preserved() && allocation_probe::live==live,
+                "composed fade queue allocation failures retain accepted parent/model/source and release staging");}
+        expect(fade_accepted && failed==2,"both composed fade queue allocation stages preserve the earlier accepted prefix");
+        std::cout<<"PLAYER_STARTUP_TICK_FADE_ALLOCATION_FAILURES "<<failed<<'\n';}
+#else
+    (void)allocations;
+#endif
+    if(!fade_accepted)tick=player->advance_state29_startup_tick(inputs,input,&fade,&owners,&render);
+    expect(tick.status==S::PassesIncomplete && tick.passes && tick.passes->status==P::SecondaryIncomplete && fade.loop() &&
+        fade.state().mode_60==1 && render.size()==4 && render[1].node_identity==fade.render_node_identity() && player->state().counter_1368==1,
+        "owned fade progresses and schedules before missing player second-pass observations stop");
+    before=startup_snapshot(*player);fade_before=fade_snapshot(fade);effects=update_owners_snapshot(owners);draw=actor_queue_snapshot(render);
+    input.secondary.guards=awl::WorldMapPlayerUpdateGuards{0,{}};input.secondary.mode_word_60=99;
+    tick=player->advance_state29_startup_tick(inputs,input,&fade,&owners,&render);
+    expect(tick.status==S::PassesIncomplete && tick.passes && tick.passes->status==P::TertiaryIncomplete && preserved(),
+        "blocked second-pass guard skips even a contradictory mode override before the independent third-pass guard");
+    input.secondary.guards=awl::WorldMapPlayerUpdateGuards{-1,0};input.secondary.mode_word_60=0;
+    tick=player->advance_state29_startup_tick(inputs,input,&fade,&owners,&render);
+    expect(tick.status==S::InvalidInput && tick.fade==F::AlreadyAdvanced && !tick.passes && preserved(),
+        "reached diagnostic override cannot replace the actual owned fade retention word");input.secondary.mode_word_60.reset();
+    tick=player->advance_state29_startup_tick(inputs,input,&fade,&owners,&render);
+    expect(tick.status==S::PassesIncomplete && tick.passes && tick.passes->status==P::TertiaryIncomplete && preserved(),
+        "late third-pass dependency does not repeat accepted fade, counters, status, playback or queue insertion");
+    input.tertiary_guards=awl::WorldMapPlayerUpdateGuards{-1,0};
+    tick=player->advance_state29_startup_tick(inputs,input,&fade,&owners,&render);
+    expect(tick.status==S::QueueIncomplete && tick.queued && tick.queued->status==Q::CallbackIncomplete &&
+        player->primary_loop()->followups_completed && !player->primary_loop()->queued_completed,
+        "late actor failure preserves all accepted earlier callbacks and pending owned update");
+    before=startup_snapshot(*player);fade_before=fade_snapshot(fade);effects=update_owners_snapshot(owners);draw=actor_queue_snapshot(render);
+    {auto other=render;tick=player->advance_state29_startup_tick(inputs,{},&fade,&owners,&other);
+        expect(tick.status==S::FadeIncomplete && tick.fade==F::InvalidInput && preserved(),"accepted fade render owner cannot be rebound on a frame retry");}
+    input.actor.actor.saved_byte_29a01=uint8_t{0};input.actor.actor.script.emplace();input.actor.actor.script->flag_width_4=1;input.actor.actor.script->flag_bytes={1};
+    tick=player->advance_state29_startup_tick(inputs,input,&fade,&owners,&render);
+    expect(tick.status==S::Completed && tick.queued && tick.queued->status==Q::Completed && player->primary_loop()->queued_completed &&
+        owners.queue.size()==1 && owners.queue[0].node_identity==900 && player->state().counter_1368==1 && fade_snapshot(fade)==fade_before && actor_queue_snapshot(render)==draw,
+        "composed startup tick finishes its script-blocked owned node after all prior callbacks without touching later foreign work");
+    before=startup_snapshot(*player);effects=update_owners_snapshot(owners);
+    tick=player->advance_state29_startup_tick(inputs,{},&fade,&owners,nullptr);
+    expect(tick.status==S::Completed && tick.queue_reused && !tick.queued && preserved(),"same-loop completed tick reuses owned completion and never consumes the next foreign node");
+    // Subsequent supplied samples run the active parent/status path through
+    // the original rounded fade deadline. Supplied queue completion is not GPU.
+    input.parent={};input.parent.guards=awl::WorldMapPlayerUpdateGuards{-1,0};input.parent.scene_child_word_4=0;
+    input.parent.pose={1,{2,0,0},{0,0,1}};input.parent.action_148=0;
+    input.secondary.scene_mode_60=0;input.secondary.secondary_byte_3f2=uint8_t{0};input.secondary.item_present=false;
+    const auto blocked_actor=input.actor;
+    for(uint32_t sample=1;sample<64;++sample){
+        render.erase(std::remove_if(render.begin(),render.end(),[&](const auto& entry){return entry.node_identity==fade.render_node_identity() ||
+            entry.node_identity==player->render_node_identity() || entry.node_identity==player->effect_node_identity();}),render.end());
+        expect(providers.clock->advance() && inputs.capture_control()==awl::WorldMapControlStatus::Captured,"startup fixture explicitly advances after supplied render completion");
+        if(sample==2){auto& actor=input.actor.actor;actor.script->flag_bytes[0]=0;actor.script->records.emplace();actor.derive_normal_visibility=true;
+            actor.frame.actor_placement=awl::WorldMapPlayerActorPlacement{input.parent.pose.position,input.parent.pose.heading};
+            actor.frame.node_post_transforms.resize(player->model().primary().model().core().nodes.size());
+            actor.visibility.emplace();actor.visibility->view=awl::WorldMapModelMatrix{1,0,0,0,0,1,0,0,0,0,1,0};
+            for(size_t i=0;i<6;++i){awl::WorldMapPlayerActorPlane plane;plane.point[i/2]=i%2?-1000.0f:1000.0f;
+                plane.normal[i/2]=i%2?-1.0f:1.0f;actor.visibility->planes[i]=plane;}
+            actor.screen.emplace();actor.screen->view=*actor.visibility->view;actor.screen->half_extents={1000.0f,1000.0f};input.actor.effect_gate=uint8_t{0};
+            auto invalid=awl::WorldMapModelMatrix{1,0,0,0,0,1,0,0,0,0,1,0};invalid[11]=std::numeric_limits<float>::quiet_NaN();
+            actor.frame.node_post_transforms.back()=invalid;
+            tick=player->advance_state29_startup_tick(inputs,input,&fade,&owners,&render);
+            expect(tick.status==S::QueueIncomplete && player->state().counter_1368==3 && player->primary_loop()->followups_completed &&
+                !player->primary_loop()->queued_completed,"late visible frame failure retains accepted parent/model/fade/pass work and pending update");
+            before=startup_snapshot(*player);fade_before=fade_snapshot(fade);effects=update_owners_snapshot(owners);draw=actor_queue_snapshot(render);
+            tick=player->advance_state29_startup_tick(inputs,input,&fade,&owners,&render);
+            expect(tick.status==S::QueueIncomplete && preserved(),"repeated failing frame cannot repeat earlier callback work or partially publish geometry");
+            actor.frame.node_post_transforms.back().reset();}
+        if(sample==3)input.actor=blocked_actor;
+        tick=player->advance_state29_startup_tick(inputs,input,&fade,&owners,&render);
+        expect(tick.status==(sample==63?S::TransitionRequired:S::Completed) && player->state().counter_1368==sample+1 &&
+            fade.state().mode_60==(sample==63?0:1) && player->state().state_1364==0x29,
+            "each connected CPU startup sample advances parent/model/fade once and stops before the first requested state transition");
+        if(sample==2)expect(tick.queued && tick.queued->callback && tick.queued->callback->status==awl::WorldMapPlayerStartupActorCallbackStatus::Completed &&
+            player->model().primary().cpu().frame() && player->model().primary().cpu().frame()->root_matrix[3]==2 && render.size()==5,
+            "corrected full CPU frame publishes from accepted playback/pose and schedules player before fade in the composed tick");
+    }
+    expect(tick.passes && tick.passes->secondary && tick.passes->secondary->requested_state==0 && !tick.queued &&
+        !player->primary_loop()->followups_completed && !player->primary_loop()->queued_completed && owners.queue.size()==2 &&
+        owners.queue[0].node_identity==player->update_node_identity(),"fade completion requests zero and preserves the queued player until that transition body is translated");
+    before=startup_snapshot(*player);fade_before=fade_snapshot(fade);effects=update_owners_snapshot(owners);draw=actor_queue_snapshot(render);
+    tick=player->advance_state29_startup_tick(inputs,input,&fade,&owners,&render);
+    expect(tick.status==S::TransitionRequired && preserved(),"transition stop retries never repeat accepted parent, animation or final fade color");
+    expect(fade.start_world_map_entry()==F::Started,"diagnostic restart invalidates a handled fade proof");
+    before=startup_snapshot(*player);fade_before=fade_snapshot(fade);
+    tick=player->advance_state29_startup_tick(inputs,input,&fade,&owners,&render);
+    expect(tick.status==S::RequiresNextLoop && preserved(),"restarting handled fade cannot retroactively update it before accepted later work");
+    // Fresh owners cannot be retroactively placed ahead of an independently
+    // handled fade, even if they happen to share the same clock values.
+    std::unique_ptr<awl::WorldMapPlayerStartup> fresh;
+    expect(awl::construct_world_map_player_startup(providers,query,&fresh).status==awl::WorldMapPlayerStartupStatus::ConstructedCpuStartup && fresh,"reverse-order fixture constructs");
+    if(fresh){const auto unchanged=startup_snapshot(*fresh);
+        expect(fresh->advance_state29_startup_tick(inputs,input,&fade,&owners,&render).status==S::RequiresNextLoop && startup_snapshot(*fresh)==unchanged,
+            "unbound handled fade prevents retroactive parent/model startup ordering");}
+    std::cout<<"PLAYER_STARTUP_TICK 64 ordered active-control samples / fade-to-state-zero stop / owned queue retries\n";
+}
 void local_animation_loops(const char* disc) {
     using S=awl::WorldMapPlayerStartupStatus;
     expect(awl::filesystem_mount("/",disc),"local coordinated animation disc mounts");
@@ -4661,12 +4813,14 @@ void local_animation_loops(const char* disc) {
             if(player->model().secondary_model())++paired;
             coordinated_animation_owner_checks(*player,false);++checked;
             primary_slice_owner_checks(providers,query,camera,profile.view_query,false);
+            startup_tick_owner_checks(providers,query,camera,profile.view_query,false);
         }
     }
     expect(checked==18 && paired==12 && blocked==6,"all supported actual phase/selection startup pairs complete coordinated checks and action-only constructors stop explicitly");
     std::cout<<"LOCAL_PLAYER_ANIMATION_LOOPS "<<checked<<" startups / "<<paired<<" pairs / "<<checked*5<<" eligible loop samples / "<<blocked
         <<" action-only constructor message stops; actual timers/clips, supplied script/visibility/pose, CPU only\n";
     std::cout<<"LOCAL_PLAYER_PRIMARY_SLICES "<<checked<<" ordered parent/model and second/third callbacks with checked queued completions; supplied guards/mode/phase/pose, CPU only\n";
+    std::cout<<"LOCAL_PLAYER_STARTUP_TICKS "<<checked<<" owners / "<<checked*64<<" active-control parent/model/fade samples / explicit state-zero stops; observed guards/scene/script/pose, CPU only\n";
 }
 void local_status_parameters(const awl::WorldMapPlayerStartAnimationTables& tables) {
     uint64_t digest=14695981039346656037ull;size_t count=0;

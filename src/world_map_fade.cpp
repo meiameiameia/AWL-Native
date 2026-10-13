@@ -77,6 +77,7 @@ WorldMapFadeStatus WorldMapFade::advance_for_loop(
     if (control.status!=WorldMapDispatchStatus::Ready) return S::RequiresControl;
     if (same) {
         if (!loop_->valid) return S::RequiresNextLoop;
+        if (loop_->inputs_owner!=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&inputs))) return S::InvalidInput;
         if (render_queue && loop_->render_owner!=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(render_queue))) return S::InvalidInput;
         return S::AlreadyAdvanced;
     }
@@ -104,6 +105,7 @@ WorldMapFadeStatus WorldMapFade::advance_for_loop(
         queue.insert(at,{key,step.after.render_priority_68});
         *render_queue=std::move(queue);state_=step.after;
         loop_=WorldMapFadeLoop{clock.loop_count,clock.raw_time,true,static_cast<uint64_t>(reinterpret_cast<uintptr_t>(render_queue))};
+        loop_->inputs_owner=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&inputs));
         return S::Advanced;
     } catch(const std::bad_alloc&) {return S::AllocationFailure;}
 }

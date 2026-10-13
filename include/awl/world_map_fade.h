@@ -45,10 +45,11 @@ struct WorldMapFadeLoop {
     uint32_t loop_count = 0, raw_time = 0;
     bool valid = true;
     uint64_t render_owner = 0; // borrowed identity; never dereferenced
+    uint64_t inputs_owner = 0;
 };
 // Owned CPU fade with the shared raw clock, fixed primary registration at
 // 10000 (group 16) and a stable render key. No GX/DX11 drawing or shared-list
-// activation. The caller retains the render queue through queued completion.
+// activation. Retain render-queue and captured-input storage through completion.
 class WorldMapFade {
 public:
     explicit WorldMapFade(std::shared_ptr<GameClock> clock) noexcept : clock_(std::move(clock)) {}
