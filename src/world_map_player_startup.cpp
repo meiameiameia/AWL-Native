@@ -527,6 +527,37 @@ WorldMapPlayerState0TransitionResult WorldMapPlayerStartup::advance_pending_stat
     } catch(const std::bad_alloc&) {return stop(S::AllocationFailure);}
 }
 
+bool WorldMapPlayerStartup::seed_state0_context(const WorldMapPlayerContextUpdateState& context) noexcept {
+    if(state_.state_1364!=0 || state0_context_ || state0_third_loop_)return false;
+    state0_context_=context;return true;
+}
+WorldMapPlayerState0ThirdResult WorldMapPlayerStartup::advance_state0_third(
+    const WorldMapUpdateInputs& inputs,const WorldMapPlayerContextUpdateSources& sources,
+    const WorldMapPlayerState0ThirdInput& input) noexcept {
+    using S=WorldMapPlayerState0ThirdStatus;
+    if(!model_->game_clock() || inputs.game_clock()!=model_->game_clock())return {S::InvalidInput};
+    if(inputs.queue_control().status!=WorldMapDispatchStatus::Ready)return {S::RequiresControl};
+    if(state_.state_1364!=0)return {S::RequiresPrimary};
+    const auto& clock=model_->game_clock()->state();
+    const auto owner=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&inputs));
+    const auto current=[&](const auto& receipt){return receipt && receipt->valid &&
+        receipt->loop_count==clock.loop_count && receipt->raw_time==clock.raw_time;};
+    if(!current(primary_loop_) || !primary_loop_->state0_transition_completed)return {S::RequiresPrimary};
+    if(primary_loop_->inputs_owner!=owner)return {S::InvalidInput};
+    if(!current(animation_loop_))return {S::RequiresAnimation};
+    if(state0_third_loop_ && state0_third_loop_->loop_count==clock.loop_count &&
+        state0_third_loop_->raw_time==clock.raw_time){
+        if(state0_third_loop_->inputs_owner!=owner)return {S::InvalidInput};
+        return {S::AlreadyCompleted};
+    }
+    WorldMapPlayerState0ThirdState next{state_.control_word_1384,state0_context_};
+    auto result=prepare_world_map_player_state0_third(inputs,sources,next,input,&next);
+    if(result.status!=S::Prepared && result.status!=S::SkippedByGuard && result.status!=S::Filtered)return result;
+    state_.control_word_1384=next.control_word_1384;state0_context_=std::move(next.context);
+    state0_third_loop_=WorldMapPlayerState0ThirdLoop{clock.loop_count,clock.raw_time,owner,result.status};
+    return result;
+}
+
 WorldMapPlayerStartupResult construct_world_map_player_startup(
     const WorldMapPlayerStartupProviders& providers, const WorldMapPlayerStartupQuery& query,
     std::unique_ptr<WorldMapPlayerStartup>* out) {

@@ -1,5 +1,6 @@
 #pragma once
 #include "awl/game_clock.h"
+#include "awl/input.h"
 #include "awl/world_map_scene_index.h"
 #include <memory>
 #include <optional>
@@ -46,6 +47,11 @@ struct WorldMapDispatchInput {
     WorldMapDispatchStatus status = WorldMapDispatchStatus::RequiresControl;
     std::optional<uint32_t> control_word;
 };
+struct WorldMapPadSnapshot {
+    uint32_t loop_count=0,raw_time=0;
+    HsdPadFrame frame;
+};
+enum class WorldMapPadCaptureStatus {Captured,AlreadyCaptured,RequiresClock,RequiresSample};
 
 // Owns explicit phase/stage observations, existing scene-request fields and
 // one-shot bytes, the derived group filter and one captured control per loop.
@@ -83,6 +89,15 @@ public:
     // undo capture; retry uses its retained word. This is an input boundary,
     // not acknowledgement that the whole loop or its work queues completed.
     [[nodiscard]] WorldMapControlStatus capture_control() noexcept;
+    // Raw first-channel sample, supplied by the existing native PAD adapter
+    // (or a recording). No OS polling or invented pressed word. Capture once
+    // per shared-clock loop using the existing bounded HSD filter; retries
+    // retain edges/countdown. Observation is consumed only on a new capture.
+    void observe_pad_sample(const PadSample& sample) noexcept {pad_sample_=sample;}
+    [[nodiscard]] WorldMapPadCaptureStatus capture_pad() noexcept;
+    // Null for missing/stale capture. PAD and control capture are independent
+    // earlier input stages; callback failure never rolls either one back.
+    const WorldMapPadSnapshot* pad_for_loop() const noexcept;
     // D018/D260's update-queue pass uses the captured control directly,
     // without primary-list group filtering. Reject absent or stale snapshots.
     [[nodiscard]] WorldMapDispatchInput queue_control() const noexcept;
@@ -96,5 +111,8 @@ private:
     WorldMapSceneModeRequestState scene_;
     uint32_t blocked_groups_ = 0;
     std::optional<WorldMapControlWord> control_;
+    std::optional<PadSample> pad_sample_;
+    HsdPadFilter pad_filter_;
+    std::optional<WorldMapPadSnapshot> pad_;
 };
 } // namespace awl

@@ -11,6 +11,7 @@ using WorldMapPlayerContextVector=std::array<float,3>;
 struct WorldMapPlayerContextSearchProfile {
     float angle_radians=0,first_min_distance=0,first_max_distance=0,other_min_distance=0,other_max_distance=0;
     std::array<float,4> region_xz{}; // 1CF3C's inclusive X min/max, Z min/max.
+    std::optional<std::array<float,4>> prefix_region_xz; // 1CD18; optional in synthetic common-only profiles.
 };
 enum class WorldMapPlayerContextTablesStatus { Decoded, Loaded, InvalidInput, UnsupportedLayout, ReadFailure, WrongDol, AllocationFailure };
 // Immutable 10A94's eight scan slots and 11634's sixteen keyed rows, plus

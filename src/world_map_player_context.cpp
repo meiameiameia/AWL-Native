@@ -76,6 +76,11 @@ bool WorldMapPlayerContextTables::decode(const uint8_t* bytes,size_t size) noexc
         if(profile.angle_radians<0 || profile.first_min_distance<0 || profile.first_max_distance<=profile.first_min_distance ||
             profile.other_min_distance<0 || profile.other_max_distance<=profile.other_min_distance ||
             values[5]>values[6] || values[7]>values[8])return false;
+        if(view.read(0x80349fb0,4)){
+            const auto* prefix=view.read(0x80349fb0,16);if(!prefix)return false;
+            std::array<float,4> bounds;for(size_t i=0;i<4;++i){bounds[i]=float_word(detail::dol_word(prefix+i*4));if(!ordinary(bounds[i]))return false;}
+            if(bounds[0]>bounds[1] || bounds[2]>bounds[3])return false;profile.prefix_region_xz=bounds;
+        }
         search_profile_=profile;
     }
     return ordinary(back_threshold_) && ordinary(front_threshold_) && back_threshold_>=-1 && front_threshold_<=1 && back_threshold_<=front_threshold_;

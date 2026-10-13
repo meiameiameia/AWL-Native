@@ -6,6 +6,7 @@
 #include "awl/world_map_player_actor_prepare.h"
 #include "awl/world_map_player_actor_schedule.h"
 #include "awl/world_map_fade.h"
+#include "awl/world_map_player_state0_third.h"
 
 namespace awl {
 struct WorldMapPlayerStartupProviders {
@@ -278,6 +279,17 @@ public:
     const WorldMapPlayerActorMetadata& actor_metadata() const { return actor_metadata_; }
     const std::optional<WorldMapPlayerAnimationLoop>& animation_loop() const { return animation_loop_; }
     const std::optional<WorldMapPlayerPrimaryLoop>& primary_loop() const { return primary_loop_; }
+    const std::optional<WorldMapPlayerContextUpdateState>& state0_context() const {return state0_context_;}
+    const std::optional<WorldMapPlayerState0ThirdLoop>& state0_third_loop() const {return state0_third_loop_;}
+    // One explicit observed context projection after the supported transition,
+    // before any third-pass receipt. Does not translate UI construction.
+    [[nodiscard]] bool seed_state0_context(const WorldMapPlayerContextUpdateState&) noexcept;
+    // Current owned parent/model/transition prerequisites, same input owner,
+    // guarded idle third callback and once-per-loop completion. Does not mark
+    // the unimplemented state-zero first/second/queued passes complete.
+    [[nodiscard]] WorldMapPlayerState0ThirdResult advance_state0_third(
+        const WorldMapUpdateInputs&,const WorldMapPlayerContextUpdateSources&,
+        const WorldMapPlayerState0ThirdInput&) noexcept;
     // Fixed primary-list registrations observed at 14448 and 12B58. Keys
     // represent this bounded native parent/model-manager pair; this does not
     // register the original manager's other models or activate a shared list.
@@ -479,6 +491,8 @@ private:
     // Isolated animation/timer/channel mutation invalidates coordinated proof.
     std::optional<WorldMapPlayerAnimationLoop> animation_loop_;
     std::optional<WorldMapPlayerPrimaryLoop> primary_loop_;
+    std::optional<WorldMapPlayerContextUpdateState> state0_context_;
+    std::optional<WorldMapPlayerState0ThirdLoop> state0_third_loop_;
     // Separate owned tags provide stable keys without reproducing PPC pointers.
     uint8_t update_node_ = 0, effect_node_ = 0, render_node_ = 0, primary_node_ = 0, model_manager_node_ = 0;
 };

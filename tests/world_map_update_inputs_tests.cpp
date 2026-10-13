@@ -168,8 +168,48 @@ void owner_checks() {
     expect(!lifetime.expired() && owner.game_clock() && owner.dispatch(0x5001).control_word == 0x2800u,
         "input owner retains the shared clock after caller handle release");
 }
+void pad_owner_checks() {
+    using S=awl::WorldMapPadCaptureStatus;
+    awl::WorldMapUpdateInputs missing(nullptr);missing.observe_pad_sample({true,0x100});
+    expect(missing.capture_pad()==S::RequiresClock && !missing.pad_for_loop(),"PAD capture requires its clock owner");
+    auto clock=std::make_shared<awl::GameClock>();clock->set_retrace_interval(0);
+    awl::WorldMapUpdateInputs inputs(clock);
+    expect(inputs.capture_pad()==S::RequiresSample && !inputs.pad_for_loop(),"missing raw sample cannot fabricate neutral PAD");
+    // Exercise the actual native keyboard mapping without polling/opening UI.
+    awl::PadAdapter adapter;awl::NativeInputFrame raw;raw.focused=true;
+    raw.keyboard_held=awl::native_key_mask(awl::NativeKey::Space);adapter.begin_frame(raw);
+    inputs.observe_pad_sample(adapter.frame().sample);
+    expect(inputs.capture_pad()==S::Captured && inputs.pad_for_loop()->frame.current==0x100 &&
+        inputs.pad_for_loop()->frame.pressed==0x100 && inputs.pad_for_loop()->frame.repeated==0x100,
+        "keyboard Space flows through native raw PAD to an owned A press");
+    inputs.observe_pad_sample({true,0x800});
+    for(unsigned i=0;i<20;++i)expect(inputs.capture_pad()==S::AlreadyCaptured && inputs.pad_for_loop()->frame.pressed==0x100,
+        "same-loop retry preserves edges and leaves the next observation pending");
+    expect(clock->advance() && !inputs.pad_for_loop(),"zero-time next loop still invalidates prior PAD");
+    expect(inputs.capture_pad()==S::Captured && inputs.pad_for_loop()->frame.current==0x800 &&
+        inputs.pad_for_loop()->frame.pressed==0x800 && inputs.pad_for_loop()->frame.released==0x100,
+        "next loop consumes the retained replacement observation once");
+    for(unsigned loop=1;loop<=17;++loop){
+        expect(clock->advance() && inputs.capture_pad()==S::RequiresSample && !inputs.pad_for_loop(),
+            "missing next-loop sample preserves filter history and cannot expose stale edges");
+        inputs.observe_pad_sample({true,0x800});expect(inputs.capture_pad()==S::Captured,"held sample captures");
+        const auto& p=inputs.pad_for_loop()->frame;
+        expect(p.pressed==0 && p.released==0 && p.repeated==((loop==15 || loop==17)?0x800u:0u),
+            "held Y repeats after fifteen then two samples without creating a press edge");
+        expect(inputs.capture_pad()==S::AlreadyCaptured,"duplicate does not advance repeat countdown");
+    }
+    expect(clock->advance(),"disconnect loop advances");inputs.observe_pad_sample({false,0x800});
+    expect(inputs.capture_pad()==S::Captured && inputs.pad_for_loop()->frame.current==0 &&
+        inputs.pad_for_loop()->frame.pressed==0 && inputs.pad_for_loop()->frame.released==0x800,
+        "disconnect releases held buttons instead of retaining a phantom press");
+    raw.focused=false;adapter.begin_frame(raw);expect(clock->advance(),"unfocused loop advances");
+    inputs.observe_pad_sample(adapter.frame().sample);
+    expect(inputs.capture_pad()==S::Captured && inputs.pad_for_loop()->frame.current==0 && inputs.pad_for_loop()->frame.pressed==0,
+        "native focus loss stays neutral at the owned boundary");
+    clock.reset();expect(inputs.game_clock() && inputs.pad_for_loop(),"PAD snapshot retains its shared clock lifetime");
+}
 } // namespace
 int main() {
-    control_checks(); group_checks(); owner_checks();
+    control_checks(); group_checks(); owner_checks(); pad_owner_checks();
     return failures ? 1 : 0;
 }

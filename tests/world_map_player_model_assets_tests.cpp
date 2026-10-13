@@ -2841,6 +2841,20 @@ uint64_t startup_snapshot(const awl::WorldMapPlayerStartup& owner) {
     auto h=holder_snapshot(owner.model());const auto& s=owner.state();
     hash(h,uint32_t(s.state_1364));hash(h,s.counter_1368);hash(h,s.secondary_byte_3f0);
     hash(h,s.control_word_1384.has_value());hash(h,s.control_word_1384.value_or(0));
+    hash(h,owner.state0_context().has_value());if(owner.state0_context()){
+        const auto& context=*owner.state0_context();for(uint32_t v:context.labels_128)hash(h,v);for(uint32_t v:context.target_1388)hash(h,v);
+        hash(h,context.byte_1350);hash(h,context.secondary_byte_574);hash(h,context.secondary_word_564);
+        hash(h,context.ui.resource_manager_1278.has_value());hash(h,uint32_t(context.ui.resource_manager_1278.value_or(0)>>32));hash(h,uint32_t(context.ui.resource_manager_1278.value_or(0)));
+        for(const auto& v:context.ui.labels_60){hash(h,v.has_value());hash(h,v.value_or(UINT32_MAX));}
+        for(const auto& e:context.ui.elements){hash(h,e.has_value());if(e){
+            hash(h,uint32_t(reinterpret_cast<uintptr_t>(e->resources.get())));hash(h,uint32_t(reinterpret_cast<uintptr_t>(e->clock.get())));
+            hash(h,e->flags_120.value_or(UINT32_MAX));hash(h,e->animation_deadline);hash(h,e->image_group.offset);hash(h,e->icon_frame.offset);
+            for(float f:e->position_f0){uint32_t v;std::memcpy(&v,&f,4);hash(h,v);}
+        }}
+    }
+    hash(h,owner.state0_third_loop().has_value());if(owner.state0_third_loop()){
+        const auto& third=*owner.state0_third_loop();hash(h,third.loop_count);hash(h,third.raw_time);
+        hash(h,uint32_t(third.inputs_owner>>32));hash(h,uint32_t(third.inputs_owner));hash(h,uint32_t(third.completion));}
     hash(h,owner.animation_loop().has_value());if(owner.animation_loop()){
         hash(h,owner.animation_loop()->loop_count);hash(h,owner.animation_loop()->raw_time);hash(h,owner.animation_loop()->valid);}
     hash(h,owner.primary_loop().has_value());if(owner.primary_loop()){
@@ -4747,7 +4761,8 @@ void actor_placement_owner_checks(awl::WorldMapPlayerStartup& player,bool alloca
 void primary_slice_owner_checks(const awl::WorldMapPlayerStartupProviders&,const awl::WorldMapPlayerStartupQuery&,
     const std::shared_ptr<awl::WorldMapCameraCollisionAsset>&,const awl::WorldMapCameraViewQuery&,bool);
 void startup_tick_owner_checks(const awl::WorldMapPlayerStartupProviders&,const awl::WorldMapPlayerStartupQuery&,
-    const std::shared_ptr<awl::WorldMapCameraCollisionAsset>&,const awl::WorldMapCameraViewQuery&,bool);
+    const std::shared_ptr<awl::WorldMapCameraCollisionAsset>&,const awl::WorldMapCameraViewQuery&,bool,
+    const awl::WorldMapPlayerContextUpdateSources* =nullptr);
 void startup_owner_checks() {
     using S=awl::WorldMapPlayerStartupStatus;using A=awl::WorldMapPlayerStartAnimationStatus;using I=awl::WorldMapAnimationInitializerStatus;
     Fixture fixture;auto payloads=files();payloads[0]=setup_model();payloads[1]=geometry_gpl();payloads[2]=execution_skin(1);
@@ -5080,7 +5095,8 @@ void primary_slice_owner_checks(const awl::WorldMapPlayerStartupProviders& sourc
     std::cout<<"PLAYER_PRIMARY_SLICE ordered parent/model, secondary/tertiary callbacks, transition stop, filtered passes and retry preservation\n";
 }
 void startup_tick_owner_checks(const awl::WorldMapPlayerStartupProviders& source,const awl::WorldMapPlayerStartupQuery& query,
-    const std::shared_ptr<awl::WorldMapCameraCollisionAsset>& camera,const awl::WorldMapCameraViewQuery& view,bool allocations) {
+    const std::shared_ptr<awl::WorldMapCameraCollisionAsset>& camera,const awl::WorldMapCameraViewQuery& view,bool allocations,
+    const awl::WorldMapPlayerContextUpdateSources* context_sources) {
     using S=awl::WorldMapPlayerStartupTickStatus;using F=awl::WorldMapFadeStatus;using P=awl::WorldMapPlayerPrimaryPassesStatus;
     using Q=awl::WorldMapPlayerStartupQueueStatus;
     auto providers=source;providers.clock=std::make_shared<awl::GameClock>();
@@ -5090,6 +5106,9 @@ void startup_tick_owner_checks(const awl::WorldMapPlayerStartupProviders& source
     awl::WorldMapFade fade(providers.clock),other_fade(providers.clock),foreign_fade(std::make_shared<awl::GameClock>());
     expect(fade.start_world_map_entry()==F::Started,"startup-tick fade starts from the bounded clear setup branch");
     awl::WorldMapUpdateInputs inputs(providers.clock),missing(providers.clock);
+    using Third=awl::WorldMapPlayerState0ThirdStatus;
+    expect(!player->seed_state0_context({}) && player->advance_state0_third(inputs,{},{}).status==Third::RequiresControl,
+        "startup state29 cannot seed state-zero context or bypass captured control");
     constexpr std::array<uint32_t,6> phase_origins{0,34560000,103680000,207360000,276480000,311040000};
     const awl::WorldMapControlSources phase_sources{awl::WorldMapControlPhase{uint8_t{1},phase_origins[query.initial.phase]+123456u,uint8_t{0}},0};
     inputs.observe_control_sources(phase_sources);
@@ -5292,7 +5311,51 @@ void startup_tick_owner_checks(const awl::WorldMapPlayerStartupProviders& source
     if(fresh){const auto unchanged=startup_snapshot(*fresh);
         expect(fresh->advance_state29_startup_tick(inputs,input,&fade,&owners,&render).status==S::RequiresNextLoop && startup_snapshot(*fresh)==unchanged,
             "unbound handled fade prevents retroactive parent/model startup ordering");}
-    std::cout<<"PLAYER_STARTUP_TICK 64 ordered active-control samples / owned no-attachment state-zero transition / later callbacks still stopped\n";
+    before=startup_snapshot(*player);fade_before=fade_snapshot(fade);effects=update_owners_snapshot(owners);draw=actor_queue_snapshot(render);
+    const auto third_model=holder_snapshot(player->model());
+    expect(player->advance_state0_third(missing,{},{}).status==Third::RequiresControl && preserved(),"third callback requires fresh owned control");
+    missing.observe_control_sources(phase_sources);expect(missing.capture_control()==awl::WorldMapControlStatus::Captured,"alternate same-clock input captures");
+    expect(player->advance_state0_third(missing,{},{}).status==Third::InvalidInput && preserved(),"same-clock replacement input cannot replace the transition owner");
+    awl::WorldMapUpdateInputs foreign(std::make_shared<awl::GameClock>());
+    expect(player->advance_state0_third(foreign,{},{}).status==Third::InvalidInput && preserved(),"foreign clock cannot supply third-pass control or PAD");
+    expect(player->advance_state0_third(inputs,{},{}).status==Third::RequiresGuards && preserved(),"missing third guards preserve model/frame/queues/context");
+    awl::WorldMapPlayerState0ThirdInput third;third.guards=awl::WorldMapPlayerUpdateGuards{-1,0};
+    third.context.emplace();third.context->scene_type=2;third.context->current_key=17;third.context->facing={0,0,1};
+    third.context->held_row=awl::WorldMapPlayerContextItemRow{0,uint8_t{0},uint8_t{0},0u};third.context->tracked_14ac=0;
+    if(context_sources){
+        expect(player->advance_state0_third(inputs,*context_sources,third).status==Third::RequiresContextState && preserved(),"common callback cannot invent constructor-unwritten context state");
+        awl::WorldMapPlayerContextUpdateState seed;seed.ui.resource_manager_1278=context_sources->icons->resources->identity();seed.ui.labels_60={0u,0u,0u,0u};
+        for(auto& e:seed.ui.elements){e.emplace();e->flags_120=0;e->attachments_10c_110={uint64_t{0},uint64_t{0}};}
+        expect(player->seed_state0_context(seed) && !player->seed_state0_context(seed),"owned state-zero context accepts one explicit observed projection");
+        seed.labels_128[0]=999;expect(player->state0_context()->labels_128[0]==0,"seed values are copied and cannot be externally replaced");
+        before=startup_snapshot(*player);
+        expect(player->advance_state0_third(inputs,*context_sources,third).status==Third::RequiresPad && preserved(),"late PAD stop preserves context, player, model, fade and both queues");
+        inputs.observe_pad_sample({true,0});expect(inputs.capture_pad()==awl::WorldMapPadCaptureStatus::Captured,"owned idle PAD captures after a retryable missing dependency");
+        allocation_probe::enabled=true;const auto complete=player->advance_state0_third(inputs,*context_sources,third);allocation_probe::enabled=false;
+        expect(complete.status==Third::Prepared && complete.pressed==0u && player->state0_third_loop() &&
+            player->state0_context()->labels_128[2]==101 && player->state0_context()->secondary_word_564==53 &&
+            holder_snapshot(player->model())==third_model && !player->primary_loop()->followups_completed && !player->primary_loop()->queued_completed &&
+            fade_snapshot(fade)==fade_before && update_owners_snapshot(owners)==effects && actor_queue_snapshot(render)==draw,
+            "owned idle third publishes context/receipt without advancing model, consuming queues or acknowledging other unfinished passes");
+        for(uint32_t channel=0;channel<4;++channel){uint8_t old_icon=0,new_icon=0;
+            expect(context_sources->labels->icon(*seed.ui.labels_60[channel],&old_icon) &&
+                context_sources->labels->icon(*player->state0_context()->ui.labels_60[channel],&new_icon),"actual context channel labels resolve");
+            const auto& e=player->state0_context()->ui.elements[channel];
+            expect(e && e->clock==(old_icon!=new_icon?providers.clock:seed.ui.elements[channel]->clock),"changed context icons bind the actual model/input clock; retained icons keep their observed fields");}
+    } else {
+        third.guards=awl::WorldMapPlayerUpdateGuards{0,{}};third.context.reset();
+        expect(player->advance_state0_third(inputs,{},third).status==Third::SkippedByGuard && player->state0_third_loop() &&
+            !player->state0_context() && !player->primary_loop()->followups_completed,"guard-skipped third completes without fabricated context/PAD or full-pass acknowledgement");
+    }
+    before=startup_snapshot(*player);
+    expect(player->advance_state0_third(inputs,{},{}).status==Third::AlreadyCompleted && preserved() && !player->seed_state0_context({}),
+        "accepted third receipt ignores replacement observations and prohibits reseeding");
+    expect(providers.clock->advance(),"diagnostic post-third loop advances explicitly");
+    expect(player->advance_state0_third(inputs,{},{}).status==Third::RequiresControl,"next loop rejects stale control and PAD");
+    expect(inputs.capture_control()==awl::WorldMapControlStatus::Captured && player->advance_state0_third(inputs,{},{}).status==Third::RequiresPrimary,
+        "next state-zero loop cannot fabricate untranslated normal parent/model pass completion");
+    std::cout<<"PLAYER_STARTUP_TICK 64 ordered active-control samples / owned no-attachment state-zero transition / "
+        <<(context_sources?"owned idle third callback":"guard-skipped third callback")<<" / normal first/second and queued callbacks still stopped\n";
 }
 void local_animation_loops(const char* disc) {
     using S=awl::WorldMapPlayerStartupStatus;
@@ -5308,6 +5371,11 @@ void local_animation_loops(const char* disc) {
     expect(awl::load_world_map_player_context_label_tables(&context_labels)==awl::WorldMapPlayerContextLabelTablesStatus::Loaded && context_labels && context_labels->target_verified(),"local context labels load only from target-verified DOL metadata");
     if(context_labels)context_label_matrix(*context_labels,0x5d00b3cdd08c3bf9ull);
     if(context_labels)context_icon_matrix(*context_labels,0xcd1975f29e8238f5ull);
+    awl::WorldMapPlayerContextIconSources context_icons;context_icons.clock=std::make_shared<awl::GameClock>();
+    expect(awl::load_world_map_context_icon_resources(&context_icons.resources)==awl::WorldMapContextIconResourcesStatus::Loaded,"local state-zero third resources load");
+    if(!context_tables || !context_labels || !context_icons.resources){awl::filesystem_shutdown();return;}
+    awl::WorldMapSceneBucketRegistry empty_context_registry;
+    const awl::WorldMapPlayerContextUpdateSources context_sources{context_tables.get(),context_labels.get(),&empty_context_registry,&context_icons};
     awl::WorldMapPlayerStartupProviders providers;
     expect(awl::load_world_map_player_animation_assets(&providers.animations)==awl::WorldMapPlayerAnimationAssetsStatus::Loaded &&
         awl::load_world_map_player_start_animation_tables(&providers.starts)==awl::WorldMapPlayerStartAnimationStatus::Loaded && providers.starts->target_verified() &&
@@ -5334,7 +5402,7 @@ void local_animation_loops(const char* disc) {
             if(player->model().secondary_model())++paired;
             coordinated_animation_owner_checks(*player,false);++checked;
             primary_slice_owner_checks(providers,query,camera,profile.view_query,false);
-            startup_tick_owner_checks(providers,query,camera,profile.view_query,false);
+            startup_tick_owner_checks(providers,query,camera,profile.view_query,false,&context_sources);
         }
     }
     expect(checked==18 && paired==12 && blocked==6,"all supported actual phase/selection startup pairs complete coordinated checks and action-only constructors stop explicitly");

@@ -104,6 +104,18 @@ WorldMapDispatchInput WorldMapUpdateInputs::queue_control() const noexcept {
     if (!clock_ || !control_ || control_->loop_count != clock_->state().loop_count) return {};
     return {WorldMapDispatchStatus::Ready, control_->dispatch_word};
 }
+const WorldMapPadSnapshot* WorldMapUpdateInputs::pad_for_loop() const noexcept {
+    if(!clock_ || !pad_ || pad_->loop_count!=clock_->state().loop_count || pad_->raw_time!=clock_->state().raw_time)return nullptr;
+    return &*pad_;
+}
+WorldMapPadCaptureStatus WorldMapUpdateInputs::capture_pad() noexcept {
+    using S=WorldMapPadCaptureStatus;if(!clock_)return S::RequiresClock;
+    if(pad_for_loop())return S::AlreadyCaptured;
+    if(!pad_sample_)return S::RequiresSample;
+    pad_filter_.begin_frame(*pad_sample_);
+    pad_=WorldMapPadSnapshot{clock_->state().loop_count,clock_->state().raw_time,pad_filter_.frame()};
+    pad_sample_.reset();return S::Captured;
+}
 WorldMapDispatchInput WorldMapUpdateInputs::dispatch(uint32_t priority) const noexcept {
     using S = WorldMapDispatchStatus;
     const auto captured = queue_control();

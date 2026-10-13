@@ -71,6 +71,7 @@ set(SOURCES
     src/world_map_player_context.cpp
     src/world_map_player_context_labels.cpp
     src/world_map_player_context_update.cpp
+    src/world_map_player_state0_third.cpp
     src/world_map_context_icon_resources.cpp
     src/world_map_player_initial_animation.cpp
     src/world_map_player_timer_assets.cpp
@@ -155,6 +156,7 @@ set(HEADERS
     include/awl/world_map_player_context.h
     include/awl/world_map_player_context_labels.h
     include/awl/world_map_player_context_update.h
+    include/awl/world_map_player_state0_third.h
     include/awl/world_map_context_icon_resources.h
     include/awl/world_map_player_initial_animation.h
     include/awl/world_map_player_timer_assets.h
@@ -219,7 +221,7 @@ endif()
 add_test(NAME game_clock_tests COMMAND game_clock_tests)
 add_executable(world_map_update_inputs_tests
     tests/world_map_update_inputs_tests.cpp src/world_map_update_inputs.cpp
-    src/world_map_scene_index.cpp src/game_clock.cpp)
+    src/world_map_scene_index.cpp src/game_clock.cpp src/input.cpp)
 target_include_directories(world_map_update_inputs_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
 if(MSVC)
     target_compile_options(world_map_update_inputs_tests PRIVATE /W4)
@@ -687,6 +689,8 @@ add_executable(world_map_player_model_assets_tests
     src/world_map_fade.cpp
     src/world_map_player_context.cpp
     src/world_map_player_context_labels.cpp
+    src/world_map_player_context_update.cpp
+    src/world_map_player_state0_third.cpp
     src/world_map_context_icon_resources.cpp
     src/world_map_scene_index.cpp
     src/world_map_player_start.cpp
@@ -755,6 +759,8 @@ add_test(NAME world_map_context_icon_tests COMMAND world_map_context_icon_tests)
 add_executable(world_map_player_context_update_tests
     tests/world_map_player_context_update_tests.cpp
     src/world_map_player_context_update.cpp
+    src/world_map_player_state0_third.cpp
+    src/world_map_update_inputs.cpp
     src/world_map_player_context.cpp
     src/world_map_scene_index.cpp
     src/world_map_player_context_labels.cpp
