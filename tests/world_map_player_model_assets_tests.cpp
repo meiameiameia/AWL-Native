@@ -1554,6 +1554,13 @@ uint64_t holder_snapshot(const awl::WorldMapPlayerAnimationHolder& holder,bool i
         optional_real(p.limit_c);hash(h,p.clip_10.has_value());if(p.clip_10){key(p.clip_10->bank_identity);hash(h,p.clip_10->offset);}key(p.link_14);optional_real(p.value_18);};
     if(include_playback)partial(holder.primary().model().partial_playback());key(holder.primary().model().animation_banks().size());
     for(const auto& bank:holder.primary().model().animation_banks())key(bank->identity());
+    if(const auto* secondary=holder.secondary_model()) {
+        key(reinterpret_cast<uintptr_t>(secondary));partial(secondary->partial_playback());
+        key(secondary->bank().identity());hash(h,secondary->record().count_4);
+        for(const auto& bank:secondary->animation_banks())key(bank->identity());
+        const auto& core=secondary->core();key(core.parent_150);
+        for(auto child:core.children_15c)key(child);
+    }
     for(const auto* channel:{&holder.primary_channel(),&holder.secondary_channel()}){if(!include_playback && channel==&holder.primary_channel())continue;const auto& c=channel->state();
         hash(h,c.elapsed_0);hash(h,c.duration_4);key(c.target_8);key(c.previous_c);key(c.older_10);optional_real(c.blend_14);hash(h,c.mode_18);
         for(const auto& r:channel->records()){key(r.identity);partial(r.state);}}
@@ -1879,6 +1886,184 @@ void holder_checks() {
     expect(!model_lifetime.expired() && !animation_lifetime.expired() && holder->advance(frame).status==awl::WorldMapPlayerPrimaryUpdateStatus::Advanced,
         "holder keeps CPU providers and bank group alive after source handles drop");
     holder.reset();expect(model_lifetime.expired() && animation_lifetime.expired() && table_lifetime.expired(),"holder destruction releases providers after its model and borrowed channel keys");
+}
+std::vector<uint8_t> holder_pair_clip(float duration) {
+    std::vector<uint8_t> bytes(24);uint32_t raw;std::memcpy(&raw,&duration,4);
+    word(bytes,0,0x00ac7472);word(bytes,4,0x00010000);word(bytes,8,raw);return bytes;
+}
+void hash_holder_pair(uint64_t& h,const awl::WorldMapPlayerAnimationHolder& holder) {
+    const auto real=[&](float v){uint32_t w;std::memcpy(&w,&v,4);hash(h,w);};
+    const auto& s=holder.state();
+    const uint32_t mask=unsigned(s.deadline_10.has_value())|unsigned(s.count_18.has_value())*2u|unsigned(s.completed_count_1c.has_value())*4u;
+    for(uint32_t w:{mask,s.deadline_10.value_or(0),s.count_18.value_or(0),s.completed_count_1c.value_or(0),
+        uint32_t(s.completed_20.value_or(0)),uint32_t(s.flag_21.value_or(0)),s.restart_count_2c})hash(h,w);
+    for(uint32_t which=0;which<2;++which) {
+        const auto& channel=which?holder.secondary_channel():holder.primary_channel();
+        const auto& model=which?*holder.secondary_model():holder.primary().model();
+        const auto key=[&](uint64_t identity){if(!identity)return 0u;if(identity==model.binding().playback_178)return 1u;
+            for(uint32_t i=0;i<channel.records().size();++i)if(channel.records()[i].identity==identity)return i+2u;
+            expect(false,"paired snapshot contains only retained channel/model keys");return UINT32_MAX;};
+        const auto& c=channel.state();for(uint32_t w:{c.elapsed_0,c.duration_4,key(c.older_10),key(c.previous_c),key(c.target_8),unsigned(c.blend_14.has_value())})hash(h,w);
+        real(c.blend_14.value_or(0));hash(h,c.mode_18);
+        const auto playback=[&](uint32_t id,const awl::WorldMapAnimationPartialPlayback& p){
+            hash(h,id);real(p.position_0);real(p.rate_4);
+            const uint32_t known=unsigned(p.word_8.has_value())|unsigned(p.limit_c.has_value())*2u|unsigned(p.value_18.has_value())*4u;
+            hash(h,known);hash(h,p.word_8.value_or(0));real(p.limit_c.value_or(0));hash(h,p.clip_10.has_value());uint32_t index=0;
+            if(p.clip_10){bool found=false;const auto* bank=model.animation_bank(p.clip_10->bank_identity);
+                if(bank)for(uint32_t i=0;i<bank->clip_count();++i){awl::WorldMapAnimationClip clip;
+                    if(bank->resolve(i,&clip) && clip.reference.offset==p.clip_10->offset){index=i;found=true;break;}}
+                expect(found,"paired clip resolves inside its retained immutable bank");}
+            hash(h,index);hash(h,key(p.link_14));real(p.value_18.value_or(0));
+        };
+        for(uint32_t i=0;i<channel.records().size();++i)playback(i+2u,channel.records()[i].state);
+        playback(1,model.partial_playback());
+    }
+}
+void holder_pair_checks() {
+    using H=awl::WorldMapPlayerAnimationHolderStatus;using P=awl::WorldMapPlayerHolderProgressStatus;
+    using I=awl::WorldMapAnimationInitializerStatus;
+    Fixture fixture;auto payloads=files();payloads[0]=setup_model();payloads[1]=geometry_gpl();payloads[2]=execution_skin(1);
+    fixture.write("boy_0.arc",archive(payloads));fixture.write("boy_0.anm.arc",archive({holder_pair_clip(3),holder_pair_clip(7)}));
+    fixture.write("boy_0_subanm.arc",archive({holder_pair_clip(11),holder_pair_clip(13)}));
+    fixture.write("boy_0_subact.arc",archive({setup_model(),setup_model()}));
+    std::shared_ptr<const Assets> models;std::shared_ptr<const awl::WorldMapPlayerAnimationAssets> animations;
+    expect(awl::load_world_map_player_model_assets(0,&models)==Status::Loaded &&
+        awl::load_world_map_player_animation_assets(&animations)==awl::WorldMapPlayerAnimationAssetsStatus::Loaded,"paired holder providers load");if(!models || !animations)return;
+    const awl::WorldMapAnimationFeature38 inactive{0,0,UINT32_MAX,0};
+    awl::WorldMapAnimationInitializerObservations obs;obs.clock=0xfffffff0u;
+    uint64_t digest=14695981039346656037ull;uint32_t checked=0,ignored_secondary_completions=0;
+    for(uint32_t seed=0;seed<256;++seed) {
+        constexpr uint32_t values[]{0,1,2,1023};const uint32_t mode=seed%4,blend=seed/4%32,index=1+seed/128%2;
+        const uint32_t a=(seed/16%2)|(mode<<10)|((seed/32%2)<<12)|((seed/64%2)<<13)|
+            (values[seed/7%4]<<14)|((seed/8%2)<<24),b=63u|(blend<<6)|(index<<11)|(255u<<19);
+        const awl::WorldMapActorAnimationDescriptor descriptor{100,a,b,0};std::unique_ptr<awl::WorldMapPlayerAnimationHolder> holder;
+        const auto constructed=awl::construct_world_map_player_animation_holder(models,animations,descriptor,inactive,obs,&holder);
+        expect(constructed.status==H::ConstructedCpuHolder && holder && holder->secondary_model(),"fresh selected descriptor constructs both CPU models in one holder");if(!holder || !holder->secondary_model())return;
+        expect(holder->state().secondary_model_c0==holder->secondary_model()->binding().model_identity &&
+            holder->secondary_model()->core().parent_150==0 && holder->primary().model().core().children_15c==std::array<uint64_t,4>{},
+            "null C4/C8 executes DF68's clear and early return without inventing an attachment");
+        hash(digest,seed);hash_holder_pair(digest,*holder);
+        for(uint32_t tick=0;tick<16;++tick){const auto before=holder_snapshot(*holder);const auto step=holder->advance_animation();
+            const uint32_t code=step.status==P::Advanced?0u:step.status==P::RequiresNextDescriptor?1u:step.status==P::RequiresClock?2u:99u;
+            expect(code!=99 && step.primary_completed && step.secondary_completed,"paired update reaches both channels before supported policy or dependency stop");
+            if(code)expect(holder_snapshot(*holder)==before,"unavailable next descriptor/clock rolls back both progressed models/channels and holder");
+            if(step.secondary_completed==true && step.primary_completed==false && step.status==P::Advanced)++ignored_secondary_completions;
+            for(uint32_t w:{code,unsigned(step.primary_completed.value_or(false)),unsigned(step.secondary_completed.value_or(false))})hash(digest,w);
+            hash_holder_pair(digest,*holder);
+        }++checked;
+    }
+    std::cout<<"PLAYER_HOLDER_PAIR_MATRIX "<<checked<<" / 16 ticks "<<std::hex<<digest<<std::dec<<" ignored secondary completions "<<ignored_secondary_completions<<'\n';
+    expect(digest==0x477618a716445b0cull && ignored_secondary_completions==45,
+        "paired holder setup/settings/ticks/policy match actual instructions with supplied resolved clips/models and rollback on missing evidence");
+    const awl::WorldMapActorAnimationDescriptor counted{200,(3u<<10)|(2u<<14),63u|(1u<<11)|(255u<<19),0};
+    std::unique_ptr<awl::WorldMapPlayerAnimationHolder> holder;
+    expect(awl::construct_world_map_player_animation_holder(models,animations,counted,inactive,obs,&holder).status==H::ConstructedCpuHolder,"paired count fixture constructs");if(!holder)return;
+    for(unsigned tick=0;tick<4;++tick)expect(holder->advance_animation().status==P::Advanced,"paired count advances to first strict endpoint crossing");
+    expect(holder->state().completed_count_1c==1u && holder->primary().model().partial_playback().word_8==1u && holder->secondary_model()->partial_playback().word_8==1u,
+        "penultimate policy runs after both model copies");
+    for(const auto* channel:{&holder->primary_channel(),&holder->secondary_channel()})for(const auto& r:channel->records())
+        if(r.identity==channel->state().target_8)expect(r.state.word_8==0u,"penultimate count disables both target loops");
+    const auto preserved=holder_snapshot(*holder);const auto* old=holder.get();
+    auto invalid=counted;invalid.word_4=63u|(3u<<11)|(255u<<19);
+    const auto failed=awl::construct_world_map_player_animation_holder(models,animations,invalid,inactive,obs,&holder);
+    expect(failed.status==H::InvalidInput && failed.secondary_setup_status==awl::WorldMapSecondarySetupStatus::InvalidInput &&
+        holder.get()==old && holder_snapshot(*holder)==preserved,"missing secondary ACT preserves the complete previous holder");
+    auto late=counted;late.word_0=1u<<10;
+    std::unique_ptr<awl::WorldMapPlayerAnimationHolder> no_timers;
+    expect(awl::construct_world_map_player_animation_holder(models,animations,late,std::nullopt,obs,&no_timers).status==H::ConstructedCpuHolder,"late timer failure pair constructs");
+    if(no_timers){const auto before=holder_snapshot(*no_timers);const auto stop=no_timers->advance_animation();
+        expect(stop.status==P::TimerIncomplete && stop.secondary_completed && holder_snapshot(*no_timers)==before,"late timer stop preserves both already staged channels/models and policy");}
+    // The primary feature dependency must still win before secondary lookup.
+    awl::WorldMapAnimationFeature38 feature{0x3a,0,0,0};
+    const auto earlier=awl::construct_world_map_player_animation_holder(models,animations,invalid,feature,{},&holder);
+    expect(earlier.status==H::InitializerIncomplete && earlier.initializer_status==I::RequiresFeatureTable && !earlier.secondary_setup_status &&
+        holder.get()==old && holder_snapshot(*holder)==preserved,"ordered primary feature failure precedes invalid secondary resource");
+    awl::WorldMapAnimationInitializerObservations timer_obs;timer_obs.clock=17;timer_obs.fallback_table_38=900;timer_obs.rows={{900,0,0,777}};
+    std::unique_ptr<awl::WorldMapPlayerAnimationHolder> timed;
+    expect(awl::construct_world_map_player_animation_holder(models,animations,late,feature,timer_obs,&timed).status==H::ConstructedCpuHolder,"paired timer failure fixture constructs");
+    if(timed){const auto before=holder_snapshot(*timed);const auto stop=timed->advance_animation();
+        expect(stop.status==P::TimerIncomplete && stop.timers && stop.timers->status==awl::WorldMapTextureTimerStatus::RequiresClock &&
+            stop.secondary_channel_status==awl::WorldMapAnimationChannelStatus::Prepared && holder_snapshot(*timed)==before,
+            "missing retained timer clock rolls back both prepared model/channel updates");}
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    {
+        const auto live=allocation_probe::live;uint32_t rejected=0;bool reached=false;
+        for(size_t fail=0;fail<512;++fail){allocation_probe::remaining=fail;allocation_probe::enabled=true;
+            const auto result=awl::construct_world_map_player_animation_holder(models,animations,late,inactive,obs,&holder);allocation_probe::enabled=false;
+            if(result.status==H::ConstructedCpuHolder){reached=true;break;}++rejected;
+            expect(result.status==H::AllocationFailure && holder.get()==old && holder_snapshot(*holder)==preserved && allocation_probe::live==live,
+                "paired construction allocation failures release staging and preserve the previous holder");}
+        expect(reached && rejected>210,"paired constructor sweep reaches publication after both immutable bank copies");
+        std::cout<<"PLAYER_HOLDER_PAIR_CONSTRUCTION_ALLOCATION_FAILURES "<<rejected<<'\n';
+    }
+    {
+        const auto before=holder_snapshot(*holder),live=allocation_probe::live;uint32_t rejected=0;bool reached=false;
+        for(size_t fail=0;fail<64;++fail){allocation_probe::remaining=fail;allocation_probe::enabled=true;const auto step=holder->advance_animation();allocation_probe::enabled=false;
+            if(step.status==P::Advanced){reached=true;break;}++rejected;
+            expect(step.status==P::AllocationFailure && holder_snapshot(*holder)==before && allocation_probe::live==live,"paired update allocation failures roll back both channels/models");}
+        // Each channel allocates a copied pool, its model append, and the
+        // progress proposal. This path legitimately bypasses timer allocation.
+        expect(reached && rejected==6,"pair progression sweep covers all six staging allocations and reaches publication");std::cout<<"PLAYER_HOLDER_PAIR_PROGRESS_ALLOCATION_FAILURES "<<rejected<<'\n';
+    }
+#endif
+    // Reached removal is still rejected by the existing start path.
+    auto table_bytes=holder_start_tables();std::shared_ptr<const awl::WorldMapPlayerStartAnimationTables> tables;
+    expect(awl::decode_world_map_player_start_animation_tables(table_bytes.data(),table_bytes.size(),&tables)==awl::WorldMapPlayerStartAnimationStatus::Decoded,"pair reselect tables decode");
+    const auto before=holder_snapshot(*holder);awl::WorldMapPlayerStartAnimationCommand command;
+    const auto reselect=holder->start(tables,command,std::nullopt,{});
+    expect(reselect.status==awl::WorldMapPlayerStartAnimationStatus::InitializerIncomplete && reselect.initializer_status==I::RequiresSecondaryRelease &&
+        holder_snapshot(*holder)==before,"existing secondary removal remains an explicit atomic stop");
+    fixture.write("boy_0_subanm.arc",archive({holder_pair_clip(11)}));
+    std::shared_ptr<const awl::WorldMapPlayerAnimationAssets> missing_clip;
+    expect(awl::load_world_map_player_animation_assets(&missing_clip)==awl::WorldMapPlayerAnimationAssetsStatus::Loaded,"incomplete paired catalog still loads bounded bytes");
+    auto missing=late;missing.word_4=63u|(2u<<11)|(255u<<19);
+    const auto failed_clip=awl::construct_world_map_player_animation_holder(models,missing_clip,missing,inactive,obs,&holder);
+    expect(failed_clip.status==H::InvalidInput && failed_clip.secondary_construction &&
+        failed_clip.secondary_construction->status==awl::WorldMapModelConstructionStatus::Constructed && holder_snapshot(*holder)==before,
+        "missing secondary clip after successful model construction frees staging and preserves the old pair");
+    models.reset();animations.reset();
+    expect(holder->secondary_model()->animation_banks().size()==1 && holder->advance_animation().secondary_channel_status==awl::WorldMapAnimationChannelStatus::Prepared,
+        "holder retains both banks/models and their stable channel keys after external handles drop");
+}
+void local_holder_pair(const char* disc) {
+    using H=awl::WorldMapPlayerAnimationHolderStatus;using P=awl::WorldMapPlayerHolderProgressStatus;
+    expect(awl::filesystem_mount("/",disc),"local paired holder disc mounts");
+    std::shared_ptr<const awl::WorldMapPlayerStartAnimationTables> tables;std::shared_ptr<const awl::WorldMapPlayerAnimationAssets> animations;
+    expect(awl::load_world_map_player_start_animation_tables(&tables)==awl::WorldMapPlayerStartAnimationStatus::Loaded && tables && tables->target_verified() &&
+        awl::load_world_map_player_animation_assets(&animations)==awl::WorldMapPlayerAnimationAssetsStatus::Loaded,"local pair providers and DOL verify");if(!tables || !animations)return;
+    std::vector<std::unique_ptr<awl::WorldMapPlayerAnimationHolder>> holders;
+    uint32_t completed_primary=0,completed_secondary=0,blocked=0;uint64_t ticks=0;
+    for(uint32_t phase=0;phase<6;++phase)for(uint32_t choice=1;choice<4;++choice) {
+        awl::WorldMapPlayerStartAnimationCommand command;command.action=choice==2?1u:0u;command.item=choice==2?0u:7u;
+        std::optional<awl::WorldMapPlayerStartItemType> type;if(command.item)type=awl::WorldMapPlayerStartItemType{7,uint8_t(choice==3?1:5)};
+        awl::WorldMapPlayerStartAnimationSelection selected;
+        expect(tables->select(command,type,&selected)==awl::WorldMapPlayerStartAnimationStatus::Selected && selected.choice==choice,"actual pair descriptor resolves");
+        std::shared_ptr<const Assets> models;expect(awl::load_world_map_player_model_assets(phase,&models)==Status::Loaded,"local pair phase model loads");
+        const awl::WorldMapAnimationFeature38 inactive{0,0,UINT32_MAX,0};awl::WorldMapAnimationInitializerObservations obs;obs.clock=17;
+        std::unique_ptr<awl::WorldMapPlayerAnimationHolder> holder;
+        expect(awl::construct_world_map_player_animation_holder(models,animations,selected.descriptor,inactive,obs,&holder).status==H::ConstructedCpuHolder &&
+            holder && holder->secondary_model(),"all actual selected pairs construct with null C4/C8 and inactive diagnostic timers");if(!holder || !holder->secondary_model())return;
+        const auto index=(selected.descriptor.word_4>>11)&127u;awl::WorldMapModelResource resource;awl::WorldMapAnimationClip secondary_clip;
+        expect(animations->secondary_models().resolve(index,&resource) && animations->secondary_animations().resolve(index-1,&secondary_clip) &&
+            holder->secondary_model()->record().count_4==resource.count_6 && holder->secondary_model()->partial_playback().clip_10 &&
+            holder->secondary_model()->partial_playback().clip_10->offset==secondary_clip.reference.offset &&
+            holder->secondary_model()->partial_playback().limit_c==secondary_clip.parameter_zero && holder->primary().model().core().nodes.size()==55,
+            "actual 55-node primary and selected secondary retain matching ACT/clip metadata");models.reset();
+        for(uint32_t tick=0;tick<256;++tick){const auto before=holder_snapshot(*holder);const auto step=holder->advance_animation();
+            if(step.primary_completed==true)++completed_primary;if(step.secondary_completed==true)++completed_secondary;
+            if(step.status!=P::Advanced){expect((step.status==P::RequiresNextDescriptor || step.status==P::RequiresClock) && holder_snapshot(*holder)==before,
+                "local pair stops atomically at missing sequence/clock");++blocked;break;}++ticks;}
+        holders.push_back(std::move(holder));
+    }
+    const auto lifetime=std::weak_ptr<const awl::WorldMapPlayerAnimationAssets>(animations);animations.reset();tables.reset();
+    expect(!lifetime.expired() && holders.size()==18,"all actual paired holders retain their providers after caller handles drop");
+    for(const auto& holder:holders){const auto before=holder_snapshot(*holder);const auto step=holder->advance_animation();
+        expect(step.secondary_channel_status==awl::WorldMapAnimationChannelStatus::Prepared &&
+            (step.status==P::Advanced || holder_snapshot(*holder)==before),"retained actual paired models continue staging/progression safely");}
+    expect(ticks>0 && completed_primary>0 && completed_secondary>0,"actual paired progression reaches independent primary and secondary boundaries");
+    std::cout<<"LOCAL_PLAYER_HOLDER_PAIR "<<holders.size()<<" pairs / "<<ticks<<" accepted ticks / primary boundaries "<<completed_primary
+        <<" secondary boundaries "<<completed_secondary<<" dependency stops "<<blocked<<"; diagnostic timers/null sources, CPU only\n";
+    holders.clear();expect(lifetime.expired(),"paired holder destruction releases models before their borrowed channels and retained providers");
 }
 void local_holder(const char* disc) {
     using H=awl::WorldMapPlayerAnimationHolderStatus;using S=awl::WorldMapPlayerStartAnimationStatus;
@@ -4761,16 +4946,17 @@ int main(int argc,char** argv){
     }
 #endif
     actor_placement_comparisons();embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();skin_execution_checks();awl::filesystem_shutdown();frame_checks();awl::filesystem_shutdown();animation_frame_checks();awl::filesystem_shutdown();attachment_frame_checks();awl::filesystem_shutdown();hierarchy_frame_checks();awl::filesystem_shutdown();partial_frame_sampling_checks();owned_hierarchy_frame_checks();awl::filesystem_shutdown();primary_frame_owner_checks();awl::filesystem_shutdown();topology_checks();awl::filesystem_shutdown();geometry_checks();awl::filesystem_shutdown();primary_owner_checks();awl::filesystem_shutdown();holder_checks();awl::filesystem_shutdown();initial_root_scale_checks();initial_input_checks();awl::filesystem_shutdown();timer_asset_checks();awl::filesystem_shutdown();texture_feature_checks();awl::filesystem_shutdown();state29_camera_checks();parent_update_checks();startup_owner_checks();awl::filesystem_shutdown();feature_draw_state_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
-    holder_policy_checks();
+    holder_policy_checks();holder_pair_checks();awl::filesystem_shutdown();
     if(argc==3 && std::string(argv[1])=="--player-model-local")local(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-frame-local")local(argv[2],true);
     else if(argc==3 && std::string(argv[1])=="--player-primary-local")local_primary(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-holder-local")local_holder(argv[2]);
+    else if(argc==3 && std::string(argv[1])=="--player-holder-pair-local")local_holder_pair(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-initial-holder-local")local_initial_holder(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-timer-holder-local")local_timer_holder(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-clock-holder-local")local_timer_holder(argv[2],true);
     else if(argc==3 && std::string(argv[1])=="--player-initial-model-local")local_timer_holder(argv[2],true,true);
     else if(argc==3 && std::string(argv[1])=="--player-startup-local")local_startup(argv[2]);
-    else if(argc!=1)expect(false,"usage: --player-model-local <disc>, --player-frame-local <disc>, --player-primary-local <disc>, --player-holder-local <disc>, --player-initial-holder-local <disc>, --player-timer-holder-local <disc>, --player-clock-holder-local <disc>, --player-initial-model-local <disc> or --player-startup-local <disc>");
+    else if(argc!=1)expect(false,"usage: --player-model-local <disc>, --player-frame-local <disc>, --player-primary-local <disc>, --player-holder-local <disc>, --player-holder-pair-local <disc>, --player-initial-holder-local <disc>, --player-timer-holder-local <disc>, --player-clock-holder-local <disc>, --player-initial-model-local <disc> or --player-startup-local <disc>");
     awl::filesystem_shutdown();return failures?1:0;
 }

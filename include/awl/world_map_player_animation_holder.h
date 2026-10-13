@@ -57,6 +57,9 @@ struct WorldMapPlayerHolderProgressResult {
     WorldMapPlayerHolderProgressStatus status = WorldMapPlayerHolderProgressStatus::InvalidInput;
     std::optional<WorldMapAnimationChannelStatus> channel_status;
     std::optional<bool> primary_completed;
+    std::optional<WorldMapAnimationChannelStatus> secondary_channel_status;
+    // Observed return only: D7FC bases holder policy on primary completion.
+    std::optional<bool> secondary_completed;
     std::optional<uint64_t> required_descriptor;
     std::optional<uint32_t> required_field;
     uint64_t required_record = 0;
@@ -77,6 +80,7 @@ struct WorldMapPlayerAnimationHolderChannelDependency {
     uint64_t required_record = 0;
     // Record +8/+C mask 1/2; record zero with mask 1 means channel +14.
     uint32_t required_fields = 0;
+    bool secondary = false;
 };
 struct WorldMapPlayerAnimationHolderResult {
     WorldMapPlayerAnimationHolderStatus status = WorldMapPlayerAnimationHolderStatus::InvalidInput;
@@ -85,6 +89,8 @@ struct WorldMapPlayerAnimationHolderResult {
     std::optional<uint32_t> secondary_index;
     std::optional<WorldMapAnimationFeatureRow> required_row;
     std::optional<WorldMapPlayerAnimationHolderChannelDependency> channel_dependency;
+    std::optional<WorldMapSecondarySetupStatus> secondary_setup_status;
+    std::optional<WorldMapModelConstructionResult> secondary_construction;
 };
 struct WorldMapPlayerAnimationHolderStartResult {
     WorldMapPlayerStartAnimationStatus status = WorldMapPlayerStartAnimationStatus::InvalidInput;
@@ -127,8 +133,9 @@ struct WorldMapPlayerInitialModelState {
 
 // D4B4's two owned channels, D560 state, actual CPU primary and retained
 // group-zero providers. Fresh D610 binding executes initialization before
-// publication. Existing-holder D610 rebind/reset, secondary construction,
-// secondary progression, live actor scheduling and GPU draws
+// publication, including a fresh selected secondary with null C4/C8/CC.
+// Existing-secondary reconstruction/removal, D610 rebind/reset,
+// live actor scheduling and GPU draws
 // remain unsupported. General construction accepts a supplied complete
 // feature snapshot; the initial-input wrapper prepares it from static inputs
 // and reached runtime table/clock evidence.
@@ -140,6 +147,7 @@ public:
     const WorldMapNativeAnimationChannel& primary_channel() const { return *primary_channel_; }
     const WorldMapNativeAnimationChannel& secondary_channel() const { return *secondary_channel_; }
     const WorldMapPlayerPrimaryOwner& primary() const { return *primary_; }
+    const WorldMapNativeModel* secondary_model() const { return secondary_model_.get(); }
     const std::shared_ptr<const WorldMapPlayerAnimationAssets>& animations() const { return animations_; }
     const WorldMapActorAnimationDescriptor& descriptor() const { return descriptor_; }
     const std::shared_ptr<const WorldMapPlayerInitialAnimationInputs>& initial_inputs() const { return initial_inputs_; }
@@ -166,9 +174,11 @@ public:
     [[nodiscard]] WorldMapAnimationChannelStatus advance_primary_channel(WorldMapAnimationChannelProgressStep* out) {
         return primary_channel_->progress(&primary_->model(), out);
     }
-    // BA94's ordered primary 69C4 -> D7FC policy -> F6D4, published together.
+    // BA94's ordered primary/selected-secondary 69C4 -> D7FC policy -> F6D4,
+    // published together. Secondary completion does not drive holder policy.
     // Retained sequences include terminal reset and direct DB28 transitions/
-    // restarts. Reached secondary or unavailable evidence rejects the entire
+    // restarts on the no-secondary path. Reached reconstruction/removal or
+    // unavailable evidence rejects the entire
     // update. Retains clock without advancing it; no CPU frame or queue work.
     [[nodiscard]] WorldMapPlayerHolderProgressResult advance_animation();
     [[nodiscard]] bool configure_repeats(WorldMapPlayerHolderRepeatKind kind,uint32_t value) noexcept;
@@ -185,6 +195,8 @@ private:
     friend WorldMapPlayerStartupResult construct_world_map_player_startup(
         const WorldMapPlayerStartupProviders&, const WorldMapPlayerStartupQuery&, std::unique_ptr<WorldMapPlayerStartup>*);
     bool finish_initial_model(float scale, const std::shared_ptr<const WorldMapPlayerModelAssets>& assets);
+    WorldMapPlayerAnimationHolderResult initialize_fresh_pair(const WorldMapActorAnimationDescriptor&,
+        const WorldMapPlayerAnimationGroupBinding&,const WorldMapAnimationInitializerObservations&);
     friend WorldMapPlayerAnimationHolderResult construct_world_map_player_animation_holder(
         const std::shared_ptr<const WorldMapPlayerModelAssets>&,
         const std::shared_ptr<const WorldMapPlayerAnimationAssets>&, const WorldMapActorAnimationDescriptor&,
@@ -221,6 +233,7 @@ private:
     std::shared_ptr<const WorldMapPlayerTimerAssets> timer_assets_;
     std::shared_ptr<GameClock> game_clock_;
     std::unique_ptr<WorldMapPlayerPrimaryOwner> primary_;
+    std::unique_ptr<WorldMapNativeModel> secondary_model_;
     std::vector<WorldMapNativeModel*> models_; // Borrowed registry, fixed after fresh construction.
     WorldMapPlayerAnimationHolderState state_;
     WorldMapActorAnimationDescriptor descriptor_;

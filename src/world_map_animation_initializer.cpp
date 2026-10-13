@@ -286,7 +286,8 @@ WorldMapAnimationInitializerStatus prepare_initializer(
     const std::optional<WorldMapActorAnimationDescriptor>& descriptor,
     const std::optional<WorldMapActorAnimationGroup>& group,
     const std::optional<WorldMapAnimationModelBinding>& model, const WorldMapAnimationBank* bank,
-    const WorldMapAnimationInitializerObservations& observations, Step* out, bool current=false) {
+    const WorldMapAnimationInitializerObservations& observations, Step* out, bool current=false,
+    const WorldMapPartialAnimationSecondaryInput* secondary=nullptr) {
     using Status = WorldMapAnimationInitializerStatus;
     if (out == nullptr || &state == &out->after) return Status::InvalidInput;
     Step step; step.after = state;
@@ -335,20 +336,36 @@ WorldMapAnimationInitializerStatus prepare_initializer(
     if (fields.secondary_index) {
         step.secondary_index = fields.secondary_index;
         if constexpr (std::is_same_v<State, WorldMapPartialAnimationInitializerState>) {
-            return finish(Status::RequiresSecondarySetup);
+            if (!secondary || state.secondary_model_c0) return finish(Status::RequiresSecondarySetup);
+            if (secondary->selected_index!=*fields.secondary_index || !secondary->animation_bank_identity ||
+                !secondary->model.model_identity || secondary->model.model_identity==state.animation.model_identity_30)
+                return Status::InvalidInput;
+            for (const auto& first:state.records) for (const auto& second:secondary->records)
+                if (first.identity==second.identity) return Status::InvalidInput;
+            uint32_t blend=(descriptor->word_4>>6)&31u;if (blend==31) blend=10;
+            const WorldMapActorAnimationSetup request{secondary->model.model_identity,secondary->animation_bank_identity,
+                (*fields.secondary_index-1u)&0xffffu,blend,0,0.0f};
+            WorldMapAnimationPartialChannelStep prepared;
+            const auto status=prepare_world_map_partial_animation_channel(secondary->channel,secondary->records,
+                request,secondary->model,secondary->bank,&prepared);
+            if (status==WorldMapAnimationChannelStatus::InvalidInput) return Status::InvalidInput;
+            step.secondary_channel_setup=std::move(prepared);
+            if (status!=WorldMapAnimationChannelStatus::Prepared) return finish(Status::RequiresSecondarySetup);
+            step.after.secondary_model_c0=secondary->model.model_identity;
         } else {
             if (!observations.secondary_group) return finish(Status::RequiresSecondarySetup);
             if (observations.secondary_group->group_index != fields.group_index) return Status::InvalidInput;
-            WorldMapSecondarySetupStep secondary;
+            WorldMapSecondarySetupStep secondary_request;
             const auto status = prepare_world_map_secondary_model_setup(*fields.secondary_index,
                 observations.secondary_group->model_bank_identity, observations.model_bank,
-                state.secondary_model_c0, state.secondary_model, step.after.records, observations.secondary_arena_cc, &secondary);
+                state.secondary_model_c0, state.secondary_model, step.after.records, observations.secondary_arena_cc, &secondary_request);
             if (status == WorldMapSecondarySetupStatus::InvalidInput) return Status::InvalidInput;
-            step.secondary_setup = std::move(secondary);
+            step.secondary_setup = std::move(secondary_request);
             return finish(Status::RequiresSecondarySetup);
         }
     }
-    if (state.secondary_model_c0 != 0) {
+    if (!fields.secondary_index && secondary) return Status::InvalidInput;
+    if (!fields.secondary_index && state.secondary_model_c0 != 0) {
         WorldMapSecondaryReleaseStep release;
         const auto status = prepare_world_map_secondary_model_release(state.secondary_model_c0,
             state.secondary_model, state.secondary_feature, &release);
@@ -388,6 +405,18 @@ WorldMapAnimationInitializerStatus prepare_initializer(
     step.settings = settings;
     if (status != WorldMapAnimationChannelStatus::Prepared) return finish(Status::RequiresModelSetup);
     step.after.records = settings.records_after;
+    if (step.secondary_channel_setup) {
+        // Channels have disjoint record pools. Loop writes commute across
+        // those pools; settings still bind primary before secondary, as DB28.
+        WorldMapAnimationPartialChannelStep prepared;
+        const auto& setup_secondary=*step.secondary_channel_setup;
+        const auto secondary_status=prepare_world_map_partial_animation_channel_settings(setup_secondary.after,
+            setup_secondary.records_after,secondary->model.model_identity,secondary->model,
+            step.loop?1u:0u,step.rate,&prepared);
+        if (secondary_status==WorldMapAnimationChannelStatus::InvalidInput) return Status::InvalidInput;
+        step.secondary_channel_settings=std::move(prepared);
+        if (secondary_status!=WorldMapAnimationChannelStatus::Prepared) return finish(Status::RequiresSecondarySetup);
+    }
     animation.flag_21 = fields.flag_13 ? 1 : 0;
     step.hierarchy_model = animation.model_identity_30;
     if (!state.model_links) return finish(Status::RequiresModelHierarchy);
@@ -426,5 +455,14 @@ WorldMapAnimationInitializerStatus prepare_world_map_partial_animation_current_i
     const WorldMapAnimationInitializerObservations& observations, WorldMapPartialAnimationInitializerStep* out) {
     return prepare_initializer<WorldMapPartialAnimationInitializerState, WorldMapPartialAnimationInitializerStep, WorldMapAnimationPartialChannelStep>(
         state,state.animation.current_descriptor_0,descriptor,group,model,bank,observations,out,true);
+}
+WorldMapAnimationInitializerStatus prepare_world_map_partial_animation_fresh_pair_initializer(
+    const WorldMapPartialAnimationInitializerState& state,uint64_t requested,
+    const WorldMapActorAnimationDescriptor& descriptor,const WorldMapActorAnimationGroup& group,
+    const WorldMapAnimationModelBinding& model,const WorldMapAnimationBank* bank,
+    const WorldMapAnimationInitializerObservations& observations,
+    const WorldMapPartialAnimationSecondaryInput& secondary,WorldMapPartialAnimationInitializerStep* out) {
+    return prepare_initializer<WorldMapPartialAnimationInitializerState,WorldMapPartialAnimationInitializerStep,WorldMapAnimationPartialChannelStep>(
+        state,requested,descriptor,group,model,bank,observations,out,false,&secondary);
 }
 } // namespace awl

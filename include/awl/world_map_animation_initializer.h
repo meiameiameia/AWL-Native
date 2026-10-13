@@ -133,6 +133,17 @@ enum class WorldMapAnimationInitializerStatus {
     RequiresSecondaryRelease, RequiresModelHierarchy, InvalidInput,
     Prepared,
 };
+// Supplied fresh secondary construction, with its authoritative model record
+// included in records. The caller owns model/clip lifetimes. Null C4/C8 only;
+// this does not reconstruct, restore or release a prior secondary.
+struct WorldMapPartialAnimationSecondaryInput {
+    uint32_t selected_index = 127;
+    uint64_t animation_bank_identity = 0;
+    WorldMapAnimationChannelState channel;
+    std::vector<WorldMapAnimationPartialPlaybackRecord> records;
+    WorldMapAnimationModelBinding model;
+    const WorldMapAnimationBank* bank = nullptr;
+};
 template<class State, class ChannelStep> struct WorldMapBasicAnimationInitializerStep {
     // Supplied-state proposal or unaccepted ordered prefix, never resumable
     // or a live parent acknowledgement. Reprepare from the original state
@@ -148,6 +159,7 @@ template<class State, class ChannelStep> struct WorldMapBasicAnimationInitialize
     std::optional<WorldMapModelLinkStep> hierarchy;
     std::optional<WorldMapSecondarySetupStep> secondary_setup;
     std::optional<WorldMapSecondaryReleaseStep> secondary_release;
+    std::optional<WorldMapAnimationPartialChannelStep> secondary_channel_setup, secondary_channel_settings;
 };
 using WorldMapAnimationInitializerStep = WorldMapBasicAnimationInitializerStep<WorldMapAnimationInitializerState, WorldMapAnimationChannelStep>;
 using WorldMapPartialAnimationInitializerStep = WorldMapBasicAnimationInitializerStep<WorldMapPartialAnimationInitializerState, WorldMapAnimationPartialChannelStep>;
@@ -185,6 +197,17 @@ using WorldMapPartialAnimationInitializerStep = WorldMapBasicAnimationInitialize
     const std::optional<WorldMapActorAnimationGroup>& group,
     const std::optional<WorldMapAnimationModelBinding>& model, const WorldMapAnimationBank* bank,
     const WorldMapAnimationInitializerObservations& observations, WorldMapPartialAnimationInitializerStep* out);
+
+// Fresh D69C -> DB28 pair: primary setup/features, supplied secondary setup,
+// common mode/loop/rate, primary then secondary reset/bind, null-source DF68.
+// Requires state.secondary_model_c0 == 0. No construction or publication;
+// missing dependencies remain unaccepted diagnostics. InvalidInput preserves out.
+[[nodiscard]] WorldMapAnimationInitializerStatus prepare_world_map_partial_animation_fresh_pair_initializer(
+    const WorldMapPartialAnimationInitializerState& state, uint64_t requested,
+    const WorldMapActorAnimationDescriptor& descriptor, const WorldMapActorAnimationGroup& group,
+    const WorldMapAnimationModelBinding& model, const WorldMapAnimationBank* bank,
+    const WorldMapAnimationInitializerObservations& observations,
+    const WorldMapPartialAnimationSecondaryInput& secondary, WorldMapPartialAnimationInitializerStep* out);
 
 class WorldMapNativeModel;
 class WorldMapNativeAnimationChannel;
