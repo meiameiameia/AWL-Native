@@ -2836,6 +2836,8 @@ uint64_t startup_snapshot(const awl::WorldMapPlayerStartup& owner) {
     auto h=holder_snapshot(owner.model());const auto& s=owner.state();
     hash(h,uint32_t(s.state_1364));hash(h,s.counter_1368);hash(h,s.secondary_byte_3f0);
     hash(h,s.control_word_1384.has_value());hash(h,s.control_word_1384.value_or(0));
+    hash(h,owner.animation_loop().has_value());if(owner.animation_loop()){
+        hash(h,owner.animation_loop()->loop_count);hash(h,owner.animation_loop()->raw_time);hash(h,owner.animation_loop()->valid);}
     const auto key=reinterpret_cast<uintptr_t>(owner.starts().get());hash(h,uint32_t(uint64_t(key)>>32));hash(h,uint32_t(key));
     hash(h,owner.camera().has_value());if(owner.camera()){const auto camera=camera_snapshot(*owner.camera());hash(h,uint32_t(camera>>32));hash(h,uint32_t(camera));}
     const auto& actor=owner.actor_metadata();hash(h,actor.flag_15d);hash(h,actor.flag_15e);hash(h,actor.flag_15f);
@@ -3843,6 +3845,117 @@ void normal_actor_frame_owner_checks(awl::WorldMapPlayerStartup& player,bool all
         player.state().control_word_1384==parent.control_word_1384 && (player.camera()?camera_snapshot(*player.camera()):0)==camera,
         "normal visibility diagnostics do not acknowledge original parent, camera, metadata or queue stores");
 }
+void coordinated_animation_owner_checks(awl::WorldMapPlayerStartup& player,bool allocations) {
+    using A=awl::WorldMapPlayerAnimationLoopStatus;using Q=awl::WorldMapPlayerStartupQueueStatus;
+    using C=awl::WorldMapPlayerStartupActorCallbackStatus;using H=awl::WorldMapPlayerHolderProgressStatus;
+    const auto clock=player.model().game_clock();if(!clock)return;
+    const auto interval=clock->state().retrace_interval;
+    awl::WorldMapUpdateInputs controls(clock),missing(clock),foreign(std::make_shared<awl::GameClock>());
+    const awl::WorldMapControlSources sources{awl::WorldMapControlPhase{uint8_t{0},{},uint8_t{1}},0};
+    controls.observe_control_sources(sources);foreign.observe_control_sources(sources);
+    expect(controls.capture_control()==awl::WorldMapControlStatus::Captured && foreign.capture_control()==awl::WorldMapControlStatus::Captured,"coordinated animation captures its current shared-clock input");
+    awl::WorldMapPlayerStartupQueuedActorInput input;
+    awl::WorldMapPlayerUpdateOwners updates;updates.queue={{player.update_node_identity(),0x1010}};
+    awl::WorldMapPlayerActorQueue render;
+    auto before=startup_snapshot(player),pending=update_owners_snapshot(updates);
+    expect(player.consume_state29_update_after_animation(controls,input,&updates,&render).status==Q::RequiresAnimation &&
+        startup_snapshot(player)==before && update_owners_snapshot(updates)==pending,"queued frame cannot run before its loop's animation slot is accepted");
+    expect(player.advance_animation_for_loop(missing).status==A::RequiresControl && player.advance_animation_for_loop(foreign).status==A::InvalidInput &&
+        startup_snapshot(player)==before,"missing capture or a different clock cannot advance either animation channel or create a receipt");
+    const int rounding=std::fegetround();expect(std::fesetround(FE_UPWARD)==0,"coordinated update selects unsupported arithmetic");
+    const auto rejected=player.advance_animation_for_loop(controls);expect(std::fesetround(rounding)==0,"coordinated update restores caller rounding");
+    expect(rejected.status==A::AnimationIncomplete && rejected.animation && rejected.animation->status==H::ChannelIncomplete && startup_snapshot(player)==before &&
+        !player.animation_loop(),"failed paired/channel preparation publishes no playback, timer or loop acknowledgement");
+    awl::WorldMapPlayerAnimationLoopResult advanced;
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    if(allocations){const auto live=allocation_probe::live;size_t failed=0;bool reached=false;
+        for(size_t fail=0;fail<256;++fail){allocation_probe::remaining=fail;allocation_probe::enabled=true;
+            advanced=player.advance_animation_for_loop(controls);allocation_probe::enabled=false;
+            if(advanced.status==A::Advanced){reached=true;break;}++failed;
+            expect(advanced.status==A::AnimationIncomplete && advanced.animation && advanced.animation->status==H::AllocationFailure &&
+                startup_snapshot(player)==before && allocation_probe::live==live,"animation allocation failures retain absent receipt, accepted owners and free all staging");}
+        expect(reached && failed>=3,"coordinated animation allocation sweep reaches publication");
+        std::cout<<"PLAYER_ANIMATION_LOOP_ALLOCATION_FAILURES "<<failed<<'\n';}
+    else advanced=player.advance_animation_for_loop(controls);
+#else
+    (void)allocations;advanced=player.advance_animation_for_loop(controls);
+#endif
+    expect(advanced.status==A::Advanced && advanced.animation && player.animation_loop() &&
+        player.animation_loop()->loop_count==clock->state().loop_count && player.animation_loop()->raw_time==clock->state().raw_time &&
+        bool(advanced.animation->secondary_channel_status)==(((player.model().descriptor().word_4>>11)&127u)!=127),
+        "eligible slot publishes ordered primary/selected-secondary progression and timers before its loop receipt");
+    before=startup_snapshot(player);pending=update_owners_snapshot(updates);
+    expect(player.advance_animation_for_loop(controls).status==A::AlreadyAdvanced && startup_snapshot(player)==before,
+        "repeated same-loop progression never adds another channel tick or timer update");
+    auto step=player.consume_state29_update_after_animation(controls,input,&updates,&render);
+    expect(step.status==Q::CallbackIncomplete && startup_snapshot(player)==before && update_owners_snapshot(updates)==pending && render.empty() &&
+        player.advance_animation_for_loop(controls).status==A::AlreadyAdvanced,"missing frame dependencies retain accepted animation and pending update for retry");
+    input.actor.saved_byte_29a01=uint8_t{0};input.actor.script.emplace();input.actor.script->flag_width_4=1;
+    input.actor.script->flag_bytes={0};input.actor.script->records.emplace();input.actor.derive_normal_visibility=true;
+    input.actor.frame.actor_placement=awl::WorldMapPlayerActorPlacement{{40,50,60},{0,0,1}};
+    input.actor.frame.node_post_transforms.resize(player.model().primary().model().core().nodes.size());
+    input.actor.visibility.emplace();input.actor.visibility->view=awl::WorldMapModelMatrix{1,0,0,0,0,1,0,0,0,0,1,0};
+    for(size_t i=0;i<6;++i){awl::WorldMapPlayerActorPlane plane;plane.point[i/2]=i%2?-1000.0f:1000.0f;plane.normal[i/2]=i%2?-1.0f:1.0f;input.actor.visibility->planes[i]=plane;}
+    input.actor.screen.emplace();input.actor.screen->view=*input.actor.visibility->view;input.actor.screen->half_extents={1000.0f,1000.0f};
+    input.effect_gate=uint8_t{0};
+    auto invalid=awl::WorldMapModelMatrix{1,0,0,0,0,1,0,0,0,0,1,0};invalid[11]=std::numeric_limits<float>::quiet_NaN();
+    input.actor.frame.node_post_transforms.back()=invalid;
+    step=player.consume_state29_update_after_animation(controls,input,&updates,&render);
+    expect(step.status==Q::CallbackIncomplete && startup_snapshot(player)==before && update_owners_snapshot(updates)==pending,
+        "late frame failure cannot roll back or repeat the separately accepted model-pool update");input.actor.frame.node_post_transforms.back().reset();
+    input.effect_gate.reset();step=player.consume_state29_update_after_animation(controls,input,&updates,&render);
+    expect(step.status==Q::CallbackIncomplete && startup_snapshot(player)==before && update_owners_snapshot(updates)==pending && render.empty(),
+        "missing effect after frame preparation retains the same loop receipt and retry node");input.effect_gate=uint8_t{0};
+    bool completed=false;
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    if(allocations){const auto live=allocation_probe::live;size_t failed=0;
+        for(size_t fail=0;fail<128;++fail){allocation_probe::remaining=fail;allocation_probe::enabled=true;
+            step=player.consume_state29_update_after_animation(controls,input,&updates,&render);allocation_probe::enabled=false;
+            if(step.status==Q::Completed){completed=true;break;}++failed;
+            expect(step.status==Q::CallbackIncomplete && startup_snapshot(player)==before && update_owners_snapshot(updates)==pending && render.empty() &&
+                allocation_probe::live==live && player.advance_animation_for_loop(controls).status==A::AlreadyAdvanced,
+                "every frame/queue allocation failure preserves the accepted receipt, pending work and both animation channels");}
+        expect(completed && failed>5,"coordinated callback allocation sweep reaches frame and queue publication");
+        std::cout<<"PLAYER_ANIMATED_QUEUE_ALLOCATION_FAILURES "<<failed<<'\n';}
+#endif
+    if(!completed)step=player.consume_state29_update_after_animation(controls,input,&updates,&render);
+    expect(step.status==Q::Completed && step.callback && step.callback->status==C::Completed && updates.queue.empty() &&
+        player.model().primary().cpu().frame() && player.model().primary().cpu().frame()->root_matrix[3]==40 &&
+        player.advance_animation_for_loop(controls).status==A::AlreadyAdvanced,"successful frame consumes accepted playback/timers and removes the owned node once");
+    // Explicit diagnostic clock steps represent distinct loop samples; this
+    // test does not acknowledge a rendered/presented complete game loop.
+    for(uint32_t tick=0;tick<4;++tick){clock->set_retrace_interval(tick==0?0u:2u);expect(clock->advance(),"diagnostic fixture moves to its next shared-clock loop");
+        updates.queue={{player.update_node_identity(),0x1010}};before=startup_snapshot(player);pending=update_owners_snapshot(updates);
+        expect(player.advance_animation_for_loop(controls).status==A::RequiresControl &&
+            player.consume_state29_update_after_animation(controls,input,&updates,&render).status==Q::RequiresControl &&
+            startup_snapshot(player)==before && update_owners_snapshot(updates)==pending,"clock step invalidates old control before any next-loop model or frame work");
+        expect(controls.capture_control()==awl::WorldMapControlStatus::Captured,"next loop captures fresh control");
+        expect(player.consume_state29_update_after_animation(controls,input,&updates,&render).status==Q::RequiresAnimation && startup_snapshot(player)==before,
+            "fresh input alone cannot reuse the prior loop's accepted animation receipt");
+        expect(player.advance_animation_for_loop(controls).status==A::Advanced,"each new loop advances eligible animation exactly once, including zero raw-time increment");
+        const auto playback=holder_snapshot(player.model(),false);const auto time=clock->state();
+        if(tick==1)input.actor.script->flag_bytes[0]=1;
+        if(tick==2){input.actor.visibility->planes[0]->point[0]=0;input.actor.screen.reset();input.effect_gate.reset();}
+        step=player.consume_state29_update_after_animation(controls,input,&updates,&render);
+        expect(step.status==Q::Completed && updates.queue.empty() && holder_snapshot(player.model(),false)==playback &&
+            clock->state().raw_time==time.raw_time && clock->state().loop_count==time.loop_count && player.advance_animation_for_loop(controls).status==A::AlreadyAdvanced,
+            "visible, script-blocked and culled callbacks finish without repeating animation/timers or advancing the clock");
+        if(tick==1)expect(step.callback && step.callback->status==C::ScriptBlocked,"script block occurs after eligible pool progression");
+        if(tick==2)expect(step.callback && step.callback->actor && step.callback->actor->status==awl::WorldMapPlayerStartupActorFrameStatus::VisibilityStopped,"culled frame still completes after pool progression");
+        input.actor.script->flag_bytes[0]=0;input.actor.visibility->planes[0]->point[0]=1000;
+        input.actor.screen.emplace();input.actor.screen->view=*input.actor.visibility->view;input.actor.screen->half_extents={1000.0f,1000.0f};input.effect_gate=uint8_t{0};
+    }
+    updates.queue.clear();expect(player.consume_state29_update_after_animation(missing,{},&updates,nullptr).status==Q::Empty,"empty coordinated queue skips receipt and control dependencies");
+    awl::WorldMapAnimationChannelProgressStep isolated;
+    expect(player.advance_primary_channel(&isolated)==awl::WorldMapAnimationChannelStatus::Advanced && player.animation_loop() && !player.animation_loop()->valid,
+        "isolated channel mutation invalidates coordinated proof while preserving its handled loop key");
+    before=startup_snapshot(player);updates.queue={{player.update_node_identity(),0x1010}};
+    expect(player.advance_animation_for_loop(controls).status==A::RequiresNextLoop &&
+        player.consume_state29_update_after_animation(controls,input,&updates,&render).status==Q::RequiresAnimation && startup_snapshot(player)==before,
+        "mixing isolated diagnostics cannot reopen an already advanced loop or acknowledge its stale frame proof");
+    clock->set_retrace_interval(interval);
+    std::cout<<"PLAYER_ANIMATION_LOOP 5 eligible loops / visible, blocked, culled and late-retry frames; explicit clock, owned slot only\n";
+}
 void gated_actor_frame_owner_checks(awl::WorldMapPlayerStartup& player,bool allocations) {
     using S=awl::WorldMapPlayerStartupActorFrameStatus;using G=awl::WorldMapPlayerActorGateStatus;
     using V=awl::WorldMapPlayerActorVisibilityStatus;
@@ -3922,6 +4035,7 @@ void gated_actor_frame_owner_checks(awl::WorldMapPlayerStartup& player,bool allo
     queued_actor_owner_checks(player,allocations);
     texture_timer_owner_checks(player,allocations);
     channel_progress_owner_checks(player,allocations);
+    coordinated_animation_owner_checks(player,allocations);
 }
 void actor_placement_owner_checks(awl::WorldMapPlayerStartup& player,bool allocations=false) {
     using S=awl::WorldMapPlayerPrimaryUpdateStatus;using F=awl::WorldMapPlayerFrameStatus;
@@ -4069,6 +4183,16 @@ void startup_owner_checks() {
     expect(reached && rejected>225,"startup sweep includes model type row staging and changed callback setup after initial model construction");
     std::cout<<"PLAYER_STARTUP_ALLOCATION_FAILURES "<<rejected<<'\n';
 #endif
+    {
+        auto paired_bytes=start_bytes;word(paired_bytes,0x164,63u|(1u<<11)|(255u<<19));auto paired=p;
+        paired.clock=std::make_shared<awl::GameClock>(*p.clock);
+        expect(awl::decode_world_map_player_start_animation_tables(paired_bytes.data(),paired_bytes.size(),&paired.starts)==A::Decoded,
+            "coordinated paired startup selector decodes");
+        std::unique_ptr<awl::WorldMapPlayerStartup> pair;
+        expect(awl::construct_world_map_player_startup(paired,q,&pair).status==S::ConstructedCpuStartup && pair && pair->model().secondary_model(),
+            "full startup owns selected secondary for coordinated loop/frame retry checks");
+        if(pair)coordinated_animation_owner_checks(*pair,true);
+    }
     using C=awl::WorldMapPlayerState29CameraStatus;
     expect(owner->advance(frame).status==awl::WorldMapPlayerPrimaryUpdateStatus::Advanced,"camera rollback checks retain an evaluated CPU frame");
     const auto no_camera=startup_snapshot(*owner);awl::WorldMapPlayerStartupState29Input callback;callback.player_position={2,0,0};
@@ -4139,6 +4263,38 @@ void startup_owner_checks() {
         owner->advance(frame).status==awl::WorldMapPlayerPrimaryUpdateStatus::Advanced && owner->model().game_clock()->state().raw_time==66,
         "CPU startup retains model, both static input owners and clock after all caller handles drop");owner.reset();
     expect(model_lifetime.expired() && inputs_lifetime.expired() && starts_lifetime.expired() && clock_lifetime.expired() && camera_lifetime.expired(),"last startup releases model, camera providers and shared clock");
+}
+void local_animation_loops(const char* disc) {
+    using S=awl::WorldMapPlayerStartupStatus;
+    expect(awl::filesystem_mount("/",disc),"local coordinated animation disc mounts");
+    awl::WorldMapPlayerStartupProviders providers;
+    expect(awl::load_world_map_player_animation_assets(&providers.animations)==awl::WorldMapPlayerAnimationAssetsStatus::Loaded &&
+        awl::load_world_map_player_start_animation_tables(&providers.starts)==awl::WorldMapPlayerStartAnimationStatus::Loaded && providers.starts->target_verified() &&
+        awl::load_world_map_player_initial_animation_inputs(&providers.initial)==awl::WorldMapPlayerInitialAnimationStatus::Loaded &&
+        awl::load_world_map_player_timer_assets(&providers.timers)==awl::WorldMapPlayerTimerAssetsStatus::Loaded,"local coordinated providers and DOL verify");
+    if(!providers.animations || !providers.starts || !providers.initial || !providers.timers)return;
+    uint32_t checked=0,paired=0,blocked=0;
+    for(uint32_t phase=0;phase<6;++phase){expect(awl::load_world_map_player_model_assets(phase,&providers.models)==Status::Loaded,"local coordinated phase model loads");
+        std::unique_ptr<awl::WorldMapPlayerStartup> player;
+        for(uint32_t choice=0;choice<4;++choice){providers.clock=std::make_shared<awl::GameClock>();
+            awl::WorldMapPlayerStartupQuery query;query.initial.phase=phase;query.tail.inputs.start.saved_pose.scene_type=1;query.audio_byte_90=uint8_t{0};
+            query.tail.action_148_after_setup=choice==2?1:0;query.item_144_after_setup=(choice==1 || choice==3)?7u:0u;
+            if(query.item_144_after_setup)query.item_type=awl::WorldMapPlayerStartItemType{7,uint8_t(choice==3?1:5)};
+            const auto before=player?startup_snapshot(*player):0;
+            const auto constructed=awl::construct_world_map_player_startup(providers,query,&player);
+            if(choice==2){expect(constructed.status==S::ConstructorTailIncomplete && constructed.tail_status==awl::WorldMapPlayerConstructorTailStatus::MissingCameraByteEvidence &&
+                player && startup_snapshot(*player)==before,"actual action-only constructor requires untranslated message delivery before its secondary selection and preserves previous startup");++blocked;continue;}
+            if(constructed.status!=S::ConstructedCpuStartup)std::cout<<"LOCAL_ANIMATION_STARTUP_STOP phase "<<phase<<" choice "<<choice<<" status "<<int(constructed.status)
+                <<" tail "<<(constructed.tail_status?int(*constructed.tail_status):-1)<<" animation "<<(constructed.animation?int(constructed.animation->status):-1)
+                <<" initializer "<<(constructed.animation && constructed.animation->initializer_status?int(*constructed.animation->initializer_status):-1)<<'\n';
+            expect(constructed.status==S::ConstructedCpuStartup && player,"actual primary/secondary choice reaches complete native CPU startup");if(!player)return;
+            if(player->model().secondary_model())++paired;
+            coordinated_animation_owner_checks(*player,false);++checked;
+        }
+    }
+    expect(checked==18 && paired==12 && blocked==6,"all supported actual phase/selection startup pairs complete coordinated checks and action-only constructors stop explicitly");
+    std::cout<<"LOCAL_PLAYER_ANIMATION_LOOPS "<<checked<<" startups / "<<paired<<" pairs / "<<checked*5<<" eligible loop samples / "<<blocked
+        <<" action-only constructor message stops; actual timers/clips, supplied script/visibility/pose, CPU only\n";
 }
 void local_status_parameters(const awl::WorldMapPlayerStartAnimationTables& tables) {
     uint64_t digest=14695981039346656037ull;size_t count=0;
@@ -5149,11 +5305,12 @@ int main(int argc,char** argv){
     else if(argc==3 && std::string(argv[1])=="--player-holder-local")local_holder(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-holder-pair-local")local_holder_pair(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-holder-lifecycle-local")local_holder_lifecycle(argv[2]);
+    else if(argc==3 && std::string(argv[1])=="--player-animation-loop-local")local_animation_loops(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-initial-holder-local")local_initial_holder(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-timer-holder-local")local_timer_holder(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-clock-holder-local")local_timer_holder(argv[2],true);
     else if(argc==3 && std::string(argv[1])=="--player-initial-model-local")local_timer_holder(argv[2],true,true);
     else if(argc==3 && std::string(argv[1])=="--player-startup-local")local_startup(argv[2]);
-    else if(argc!=1)expect(false,"usage: --player-model-local <disc>, --player-frame-local <disc>, --player-primary-local <disc>, --player-holder-local <disc>, --player-holder-pair-local <disc>, --player-holder-lifecycle-local <disc>, --player-initial-holder-local <disc>, --player-timer-holder-local <disc>, --player-clock-holder-local <disc>, --player-initial-model-local <disc> or --player-startup-local <disc>");
+    else if(argc!=1)expect(false,"usage: --player-model-local <disc>, --player-frame-local <disc>, --player-primary-local <disc>, --player-holder-local <disc>, --player-holder-pair-local <disc>, --player-holder-lifecycle-local <disc>, --player-animation-loop-local <disc>, --player-initial-holder-local <disc>, --player-timer-holder-local <disc>, --player-clock-holder-local <disc>, --player-initial-model-local <disc> or --player-startup-local <disc>");
     awl::filesystem_shutdown();return failures?1:0;
 }

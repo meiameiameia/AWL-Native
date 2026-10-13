@@ -147,9 +147,24 @@ struct WorldMapPlayerStartupQueuedActorInput {
     WorldMapPlayerStartupActorFrameInput actor;
     std::optional<uint8_t> effect_gate;
 };
+
+// Native receipt for this owned pool slot, not the entire original pool/pass.
+// Raw time is retained for diagnostics; loop_count distinguishes zero-time loops.
+struct WorldMapPlayerAnimationLoop {
+    uint32_t loop_count = 0, raw_time = 0;
+    bool valid = true;
+};
+enum class WorldMapPlayerAnimationLoopStatus {
+    Advanced, AlreadyAdvanced, RequiresControl, RequiresModelTail,
+    AnimationIncomplete, InvalidInput, RequiresNextLoop
+};
+struct WorldMapPlayerAnimationLoopResult {
+    WorldMapPlayerAnimationLoopStatus status = WorldMapPlayerAnimationLoopStatus::InvalidInput;
+    std::optional<WorldMapPlayerHolderProgressResult> animation;
+};
 enum class WorldMapPlayerStartupQueueStatus {
     Completed, Empty, UnsupportedNode, UnsupportedPriority, InvalidQueue,
-    RequiresControl, CallbackIncomplete, InvalidInput
+    RequiresControl, CallbackIncomplete, InvalidInput, RequiresAnimation
 };
 struct WorldMapPlayerStartupQueueResult {
     WorldMapPlayerStartupQueueStatus status = WorldMapPlayerStartupQueueStatus::InvalidInput;
@@ -169,6 +184,7 @@ public:
     const std::shared_ptr<const WorldMapPlayerStartAnimationTables>& starts() const { return starts_; }
     const std::optional<WorldMapPlayerStartupCameraState>& camera() const { return camera_; }
     const WorldMapPlayerActorMetadata& actor_metadata() const { return actor_metadata_; }
+    const std::optional<WorldMapPlayerAnimationLoop>& animation_loop() const { return animation_loop_; }
     uint64_t update_node_identity() const { return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&update_node_)); }
     uint64_t effect_node_identity() const { return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&effect_node_)); }
     uint64_t render_node_identity() const { return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&render_node_)); }
@@ -241,23 +257,52 @@ public:
     [[nodiscard]] WorldMapPlayerStartupQueueResult consume_state29_update(
         const WorldMapUpdateInputs& inputs, const WorldMapPlayerStartupQueuedActorInput& input,
         WorldMapPlayerUpdateOwners* updates, WorldMapPlayerActorQueue* render_queue);
+    // Eligible first-slot portion of EBBC -> ED7C -> BA94: advance the primary
+    // and selected-secondary channels, holder and timers once per fresh captured loop.
+    // Pool +90's separate feature tail must be null. A stop preserves model
+    // and receipt. Retry after acceptance returns AlreadyAdvanced, including
+    // after a later frame failure. Control is a freshness check; BA94 does not
+    // consume its bits. The manager's registration/filter, other pool entries
+    // and other primary passes remain dependencies; this does not dispatch the
+    // whole manager or advance time. Call only for an eligible owned slot.
+    [[nodiscard]] WorldMapPlayerAnimationLoopResult advance_animation_for_loop(const WorldMapUpdateInputs& inputs);
+    // Same bounded front-node callback/completion, additionally requiring the
+    // owned animation slot's accepted receipt for this loop. Empty queues still
+    // skip every dependency; invalid/foreign earlier nodes are never skipped.
+    // Frame failure retains the already accepted animation and pending node.
+    // No primary-pass completion, render execution or clock advance is implied.
+    [[nodiscard]] WorldMapPlayerStartupQueueResult consume_state29_update_after_animation(
+        const WorldMapUpdateInputs& inputs, const WorldMapPlayerStartupQueuedActorInput& input,
+        WorldMapPlayerUpdateOwners* updates, WorldMapPlayerActorQueue* render_queue);
     [[nodiscard]] WorldMapPlayerPrimaryUpdateResult advance(const WorldMapPlayerPrimaryFrameInput& input) {
         return model_->advance(input);
     }
-    // Isolated F6D4 portion with retained raw clock, not the whole BA94 update.
+    // Isolated diagnostic mutations invalidate coordinated proof while keeping
+    // the handled loop key. That loop cannot be advanced a second time; resume
+    // coordinated work only after a new clock loop and fresh control capture.
+    // F6D4 portion with retained raw clock, not the whole BA94 update.
     [[nodiscard]] WorldMapTextureTimerResult advance_texture_timers() noexcept {
-        return model_->advance_texture_timers();
+        auto result=model_->advance_texture_timers();
+        if (result.status==WorldMapTextureTimerStatus::Prepared && animation_loop_) animation_loop_->valid=false;
+        return result;
     }
     [[nodiscard]] WorldMapAnimationChannelStatus advance_primary_channel(WorldMapAnimationChannelProgressStep* out) {
-        return model_->advance_primary_channel(out);
+        const auto status=model_->advance_primary_channel(out);
+        if (status==WorldMapAnimationChannelStatus::Advanced && animation_loop_) animation_loop_->valid=false;
+        return status;
     }
     [[nodiscard]] WorldMapPlayerHolderProgressResult advance_animation() {
-        return model_->advance_animation();
+        auto result=model_->advance_animation();
+        if (result.status==WorldMapPlayerHolderProgressStatus::Advanced && animation_loop_) animation_loop_->valid=false;
+        return result;
     }
     [[nodiscard]] bool configure_animation_repeats(WorldMapPlayerHolderRepeatKind kind,uint32_t value) noexcept {
         return model_->configure_repeats(kind,value);
     }
 private:
+    [[nodiscard]] WorldMapPlayerStartupQueueResult consume_update(
+        const WorldMapUpdateInputs&,const WorldMapPlayerStartupQueuedActorInput&,
+        WorldMapPlayerUpdateOwners*,WorldMapPlayerActorQueue*,bool require_animation);
     WorldMapPlayerStartup() = default;
     [[nodiscard]] WorldMapPlayerState29CameraStep prepare_state29_camera(
         const WorldMapPlayerStartupState29Input& input) const;
@@ -273,13 +318,15 @@ private:
     WorldMapPlayerStartupState state_;
     std::optional<WorldMapPlayerStartupCameraState> camera_;
     WorldMapPlayerActorMetadata actor_metadata_;
+    // Isolated animation/timer/channel mutation invalidates coordinated proof.
+    std::optional<WorldMapPlayerAnimationLoop> animation_loop_;
     // Separate owned tags provide stable keys without reproducing PPC pointers.
     uint8_t update_node_ = 0, effect_node_ = 0, render_node_ = 0;
 };
 // Fresh slot-zero / alternate -1 / type-zero startup only. Supplied phase,
 // post-setup guards/binding/item fields and audio byte remain explicit.
 // Reached scene-object messages, restored poses, busy bindings, guard state F,
-// audio stop, secondary setup and runtime-entry contents are unsupported.
+// audio stop and runtime-entry contents are unsupported.
 // Ordered model-type timer dependencies precede selector-one initialization;
 // only a successful/unchanged callback permits counter reset and +3F0=1.
 // Every stop releases staging and preserves *out, its frame/mesh/providers and

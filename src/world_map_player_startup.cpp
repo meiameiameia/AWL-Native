@@ -207,6 +207,34 @@ WorldMapPlayerStartupActorCallbackResult WorldMapPlayerStartup::advance_actor_ca
 WorldMapPlayerStartupQueueResult WorldMapPlayerStartup::consume_state29_update(
     const WorldMapUpdateInputs& inputs, const WorldMapPlayerStartupQueuedActorInput& input,
     WorldMapPlayerUpdateOwners* updates, WorldMapPlayerActorQueue* render_queue) {
+    return consume_update(inputs,input,updates,render_queue,false);
+}
+WorldMapPlayerStartupQueueResult WorldMapPlayerStartup::consume_state29_update_after_animation(
+    const WorldMapUpdateInputs& inputs, const WorldMapPlayerStartupQueuedActorInput& input,
+    WorldMapPlayerUpdateOwners* updates, WorldMapPlayerActorQueue* render_queue) {
+    return consume_update(inputs,input,updates,render_queue,true);
+}
+WorldMapPlayerAnimationLoopResult WorldMapPlayerStartup::advance_animation_for_loop(const WorldMapUpdateInputs& inputs) {
+    using S=WorldMapPlayerAnimationLoopStatus;
+    if (!model_->game_clock() || inputs.game_clock()!=model_->game_clock()) return {S::InvalidInput};
+    const auto control=inputs.queue_control();
+    if (control.status!=WorldMapDispatchStatus::Ready || !control.control_word) return {S::RequiresControl};
+    const auto& clock=model_->game_clock()->state();
+    if (animation_loop_ && animation_loop_->loop_count==clock.loop_count && animation_loop_->raw_time==clock.raw_time)
+        return {animation_loop_->valid?S::AlreadyAdvanced:S::RequiresNextLoop};
+    // ED7C calls virtual +0C only on initialized slots, then reaches +90's
+    // separate feature update. Preflight this untranslated tail so it cannot
+    // leave an accepted holder update behind an unsupported pool operation.
+    if (!model_->initial_model_state() || !model_->initial_model_state()->initialized_c || model_->state().feature_3c)
+        return {S::RequiresModelTail};
+    WorldMapPlayerAnimationLoopResult result;result.animation=model_->advance_animation();
+    if (result.animation->status!=WorldMapPlayerHolderProgressStatus::Advanced) {result.status=S::AnimationIncomplete;return result;}
+    animation_loop_=WorldMapPlayerAnimationLoop{clock.loop_count,clock.raw_time};
+    result.status=S::Advanced;return result;
+}
+WorldMapPlayerStartupQueueResult WorldMapPlayerStartup::consume_update(
+    const WorldMapUpdateInputs& inputs,const WorldMapPlayerStartupQueuedActorInput& input,
+    WorldMapPlayerUpdateOwners* updates,WorldMapPlayerActorQueue* render_queue,bool require_animation) {
     using S = WorldMapPlayerStartupQueueStatus;
     if (!updates) return {S::InvalidInput};
     const auto& queue = updates->queue;
@@ -221,6 +249,8 @@ WorldMapPlayerStartupQueueResult WorldMapPlayerStartup::consume_state29_update(
     if (inputs.game_clock() != model_->game_clock()) return {S::InvalidInput};
     const auto control = inputs.queue_control();
     if (control.status != WorldMapDispatchStatus::Ready || !control.control_word) return {S::RequiresControl};
+    if (require_animation && (!animation_loop_ || !animation_loop_->valid || animation_loop_->loop_count!=model_->game_clock()->state().loop_count ||
+        animation_loop_->raw_time!=model_->game_clock()->state().raw_time)) return {S::RequiresAnimation};
     WorldMapPlayerStartupQueueResult result;
     // Borrow observations without copying/allocating before the script gate.
     result.callback = advance_actor_callback(control.control_word,input.actor,input.effect_gate,render_queue);
