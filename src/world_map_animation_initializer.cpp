@@ -465,4 +465,13 @@ WorldMapAnimationInitializerStatus prepare_world_map_partial_animation_fresh_pai
     return prepare_initializer<WorldMapPartialAnimationInitializerState,WorldMapPartialAnimationInitializerStep,WorldMapAnimationPartialChannelStep>(
         state,requested,descriptor,group,model,bank,observations,out,false,&secondary);
 }
+WorldMapAnimationInitializerStatus prepare_world_map_partial_animation_current_pair_initializer(
+    const WorldMapPartialAnimationInitializerState& state,
+    const WorldMapActorAnimationDescriptor& descriptor,const WorldMapActorAnimationGroup& group,
+    const WorldMapAnimationModelBinding& model,const WorldMapAnimationBank* bank,
+    const WorldMapAnimationInitializerObservations& observations,
+    const WorldMapPartialAnimationSecondaryInput& secondary,WorldMapPartialAnimationInitializerStep* out) {
+    return prepare_initializer<WorldMapPartialAnimationInitializerState,WorldMapPartialAnimationInitializerStep,WorldMapAnimationPartialChannelStep>(
+        state,state.animation.current_descriptor_0,descriptor,group,model,bank,observations,out,true,&secondary);
+}
 } // namespace awl

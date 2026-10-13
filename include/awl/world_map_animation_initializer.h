@@ -133,9 +133,9 @@ enum class WorldMapAnimationInitializerStatus {
     RequiresSecondaryRelease, RequiresModelHierarchy, InvalidInput,
     Prepared,
 };
-// Supplied fresh secondary construction, with its authoritative model record
+// Supplied secondary construction, with its authoritative model record
 // included in records. The caller owns model/clip lifetimes. Null C4/C8 only;
-// this does not reconstruct, restore or release a prior secondary.
+// construction/restoration/release of a prior secondary belongs to the caller.
 struct WorldMapPartialAnimationSecondaryInput {
     uint32_t selected_index = 127;
     uint64_t animation_bank_identity = 0;
@@ -198,12 +198,24 @@ using WorldMapPartialAnimationInitializerStep = WorldMapBasicAnimationInitialize
     const std::optional<WorldMapAnimationModelBinding>& model, const WorldMapAnimationBank* bank,
     const WorldMapAnimationInitializerObservations& observations, WorldMapPartialAnimationInitializerStep* out);
 
-// Fresh D69C -> DB28 pair: primary setup/features, supplied secondary setup,
+// D69C -> DB28 with a newly constructed secondary (possibly restored by its
+// caller): primary setup/features, supplied secondary setup,
 // common mode/loop/rate, primary then secondary reset/bind, null-source DF68.
 // Requires state.secondary_model_c0 == 0. No construction or publication;
 // missing dependencies remain unaccepted diagnostics. InvalidInput preserves out.
 [[nodiscard]] WorldMapAnimationInitializerStatus prepare_world_map_partial_animation_fresh_pair_initializer(
     const WorldMapPartialAnimationInitializerState& state, uint64_t requested,
+    const WorldMapActorAnimationDescriptor& descriptor, const WorldMapActorAnimationGroup& group,
+    const WorldMapAnimationModelBinding& model, const WorldMapAnimationBank* bank,
+    const WorldMapAnimationInitializerObservations& observations,
+    const WorldMapPartialAnimationSecondaryInput& secondary, WorldMapPartialAnimationInitializerStep* out);
+
+// Direct DB28 with an already constructed/restored secondary. The supplied
+// state describes the post-construction wrapper (old C0 cleared), while the
+// channel keeps its existing keys/history. Ownership changes are the caller's
+// staged responsibility; no release or construction is performed here.
+[[nodiscard]] WorldMapAnimationInitializerStatus prepare_world_map_partial_animation_current_pair_initializer(
+    const WorldMapPartialAnimationInitializerState& state,
     const WorldMapActorAnimationDescriptor& descriptor, const WorldMapActorAnimationGroup& group,
     const WorldMapAnimationModelBinding& model, const WorldMapAnimationBank* bank,
     const WorldMapAnimationInitializerObservations& observations,

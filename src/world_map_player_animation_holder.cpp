@@ -159,6 +159,162 @@ bool WorldMapPlayerAnimationHolder::configure_repeats(WorldMapPlayerHolderRepeat
         std::optional<uint32_t>(game_clock_->state().raw_time):std::nullopt;
     return prepare_world_map_player_holder_repeat(state_,kind,value,now,&state_);
 }
+struct WorldMapPlayerAnimationHolder::Initialization {
+    WorldMapAnimationPartialChannelStep primary, secondary;
+    std::vector<std::shared_ptr<const WorldMapAnimationBank>> primary_banks, secondary_banks;
+    std::vector<WorldMapNativeModel*> models;
+    WorldMapModelLinkState links;
+    std::unique_ptr<WorldMapNativeModel> replacement;
+    bool replace_secondary = false;
+};
+void WorldMapPlayerAnimationHolder::stage_initialization(Initialization& staged,
+    const WorldMapAnimationPartialChannelStep* primary,const WorldMapAnimationPartialChannelStep* secondary) const {
+    if (primary) staged.primary=*primary;
+    else {
+        staged.primary.after=primary_channel_->state_;staged.primary.records_after=primary_channel_->records_;
+        staged.primary.records_after.push_back({primary_->model().binding().playback_178,primary_->model().partial_playback()});
+    }
+    if (secondary) staged.secondary=*secondary;
+    else {
+        staged.secondary.after=secondary_channel_->state_;staged.secondary.records_after=secondary_channel_->records_;
+        if (secondary_model_) staged.secondary.records_after.push_back({secondary_model_->binding().playback_178,secondary_model_->partial_playback()});
+    }
+    staged.primary_banks=primary_->model().animation_banks_;
+    staged.secondary_banks=secondary_banks_;
+    // Fresh construction predates channel-level retention. Import its owned
+    // snapshots once; after removal the holder continues owning them.
+    if (secondary_model_ && staged.secondary_banks.empty()) staged.secondary_banks=secondary_model_->animation_banks_;
+    staged.models=models_;for (const auto* model:models_) staged.links.nodes.push_back(model->model_links());
+}
+WorldMapNativeAnimationInitializerStatus WorldMapPlayerAnimationHolder::prepare_owned_initializer(
+    WorldMapPlayerAnimationHolderState& state,const WorldMapActorAnimationDescriptor& descriptor,
+    const WorldMapPlayerAnimationGroupBinding& group,const WorldMapAnimationInitializerObservations& observations,
+    bool current,Initialization& staged,WorldMapPartialAnimationInitializerStep* out,WorldMapAnimationInitializerStatus& status) {
+    using N=WorldMapNativeAnimationInitializerStatus;using I=WorldMapAnimationInitializerStatus;
+    auto& primary=primary_->model();const auto binding=primary.binding();
+    const auto metadata=supplied_metadata(state);
+    WorldMapPartialAnimationInitializerState supplied;
+    supplied.animation=metadata.animation;supplied.primary=staged.primary.after;supplied.records=staged.primary.records_after;
+    supplied.has_optional_bindings=true;supplied.feature_38=state.feature_38;supplied.feature_3c=state.feature_3c;
+    supplied.secondary_model_c0=state.secondary_model_c0;supplied.model_links=staged.links;
+    auto* old=staged.replace_secondary?staged.replacement.get():secondary_model_.get();
+    if (old) supplied.secondary_model=old->record();
+    const auto prepare=[&](WorldMapPartialAnimationInitializerStep* step) {
+        return current?prepare_world_map_partial_animation_current_initializer(supplied,descriptor,group.primary,binding,
+            &group.assets->primary_animations(),observations,step):
+            prepare_world_map_partial_animation_initializer(supplied,descriptor.identity,descriptor,group.primary,binding,
+                &group.assets->primary_animations(),observations,step);
+    };
+    // Preserve primary setup/feature failure priority before resource/save or
+    // release. Reprepare the complete operation from the original staged input.
+    status=prepare(out);
+    if (status==I::Unchanged) return N::Unchanged;
+    if (status==I::InvalidInput) return N::InvalidInput;
+    const uint32_t index=(descriptor.word_4>>11)&127u;
+    const bool lifecycle=status==I::RequiresSecondarySetup || status==I::RequiresSecondaryRelease;
+    if (!lifecycle && status!=I::Prepared) return N::Incomplete;
+    std::unique_ptr<WorldMapNativeModel> replacement;
+    std::vector<std::shared_ptr<const WorldMapAnimationBank>> secondary_banks;
+    if (lifecycle) {
+        secondary_banks=staged.secondary_banks;
+        if (state.feature_c4 || state.auxiliary_model_c8 || state.arena_cc ||
+            bool(state.secondary_model_c0)!=bool(old) || (old && state.secondary_model_c0!=old->binding().model_identity)) return N::Incomplete;
+        // Only our unattached no-feature/no-auxiliary owned secondary can be
+        // replaced/deleted. Never infer ownership from a nonzero raw pointer.
+        for (const auto& node:staged.links.nodes) {
+            if (node.parent_150) return N::Incomplete;
+            for (const auto child:node.children_15c) if (child) return N::Incomplete;
+        }
+        if (old) {
+            const auto record=old->record();
+            if (record.flags_174!=4 || record.auxiliary_c || record.allocation_10 || record.feature_14) return N::Incomplete;
+        }
+        if (index!=127) {
+            // A044C compares the full old count against the resource halfword.
+            // Unknown playback fields block ONLY when the counts agree.
+            std::vector<WorldMapAnimationPlaybackRecord> saved;
+            WorldMapSecondarySetupStep setup;
+            const auto prepare_setup=[&] {
+                return prepare_world_map_secondary_model_setup(index,group.secondary.model_bank_identity,
+                    &group.assets->secondary_models(),state.secondary_model_c0,supplied.secondary_model,saved,uint64_t{0},&setup);
+            };
+            auto setup_status=prepare_setup();
+            if (setup_status==WorldMapSecondarySetupStatus::RequiresPlayback && old && !staged.secondary.records_after.empty()) {
+                const auto& record=staged.secondary.records_after.back();
+                if (record.identity!=old->binding().playback_178) return N::InvalidInput;
+                if (const auto playback=record.state.complete()) {
+                    saved.push_back({record.identity,*playback});setup_status=prepare_setup();
+                }
+            }
+            if (setup_status==WorldMapSecondarySetupStatus::InvalidInput) return N::InvalidInput;
+            if (setup_status!=WorldMapSecondarySetupStatus::RequiresConstruction) return N::Incomplete;
+            const auto constructed=construct_world_map_secondary_model(group.assets->secondary_models(),index,setup,&replacement);
+            if (constructed.status==WorldMapModelConstructionStatus::AllocationFailure) return N::AllocationFailure;
+            if (constructed.status==WorldMapModelConstructionStatus::InvalidInput) return N::InvalidInput;
+            if (constructed.status!=WorldMapModelConstructionStatus::Constructed) return N::Incomplete;
+            const auto& bank=group.assets->secondary_animations();bool retained=false;
+            for (const auto& entry:secondary_banks) if (entry->identity()==bank.identity()) {
+                if (!entry->same_contents(bank)) return N::InvalidInput;
+                retained=true;break;
+            }
+            if (!retained) secondary_banks.push_back(std::make_shared<const WorldMapAnimationBank>(bank));
+            replacement->animation_banks_=secondary_banks;
+        }
+        // CD50 overwrites C0; CE88 clears it. Keep the old native owner alive
+        // until publication. Its channel records and clips survive either path.
+        supplied.secondary_model_c0=0;supplied.secondary_model.reset();
+        supplied.model_links->nodes.resize(1);
+        if (replacement) supplied.model_links->nodes.push_back(replacement->model_links());
+        if (replacement) {
+            WorldMapPartialAnimationSecondaryInput other;
+            other.selected_index=index;other.animation_bank_identity=group.secondary_animation_bank_identity;
+            other.channel=staged.secondary.after;other.records=staged.secondary.records_after;
+            if (old) other.records.pop_back();
+            other.model=replacement->binding();other.records.push_back({other.model.playback_178,replacement->partial_playback()});
+            other.bank=&group.assets->secondary_animations();
+            status=current?prepare_world_map_partial_animation_current_pair_initializer(supplied,descriptor,group.primary,binding,
+                &group.assets->primary_animations(),observations,other,out):
+                prepare_world_map_partial_animation_fresh_pair_initializer(supplied,descriptor.identity,descriptor,group.primary,binding,
+                    &group.assets->primary_animations(),observations,other,out);
+        } else status=prepare(out);
+    }
+    if (status==I::InvalidInput) return N::InvalidInput;
+    if (status!=I::Prepared) return N::Incomplete;
+    if (!out->after.model_links || out->after.records.empty() || out->after.records.back().identity!=binding.playback_178) return N::InvalidInput;
+    const auto& primary_bank=group.assets->primary_animations();bool retained=false;
+    for (const auto& entry:staged.primary_banks) if (entry->identity()==primary_bank.identity()) {
+        if (!entry->same_contents(primary_bank)) return N::InvalidInput;
+        retained=true;break;
+    }
+    if (!retained) staged.primary_banks.push_back(std::make_shared<const WorldMapAnimationBank>(primary_bank));
+    if (lifecycle) {
+        if (replacement) {
+            if (!out->secondary_channel_settings || out->secondary_channel_settings->records_after.empty() ||
+                out->secondary_channel_settings->records_after.back().identity!=replacement->binding().playback_178) return N::InvalidInput;
+            staged.secondary=std::move(*out->secondary_channel_settings);
+        } else if (old) staged.secondary.records_after.pop_back();
+        staged.models.resize(1);if (replacement) staged.models.push_back(replacement.get());
+        staged.replacement=std::move(replacement);staged.replace_secondary=true;
+        staged.secondary_banks.swap(secondary_banks);
+    }
+    staged.primary.after=out->after.primary;staged.primary.records_after.swap(out->after.records);
+    staged.links=std::move(*out->after.model_links);
+    auto after=metadata;after.animation=out->after.animation;after.feature_38=out->after.feature_38;after.feature_3c=out->after.feature_3c;
+    if (current) publish_current_fields(state,after,descriptor);else publish_known_fields(state,after,descriptor);
+    state.secondary_model_c0=out->after.secondary_model_c0;return N::Advanced;
+}
+void WorldMapPlayerAnimationHolder::publish_initialization(Initialization& staged) noexcept {
+    auto& primary=primary_->model();
+    primary.set_playback(staged.primary.records_after.back().state);staged.primary.records_after.pop_back();
+    primary.animation_banks_.swap(staged.primary_banks);
+    primary_channel_->state_=staged.primary.after;primary_channel_->records_.swap(staged.primary.records_after);
+    auto* secondary=staged.replace_secondary?staged.replacement.get():secondary_model_.get();
+    if (secondary) {secondary->set_playback(staged.secondary.records_after.back().state);staged.secondary.records_after.pop_back();}
+    secondary_channel_->state_=staged.secondary.after;secondary_channel_->records_.swap(staged.secondary.records_after);
+    for (size_t i=0;i<staged.models.size();++i) staged.models[i]->publish_links(staged.links.nodes[i]);
+    if (staged.replace_secondary) secondary_model_=std::move(staged.replacement);
+    secondary_banks_.swap(staged.secondary_banks);models_.swap(staged.models);
+}
 WorldMapPlayerHolderProgressResult WorldMapPlayerAnimationHolder::advance_animation() {
     using S=WorldMapPlayerHolderProgressStatus;using C=WorldMapAnimationChannelStatus;
     static_assert(std::is_nothrow_copy_assignable_v<WorldMapPlayerAnimationHolderState>);
@@ -211,7 +367,7 @@ WorldMapPlayerHolderProgressResult WorldMapPlayerAnimationHolder::advance_animat
             }
             return obs;
         };
-        std::optional<WorldMapModelLinkState> links;
+        std::optional<Initialization> initialization;
         const auto initialize=[&](WorldMapPlayerAnimationHolderState& state,WorldMapActorAnimationDescriptor& descriptor) {
             const auto record=resolve(state.current_descriptor_0);
             if (!record) return S::RequiresInitialization;
@@ -219,27 +375,22 @@ WorldMapPlayerHolderProgressResult WorldMapPlayerAnimationHolder::advance_animat
             if (bind_world_map_player_animation_group(record->word_0,animations_,&group)!=WorldMapPlayerAnimationAssetsStatus::Bound) {
                 result.initializer_status=WorldMapAnimationInitializerStatus::RequiresBinding;return S::RequiresInitialization;
             }
-            const auto* bank=model.animation_bank(group.primary.bank_identity);
-            if (!bank || !bank->same_contents(group.assets->primary_animations())) return S::InvalidInput;
-            if (!links) {links.emplace();for (const auto* owner:models_) links->nodes.push_back(owner->model_links());}
-            const auto metadata=supplied_metadata(state);
-            WorldMapPartialAnimationInitializerState supplied;
-            supplied.animation=metadata.animation;supplied.primary=progress.update.after;supplied.records=progress.update.records_after;
-            supplied.has_optional_bindings=true;supplied.feature_38=state.feature_38;supplied.feature_3c=state.feature_3c;
-            supplied.secondary_model_c0=state.secondary_model_c0;supplied.model_links=links;
+            if (!initialization) {
+                initialization.emplace();stage_initialization(*initialization,&progress.update,
+                    secondary_progress?&secondary_progress->update:nullptr);
+            }
             WorldMapPartialAnimationInitializerStep prepared;
-            result.initializer_status=prepare_world_map_partial_animation_current_initializer(supplied,record,group.primary,binding,bank,observations(state),&prepared);
+            WorldMapAnimationInitializerStatus initializer_status;
+            const auto status=prepare_owned_initializer(state,*record,group,observations(state),true,*initialization,&prepared,initializer_status);
+            result.initializer_status=initializer_status;
             result.required_row=prepared.required_row;result.secondary_index=prepared.secondary_index;
-            for (const auto* step:{&prepared.setup,&prepared.settings}) if (*step && ((*step)->required_record || (*step)->required_fields)) {
+            for (const auto* step:{&prepared.setup,&prepared.settings,&prepared.secondary_channel_setup,&prepared.secondary_channel_settings}) if (*step && ((*step)->required_record || (*step)->required_fields)) {
                 result.required_record=(*step)->required_record;result.required_playback_fields=(*step)->required_fields;
             }
-            if (*result.initializer_status==WorldMapAnimationInitializerStatus::InvalidInput) return S::InvalidInput;
-            if (*result.initializer_status!=WorldMapAnimationInitializerStatus::Prepared) return S::RequiresInitialization;
-            if (!prepared.after.model_links || prepared.after.model_links->nodes.size()!=models_.size()) return S::InvalidInput;
-            auto after=metadata;after.animation=prepared.after.animation;after.feature_38=prepared.after.feature_38;after.feature_3c=prepared.after.feature_3c;
-            publish_current_fields(state,after,*record);descriptor=*record;
-            progress.update.after=prepared.after.primary;progress.update.records_after.swap(prepared.after.records);
-            links=std::move(prepared.after.model_links);++result.initialized_records;return S::Prepared;
+            if (status==WorldMapNativeAnimationInitializerStatus::InvalidInput) return S::InvalidInput;
+            if (status==WorldMapNativeAnimationInitializerStatus::AllocationFailure) return S::AllocationFailure;
+            if (status!=WorldMapNativeAnimationInitializerStatus::Advanced) return S::RequiresInitialization;
+            descriptor=*record;++result.initialized_records;return S::Prepared;
         };
         const auto reset=[&](WorldMapPlayerAnimationHolderState& state) {
             WorldMapAnimationFeatureStep prepared;
@@ -275,15 +426,17 @@ WorldMapPlayerHolderProgressResult WorldMapPlayerAnimationHolder::advance_animat
         if (result.timers->status!=WorldMapTextureTimerStatus::Prepared) { result.status=S::TimerIncomplete;return result; }
         // All fallible work is complete. The last pool record belongs to the
         // model; the channel retains its own records under their stable keys.
-        const auto model_after=progress.update.records_after.back().state;
-        progress.update.records_after.pop_back();
-        model.set_playback(model_after);channel.state_=progress.update.after;channel.records_.swap(progress.update.records_after);
-        if (secondary_progress) {
-            auto& update=secondary_progress->update;
-            secondary_model_->set_playback(update.records_after.back().state);update.records_after.pop_back();
-            secondary_channel_->state_=update.after;secondary_channel_->records_.swap(update.records_after);
+        if (initialization) publish_initialization(*initialization);
+        else {
+            const auto model_after=progress.update.records_after.back().state;
+            progress.update.records_after.pop_back();
+            model.set_playback(model_after);channel.state_=progress.update.after;channel.records_.swap(progress.update.records_after);
+            if (secondary_progress) {
+                auto& update=secondary_progress->update;
+                secondary_model_->set_playback(update.records_after.back().state);update.records_after.pop_back();
+                secondary_channel_->state_=update.after;secondary_channel_->records_.swap(update.records_after);
+            }
         }
-        if (links) for (size_t i=0;i<models_.size();++i) models_[i]->publish_links(links->nodes[i]);
         state_=policy.after;descriptor_=policy.descriptor;
         result.status=S::Advanced;return result;
     } catch (const std::bad_alloc&) { result.status=S::AllocationFailure;return result; }
@@ -426,15 +579,33 @@ WorldMapPlayerAnimationHolderStartResult WorldMapPlayerAnimationHolder::start(
     static_assert(std::is_nothrow_copy_assignable_v<WorldMapPlayerAnimationHolderState>);
     static_assert(std::is_nothrow_copy_assignable_v<WorldMapPlayerAnimationHolderStartResult>);
     try {
-        auto metadata = supplied_metadata(state_);
-        WorldMapPlayerStartNativeAnimationStep initialized;
         WorldMapPlayerAnimationHolderStartResult result;
-        result.status = advance_world_map_player_start_animation(tables, command, item_type, &metadata,
-            primary_channel_.get(), models_, animations_, observations, &initialized);
-        result.selection = initialized.selection; diagnostics(result, initialized.initializer);
-        if (result.status == Status::Advanced) {
-            publish_known_fields(state_, metadata, initialized.selection->descriptor);
-            descriptor_ = initialized.selection->descriptor; tables_ = tables;
+        if (!tables) return {Status::RequiresTables};
+        WorldMapPlayerStartAnimationSelection selection;
+        result.status=tables->select(command,item_type,&selection);
+        if (result.status!=Status::Selected) return result;
+        result.selection=selection;
+        const auto& descriptor=selection.descriptor;
+        // D69C's equal-base shortcut precedes all model/channel/asset reads.
+        if (state_.base_descriptor_4==descriptor.identity) {result.status=Status::Unchanged;result.initializer_status=WorldMapAnimationInitializerStatus::Unchanged;return result;}
+        WorldMapPlayerAnimationGroupBinding group;
+        const auto bound=bind_world_map_player_animation_group(descriptor.word_0,animations_,&group);
+        if (bound==WorldMapPlayerAnimationAssetsStatus::RequiresGroup) return {Status::RequiresGroup,selection};
+        if (bound!=WorldMapPlayerAnimationAssetsStatus::Bound) return {Status::RequiresAssets,selection};
+        Initialization staged;stage_initialization(staged);auto state=state_;
+        WorldMapPartialAnimationInitializerStep prepared;WorldMapAnimationInitializerStatus initializer_status;
+        const auto status=prepare_owned_initializer(state,descriptor,group,observations,false,staged,&prepared,initializer_status);
+        result.initializer_status=initializer_status;result.secondary_index=prepared.secondary_index;result.required_row=prepared.required_row;
+        for (const auto* step:{&prepared.setup,&prepared.settings,&prepared.secondary_channel_setup,&prepared.secondary_channel_settings})
+            if (*step && ((*step)->required_record || (*step)->required_fields))
+                result.channel_dependency=WorldMapPlayerAnimationHolderChannelDependency{
+                    step==&prepared.settings || step==&prepared.secondary_channel_settings,(*step)->required_record,(*step)->required_fields,
+                    step==&prepared.secondary_channel_setup || step==&prepared.secondary_channel_settings};
+        if (status==WorldMapNativeAnimationInitializerStatus::AllocationFailure) result.status=Status::AllocationFailure;
+        else if (status==WorldMapNativeAnimationInitializerStatus::InvalidInput) result.status=Status::InvalidInput;
+        else if (status!=WorldMapNativeAnimationInitializerStatus::Advanced) result.status=Status::InitializerIncomplete;
+        else {
+            publish_initialization(staged);state_=state;descriptor_=descriptor;tables_=tables;result.status=Status::Advanced;
         }
         return result;
     } catch (const std::bad_alloc&) { return {Status::AllocationFailure}; }
