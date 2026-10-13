@@ -14,6 +14,7 @@
 #include "awl/world_map_fade.h"
 #include "awl/world_map_phase.h"
 #include "awl/world_map_player_context.h"
+#include "awl/world_map_player_context_labels.h"
 #include "awl/world_map_scene_index.h"
 #include "awl/filesystem.h"
 
@@ -3152,6 +3153,143 @@ void context_registry_checks(const awl::WorldMapPlayerContextTables& tables) {
     registry.clear();expect(registry.size(-1)==0 && registry.size(17)==0,"clear removes every owned context node");
     std::cout<<"PLAYER_CONTEXT_REGISTRY owned positions/order/metadata, message heading and lifecycle failures\n";
 }
+std::vector<uint8_t> context_label_dol() {
+    std::vector<uint8_t> bytes(0x1658,0);
+    const std::array<std::array<uint32_t,3>,4> sections{{{{0x100,0x80292a78,31*172}},{{0x15d4,0x802a7b08,124}},{{0x1650,0x8004f19c,4}},{{0x1654,0x8034a3c8,4}}}};
+    for(uint32_t i=0;i<sections.size();++i){word(bytes,i*4,sections[i][0]);word(bytes,0x48+i*4,sections[i][1]);word(bytes,0x90+i*4,sections[i][2]);}
+    for(uint32_t row=0;row<31;++row)for(uint32_t context=0;context<86;++context){bytes[0x100+row*172+context]=uint8_t((row*7+context*3)%40);
+        bytes[0x100+row*172+86+context]=uint8_t((row*11+context*5)%40);}
+    for(uint32_t type=0;type<31;++type)word(bytes,0x15d4+type*4,0x8004f19c);
+    word(bytes,0x1650,0x38600000);word(bytes,0x1654,0x3f266666);return bytes;
+}
+std::array<uint32_t,15> context_label_words(const awl::WorldMapPlayerContextLabels& output) {
+    return {uint32_t(output.scene_type),actor_bits(output.position[0]),actor_bits(output.position[1]),actor_bits(output.position[2]),
+        actor_bits(output.facing[0]),actor_bits(output.facing[1]),actor_bits(output.facing[2]),uint32_t(output.target_kind),uint32_t(output.target_payload),output.direction,
+        uint32_t(output.item),uint32_t(output.action),output.labels[0],output.labels[1],output.labels[2]};
+}
+void context_label_matrix(const awl::WorldMapPlayerContextLabelTables& tables,uint64_t expected) {
+    uint64_t digest=14695981039346656037ull;using S=awl::WorldMapPlayerContextLabelStatus;
+    for(uint32_t seed=0;seed<1024;++seed){awl::WorldMapPlayerContextLabelInput input;const bool action=seed%2!=0;
+        input.source=action?awl::WorldMapPlayerContextLabelSource::Action:awl::WorldMapPlayerContextLabelSource::HeldItem;
+        input.value=action?std::array<int32_t,16>{0,1,2,3,47,48,55,56,57,58,59,60,61,INT32_MIN,-1,INT32_MAX}[seed/2%16]:
+            std::array<int32_t,12>{0,2,3,4,6,30,0x459,0x4f6,0x4f7,0x4f8,0x4f9,64}[seed/2%12];
+        awl::WorldMapPlayerContextItemRow row;row.item_id=action?0:input.value;row.type_0=uint8_t(seed/4%32);row.flags_1=uint8_t(seed*37);
+        row.flags_1c=std::array<uint32_t,4>{0,2,4,6}[seed/32%4];input.item_row=row;input.item_record_resolved=true;input.item_record_byte_c=std::array<uint8_t,3>{0,2,255}[seed/128%3];
+        input.action_record_resolved=true;input.action_record_flags_28=uint8_t(seed*13);input.target_record_resolved=true;input.target_record_predicate=(seed&128)!=0;
+        input.target_record_flags_28=uint8_t(seed*13);input.context_item_available={bool(seed&256),bool(seed&512)};input.context8_scene_blocked=bool(seed&64);input.item_flag1_available=bool(seed&32);
+        input.terrain_clear={bool(seed&16),bool(seed&32)};input.secondary_ground_available=bool(seed&64);
+        const std::array<float,5> values{0,1,-1,.1f,120.125f};for(size_t axis=0;axis<3;++axis)input.position[axis]=values[(seed+axis)%5];
+        input.facing=std::array<awl::WorldMapPlayerContextVector,4>{{{0,0,1},{1,0,0},{0,0,0},{0,0,-1}}}[seed/4%4];
+        input.scene_type=int32_t(seed%48)-2;input.query_mode=std::array<int32_t,4>{0,1,2,-1}[seed/8%4];input.target_kind=int32_t(seed/16%53)-1;
+        input.target_payload=int32_t(seed*3%80)-1;input.direction=seed%5;awl::WorldMapPlayerContextLabels output;
+        const auto step=awl::prepare_world_map_player_context_labels(&tables,input,&output);expect(step.status==S::Prepared,"complete observed context descriptor prepares across constructor modes and target classes");
+        hash(digest,seed);for(auto value:context_label_words(output))hash(digest,value);hash(digest,step.classification);hash(digest,step.context);hash(digest,step.probe_mask);
+        for(float value:step.terrain_position.value_or(awl::WorldMapPlayerContextVector{}))hash(digest,actor_bits(value));
+        if(std::getenv("AWL_CONTEXT_LABEL_TRACE")){std::cout<<"CONTEXT_LABEL_ROW "<<seed;for(auto value:context_label_words(output))std::cout<<' '<<std::hex<<value;
+            std::cout<<' '<<step.classification<<' '<<step.context<<' '<<uint32_t(step.probe_mask);for(float value:step.terrain_position.value_or(awl::WorldMapPlayerContextVector{}))std::cout<<' '<<actor_bits(value);std::cout<<std::dec<<'\n';}
+    }
+    expect(digest==expected,"1024 complete descriptor words, classifications and reached probe positions agree with original instructions over explicit record/predicate observations");
+    std::cout<<"PLAYER_CONTEXT_LABEL_COMPARISONS 1024 "<<std::hex<<digest<<std::dec<<'\n';
+}
+void context_label_classification_checks(const awl::WorldMapPlayerContextLabelTables& tables) {
+    using S=awl::WorldMapPlayerContextLabelStatus;uint64_t digest=14695981039346656037ull;uint32_t count=0;
+    std::vector<int32_t> payloads;for(int32_t payload=-2;payload<=80;++payload)payloads.push_back(payload);payloads.push_back(INT32_MIN);payloads.push_back(INT32_MAX);
+    for(int32_t kind=-1;kind<=51;++kind)for(int32_t payload:payloads)for(uint32_t direction:{0u,1u,2u,3u,4u,UINT32_MAX}){
+        awl::WorldMapPlayerContextLabelInput input;input.target_kind=kind;input.target_payload=payload;input.direction=direction;input.facing={0,0,1};
+        input.target_record_resolved=true;const bool predicate=((uint32_t(kind)^uint32_t(payload)^direction)&1)!=0;const uint8_t flags=uint8_t(uint32_t(payload)&3);
+        input.target_record_predicate=predicate;input.target_record_flags_28=flags;input.context_item_available={true,true};input.context8_scene_blocked=false;
+        input.terrain_clear={true,true};input.secondary_ground_available=true;input.item_row=awl::WorldMapPlayerContextItemRow{0,{},{},0u};
+        awl::WorldMapPlayerContextLabels output;const auto step=awl::prepare_world_map_player_context_labels(&tables,input,&output);
+        expect(step.status==S::Prepared,"all target routes prepare with complete reached observations");for(uint32_t value:{uint32_t(kind),uint32_t(payload),direction,uint32_t(predicate),uint32_t(flags),step.context})hash(digest,value);++count;
+    }
+    expect(count==27030 && digest==0x8ba9bebe67c93b54ull,"all 51 target routes and signed boundaries agree with original classification instructions");
+    std::cout<<"PLAYER_CONTEXT_TARGET_CLASSIFICATION "<<count<<' '<<std::hex<<digest<<std::dec<<'\n';digest=14695981039346656037ull;
+    for(uint32_t flags=0;flags<256;++flags){awl::WorldMapPlayerContextLabelInput input;input.value=64;input.query_mode=1;
+        input.item_row=awl::WorldMapPlayerContextItemRow{64,uint8_t(0),uint8_t(flags),0u};awl::WorldMapPlayerContextLabels output;
+        const auto step=awl::prepare_world_map_player_context_labels(&tables,input,&output);expect(step.status==S::Prepared,"all item flag bytes prepare");hash(digest,flags);hash(digest,step.classification);}
+    expect(digest==0x4c9c08e222202925ull,"all 256 item flag bytes retain original ordered bit precedence with the same invented final routing");std::cout<<"PLAYER_CONTEXT_ITEM_FLAGS 256 "<<std::hex<<digest<<std::dec<<'\n';
+    digest=14695981039346656037ull;count=0;
+    for(int32_t action:{2,47,48,55,56,57,58,59,60,61,-1,INT32_MIN,INT32_MAX})for(uint32_t flags=0;flags<256;++flags){
+        awl::WorldMapPlayerContextLabelInput input;input.source=awl::WorldMapPlayerContextLabelSource::Action;input.value=action;input.query_mode=1;input.target_kind=30;
+        input.action_record_resolved=true;input.action_record_flags_28=uint8_t(flags);awl::WorldMapPlayerContextLabels output;
+        const auto step=awl::prepare_world_map_player_context_labels(&tables,input,&output);std::array<uint32_t,2> base{};
+        expect(step.status==S::Prepared && tables.labels(step.classification,42,&base),"all reached action flags prepare with their original classification");
+        const uint32_t result=output.labels[0]==base[0]?1u:0u;for(uint32_t value:{uint32_t(action),flags,result})hash(digest,value);++count;
+    }
+    expect(count==3328 && digest==0x68082f4c104c6b25ull,"all action flag bytes/boundaries agree with original 4F25C mask selection");std::cout<<"PLAYER_CONTEXT_ACTION_FLAGS "<<count<<' '<<std::hex<<digest<<std::dec<<'\n';
+}
+void context_label_checks() {
+    using D=awl::WorldMapPlayerContextLabelTablesStatus;using S=awl::WorldMapPlayerContextLabelStatus;
+    auto bytes=context_label_dol();std::shared_ptr<const awl::WorldMapPlayerContextLabelTables> tables;
+    expect(awl::decode_world_map_player_context_label_tables(bytes.data(),bytes.size(),&tables)==D::Decoded && tables && !tables->target_verified(),"invented context label metadata is owned without target identity");if(!tables)return;
+    const auto* old=tables.get();for(size_t size=0;size<bytes.size();++size)expect(awl::decode_world_map_player_context_label_tables(bytes.data(),size,&tables)==D::UnsupportedLayout && tables.get()==old,"every truncated label DOL preserves prior metadata");
+    for(const auto invalid:std::array<std::array<uint32_t,2>,4>{{{{0x15d4,0x8004f198}},{{0x1650,0x38800000}},{{0x1650,0x3860001f}},{{0x1654,0x7fc00000}}}}){auto bad=bytes;word(bad,invalid[0],invalid[1]);
+        expect(awl::decode_world_map_player_context_label_tables(bad.data(),bad.size(),&tables)==D::UnsupportedLayout && tables.get()==old,"invalid routing/code/distance rejects without replacing metadata");}
+    std::array<uint32_t,2> labels{999,999};expect(!tables->labels(31,0,&labels) && !tables->labels(0,86,&labels) && !tables->labels(0,0,nullptr) && labels==std::array<uint32_t,2>{999,999},"label lookup bounds preserve output");
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    {const auto live=allocation_probe::live;size_t failed=0;bool decoded=false;
+        for(size_t fail=0;fail<8;++fail){allocation_probe::remaining=fail;allocation_probe::enabled=true;const auto status=awl::decode_world_map_player_context_label_tables(bytes.data(),bytes.size(),&tables);allocation_probe::enabled=false;
+            if(status==D::Decoded){decoded=true;break;}++failed;expect(status==D::AllocationFailure && tables.get()==old && allocation_probe::live==live,"both label metadata allocations preserve retained owner and release staging");}
+        expect(decoded && failed==2,"label tables publish only after both allocations succeed");std::cout<<"PLAYER_CONTEXT_LABEL_ALLOCATION_FAILURES "<<failed<<'\n';}
+#endif
+    context_label_matrix(*tables,0x9ca42ae922786a33ull);
+    context_label_classification_checks(*tables);
+    awl::WorldMapPlayerContextLabelInput input;input.query_mode=1;input.facing={0,0,1};awl::WorldMapPlayerContextLabels output;output.labels={777,888,999};
+    auto prior=context_label_words(output);const auto stopped=[&](S status){const auto step=awl::prepare_world_map_player_context_labels(tables.get(),input,&output);
+        expect(step.status==status && context_label_words(output)==prior,"reached context-label dependency preserves every previous descriptor word");return step;};
+    expect(awl::prepare_world_map_player_context_labels(nullptr,input,&output).status==S::RequiresTables && context_label_words(output)==prior && awl::prepare_world_map_player_context_labels(tables.get(),input,nullptr).status==S::InvalidInput,"missing table/output rejects");
+    expect(awl::prepare_world_map_player_context_labels(tables.get(),input,&output).status==S::Prepared && output.labels==std::array<uint32_t,3>{13,21,102},"fixed mode uses context42 and no-item classification1 without item/target observations");prior=context_label_words(output);
+    input.query_mode=0;input.target_kind=30;stopped(S::RequiresTargetRecord);input.target_record_resolved=true;stopped(S::RequiresTargetPredicate);input.target_record_predicate=true;stopped(S::RequiresTargetFlags);
+    input.target_record_flags_28=uint8_t(3);expect(awl::prepare_world_map_player_context_labels(tables.get(),input,&output).status==S::Prepared,"target record classification resolves after its ordered observations");prior=context_label_words(output);
+    input={};input.query_mode=1;input.value=30;input.item_row=awl::WorldMapPlayerContextItemRow{30,uint8_t(9),{},{}};stopped(S::RequiresItemRecord);input.item_record_resolved=true;
+    auto step=awl::prepare_world_map_player_context_labels(tables.get(),input,&output);expect(step.status==S::Prepared && step.classification==29,"type9 record resolution precedes item30 early return while later row flags/record byte are unread");prior=context_label_words(output);
+    input.value=64;input.item_row=awl::WorldMapPlayerContextItemRow{64,uint8_t(8),{},{}};input.item_record_resolved.reset();stopped(S::RequiresItemRecord);input.item_record_resolved=true;stopped(S::RequiresItemFlags);
+    input.item_row->flags_1=uint8_t(16);step=awl::prepare_world_map_player_context_labels(tables.get(),input,&output);expect(step.status==S::Prepared && step.classification==23,"ordered flags classifier precedes type8 return");prior=context_label_words(output);
+    input.item_row->type_0=uint8_t(9);input.item_row->flags_1=uint8_t(0);stopped(S::RequiresItemRecordByte);input.item_record_byte_c=uint8_t(2);
+    step=awl::prepare_world_map_player_context_labels(tables.get(),input,&output);expect(step.status==S::Prepared && step.classification==15,"type9 saved byte two skips later flags word");prior=context_label_words(output);
+    input.item_record_byte_c=uint8_t(0);stopped(S::RequiresItemFlags);input.item_row->flags_1c=2;
+    step=awl::prepare_world_map_player_context_labels(tables.get(),input,&output);expect(step.status==S::Prepared && step.classification==21,"flags2/4 precedence selects item class21");prior=context_label_words(output);
+    input={};input.value=0x4f6;input.query_mode=1;input.facing={0,0,1};input.item_row=awl::WorldMapPlayerContextItemRow{0x4f6,uint8_t(0),uint8_t(0),0u};
+    step=stopped(S::RequiresTerrain);expect(step.terrain_channel==0u && step.probe_mask==1 && step.terrain_position && actor_bits((*step.terrain_position)[2])==0x3f266666,"first label29 reports the actual forward probe point");
+    input.terrain_clear[0]=false;step=stopped(S::RequiresTerrain);expect(step.terrain_channel==1u && step.probe_mask==3,"secondary terrain dependency follows accepted primary observation");input.terrain_clear[1]=true;
+    allocation_probe::remaining=0;allocation_probe::enabled=true;step=awl::prepare_world_map_player_context_labels(tables.get(),input,&output);allocation_probe::enabled=false;
+    expect(step.status==S::Prepared && output.labels==std::array<uint32_t,3>{0,29,102},"two ordered terrain results publish together without allocation");prior=context_label_words(output);
+    const auto rounding=std::fegetround();expect(std::fesetround(FE_UPWARD)==0,"context label test selects unsupported rounding");stopped(S::UnsupportedNumerics);expect(std::fesetround(rounding)==0,"context label test restores rounding");
+    input.facing[1]=std::numeric_limits<float>::infinity();stopped(S::UnsupportedNumerics);
+    input={};input.target_kind=34;stopped(S::RequiresItemAvailability);input.context_item_available[0]=false;
+    step=awl::prepare_world_map_player_context_labels(tables.get(),input,&output);expect(step.status==S::Prepared && step.context==76,"unavailable context74 remaps to76 before label lookup");prior=context_label_words(output);
+    input={};input.target_kind=4;input.direction=2;stopped(S::RequiresScenePredicate);input.context8_scene_blocked=true;
+    step=awl::prepare_world_map_player_context_labels(tables.get(),input,&output);expect(step.status==S::Prepared && step.context==0,"context8 scene predicate remaps before label lookup");prior=context_label_words(output);
+    input={};input.source=awl::WorldMapPlayerContextLabelSource::Action;input.value=56;input.query_mode=1;input.target_kind=30;stopped(S::RequiresActionRecord);input.action_record_resolved=true;stopped(S::RequiresActionFlags);
+    input.action_record_flags_28=uint8_t(8);step=awl::prepare_world_map_player_context_labels(tables.get(),input,&output);expect(step.status==S::Prepared && output.labels[0]==35,"action56 checks bit4 rather than bit8 and increments primary label when clear");prior=context_label_words(output);
+    input.value=2;input.action_record_flags_28.reset();expect(awl::prepare_world_map_player_context_labels(tables.get(),input,&output).status==S::Prepared,"action2 requires record resolution but skips flags");prior=context_label_words(output);
+    input={};input.target_kind=47;input.target_payload=64;stopped(S::RequiresItemRow);input.item_row=awl::WorldMapPlayerContextItemRow{0,{},{},2u};stopped(S::RequiresItemAvailability);input.item_flag1_available=true;
+    expect(awl::prepare_world_map_player_context_labels(tables.get(),input,&output).status==S::Prepared && output.labels[0]==35,"context47 item flag availability can replace primary label");
+    {auto bad=bytes;bad[0x100+172+86+42]=25;std::shared_ptr<const awl::WorldMapPlayerContextLabelTables> ground;
+        expect(awl::decode_world_map_player_context_label_tables(bad.data(),bad.size(),&ground)==D::Decoded,"invented reached ground label decodes");input={};input.query_mode=1;prior=context_label_words(output);
+        expect(awl::prepare_world_map_player_context_labels(ground.get(),input,&output).status==S::RequiresGround && context_label_words(output)==prior,"label25 requires ground before publication");input.secondary_ground_available=false;
+        expect(awl::prepare_world_map_player_context_labels(ground.get(),input,&output).status==S::Prepared && output.labels[1]==0,"failed ground predicate clears only secondary label");}
+    {std::shared_ptr<const awl::WorldMapPlayerContextTables> neighbors;auto neighbor_bytes=context_tables_dol();expect(awl::decode_world_map_player_context_tables(neighbor_bytes.data(),neighbor_bytes.size(),&neighbors)==awl::WorldMapPlayerContextTablesStatus::Decoded,"chain neighbors decode");
+        awl::WorldMapSceneBucketRegistry registry;awl::WorldMapPlayerContextMetadata metadata;metadata.owner_code_4=100u;metadata.owner_kind_8=4u;metadata.facing_28=awl::WorldMapPlayerContextVector{0,0,-1};metadata.facing_threshold_38=1.0f;metadata.max_squared_distance_3c=16.0f;metadata.payload=std::array<uint32_t,2>{1,999};awl::WorldMapScenePositionUpdate update;
+        expect(registry.register_object(1,3,{0,0,1}) && registry.set_context_metadata(1,metadata) && registry.update_position(1,{0,0,1},&update),"chain owns target payload distinct from owner kind");
+        awl::WorldMapPlayerContextQuery query;query.current_key=17;query.origin=awl::WorldMapPlayerContextVector{};query.forward={0,0,1};query.max_distance=4;awl::WorldMapPlayerContextResult target;
+        expect(awl::query_world_map_player_scene_context(neighbors.get(),&registry,query,&target).status==awl::WorldMapPlayerContextStatus::Prepared && target.found,"chain query selects owned target");input={};input.facing=query.forward;
+        step=awl::prepare_world_map_player_context_labels_from_target(tables.get(),target,input,&output);expect(step.status==S::Prepared && step.context==6 && output.target_kind==1 && output.target_payload==999,
+            "query-to-label adapter binds resolved payload words rather than owner kind/code");
+        const auto retained=context_label_words(output);metadata.payload=std::array<uint32_t,2>{30,999};expect(registry.set_context_metadata(1,metadata) &&
+            awl::query_world_map_player_scene_context(neighbors.get(),&registry,query,&target).status==awl::WorldMapPlayerContextStatus::Prepared &&
+            awl::prepare_world_map_player_context_labels_from_target(tables.get(),target,input,&output).status==S::RequiresTargetRecord && context_label_words(output)==retained,
+            "changed owned target can reach a late record dependency without losing the prior descriptor");
+        expect(registry.unregister_object(1) && awl::query_world_map_player_scene_context(neighbors.get(),&registry,query,&target).status==awl::WorldMapPlayerContextStatus::Prepared && !target.found,
+            "removed owned target produces the query's complete no-hit defaults");input.target_kind=1;input.target_payload=999;
+        step=awl::prepare_world_map_player_context_labels_from_target(tables.get(),target,input,&output);expect(step.status==S::Prepared && step.context==0 && output.target_kind==-1 && output.target_payload==-1,
+            "no-hit binding replaces stale target observations with original signed minus-one payload defaults");}
+    {Fixture fixture;const auto* retained=tables.get();expect(awl::load_world_map_player_context_label_tables(&tables)==D::ReadFailure && tables.get()==retained,"missing label DOL preserves prior provider");std::filesystem::create_directory(fixture.root/"sys");
+        {std::ofstream file(fixture.root/"sys"/"main.dol",std::ios::binary);file.write(reinterpret_cast<const char*>(bytes.data()),std::streamsize(bytes.size()));expect(bool(file),"invented label fixture writes");}
+        expect(awl::load_world_map_player_context_label_tables(&tables)==D::WrongDol && tables.get()==retained,"invented label layout cannot bypass target SHA1");awl::filesystem_shutdown();}
+    bytes.clear();expect(tables->labels(1,42,&labels) && labels==std::array<uint32_t,2>{13,21},"decoded labels outlive their source bytes");
+    std::cout<<"PLAYER_CONTEXT_LABELS item/action/target classification, ordered predicates and query payload binding\n";
+}
 void context_checks() {
     using D=awl::WorldMapPlayerContextTablesStatus;using S=awl::WorldMapPlayerContextStatus;
     auto bytes=context_tables_dol();std::shared_ptr<const awl::WorldMapPlayerContextTables> tables;
@@ -5125,6 +5263,9 @@ void local_animation_loops(const char* disc) {
         expect(context_tables->neighbor(key,slot,&neighbor),"all verified context key/slot lookups resolve");for(uint32_t w:{uint32_t(key),slot,uint32_t(neighbor)})hash(digest,w);}
         expect(digest==0x2f3276d5d8b5b6f5ull,"all 128 local context neighbors match actual original lookup instructions");
         std::cout<<"LOCAL_PLAYER_CONTEXT_NEIGHBORS 128 "<<std::hex<<digest<<std::dec<<'\n';context_matrix(*context_tables,0x542f2a040b6b50b0ull);}
+    std::shared_ptr<const awl::WorldMapPlayerContextLabelTables> context_labels;
+    expect(awl::load_world_map_player_context_label_tables(&context_labels)==awl::WorldMapPlayerContextLabelTablesStatus::Loaded && context_labels && context_labels->target_verified(),"local context labels load only from target-verified DOL metadata");
+    if(context_labels)context_label_matrix(*context_labels,0x5d00b3cdd08c3bf9ull);
     awl::WorldMapPlayerStartupProviders providers;
     expect(awl::load_world_map_player_animation_assets(&providers.animations)==awl::WorldMapPlayerAnimationAssetsStatus::Loaded &&
         awl::load_world_map_player_start_animation_tables(&providers.starts)==awl::WorldMapPlayerStartAnimationStatus::Loaded && providers.starts->target_verified() &&
@@ -6162,7 +6303,7 @@ int main(int argc,char** argv){
     }
 #endif
     actor_placement_comparisons();embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();skin_execution_checks();awl::filesystem_shutdown();frame_checks();awl::filesystem_shutdown();animation_frame_checks();awl::filesystem_shutdown();attachment_frame_checks();awl::filesystem_shutdown();hierarchy_frame_checks();awl::filesystem_shutdown();partial_frame_sampling_checks();owned_hierarchy_frame_checks();awl::filesystem_shutdown();primary_frame_owner_checks();awl::filesystem_shutdown();topology_checks();awl::filesystem_shutdown();geometry_checks();awl::filesystem_shutdown();primary_owner_checks();awl::filesystem_shutdown();holder_checks();awl::filesystem_shutdown();initial_root_scale_checks();initial_input_checks();awl::filesystem_shutdown();timer_asset_checks();awl::filesystem_shutdown();texture_feature_checks();awl::filesystem_shutdown();state29_camera_checks();parent_update_checks();startup_owner_checks();awl::filesystem_shutdown();feature_draw_state_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
-    fade_checks();context_checks();state0_initializer_checks();followup_decision_checks();holder_policy_checks();holder_pair_checks();awl::filesystem_shutdown();holder_lifecycle_checks();awl::filesystem_shutdown();
+    fade_checks();context_checks();context_label_checks();state0_initializer_checks();followup_decision_checks();holder_policy_checks();holder_pair_checks();awl::filesystem_shutdown();holder_lifecycle_checks();awl::filesystem_shutdown();
     if(argc==3 && std::string(argv[1])=="--player-model-local")local(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-frame-local")local(argv[2],true);
     else if(argc==3 && std::string(argv[1])=="--player-primary-local")local_primary(argv[2]);
