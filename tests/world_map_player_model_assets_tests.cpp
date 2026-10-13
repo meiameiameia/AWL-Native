@@ -2838,6 +2838,9 @@ uint64_t startup_snapshot(const awl::WorldMapPlayerStartup& owner) {
     hash(h,s.control_word_1384.has_value());hash(h,s.control_word_1384.value_or(0));
     hash(h,owner.animation_loop().has_value());if(owner.animation_loop()){
         hash(h,owner.animation_loop()->loop_count);hash(h,owner.animation_loop()->raw_time);hash(h,owner.animation_loop()->valid);}
+    hash(h,owner.primary_loop().has_value());if(owner.primary_loop()){
+        hash(h,owner.primary_loop()->loop_count);hash(h,owner.primary_loop()->raw_time);hash(h,owner.primary_loop()->valid);
+        hash(h,uint32_t(owner.primary_loop()->updates_owner>>32));hash(h,uint32_t(owner.primary_loop()->updates_owner));}
     const auto key=reinterpret_cast<uintptr_t>(owner.starts().get());hash(h,uint32_t(uint64_t(key)>>32));hash(h,uint32_t(key));
     hash(h,owner.camera().has_value());if(owner.camera()){const auto camera=camera_snapshot(*owner.camera());hash(h,uint32_t(camera>>32));hash(h,uint32_t(camera));}
     const auto& actor=owner.actor_metadata();hash(h,actor.flag_15d);hash(h,actor.flag_15e);hash(h,actor.flag_15f);
@@ -4101,6 +4104,8 @@ void actor_placement_owner_checks(awl::WorldMapPlayerStartup& player,bool alloca
         "CPU actor placement does not acknowledge parent/camera updates or queue consumption");
     gated_actor_frame_owner_checks(player,allocations);
 }
+void primary_slice_owner_checks(const awl::WorldMapPlayerStartupProviders&,const awl::WorldMapPlayerStartupQuery&,
+    const std::shared_ptr<awl::WorldMapCameraCollisionAsset>&,const awl::WorldMapCameraViewQuery&,bool);
 void startup_owner_checks() {
     using S=awl::WorldMapPlayerStartupStatus;using A=awl::WorldMapPlayerStartAnimationStatus;using I=awl::WorldMapAnimationInitializerStatus;
     Fixture fixture;auto payloads=files();payloads[0]=setup_model();payloads[1]=geometry_gpl();payloads[2]=execution_skin(1);
@@ -4203,6 +4208,12 @@ void startup_owner_checks() {
     fixture.write("jimen-camera.col",startup_camera_col());expect(camera->load(),"invented flat camera terrain loads through the real provider");
     parent_owner_checks(p,q,frame,camera,camera_query);
     dispatch_owner_checks(p,q,frame,camera,camera_query);
+    primary_slice_owner_checks(p,q,camera,camera_query,true);
+    {
+        auto paired=p;auto bytes=start_bytes;word(bytes,0x164,63u|(1u<<11)|(255u<<19));
+        expect(awl::decode_world_map_player_start_animation_tables(bytes.data(),bytes.size(),&paired.starts)==A::Decoded,"ordered paired selector decodes");
+        primary_slice_owner_checks(paired,q,camera,camera_query,true);
+    }
     {
         // This fixture now advances its shared clock. Isolate it from the
         // original startup whose camera failure snapshot is checked afterward.
@@ -4264,6 +4275,118 @@ void startup_owner_checks() {
         "CPU startup retains model, both static input owners and clock after all caller handles drop");owner.reset();
     expect(model_lifetime.expired() && inputs_lifetime.expired() && starts_lifetime.expired() && clock_lifetime.expired() && camera_lifetime.expired(),"last startup releases model, camera providers and shared clock");
 }
+void primary_slice_owner_checks(const awl::WorldMapPlayerStartupProviders& source,const awl::WorldMapPlayerStartupQuery& query,
+    const std::shared_ptr<awl::WorldMapCameraCollisionAsset>& camera,const awl::WorldMapCameraViewQuery& view,bool allocations) {
+    using S=awl::WorldMapPlayerPrimarySliceStatus;using P=awl::WorldMapPlayerUpdateStatus;using A=awl::WorldMapPlayerAnimationLoopStatus;
+    using Q=awl::WorldMapPlayerStartupQueueStatus;
+    auto providers=source;providers.clock=std::make_shared<awl::GameClock>(*source.clock);
+    std::unique_ptr<awl::WorldMapPlayerStartup> player;
+    expect(awl::construct_world_map_player_startup(providers,query,&player).status==awl::WorldMapPlayerStartupStatus::ConstructedCpuStartup && player,
+        "ordered primary fixture owns a fresh startup and private shared clock");if(!player)return;
+    const auto registrations=player->primary_registration();
+    expect(registrations[0].priority==0x5001 && registrations[1].priority==0xf000 && registrations[0].node_identity &&
+        registrations[1].node_identity && registrations[0].node_identity!=registrations[1].node_identity && registrations[0].node_identity!=player->update_node_identity() &&
+        registrations[1].node_identity!=player->update_node_identity(),"native primary keys retain actual player/model-manager priorities and distinct update ownership");
+    awl::WorldMapUpdateInputs inputs(providers.clock),missing(providers.clock),foreign(std::make_shared<awl::GameClock>());
+    const awl::WorldMapControlSources sources{awl::WorldMapControlPhase{uint8_t{1},123456u,uint8_t{0}},0};
+    inputs.observe_control_sources(sources);foreign.observe_control_sources(sources);
+    expect(inputs.capture_control()==awl::WorldMapControlStatus::Captured && foreign.capture_control()==awl::WorldMapControlStatus::Captured,"ordered primary inputs capture active status control");
+    awl::WorldMapPlayerUpdateOwners owners;owners.scene_one_position_240=std::array<float,3>{};owners.queue={{900,0x1011}};
+    expect(player->initialize_fresh_status(inputs,&owners)==awl::WorldMapPlayerStatusCode::Prepared,"ordered primary pointed status initializes from its phase owner");
+    awl::WorldMapPlayerStartupDispatchInput input;input.guards=awl::WorldMapPlayerUpdateGuards{-1,0};input.pose={1,{2,0,0},{0,0,1}};
+    input.action_148=0;input.first_camera=awl::WorldMapPlayerStartupCameraSeed{camera,view};
+    auto before=startup_snapshot(*player),effects=update_owners_snapshot(owners);
+    {awl::WorldMapPlayerUpdateOwners pending;pending.queue={{player->update_node_identity(),0x1010}};
+        expect(player->consume_state29_update_after_primary_slice(inputs,{},&pending,nullptr).status==Q::RequiresPrimary && startup_snapshot(*player)==before && pending.queue.size()==1,
+            "owned queued work requires its ordered primary receipt before actor observations");}
+    expect(player->advance_state29_primary_slice(missing,input,&owners).status==S::RequiresControl &&
+        player->advance_state29_primary_slice(foreign,input,&owners).status==S::InvalidInput && startup_snapshot(*player)==before && update_owners_snapshot(owners)==effects,
+        "missing/stale or foreign primary inputs preserve both callbacks and receipts");
+    input.player_node_identity=99;
+    expect(player->advance_state29_primary_slice(inputs,input,&owners).status==S::InvalidInput && startup_snapshot(*player)==before,
+        "ordered primary facade derives the owned update key and rejects an overriding foreign key");input.player_node_identity=0;
+    auto step=player->advance_state29_primary_slice(inputs,input,&owners);
+    expect(step.status==S::ParentIncomplete && step.parent && step.parent->status==P::RequiresSceneWord && !step.animation &&
+        startup_snapshot(*player)==before && update_owners_snapshot(owners)==effects,"parent dependency stops before model-manager progression");input.scene_child_word_4=0;
+    const auto model_before=holder_snapshot(player->model());
+    awl::WorldMapPlayerStatusInputs status;const auto factors=player->starts()->status_factors(player->model().descriptor());
+    status.globals=factors.globals;status.rate=factors.rate;status.phase_raw=123456;
+    const auto expected=awl::prepare_world_map_player_status(*owners.status,player->model().descriptor().word_8,status);
+    expect(expected.status==awl::WorldMapPlayerStatusCode::Prepared && expected.after,"independently compared parent status body prepares its one-update result");
+    bool complete=false;
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    if(allocations){const auto live=allocation_probe::live;size_t failed=0;bool accepted_parent=false;
+        for(size_t fail=0;fail<128;++fail){allocation_probe::remaining=fail;allocation_probe::enabled=true;
+            step=player->advance_state29_primary_slice(inputs,input,&owners);allocation_probe::enabled=false;
+            if(step.status==S::AnimationIncomplete){accepted_parent=true;break;}
+            if(step.status==S::Completed){complete=true;break;}++failed;
+            expect(step.status==S::ParentIncomplete && step.parent && step.parent->status==P::AllocationFailure &&
+                startup_snapshot(*player)==before && update_owners_snapshot(owners)==effects && allocation_probe::live==live,
+                "every pre-publication camera/status/queue allocation failure preserves both primary callbacks and receipts");}
+        expect(accepted_parent && failed>0 && player->primary_loop() && player->primary_loop()->valid && !player->animation_loop() &&
+            holder_snapshot(player->model())==model_before && player->state().counter_1368==1,"late model failure retains accepted parent/status/registration and untouched animation");
+        std::cout<<"PLAYER_PRIMARY_PREFIX_ALLOCATION_FAILURES "<<failed<<'\n';
+        before=startup_snapshot(*player);effects=update_owners_snapshot(owners);
+        // Retry observations cannot replace already accepted parent work.
+        input.pose.position[0]=std::numeric_limits<float>::quiet_NaN();input.player_node_identity=99;
+        const auto retained=allocation_probe::live;failed=0;
+        for(size_t fail=0;fail<128;++fail){allocation_probe::remaining=fail;allocation_probe::enabled=true;
+            step=player->advance_state29_primary_slice(inputs,input,&owners);allocation_probe::enabled=false;
+            if(step.status==S::Completed){complete=true;break;}++failed;
+            expect(step.status==S::AnimationIncomplete && step.parent_reused && !step.parent && step.animation &&
+                step.animation->animation && step.animation->animation->status==awl::WorldMapPlayerHolderProgressStatus::AllocationFailure &&
+                startup_snapshot(*player)==before && update_owners_snapshot(owners)==effects && allocation_probe::live==retained,
+                "model retry allocation failures preserve the accepted parent and never repeat camera/status or registration");}
+        expect(complete && failed>=3,"model retry sweep reaches ordered completion");std::cout<<"PLAYER_PRIMARY_MODEL_RETRY_ALLOCATION_FAILURES "<<failed<<'\n';}
+#else
+    (void)allocations;(void)model_before;
+#endif
+    if(!complete)step=player->advance_state29_primary_slice(inputs,input,&owners);
+    expect(step.status==S::Completed && player->primary_loop() && player->primary_loop()->valid && player->animation_loop() &&
+        player->state().counter_1368==1 && owners.status && expected.after && status_words(*owners.status)==status_words(*expected.after) &&
+        owners.queue.size()==2 && owners.queue[0].node_identity==player->update_node_identity() && owners.queue[0].priority==0x1010,
+        "ordered completion publishes exactly one parent camera/status update and owned registration before model progression");
+    before=startup_snapshot(*player);effects=update_owners_snapshot(owners);
+    {auto other=owners;
+        expect(player->advance_state29_primary_slice(inputs,{},&other).status==S::InvalidInput &&
+            player->consume_state29_update_after_primary_slice(inputs,{},&other,nullptr).status==Q::InvalidInput && startup_snapshot(*player)==before &&
+            update_owners_snapshot(other)==effects,"accepted parent work cannot be rebound to another update owner on retry or completion");}
+    step=player->advance_state29_primary_slice(inputs,{},nullptr);
+    expect(step.status==S::Completed && step.parent_reused && !step.parent && step.animation && step.animation->status==A::AlreadyAdvanced &&
+        startup_snapshot(*player)==before && update_owners_snapshot(owners)==effects,"same-loop primary retry reuses both accepted callbacks without reading unavailable observations");
+    awl::WorldMapPlayerStartupQueuedActorInput actor;actor.actor.saved_byte_29a01=uint8_t{0};actor.actor.script.emplace();
+    actor.actor.script->flag_width_4=1;actor.actor.script->flag_bytes={1};
+    const auto accepted_model=holder_snapshot(player->model());
+    const auto consumed=player->consume_state29_update_after_primary_slice(inputs,actor,&owners,nullptr);
+    expect(consumed.status==Q::Completed && owners.queue.size()==1 && owners.queue[0].node_identity==900 &&
+        holder_snapshot(player->model())==accepted_model && player->state().counter_1368==1,
+        "checked primary-slice consumer completes a script-blocked owned front node and preserves later work");
+    expect(providers.clock->advance(),"diagnostic fixture samples its next clock loop");
+    before=startup_snapshot(*player);effects=update_owners_snapshot(owners);
+    expect(player->advance_state29_primary_slice(inputs,input,&owners).status==S::RequiresControl && startup_snapshot(*player)==before,
+        "next clock loop requires fresh capture before either ordered callback");
+    expect(inputs.capture_control()==awl::WorldMapControlStatus::Captured,"ordered fixture recaptures its next active loop");
+    inputs.request_scene_mode(4,0);awl::WorldMapSceneModeCommit commit;
+    expect(inputs.commit_scene_fields(0,uint8_t{1},&commit)==awl::WorldMapSceneFilterStatus::CommittedFields &&
+        inputs.dispatch(0x5001).status==awl::WorldMapDispatchStatus::Filtered && inputs.dispatch(0xf000).status==awl::WorldMapDispatchStatus::Ready,
+        "actual primary priorities select blocked player group 5 and unblocked model-manager group 15");
+    before=startup_snapshot(*player);effects=update_owners_snapshot(owners);const auto counter=player->state().counter_1368;
+    step=player->advance_state29_primary_slice(inputs,{},nullptr);
+    expect(step.status==S::Completed && step.parent && step.parent->status==P::SkippedByDispatchFilter && step.animation && step.animation->status==A::Advanced &&
+        player->state().counter_1368==counter && update_owners_snapshot(owners)==effects && startup_snapshot(*player)!=before,
+        "filtered parent skips every parent dependency while eligible model-manager progression still completes");
+    // An isolated later parent mutation invalidates ordered proof; the model
+    // cannot be retroactively preceded by another parent callback in this loop.
+    expect(player->advance_state29_camera({{2,0,0},0,{}}).status==awl::WorldMapPlayerState29CameraStatus::Advanced,"isolated camera diagnostic changes the accepted parent");
+    before=startup_snapshot(*player);step=player->advance_state29_primary_slice(inputs,{},nullptr);
+    expect(step.status==S::RequiresNextLoop && startup_snapshot(*player)==before && player->primary_loop() && !player->primary_loop()->valid,
+        "diagnostic parent mutation preserves handled loop key and blocks retroactive ordered replay");
+    expect(providers.clock->advance() && inputs.capture_control()==awl::WorldMapControlStatus::Captured &&
+        player->dispatch_animation_for_loop(inputs).status==A::Advanced,"isolated model-manager facade advances its next eligible captured loop");
+    before=startup_snapshot(*player);step=player->advance_state29_primary_slice(inputs,{},nullptr);
+    expect(step.status==S::RequiresNextLoop && startup_snapshot(*player)==before,"ordered primary facade rejects executing a parent retroactively after independent model progression");
+    std::cout<<"PLAYER_PRIMARY_SLICE ordered parent/model, active status once, filtered-parent and retry preservation\n";
+}
 void local_animation_loops(const char* disc) {
     using S=awl::WorldMapPlayerStartupStatus;
     expect(awl::filesystem_mount("/",disc),"local coordinated animation disc mounts");
@@ -4273,6 +4396,8 @@ void local_animation_loops(const char* disc) {
         awl::load_world_map_player_initial_animation_inputs(&providers.initial)==awl::WorldMapPlayerInitialAnimationStatus::Loaded &&
         awl::load_world_map_player_timer_assets(&providers.timers)==awl::WorldMapPlayerTimerAssetsStatus::Loaded,"local coordinated providers and DOL verify");
     if(!providers.animations || !providers.starts || !providers.initial || !providers.timers)return;
+    auto camera=std::make_shared<awl::WorldMapCameraCollisionAsset>();awl::WorldMapCameraInitialProfile profile;
+    expect(camera->load() && awl::make_world_map_camera_initial_profile(&profile),"local primary-slice camera terrain and diagnostic view load");
     uint32_t checked=0,paired=0,blocked=0;
     for(uint32_t phase=0;phase<6;++phase){expect(awl::load_world_map_player_model_assets(phase,&providers.models)==Status::Loaded,"local coordinated phase model loads");
         std::unique_ptr<awl::WorldMapPlayerStartup> player;
@@ -4290,11 +4415,13 @@ void local_animation_loops(const char* disc) {
             expect(constructed.status==S::ConstructedCpuStartup && player,"actual primary/secondary choice reaches complete native CPU startup");if(!player)return;
             if(player->model().secondary_model())++paired;
             coordinated_animation_owner_checks(*player,false);++checked;
+            primary_slice_owner_checks(providers,query,camera,profile.view_query,false);
         }
     }
     expect(checked==18 && paired==12 && blocked==6,"all supported actual phase/selection startup pairs complete coordinated checks and action-only constructors stop explicitly");
     std::cout<<"LOCAL_PLAYER_ANIMATION_LOOPS "<<checked<<" startups / "<<paired<<" pairs / "<<checked*5<<" eligible loop samples / "<<blocked
         <<" action-only constructor message stops; actual timers/clips, supplied script/visibility/pose, CPU only\n";
+    std::cout<<"LOCAL_PLAYER_PRIMARY_SLICES "<<checked<<" active parent/model callbacks, filtered-parent/model callbacks and checked queued completions; supplied guards/phase/pose, CPU only\n";
 }
 void local_status_parameters(const awl::WorldMapPlayerStartAnimationTables& tables) {
     uint64_t digest=14695981039346656037ull;size_t count=0;

@@ -41,6 +41,7 @@ WorldMapPlayerState29CameraStep WorldMapPlayerStartup::advance_state29_camera(
     const auto collision = camera_ ? camera_->collision : input.first_camera->collision;
     camera_ = WorldMapPlayerStartupCameraState{collision, *step.final_camera, *step.update};
     state_.counter_1368 = *step.counter_after;
+    if (primary_loop_) primary_loop_->valid=false;
     step.status = WorldMapPlayerState29CameraStatus::Advanced;
     return step;
 }
@@ -76,6 +77,7 @@ WorldMapPlayerStartupUpdateResult WorldMapPlayerStartup::advance_state29_parent(
     state_.counter_1368 = *result.callback->counter_after;
     state_.control_word_1384 = *input.entry.control_word;
     *owners = std::move(next);
+    if (primary_loop_) primary_loop_->valid=false;
     result.callback->status = WorldMapPlayerState29CameraStatus::Advanced;
     result.status = S::Advanced;
     return result;
@@ -85,7 +87,7 @@ WorldMapPlayerStartupUpdateResult WorldMapPlayerStartup::dispatch_state29_parent
     const WorldMapUpdateInputs& inputs, const WorldMapPlayerStartupDispatchInput& input,
     WorldMapPlayerUpdateOwners* owners) {
     using S = WorldMapPlayerUpdateStatus;
-    const auto dispatch = inputs.dispatch(0x5001u);
+    const auto dispatch = inputs.dispatch(primary_registration()[0].priority);
     if (dispatch.status == WorldMapDispatchStatus::RequiresControl) return {S::RequiresDispatchControl, {}, {}};
     if (dispatch.status == WorldMapDispatchStatus::Filtered) return {S::SkippedByDispatchFilter, {}, {}};
     if (dispatch.status != WorldMapDispatchStatus::Ready || !dispatch.control_word ||
@@ -207,12 +209,17 @@ WorldMapPlayerStartupActorCallbackResult WorldMapPlayerStartup::advance_actor_ca
 WorldMapPlayerStartupQueueResult WorldMapPlayerStartup::consume_state29_update(
     const WorldMapUpdateInputs& inputs, const WorldMapPlayerStartupQueuedActorInput& input,
     WorldMapPlayerUpdateOwners* updates, WorldMapPlayerActorQueue* render_queue) {
-    return consume_update(inputs,input,updates,render_queue,false);
+    return consume_update(inputs,input,updates,render_queue,QueuePrerequisite::None);
 }
 WorldMapPlayerStartupQueueResult WorldMapPlayerStartup::consume_state29_update_after_animation(
     const WorldMapUpdateInputs& inputs, const WorldMapPlayerStartupQueuedActorInput& input,
     WorldMapPlayerUpdateOwners* updates, WorldMapPlayerActorQueue* render_queue) {
-    return consume_update(inputs,input,updates,render_queue,true);
+    return consume_update(inputs,input,updates,render_queue,QueuePrerequisite::Animation);
+}
+WorldMapPlayerStartupQueueResult WorldMapPlayerStartup::consume_state29_update_after_primary_slice(
+    const WorldMapUpdateInputs& inputs,const WorldMapPlayerStartupQueuedActorInput& input,
+    WorldMapPlayerUpdateOwners* updates,WorldMapPlayerActorQueue* render_queue) {
+    return consume_update(inputs,input,updates,render_queue,QueuePrerequisite::Primary);
 }
 WorldMapPlayerAnimationLoopResult WorldMapPlayerStartup::advance_animation_for_loop(const WorldMapUpdateInputs& inputs) {
     using S=WorldMapPlayerAnimationLoopStatus;
@@ -232,9 +239,57 @@ WorldMapPlayerAnimationLoopResult WorldMapPlayerStartup::advance_animation_for_l
     animation_loop_=WorldMapPlayerAnimationLoop{clock.loop_count,clock.raw_time};
     result.status=S::Advanced;return result;
 }
+WorldMapPlayerAnimationLoopResult WorldMapPlayerStartup::dispatch_animation_for_loop(const WorldMapUpdateInputs& inputs) {
+    using S=WorldMapPlayerAnimationLoopStatus;
+    if (!model_->game_clock() || inputs.game_clock()!=model_->game_clock()) return {S::InvalidInput};
+    const auto dispatch=inputs.dispatch(primary_registration()[1].priority);
+    if (dispatch.status==WorldMapDispatchStatus::RequiresControl) return {S::RequiresControl};
+    if (dispatch.status==WorldMapDispatchStatus::Filtered) return {S::Filtered};
+    if (dispatch.status!=WorldMapDispatchStatus::Ready) return {S::InvalidInput};
+    return advance_animation_for_loop(inputs);
+}
+WorldMapPlayerPrimarySliceResult WorldMapPlayerStartup::advance_state29_primary_slice(
+    const WorldMapUpdateInputs& inputs,const WorldMapPlayerStartupDispatchInput& input,WorldMapPlayerUpdateOwners* owners) {
+    using S=WorldMapPlayerPrimarySliceStatus;using P=WorldMapPlayerUpdateStatus;using A=WorldMapPlayerAnimationLoopStatus;
+    static_assert(std::is_nothrow_move_constructible_v<WorldMapPlayerPrimarySliceResult>);
+    static_assert(std::is_nothrow_move_assignable_v<WorldMapPlayerPrimarySliceResult>);
+    if (!model_->game_clock() || inputs.game_clock()!=model_->game_clock()) return {S::InvalidInput};
+    if (inputs.queue_control().status!=WorldMapDispatchStatus::Ready) return {S::RequiresControl};
+    const auto clock=model_->game_clock()->state();
+    const auto same=[&](const auto& receipt) {
+        return receipt && receipt->loop_count==clock.loop_count && receipt->raw_time==clock.raw_time;
+    };
+    // Never execute the parent retroactively after a separately advanced model
+    // or repeat an accepted parent changed by an isolated diagnostic call.
+    if ((same(primary_loop_) && !primary_loop_->valid) || (same(animation_loop_) && !same(primary_loop_)))
+        return {S::RequiresNextLoop};
+    if (same(primary_loop_) && primary_loop_->updates_owner && owners &&
+        primary_loop_->updates_owner!=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(owners))) return {S::InvalidInput};
+    WorldMapPlayerPrimarySliceResult result;
+    if (same(primary_loop_)) result.parent_reused=true;
+    else {
+        const auto dispatch=inputs.dispatch(primary_registration()[0].priority);
+        if (dispatch.status==WorldMapDispatchStatus::Filtered) result.parent=dispatch_state29_parent(inputs,{},nullptr);
+        else {
+            if (input.player_node_identity && input.player_node_identity!=update_node_identity()) return {S::InvalidInput};
+            auto owned=input;owned.player_node_identity=update_node_identity();
+            result.parent=dispatch_state29_parent(inputs,owned,owners);
+        }
+        if (result.parent->status!=P::Advanced && result.parent->status!=P::SkippedByDispatchFilter) {
+            result.status=S::ParentIncomplete;return result;
+        }
+        primary_loop_=WorldMapPlayerPrimaryLoop{clock.loop_count,clock.raw_time,true,
+            result.parent->status==P::Advanced?static_cast<uint64_t>(reinterpret_cast<uintptr_t>(owners)):0};
+    }
+    result.animation=dispatch_animation_for_loop(inputs);
+    if (result.animation->status==A::RequiresNextLoop) result.status=S::RequiresNextLoop;
+    else if (result.animation->status!=A::Advanced && result.animation->status!=A::AlreadyAdvanced) result.status=S::AnimationIncomplete;
+    else result.status=S::Completed;
+    return result;
+}
 WorldMapPlayerStartupQueueResult WorldMapPlayerStartup::consume_update(
     const WorldMapUpdateInputs& inputs,const WorldMapPlayerStartupQueuedActorInput& input,
-    WorldMapPlayerUpdateOwners* updates,WorldMapPlayerActorQueue* render_queue,bool require_animation) {
+    WorldMapPlayerUpdateOwners* updates,WorldMapPlayerActorQueue* render_queue,QueuePrerequisite prerequisite) {
     using S = WorldMapPlayerStartupQueueStatus;
     if (!updates) return {S::InvalidInput};
     const auto& queue = updates->queue;
@@ -249,7 +304,12 @@ WorldMapPlayerStartupQueueResult WorldMapPlayerStartup::consume_update(
     if (inputs.game_clock() != model_->game_clock()) return {S::InvalidInput};
     const auto control = inputs.queue_control();
     if (control.status != WorldMapDispatchStatus::Ready || !control.control_word) return {S::RequiresControl};
-    if (require_animation && (!animation_loop_ || !animation_loop_->valid || animation_loop_->loop_count!=model_->game_clock()->state().loop_count ||
+    if (prerequisite==QueuePrerequisite::Primary && (!primary_loop_ || !primary_loop_->valid ||
+        primary_loop_->loop_count!=model_->game_clock()->state().loop_count || primary_loop_->raw_time!=model_->game_clock()->state().raw_time))
+        return {S::RequiresPrimary};
+    if (prerequisite==QueuePrerequisite::Primary && primary_loop_->updates_owner &&
+        primary_loop_->updates_owner!=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(updates))) return {S::InvalidInput};
+    if (prerequisite!=QueuePrerequisite::None && (!animation_loop_ || !animation_loop_->valid || animation_loop_->loop_count!=model_->game_clock()->state().loop_count ||
         animation_loop_->raw_time!=model_->game_clock()->state().raw_time)) return {S::RequiresAnimation};
     WorldMapPlayerStartupQueueResult result;
     // Borrow observations without copying/allocating before the script gate.

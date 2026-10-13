@@ -156,15 +156,32 @@ struct WorldMapPlayerAnimationLoop {
 };
 enum class WorldMapPlayerAnimationLoopStatus {
     Advanced, AlreadyAdvanced, RequiresControl, RequiresModelTail,
-    AnimationIncomplete, InvalidInput, RequiresNextLoop
+    AnimationIncomplete, InvalidInput, RequiresNextLoop, Filtered
 };
 struct WorldMapPlayerAnimationLoopResult {
     WorldMapPlayerAnimationLoopStatus status = WorldMapPlayerAnimationLoopStatus::InvalidInput;
     std::optional<WorldMapPlayerHolderProgressResult> animation;
 };
+enum class WorldMapPlayerPrimarySliceStatus {
+    Completed, RequiresControl, ParentIncomplete, AnimationIncomplete,
+    RequiresNextLoop, InvalidInput
+};
+struct WorldMapPlayerPrimaryLoop {
+    uint32_t loop_count = 0, raw_time = 0;
+    bool valid = true;
+    // Borrowed identity only. Keep this update owner's storage alive through
+    // queued completion; no pointer is reconstructed or dereferenced by key.
+    uint64_t updates_owner = 0;
+};
+struct WorldMapPlayerPrimarySliceResult {
+    WorldMapPlayerPrimarySliceStatus status = WorldMapPlayerPrimarySliceStatus::InvalidInput;
+    std::optional<WorldMapPlayerStartupUpdateResult> parent;
+    std::optional<WorldMapPlayerAnimationLoopResult> animation;
+    bool parent_reused = false;
+};
 enum class WorldMapPlayerStartupQueueStatus {
     Completed, Empty, UnsupportedNode, UnsupportedPriority, InvalidQueue,
-    RequiresControl, CallbackIncomplete, InvalidInput, RequiresAnimation
+    RequiresControl, CallbackIncomplete, InvalidInput, RequiresAnimation, RequiresPrimary
 };
 struct WorldMapPlayerStartupQueueResult {
     WorldMapPlayerStartupQueueStatus status = WorldMapPlayerStartupQueueStatus::InvalidInput;
@@ -185,6 +202,14 @@ public:
     const std::optional<WorldMapPlayerStartupCameraState>& camera() const { return camera_; }
     const WorldMapPlayerActorMetadata& actor_metadata() const { return actor_metadata_; }
     const std::optional<WorldMapPlayerAnimationLoop>& animation_loop() const { return animation_loop_; }
+    const std::optional<WorldMapPlayerPrimaryLoop>& primary_loop() const { return primary_loop_; }
+    // Fixed primary-list registrations observed at 14448 and 12B58. Keys
+    // represent this bounded native parent/model-manager pair; this does not
+    // register the original manager's other models or activate a shared list.
+    std::array<WorldMapPlayerUpdateQueueEntry,2> primary_registration() const noexcept {
+        return {{{static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&primary_node_)),0x5001},
+            {static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&model_manager_node_)),0xf000}}};
+    }
     uint64_t update_node_identity() const { return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&update_node_)); }
     uint64_t effect_node_identity() const { return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&effect_node_)); }
     uint64_t render_node_identity() const { return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&render_node_)); }
@@ -266,6 +291,19 @@ public:
     // and other primary passes remain dependencies; this does not dispatch the
     // whole manager or advance time. Call only for an eligible owned slot.
     [[nodiscard]] WorldMapPlayerAnimationLoopResult advance_animation_for_loop(const WorldMapUpdateInputs& inputs);
+    // Bind the traced F000 registration/group to the eligible-slot operation.
+    // Supported scene masks leave group 15 unblocked. A future blocked mask
+    // is an explicit stop, not invented successful animation progression.
+    [[nodiscard]] WorldMapPlayerAnimationLoopResult dispatch_animation_for_loop(const WorldMapUpdateInputs& inputs);
+    // Ordered owned primary slice: parent 5001 -> model manager F000, before
+    // the checked queued actor callback. Derives this owner's update key;
+    // contradictory supplied keys reject on the reached unfiltered branch.
+    // Each callback commits atomically. If animation fails after an accepted
+    // parent, retry reuses that parent result without repeating counter/status
+    // or queue writes. This is not a full primary pass: other nodes/pool slots,
+    // secondary/tertiary passes, scene callbacks and render/clock work remain.
+    [[nodiscard]] WorldMapPlayerPrimarySliceResult advance_state29_primary_slice(
+        const WorldMapUpdateInputs&,const WorldMapPlayerStartupDispatchInput&,WorldMapPlayerUpdateOwners*);
     // Same bounded front-node callback/completion, additionally requiring the
     // owned animation slot's accepted receipt for this loop. Empty queues still
     // skip every dependency; invalid/foreign earlier nodes are never skipped.
@@ -274,6 +312,12 @@ public:
     [[nodiscard]] WorldMapPlayerStartupQueueResult consume_state29_update_after_animation(
         const WorldMapUpdateInputs& inputs, const WorldMapPlayerStartupQueuedActorInput& input,
         WorldMapPlayerUpdateOwners* updates, WorldMapPlayerActorQueue* render_queue);
+    // Require both accepted ordered primary callbacks, then reuse the same
+    // front-node frame/scheduling transaction. Other primary nodes/passes are
+    // not acknowledged by these two owned receipts.
+    [[nodiscard]] WorldMapPlayerStartupQueueResult consume_state29_update_after_primary_slice(
+        const WorldMapUpdateInputs&,const WorldMapPlayerStartupQueuedActorInput&,
+        WorldMapPlayerUpdateOwners*,WorldMapPlayerActorQueue*);
     [[nodiscard]] WorldMapPlayerPrimaryUpdateResult advance(const WorldMapPlayerPrimaryFrameInput& input) {
         return model_->advance(input);
     }
@@ -300,9 +344,10 @@ public:
         return model_->configure_repeats(kind,value);
     }
 private:
+    enum class QueuePrerequisite { None, Animation, Primary };
     [[nodiscard]] WorldMapPlayerStartupQueueResult consume_update(
         const WorldMapUpdateInputs&,const WorldMapPlayerStartupQueuedActorInput&,
-        WorldMapPlayerUpdateOwners*,WorldMapPlayerActorQueue*,bool require_animation);
+        WorldMapPlayerUpdateOwners*,WorldMapPlayerActorQueue*,QueuePrerequisite);
     WorldMapPlayerStartup() = default;
     [[nodiscard]] WorldMapPlayerState29CameraStep prepare_state29_camera(
         const WorldMapPlayerStartupState29Input& input) const;
@@ -320,8 +365,9 @@ private:
     WorldMapPlayerActorMetadata actor_metadata_;
     // Isolated animation/timer/channel mutation invalidates coordinated proof.
     std::optional<WorldMapPlayerAnimationLoop> animation_loop_;
+    std::optional<WorldMapPlayerPrimaryLoop> primary_loop_;
     // Separate owned tags provide stable keys without reproducing PPC pointers.
-    uint8_t update_node_ = 0, effect_node_ = 0, render_node_ = 0;
+    uint8_t update_node_ = 0, effect_node_ = 0, render_node_ = 0, primary_node_ = 0, model_manager_node_ = 0;
 };
 // Fresh slot-zero / alternate -1 / type-zero startup only. Supplied phase,
 // post-setup guards/binding/item fields and audio byte remain explicit.
