@@ -64,6 +64,20 @@ bool WorldMapPlayerContextTables::decode(const uint8_t* bytes,size_t size) noexc
     for(size_t i=0;i<16;++i){rows_[i].key=signed_word(detail::dol_word(rows+i*36));
         for(size_t j=0;j<8;++j)rows_[i].neighbors[j]=signed_word(detail::dol_word(rows+i*36+4+j*4));}
     back_threshold_=float_word(detail::dol_word(thresholds));front_threshold_=float_word(detail::dol_word(thresholds+4));
+    if(view.read(0x8034a260,4)){
+        WorldMapPlayerContextSearchProfile profile;std::array<float,9> values{};
+        constexpr uint32_t addresses[]{0x8034a260,0x8034a270,0x8034a274,0x8034a250,0x8034a278,
+            0x80349fcc,0x80349fd0,0x80349fd4,0x80349fd8};
+        for(size_t i=0;i<values.size();++i){const auto* p=view.read(addresses[i],4);if(!p)return false;
+            values[i]=float_word(detail::dol_word(p));if(!ordinary(values[i]))return false;}
+        profile.angle_radians=values[0];profile.first_min_distance=values[1];profile.first_max_distance=values[2];
+        profile.other_min_distance=values[3];profile.other_max_distance=values[4];
+        for(size_t i=0;i<4;++i)profile.region_xz[i]=values[5+i];
+        if(profile.angle_radians<0 || profile.first_min_distance<0 || profile.first_max_distance<=profile.first_min_distance ||
+            profile.other_min_distance<0 || profile.other_max_distance<=profile.other_min_distance ||
+            values[5]>values[6] || values[7]>values[8])return false;
+        search_profile_=profile;
+    }
     return ordinary(back_threshold_) && ordinary(front_threshold_) && back_threshold_>=-1 && front_threshold_<=1 && back_threshold_<=front_threshold_;
 }
 bool WorldMapPlayerContextTables::neighbor(int32_t key,uint32_t slot,int32_t* out) const noexcept {

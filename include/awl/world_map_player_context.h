@@ -8,6 +8,10 @@
 
 namespace awl {
 using WorldMapPlayerContextVector=std::array<float,3>;
+struct WorldMapPlayerContextSearchProfile {
+    float angle_radians=0,first_min_distance=0,first_max_distance=0,other_min_distance=0,other_max_distance=0;
+    std::array<float,4> region_xz{}; // 1CF3C's inclusive X min/max, Z min/max.
+};
 enum class WorldMapPlayerContextTablesStatus { Decoded, Loaded, InvalidInput, UnsupportedLayout, ReadFailure, WrongDol, AllocationFailure };
 // Immutable 10A94's eight scan slots and 11634's sixteen keyed rows, plus
 // 10F00's two facing thresholds. No runtime scene lists or raw DOL retained.
@@ -18,6 +22,8 @@ public:
     [[nodiscard]] bool neighbor(int32_t key,uint32_t slot,int32_t* out) const noexcept;
     float back_threshold() const noexcept { return back_threshold_; }
     float front_threshold() const noexcept { return front_threshold_; }
+    // Optional in older query-only synthetic decodes; present in target DOL.
+    const std::optional<WorldMapPlayerContextSearchProfile>& search_profile() const noexcept {return search_profile_;}
 private:
     struct Row {int32_t key=0;std::array<int32_t,8> neighbors{};};
     WorldMapPlayerContextTables()=default;
@@ -29,6 +35,7 @@ private:
     std::array<uint32_t,8> scan_slots_{};
     std::array<Row,16> rows_{};
     float back_threshold_=0,front_threshold_=0;
+    std::optional<WorldMapPlayerContextSearchProfile> search_profile_;
     bool target_verified_=false;
 };
 [[nodiscard]] WorldMapPlayerContextTablesStatus decode_world_map_player_context_tables(
