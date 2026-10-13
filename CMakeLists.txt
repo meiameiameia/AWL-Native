@@ -70,6 +70,7 @@ set(SOURCES
     src/world_map_fade.cpp
     src/world_map_player_context.cpp
     src/world_map_player_context_labels.cpp
+    src/world_map_context_icon_resources.cpp
     src/world_map_player_initial_animation.cpp
     src/world_map_player_timer_assets.cpp
     src/game_clock.cpp
@@ -152,6 +153,7 @@ set(HEADERS
     include/awl/world_map_phase.h
     include/awl/world_map_player_context.h
     include/awl/world_map_player_context_labels.h
+    include/awl/world_map_context_icon_resources.h
     include/awl/world_map_player_initial_animation.h
     include/awl/world_map_player_timer_assets.h
     include/awl/game_clock.h
@@ -683,6 +685,7 @@ add_executable(world_map_player_model_assets_tests
     src/world_map_fade.cpp
     src/world_map_player_context.cpp
     src/world_map_player_context_labels.cpp
+    src/world_map_context_icon_resources.cpp
     src/world_map_scene_index.cpp
     src/world_map_player_start.cpp
     src/collision_asset.cpp
@@ -722,3 +725,27 @@ else()
     target_compile_options(world_map_player_model_assets_tests PRIVATE -Wall -Wextra)
 endif()
 add_test(NAME world_map_player_model_assets_tests COMMAND world_map_player_model_assets_tests)
+
+add_executable(world_map_context_icon_tests
+    tests/world_map_context_icon_tests.cpp
+    src/world_map_context_icon_resources.cpp
+    src/world_map_player_context_labels.cpp
+    src/game_clock.cpp
+    src/tpl.cpp
+    src/disc_identity.cpp
+    src/filesystem.cpp
+    src/memory.cpp
+    src/platform.cpp
+    src/input.cpp
+)
+target_include_directories(world_map_context_icon_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+if(WIN32)
+    target_compile_definitions(world_map_context_icon_tests PRIVATE AWL_PLATFORM_WINDOWS _CRT_SECURE_NO_WARNINGS)
+    target_link_libraries(world_map_context_icon_tests PRIVATE xinput bcrypt)
+endif()
+if(MSVC)
+    target_compile_options(world_map_context_icon_tests PRIVATE /W4)
+else()
+    target_compile_options(world_map_context_icon_tests PRIVATE -Wall -Wextra)
+endif()
+add_test(NAME world_map_context_icon_tests COMMAND world_map_context_icon_tests)

@@ -1,7 +1,14 @@
 #pragma once
 #include "awl/world_map_player_context.h"
+#include "awl/world_map_context_icon_resources.h"
+#include "awl/game_clock.h"
 
 namespace awl {
+struct WorldMapContextIconSetupConstants {
+    float depth=0;
+    std::array<float,2> scalar{},vector{};
+    std::array<float,3> base_vector{};
+};
 enum class WorldMapPlayerContextLabelTablesStatus { Decoded, Loaded, InvalidInput, UnsupportedLayout, ReadFailure, WrongDol, AllocationFailure };
 // 4ED60's 31 rows of two 86-byte label arrays, plus 4EFDC's final
 // item-type routing and the reached forward-probe distance. No raw DOL kept.
@@ -13,6 +20,7 @@ public:
     float probe_distance() const noexcept {return probe_distance_;}
     // Optional on bounded synthetic label-only decodes; present in target DOL.
     [[nodiscard]] bool icon(uint32_t label,uint8_t* out) const noexcept;
+    const std::optional<WorldMapContextIconSetupConstants>& icon_setup() const noexcept {return icon_setup_;}
 private:
     WorldMapPlayerContextLabelTables()=default;
     bool decode(const uint8_t*,size_t) noexcept;
@@ -24,6 +32,7 @@ private:
     std::array<uint8_t,31> item_classes_{};
     float probe_distance_=0;
     std::optional<std::array<uint8_t,103>> icons_;
+    std::optional<WorldMapContextIconSetupConstants> icon_setup_;
     bool target_verified_=false;
 };
 [[nodiscard]] WorldMapPlayerContextLabelTablesStatus decode_world_map_player_context_label_tables(
@@ -104,30 +113,62 @@ struct WorldMapPlayerContextLabelStep {
     const WorldMapPlayerContextLabelTables*,const WorldMapPlayerContextResult&,
     const WorldMapPlayerContextLabelInput&,WorldMapPlayerContextLabels* out) noexcept;
 
+// Projection of fields reached by 83378 on an E1988-compatible element.
+// Missing prior flags/attachment observations are not constructor defaults.
+// Unrepresented image transforms/leaf bodies still prevent drawing.
+struct WorldMapContextIconElement {
+    std::optional<uint32_t> flags_120;
+    std::array<std::optional<uint64_t>,2> attachments_10c_110;
+    std::shared_ptr<const WorldMapContextIconResources> resources;
+    std::shared_ptr<GameClock> clock;
+    WorldMapContextIconGroup image_group;
+    WorldMapContextIconFrame icon_frame,placement_frame;
+    uint32_t animation_root_offset=0,animation_root=0,animation_current=0,animation_deadline=0,animation_progress=0;
+    std::optional<std::array<float,2>> image_position_10,animation_position_54;
+    float image_depth_18=0,animation_depth_5c=0;
+    std::array<float,2> position_f0{};
+    std::optional<std::array<float,4>> target_f8;
+    float depth_114=0,scalar_128=0,scalar_step_12c=0;
+    std::array<float,3> vector_cc{},vector_base_d8{},vector_step_e4{};
+    std::array<float,2> scalar_parameters_94{},vector_parameters_a4{};
+    uint32_t scalar_duration_9c=0,vector_duration_ac=0;
+    uint16_t scalar_count_130=0,vector_count_132=0;
+    uint8_t frame_134=0,repeat_135=0,enabled_136=0,channel_zero_137=0;
+    uint8_t scalar_enabled_a0=0,scalar_repeat_a1=0,vector_enabled_b0=0,vector_repeat_b1=0;
+};
+struct WorldMapPlayerContextIconSources {
+    std::shared_ptr<const WorldMapContextIconResources> resources;
+    std::shared_ptr<GameClock> clock;
+};
 struct WorldMapPlayerContextIconState {
     std::optional<uint64_t> resource_manager_1278;
     std::array<std::optional<uint32_t>,4> labels_60;
+    std::array<std::optional<WorldMapContextIconElement>,4> elements;
 };
 enum class WorldMapPlayerContextIconStatus {
     Prepared, RequiresResourceManager, RequiresPreviousLabel, RequiresIconMap,
-    RequiresIconAssets, UnsupportedLabel, InvalidInput
+    RequiresIconAssets, UnsupportedLabel, InvalidInput,RequiresClock,RequiresElementState,
+    RequiresAttachedElement,RequiresSetupConstants,UnsupportedResources,UnsupportedNumerics
 };
 struct WorldMapPlayerContextIconStep {
     WorldMapPlayerContextIconStatus status=WorldMapPlayerContextIconStatus::InvalidInput;
     uint32_t channel=0,prepared_mask=0;
     std::optional<uint8_t> previous_icon,next_icon;
 };
-// 83378 through equal-label/equal-mapped-icon completion. Changed icon stops
-// before 18124C/resource setup; it cannot acknowledge UI delivery. Manager and
-// previous labels are observed retained state, not fabricated constructor state.
-// Every stop preserves *out; no allocation or resource-manager dereference.
+// 83378's retained paths need no sources/element state. Changed icons bind
+// checked AGC/TPL, raw shared-clock initialization and reached element fields.
+// Only known-null attached objects are supported. Manager identity must match
+// the native resources. Every stop preserves *out, with no allocation/clock
+// advance/GPU work. This does not acknowledge the surrounding callback/draw.
 [[nodiscard]] WorldMapPlayerContextIconStep prepare_world_map_player_context_icon(
     const WorldMapPlayerContextLabelTables*,const WorldMapPlayerContextIconState&,
-    uint32_t channel,uint32_t label,WorldMapPlayerContextIconState* out) noexcept;
+    uint32_t channel,uint32_t label,WorldMapPlayerContextIconState* out,
+    const WorldMapPlayerContextIconSources* sources=nullptr) noexcept;
 // 43120's channel order is 0,1,3,2 for primary,zero,secondary,tertiary.
-// All four retained-icon updates publish atomically; a late changed icon keeps
+// All four supported updates publish atomically; a late dependency keeps
 // the caller's entire previous state. Original intermediate writes are deferred.
 [[nodiscard]] WorldMapPlayerContextIconStep prepare_world_map_player_context_icons(
     const WorldMapPlayerContextLabelTables*,const WorldMapPlayerContextIconState&,
-    const WorldMapPlayerContextLabels&,WorldMapPlayerContextIconState* out) noexcept;
+    const WorldMapPlayerContextLabels&,WorldMapPlayerContextIconState* out,
+    const WorldMapPlayerContextIconSources* sources=nullptr) noexcept;
 } // namespace awl

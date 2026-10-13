@@ -107,6 +107,19 @@ bool WorldMapPlayerContextLabelTables::decode(const uint8_t* data,size_t size) n
     // Label-only fixtures remain valid. Missing icon metadata cannot authorize
     // a later mapped-icon comparison; the icon API reports that dependency.
     if(const auto* icons=view.read(0x8024f694,103)){std::array<uint8_t,103> copy;std::memcpy(copy.data(),icons,copy.size());icons_=copy;}
+    if(const auto* constants=view.read(0x8034a5d8,24)){
+        const auto* vector=view.read(0x8024f700,12);const auto* masks=view.read(0x8034ad1c,8);
+        const auto* vtable=view.read(0x802bb108,20);
+        if(!vector || !masks || !vtable || detail::dol_word(masks)!=2 || detail::dol_word(masks+4)!=4 ||
+            detail::dol_word(vtable+8)!=0x800e2084 || detail::dol_word(vtable+16)!=0x800e21bc)return false;
+        const auto real=[](const uint8_t* p){const uint32_t bits=detail::dol_word(p);float value;std::memcpy(&value,&bits,4);return value;};
+        WorldMapContextIconSetupConstants setup;setup.depth=real(constants);
+        setup.scalar={real(constants+8),real(constants+12)};setup.vector={real(constants+16),real(constants+20)};
+        for(size_t i=0;i<3;++i)setup.base_vector[i]=real(vector+i*4);
+        if(!ordinary(setup.depth))return false;
+        for(float v:setup.scalar)if(!ordinary(v))return false;for(float v:setup.vector)if(!ordinary(v))return false;
+        for(float v:setup.base_vector)if(!ordinary(v))return false;icon_setup_=setup;
+    }
     return ordinary(probe_distance_) && probe_distance_>0;
 }
 bool WorldMapPlayerContextLabelTables::icon(uint32_t label,uint8_t* out) const noexcept {
@@ -192,28 +205,78 @@ WorldMapPlayerContextLabelStep prepare_world_map_player_context_labels_from_targ
     return prepare_world_map_player_context_labels(tables,bound,out);
 }
 WorldMapPlayerContextIconStep prepare_world_map_player_context_icon(const WorldMapPlayerContextLabelTables* tables,
-    const WorldMapPlayerContextIconState& input,uint32_t channel,uint32_t label,WorldMapPlayerContextIconState* out) noexcept {
+    const WorldMapPlayerContextIconState& input,uint32_t channel,uint32_t label,WorldMapPlayerContextIconState* out,
+    const WorldMapPlayerContextIconSources* sources) noexcept {
     using I=WorldMapPlayerContextIconStatus;WorldMapPlayerContextIconStep step;step.channel=channel;
     if(!out || channel>=4)return step;
     if(!input.resource_manager_1278){step.status=I::RequiresResourceManager;return step;}
     if(!input.labels_60[channel]){step.status=I::RequiresPreviousLabel;return step;}
     const uint32_t previous=*input.labels_60[channel];
+    auto next=input;
     if(previous!=label){
         if(previous>=103 || label>=103){step.status=I::UnsupportedLabel;return step;}
         uint8_t old_icon,new_icon;
         if(!tables || !tables->icon(label,&new_icon) || !tables->icon(previous,&old_icon)){step.status=I::RequiresIconMap;return step;}
         step.previous_icon=old_icon;step.next_icon=new_icon;
-        if(old_icon!=new_icon){step.status=I::RequiresIconAssets;return step;}
+        if(old_icon!=new_icon){
+            if(!sources || !sources->resources){step.status=I::RequiresIconAssets;return step;}
+            if(!*input.resource_manager_1278 || *input.resource_manager_1278!=sources->resources->identity())return step;
+            if(!sources->clock){step.status=I::RequiresClock;return step;}
+            if(!tables->icon_setup()){step.status=I::RequiresSetupConstants;return step;}
+            if(!input.elements[channel] || !input.elements[channel]->flags_120 ||
+                !input.elements[channel]->attachments_10c_110[0] || !input.elements[channel]->attachments_10c_110[1]){
+                step.status=I::RequiresElementState;return step;}
+            auto element=*input.elements[channel];
+            if(element.clock && element.clock!=sources->clock)return step;
+            if(*element.attachments_10c_110[0] || *element.attachments_10c_110[1]){step.status=I::RequiresAttachedElement;return step;}
+            uint32_t groups;WorldMapContextIconGroup initial;
+            const auto& assets=*sources->resources;
+            if(!assets.frame(0,channel,0,&element.placement_frame) || !assets.group(1,new_icon,&element.image_group) ||
+                !assets.root(1,&element.animation_root_offset,&groups) || !assets.group(1,0,&initial) ||
+                !assets.frame(1,new_icon,0,&element.icon_frame)){step.status=I::UnsupportedResources;return step;}
+            if(std::fegetround()!=FE_TONEAREST){step.status=I::UnsupportedNumerics;return step;}
+            const auto& constants=*tables->icon_setup();
+            volatile float scalar_difference=constants.scalar[1]-constants.scalar[0];
+            volatile float vector_difference=constants.vector[1]-constants.vector[0];
+            volatile float scalar_step=scalar_difference==0.0f?0.0f:scalar_difference/15.0f;
+            volatile float vector_step=vector_difference==0.0f?0.0f:vector_difference/15.0f;
+            if(!ordinary(scalar_difference) || !ordinary(vector_difference) || !ordinary(scalar_step) || !ordinary(vector_step)){
+                step.status=I::UnsupportedNumerics;return step;}
+            element.resources=sources->resources;element.clock=sources->clock;
+            element.animation_root=1;element.animation_current=0;element.animation_progress=0;
+            element.animation_deadline=sources->clock->state().raw_time+initial.duration_c;
+            element.position_f0={float(element.icon_frame.pair[0]),float(element.icon_frame.pair[1])};
+            const std::array<float,2> placement{float(element.placement_frame.pair[0]),float(element.placement_frame.pair[1])};
+            if(*element.flags_120&1){
+                element.target_f8=std::array<float,4>{placement[0],placement[1],placement[0]-element.position_f0[0],placement[1]-element.position_f0[1]};
+            }else{
+                element.position_f0=placement;element.image_position_10=placement;element.animation_position_54=placement;
+            }
+            element.depth_114=constants.depth;element.image_depth_18=constants.depth;element.animation_depth_5c=constants.depth;
+            element.enabled_136=1;element.channel_zero_137=channel==0?1u:0u;
+            element.vector_base_d8=constants.base_vector; // E2270, then E29A0 saves this vector.
+            element.vector_cc.fill(constants.vector[0]);element.vector_step_e4.fill(static_cast<float>(vector_step));
+            element.scalar_128=constants.scalar[0];element.scalar_step_12c=scalar_step;
+            element.scalar_parameters_94=constants.scalar;element.vector_parameters_a4=constants.vector;
+            element.scalar_duration_9c=15;element.vector_duration_ac=15;
+            element.scalar_count_130=15;element.vector_count_132=15;
+            element.frame_134=0;element.repeat_135=1;
+            element.scalar_enabled_a0=1;element.scalar_repeat_a1=1;element.vector_enabled_b0=1;element.vector_repeat_b1=1;
+            // E2270's optional bit-4 reset is overwritten by the following
+            // enabled E29A0 call; its final reached fields are folded here.
+            *element.flags_120|=6;next.elements[channel]=std::move(element);
+        }
     }
-    auto next=input;next.labels_60[channel]=label;*out=next;step.prepared_mask=1u<<channel;step.status=I::Prepared;return step;
+    next.labels_60[channel]=label;*out=std::move(next);step.prepared_mask=1u<<channel;step.status=I::Prepared;return step;
 }
 WorldMapPlayerContextIconStep prepare_world_map_player_context_icons(const WorldMapPlayerContextLabelTables* tables,
-    const WorldMapPlayerContextIconState& input,const WorldMapPlayerContextLabels& labels,WorldMapPlayerContextIconState* out) noexcept {
+    const WorldMapPlayerContextIconState& input,const WorldMapPlayerContextLabels& labels,WorldMapPlayerContextIconState* out,
+    const WorldMapPlayerContextIconSources* sources) noexcept {
     using I=WorldMapPlayerContextIconStatus;WorldMapPlayerContextIconStep step;if(!out)return step;
     auto next=input;uint32_t mask=0;
     for(const auto channel:{0u,1u,3u,2u}){
         const auto label=channel==0?labels.labels[0]:channel==1?0u:channel==3?labels.labels[1]:labels.labels[2];
-        step=prepare_world_map_player_context_icon(tables,next,channel,label,&next);step.prepared_mask|=mask;
+        step=prepare_world_map_player_context_icon(tables,next,channel,label,&next,sources);step.prepared_mask|=mask;
         if(step.status!=I::Prepared)return step;mask=step.prepared_mask;
     }
     *out=next;return step;
