@@ -29,6 +29,11 @@ struct WorldMapPlayerAnimationHolderState {
     std::optional<WorldMapAnimationFeature3c> feature_3c;
     uint64_t secondary_model_c0 = 0, feature_c4 = 0, auxiliary_model_c8 = 0, arena_cc = 0;
 };
+enum class WorldMapPlayerHolderRepeatKind { Duration, Count };
+// D9FC: deadline=raw clock+duration (wrap), limit=0. DA44: limit=count
+// only. Neither resets restart count. False preserves out; whole alias allowed.
+[[nodiscard]] bool prepare_world_map_player_holder_repeat(const WorldMapPlayerAnimationHolderState& state,
+    WorldMapPlayerHolderRepeatKind kind,uint32_t value,std::optional<uint32_t> now,WorldMapPlayerAnimationHolderState* out) noexcept;
 enum class WorldMapPlayerHolderProgressStatus {
     Prepared, Advanced, RequiresSecondary, RequiresCompletedFlag, RequiresClock,
     RequiresDeadline, RequiresCount, RequiresNextDescriptor, RequiresFeatureReset,
@@ -57,6 +62,13 @@ struct WorldMapPlayerHolderProgressResult {
     uint64_t required_record = 0;
     uint32_t required_playback_fields = 0;
     std::optional<WorldMapTextureTimerResult> timers;
+    std::optional<WorldMapAnimationInitializerStatus> initializer_status;
+    std::optional<WorldMapAnimationFeatureStatus> feature_status;
+    std::optional<WorldMapAnimationFeatureRow> required_row;
+    std::optional<uint32_t> secondary_index;
+    // Staged work; only Advanced acknowledges publication of the whole update.
+    uint32_t initialized_records = 0;
+    bool terminal_feature_reset = false;
 };
 enum class WorldMapPlayerAnimationHolderStatus { ConstructedCpuHolder, RequiresModelAssets,
     RequiresAnimationAssets, RequiresPrimary, RequiresGroup, InitializerIncomplete, InvalidInput, AllocationFailure };
@@ -116,7 +128,7 @@ struct WorldMapPlayerInitialModelState {
 // D4B4's two owned channels, D560 state, actual CPU primary and retained
 // group-zero providers. Fresh D610 binding executes initialization before
 // publication. Existing-holder D610 rebind/reset, secondary construction,
-// descriptor transitions/restarts, actor acknowledgement and GPU draws
+// secondary progression, live actor scheduling and GPU draws
 // remain unsupported. General construction accepts a supplied complete
 // feature snapshot; the initial-input wrapper prepares it from static inputs
 // and reached runtime table/clock evidence.
@@ -155,9 +167,11 @@ public:
         return primary_channel_->progress(&primary_->model(), out);
     }
     // BA94's ordered primary 69C4 -> D7FC policy -> F6D4, published together.
-    // Reached secondary/sequence/initializer dependencies reject the entire
+    // Retained sequences include terminal reset and direct DB28 transitions/
+    // restarts. Reached secondary or unavailable evidence rejects the entire
     // update. Retains clock without advancing it; no CPU frame or queue work.
     [[nodiscard]] WorldMapPlayerHolderProgressResult advance_animation();
+    [[nodiscard]] bool configure_repeats(WorldMapPlayerHolderRepeatKind kind,uint32_t value) noexcept;
     // BBA0's ordered CPU frame -> F548 selection/cache update. Both publish
     // atomically after all preparation. Timer values/clocks, holder sequence,
     // actor metadata, optional effect and queues remain unchanged.

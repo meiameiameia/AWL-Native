@@ -177,6 +177,15 @@ using WorldMapPartialAnimationInitializerStep = WorldMapBasicAnimationInitialize
     const std::optional<WorldMapAnimationModelBinding>& model, const WorldMapAnimationBank* bank,
     const WorldMapAnimationInitializerObservations& observations, WorldMapPartialAnimationInitializerStep* out);
 
+// Direct DB28 entry, sharing the checked body above without D69C's equal-base
+// shortcut or new-start resets. Current must already identify descriptor.
+[[nodiscard]] WorldMapAnimationInitializerStatus prepare_world_map_partial_animation_current_initializer(
+    const WorldMapPartialAnimationInitializerState& state,
+    const std::optional<WorldMapActorAnimationDescriptor>& descriptor,
+    const std::optional<WorldMapActorAnimationGroup>& group,
+    const std::optional<WorldMapAnimationModelBinding>& model, const WorldMapAnimationBank* bank,
+    const WorldMapAnimationInitializerObservations& observations, WorldMapPartialAnimationInitializerStep* out);
+
 class WorldMapNativeModel;
 class WorldMapNativeAnimationChannel;
 struct WorldMapNativeAnimationInitializerMetadata {

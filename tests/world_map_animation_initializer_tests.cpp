@@ -646,5 +646,49 @@ void test_channel_progress() {
     pool={{1,progress_record(1,0,0)},{1,progress_record(1,0,0)}};
     expect(awl::prepare_world_map_partial_animation_channel_progress(channel,pool,0,std::nullopt,&step)==S::InvalidInput,"channel progression rejects ambiguous record keys");
 }
+void test_current_initializer() {
+    uint64_t digest=14695981039346656037ull;
+    for(uint32_t seed=0;seed<512;++seed) {
+        awl::WorldMapActorAnimationState state;state.current_descriptor_0=0x40000;state.base_descriptor_4=0x41000;
+        state.speed_8=2;state.default_duration_c=1000;state.deadline_10=23;state.default_count_14=3;
+        state.count_18=17;state.completed_count_1c=19;state.completed_20=3;state.flag_21=7;
+        state.restart_deadline_24=200;state.restart_limit_28=5;state.restart_count_2c=9;state.model_identity_30=0x2000;
+        const uint32_t group=seed%4,clip=seed/4%4,blend=seed/16%32,mode=seed/3%4,value=seed/7%1024,flags=seed/5%8;
+        const Descriptor descriptor{0x40000,(group<<25)|(mode<<10)|(value<<14)|((flags&1)<<12)|((flags&2)<<12)|((flags&4)<<22)|clip,
+            63u|(blend<<6)|(127u<<11)|(255u<<19),77};
+        awl::WorldMapActorAnimationStep step;
+        expect(awl::prepare_world_map_actor_animation_current(state,descriptor,awl::WorldMapActorAnimationGroup{group,0x60000ull+group*256},&step)==
+            awl::WorldMapActorAnimationStatus::RequiresModelSetup && !step.descriptor_changed && step.primary_setup,
+            "direct current initializer reaches setup without a new-start acknowledgement");
+        if(!step.primary_setup)continue;const auto& a=step.after;const auto& p=*step.primary_setup;
+        for(uint32_t word:{seed,uint32_t(a.current_descriptor_0),uint32_t(a.base_descriptor_4),bits(a.speed_8),a.default_duration_c,a.deadline_10,
+            a.default_count_14,a.count_18,a.completed_count_1c,uint32_t(a.completed_20),uint32_t(a.flag_21),a.restart_deadline_24,a.restart_limit_28,
+            a.restart_count_2c,uint32_t(a.model_identity_30),uint32_t(p.model_identity),uint32_t(p.bank_identity),p.clip_index,p.blend_count,p.argument_6,bits(p.start_value)})hash(digest,word);
+    }
+    std::cout<<"CURRENT_INITIALIZER_PREFIX 512 "<<std::hex<<digest<<std::dec<<'\n';
+    expect(digest==0xde0d6fc9b70b9f85ull,"current initializer prefix matches actual DB28 entry through first 6878 call with preserved metadata");
+    awl::WorldMapPartialAnimationInitializerState state;state.animation=initial().animation;state.has_optional_bindings=true;
+    state.primary={0,0,2,3,4,std::nullopt,0};
+    for(const auto& record:records())state.records.push_back({record.identity,awl::partial_world_map_animation_playback(record.state)});
+    state.model_links=awl::WorldMapModelLinkState{{awl::WorldMapModelLinkNode{100}}};
+    state.animation.completed_20=3;state.animation.restart_count_2c=9;
+    const auto owned=bank();Observations observations;observations.clock=UINT32_MAX-5;
+    awl::WorldMapPartialAnimationInitializerStep step;
+    const auto prepare=[&](uint32_t mode){return awl::prepare_world_map_partial_animation_current_initializer(state,
+        Descriptor{state.animation.current_descriptor_0,mode<<10,absent,77},awl::WorldMapActorAnimationGroup{0,200},
+        awl::WorldMapAnimationModelBinding{100,1},&owned,observations,&step);};
+    for(uint32_t mode=0;mode<4;++mode) {
+        expect(prepare(mode)==Status::Prepared && step.after.animation.base_descriptor_4==1 && step.after.animation.current_descriptor_0==1 &&
+            step.after.animation.completed_20==3 && step.after.animation.restart_count_2c==9 && step.after.animation.flag_21==0 &&
+            step.after.records[0].state.clip_10 && step.after.records[0].state.clip_10->bank_identity==200 &&
+            (mode!=2 || step.after.animation.deadline_10==7) && (mode!=3 || (step.after.animation.count_18==7 && step.after.animation.completed_count_1c==0)),
+            "same-base direct DB28 initializes playback and reached mode fields while preserving completion/restart metadata");
+    }
+    observations.clock.reset();expect(prepare(2)==Status::RequiresClock && !step.settings && step.after.animation.completed_20==3,
+        "direct timed initializer stops before settings when clock is absent");
+    const auto preserved=step.after.animation.restart_count_2c;
+    expect(awl::prepare_world_map_partial_animation_current_initializer(step.after,{}, {},{},nullptr,observations,&step)==Status::InvalidInput &&
+        step.after.animation.restart_count_2c==preserved,"direct initializer rejects output alias without replacing diagnostics");
+}
 } // namespace
-int main(){test_playback_progress();test_channel_progress();test_initializer();test_feature();test_actor_model_type();test_actor_model_type_matrix();test_model_links();test_secondary();test_failure_order();test_partial_settings();test_partial_initializer();test_settings_matrix();test_tail_matrix();test_feature_matrix();return failures==0?0:1;}
+int main(){test_current_initializer();test_playback_progress();test_channel_progress();test_initializer();test_feature();test_actor_model_type();test_actor_model_type_matrix();test_model_links();test_secondary();test_failure_order();test_partial_settings();test_partial_initializer();test_settings_matrix();test_tail_matrix();test_feature_matrix();return failures==0?0:1;}

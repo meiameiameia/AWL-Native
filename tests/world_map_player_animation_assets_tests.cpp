@@ -320,6 +320,7 @@ std::vector<uint8_t> start_dol() {
         word(b,0x160+i*24,(1u<<10)|(i&1));
         word(b,0x164+i*24,63u|(127u<<11)|(255u<<19));
         word(b,0x168+i*24,0x1500+i);
+        word(b,0x16C+i*24,1023u);word(b,0x170+i*24,127u<<11);word(b,0x174+i*24,UINT32_MAX);
     }
     return b;
 }
@@ -343,6 +344,28 @@ void start_animation_synthetic() {
         tables && !tables->target_verified(),"invented DOL tables decode into an immutable unverified owner");
     if(!tables)return;
     const auto* original=tables.get();
+    awl::WorldMapActorAnimationDescriptor record{777,1,2,3};
+    for(uint64_t i=0;i<4;++i) {
+        const uint64_t base=0x81001000+i*24;
+        expect(tables->sequence_record(base,base+12,&record) && record.identity==base+12 && record.word_0==1023 && record.word_4==(127u<<11) && record.word_8==UINT32_MAX,
+            "each bounded selector sequence retains its independently specified terminal record");
+        expect(!tables->sequence_record(base,base+24,&record) && record.identity==base+12 &&
+            !tables->sequence_record(base,base+1,&record) && !tables->sequence_record(base+1,base,&record),
+            "sequence lookup rejects beyond-terminal, misaligned and foreign-base keys without changing output");
+    }
+    expect(!tables->sequence_record(0x81001000,0x81001000,nullptr),"sequence lookup rejects absent output");
+    auto unterminated=b;for(size_t i=0;i<4;++i)word(unterminated,0x16C+i*24,0);
+    expect(awl::decode_world_map_player_start_animation_tables(unterminated.data(),unterminated.size(),&tables)==S::UnsupportedLayout && tables.get()==original,
+        "a mapped region without a reached terminal cannot establish a sequence extent");
+    auto truncated_terminal=b;word(truncated_terminal,0x9C,92);
+    expect(awl::decode_world_map_player_start_animation_tables(truncated_terminal.data(),truncated_terminal.size(),&tables)==S::UnsupportedLayout && tables.get()==original,
+        "terminal records require all twelve mapped bytes");
+    auto excessive=b;excessive.resize(0x300+257*12);word(excessive,3*4,0x300);word(excessive,0x90+3*4,257*12);
+    for(size_t i=0;i<96;++i)excessive[0x300+i]=b[0x160+i];
+    for(size_t i=0;i<4;++i)word(excessive,0x30C+i*24,0);
+    word(excessive,0x300+256*12,1023);
+    expect(awl::decode_world_map_player_start_animation_tables(excessive.data(),excessive.size(),&tables)==S::UnsupportedLayout && tables.get()==original,
+        "a terminal beyond the explicit 256-record native bound cannot authorize a sequence");
     awl::WorldMapPlayerStatusState fresh;
     expect(tables->prepare_fresh_status(UINT32_MAX,&fresh)==awl::WorldMapPlayerStatusCode::Prepared &&
         fresh.word_4==90000 && fresh.word_20==24999 && fresh.word_14==1200000 && fresh.word_12c==2159999 &&
@@ -433,11 +456,27 @@ void start_animation_synthetic() {
     f.write("../sys/main.dol",b);
     expect(awl::load_world_map_player_start_animation_tables(&tables)==S::WrongDol && tables.get()==original,
         "synthetic shape cannot bypass exact target SHA1");
+    // MSVC Debug vector constructors allocate noexcept iterator proxies.
+    // Keep iterator checking; sweep catchable sequence allocations in Release.
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    const auto sequence_live=allocation_probe::live;size_t allocation_stops=0;bool decoded=false;
+    for(size_t fail=0;fail<32;++fail) {
+        allocation_probe::remaining=fail;allocation_probe::enabled=true;
+        const auto allocated=awl::decode_world_map_player_start_animation_tables(b.data(),b.size(),&tables);allocation_probe::enabled=false;
+        if(allocated==S::Decoded){decoded=true;break;}++allocation_stops;
+        expect(allocated==S::AllocationFailure && tables.get()==original && allocation_probe::live==sequence_live,
+            "every sequence/table allocation failure preserves prior ownership and frees all staged metadata");
+    }
+    expect(decoded && allocation_stops>=10,"sequence allocation sweep reaches all four owned terminal records");
+    std::cout<<"PLAYER_SEQUENCE_TABLE_ALLOCATION_FAILURES "<<allocation_stops<<'\n';
+#else
     allocation_probe::remaining=0;allocation_probe::enabled=true;
-    const auto allocated=awl::decode_world_map_player_start_animation_tables(b.data(),b.size(),&tables);
-    allocation_probe::enabled=false;
-    expect(allocated==S::AllocationFailure && tables.get()==original,"table allocation failure preserves ownership");
+    const auto allocated=awl::decode_world_map_player_start_animation_tables(b.data(),b.size(),&tables);allocation_probe::enabled=false;
+    expect(allocated==S::AllocationFailure && tables.get()==original,"failed initial table allocation preserves prior ownership");
+#endif
     b.assign(b.size(),0);
+    expect(tables->sequence_record(0x81001000,0x8100100C,&record) && record.word_0==1023,
+        "owned sequence metadata survives clearing source bytes");
     expect(tables->select(command,std::nullopt,&selection)==S::Selected && selection.descriptor.word_8==0x1500,
         "clearing source bytes cannot invalidate selected descriptor words");
     const auto private_factors=tables->status_factors(selection.descriptor);

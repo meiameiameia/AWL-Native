@@ -39,6 +39,17 @@ bool WorldMapPlayerStartAnimationTables::decode(const uint8_t* data, size_t size
         const auto* descriptor = view.read(address,12);
         if (!descriptor) return false;
         entries[i] = {i,index,{address,dol_word(descriptor),dol_word(descriptor + 4),dol_word(descriptor + 8)}};
+        // Native resource bound, not an inferred original table length.
+        // Require an explicit terminal within 256 twelve-byte records.
+        for (uint32_t record=0;record<256;++record) {
+            const uint64_t key=uint64_t(address)+uint64_t(record)*12;
+            if (key>UINT32_MAX) return false;
+            const auto* words=view.read(static_cast<uint32_t>(key),12);
+            if (!words) return false;
+            sequences_[i].push_back({key,dol_word(words),dol_word(words+4),dol_word(words+8)});
+            if ((dol_word(words)&1023u)==1023) break;
+        }
+        if ((sequences_[i].back().word_0&1023u)!=1023) return false;
         const uint32_t code = entries[i].descriptor.word_8;
         // Preserve unsupported negative descriptors for the later status
         // consumer; they cannot authorize a read before a rate table.
@@ -66,6 +77,14 @@ bool WorldMapPlayerStartAnimationTables::decode(const uint8_t* data, size_t size
     return true;
 }
 
+bool WorldMapPlayerStartAnimationTables::sequence_record(uint64_t base,uint64_t current,WorldMapActorAnimationDescriptor* out) const noexcept {
+    if (!out) return false;
+    for (size_t i=0;i<entries_.size();++i) if (entries_[i].descriptor.identity==base) {
+        for (const auto& record:sequences_[i]) if (record.identity==current) {*out=record;return true;}
+        return false;
+    }
+    return false;
+}
 WorldMapPlayerStatusFactors WorldMapPlayerStartAnimationTables::status_factors(
     const WorldMapActorAnimationDescriptor& current) const noexcept {
     WorldMapPlayerStatusFactors result;

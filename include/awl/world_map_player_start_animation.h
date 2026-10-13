@@ -2,6 +2,7 @@
 #include "awl/world_map_player_start.h"
 #include "awl/world_map_player_animation_assets.h"
 #include "awl/world_map_player_status.h"
+#include <vector>
 
 namespace awl {
 struct WorldMapPlayerStartItemType { uint32_t item = 0; uint8_t type = 0; };
@@ -22,11 +23,11 @@ enum class WorldMapPlayerStartAnimationStatus {
     ReadFailure, WrongDol, AllocationFailure, Advanced
 };
 
-// Immutable first records of selector 1's four descriptor choices. Logical
-// DOL addresses are equality keys, never host pointers. These copied words
-// do not decode the subsequent 12-byte sequence or establish playback.
+// Immutable bounded sequences of selector 1's four descriptor choices,
+// including their first terminal clip-1023 record. Logical DOL addresses are
+// equality keys, never host pointers. Metadata ownership is not playback.
 // Also retains initial DOL coefficients and the reached status halfword for
-// each of these records, plus the three initial r2 status-reset constants;
+// each first record, plus the three initial r2 status-reset constants;
 // this does not infer either rate table's length.
 class WorldMapPlayerStartAnimationTables {
 public:
@@ -40,6 +41,10 @@ public:
         const WorldMapPlayerStartAnimationCommand& command,
         const std::optional<WorldMapPlayerStartItemType>& item_type,
         WorldMapPlayerStartAnimationSelection* out) const;
+    // Exact base and record key within that retained sequence. Stops preserve
+    // out. Never reads beyond its terminal or infers another sequence's extent.
+    [[nodiscard]] bool sequence_record(uint64_t base, uint64_t current,
+        WorldMapActorAnimationDescriptor* out) const noexcept;
     // Initial DOL parameter snapshot, not later mutable global observations.
     // Only an exact retained first record gets a rate. Unknown/spoofed records
     // keep the coefficients but leave the rate unknown for the ordered consumer.
@@ -57,6 +62,7 @@ private:
     friend WorldMapPlayerStartAnimationStatus load_world_map_player_start_animation_tables(
         std::shared_ptr<const WorldMapPlayerStartAnimationTables>*);
     std::array<WorldMapPlayerStartAnimationSelection,4> entries_{};
+    std::array<std::vector<WorldMapActorAnimationDescriptor>,4> sequences_;
     std::array<std::optional<uint16_t>,4> status_rates_{};
     std::array<uint32_t,static_cast<size_t>(WorldMapPlayerStatusGlobal::Count)> status_globals_{};
     WorldMapPlayerStatusResetValues status_reset_;

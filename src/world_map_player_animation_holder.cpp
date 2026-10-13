@@ -22,15 +22,21 @@ WorldMapNativeAnimationInitializerMetadata supplied_metadata(const WorldMapPlaye
     result.has_optional_bindings = true; result.feature_38 = s.feature_38; result.feature_3c = s.feature_3c;
     result.secondary_model_c0 = s.secondary_model_c0; return result;
 }
-void publish_known_fields(WorldMapPlayerAnimationHolderState& state,
+void publish_current_fields(WorldMapPlayerAnimationHolderState& state,
     const WorldMapNativeAnimationInitializerMetadata& metadata, const WorldMapActorAnimationDescriptor& descriptor) noexcept {
     const auto& a = metadata.animation;
-    state.current_descriptor_0 = a.current_descriptor_0; state.base_descriptor_4 = a.base_descriptor_4;
-    state.completed_20 = a.completed_20; state.flag_21 = a.flag_21; state.restart_count_2c = a.restart_count_2c;
+    state.flag_21 = a.flag_21;
     const auto mode = (descriptor.word_0 >> 10) & 3u;
     if (mode == 2) state.deadline_10 = a.deadline_10;
     if (mode == 3) { state.count_18 = a.count_18; state.completed_count_1c = a.completed_count_1c; }
     state.feature_38 = metadata.feature_38; state.feature_3c = metadata.feature_3c;
+}
+void publish_known_fields(WorldMapPlayerAnimationHolderState& state,
+    const WorldMapNativeAnimationInitializerMetadata& metadata, const WorldMapActorAnimationDescriptor& descriptor) noexcept {
+    publish_current_fields(state,metadata,descriptor);
+    const auto& a=metadata.animation;
+    state.current_descriptor_0=a.current_descriptor_0;state.base_descriptor_4=a.base_descriptor_4;
+    state.completed_20=a.completed_20;state.restart_count_2c=a.restart_count_2c;
 }
 template<class Result> void diagnostics(Result& out, const WorldMapNativeAnimationInitializerStep& initialized) noexcept {
     out.initializer_status = initialized.initializer_status;
@@ -45,11 +51,17 @@ template<class Result> void diagnostics(Result& out, const WorldMapNativeAnimati
         }
     }
 }
-} // namespace
-WorldMapPlayerHolderProgressStatus prepare_world_map_player_holder_policy(
+using HolderProgress=WorldMapPlayerHolderProgressStatus;
+HolderProgress require_current_initializer(WorldMapPlayerAnimationHolderState&,WorldMapActorAnimationDescriptor&) {
+    return HolderProgress::RequiresInitialization;
+}
+HolderProgress require_feature_reset(WorldMapPlayerAnimationHolderState&) {return HolderProgress::RequiresFeatureReset;}
+HolderProgress supplied_loop_disable(bool) {return HolderProgress::Prepared;}
+template<class Resolve,class Initialize,class Reset,class Disable>
+WorldMapPlayerHolderProgressStatus prepare_holder_policy(
     const WorldMapPlayerAnimationHolderState& state, const WorldMapActorAnimationDescriptor& descriptor,
-    bool primary_completed, std::optional<uint32_t> now,
-    const std::optional<WorldMapActorAnimationDescriptor>& next, WorldMapPlayerHolderPolicyStep* out) noexcept {
+    bool primary_completed, std::optional<uint32_t> now, Resolve resolve, Initialize initialize,
+    Reset reset, Disable disable, WorldMapPlayerHolderPolicyStep* out) {
     using S=WorldMapPlayerHolderProgressStatus;
     if (!out || &state==&out->after || &descriptor==&out->descriptor ||
         !state.current_descriptor_0 || state.current_descriptor_0>UINT32_MAX || descriptor.identity!=state.current_descriptor_0) return S::InvalidInput;
@@ -80,6 +92,9 @@ WorldMapPlayerHolderProgressStatus prepare_world_map_player_holder_policy(
                 if (count+1u==*state.count_18) {
                     step.disable_primary_loop=true;
                     step.disable_secondary_loop=((descriptor.word_4>>11)&127u)!=127;
+                    const auto status=disable(step.disable_secondary_loop);
+                    if (status==S::InvalidInput) return status;
+                    if (status!=S::Prepared) return stop(status);
                 }
                 advance=count>=*state.count_18;
             }
@@ -88,12 +103,22 @@ WorldMapPlayerHolderProgressStatus prepare_world_map_player_holder_policy(
     if (advance) {
         if (state.current_descriptor_0>UINT32_MAX-12u) return S::InvalidInput;
         const auto required=state.current_descriptor_0+12u;
+        const auto next=resolve(required);
         if (!next) { step.required_descriptor=required;return stop(S::RequiresNextDescriptor); }
         if (next->identity!=required) return S::InvalidInput;
         step.after.current_descriptor_0=required;step.descriptor=*next;
-        if ((next->word_0&1023u)!=1023) { step.required_descriptor=required;return stop(S::RequiresInitialization); }
-        step.after.completed_20=uint8_t{1};
-        if (state.feature_38) return stop(S::RequiresFeatureReset);
+        if ((next->word_0&1023u)!=1023) {
+            const auto status=initialize(step.after,step.descriptor);
+            if (status==S::InvalidInput) return status;
+            if (status!=S::Prepared) {step.required_descriptor=required;return stop(status);}
+        } else {
+            step.after.completed_20=uint8_t{1};
+            if (step.after.feature_38) {
+                const auto status=reset(step.after);
+                if (status==S::InvalidInput) return status;
+                if (status!=S::Prepared) return stop(status);
+            }
+        }
     }
     if ((step.descriptor.word_0&1023u)==1023 || (((step.descriptor.word_0>>10)&3u)==1 && primary_completed)) {
         ++step.after.restart_count_2c;
@@ -104,10 +129,35 @@ WorldMapPlayerHolderProgressStatus prepare_world_map_player_holder_policy(
         }
         if (restart) {
             if (!state.base_descriptor_4 || state.base_descriptor_4>UINT32_MAX) return S::InvalidInput;
-            step.required_descriptor=state.base_descriptor_4;return stop(S::RequiresInitialization);
+            step.after.current_descriptor_0=state.base_descriptor_4;
+            const auto status=initialize(step.after,step.descriptor);
+            if (status==S::InvalidInput) return status;
+            if (status!=S::Prepared) {step.required_descriptor=state.base_descriptor_4;return stop(status);}
         }
     }
     *out=step;return S::Prepared;
+}
+} // namespace
+WorldMapPlayerHolderProgressStatus prepare_world_map_player_holder_policy(
+    const WorldMapPlayerAnimationHolderState& state, const WorldMapActorAnimationDescriptor& descriptor,
+    bool primary_completed, std::optional<uint32_t> now,
+    const std::optional<WorldMapActorAnimationDescriptor>& next, WorldMapPlayerHolderPolicyStep* out) noexcept {
+    return prepare_holder_policy(state,descriptor,primary_completed,now,[&](uint64_t){return next;},
+        require_current_initializer,require_feature_reset,supplied_loop_disable,out);
+}
+bool prepare_world_map_player_holder_repeat(const WorldMapPlayerAnimationHolderState& state,
+    WorldMapPlayerHolderRepeatKind kind,uint32_t value,std::optional<uint32_t> now,WorldMapPlayerAnimationHolderState* out) noexcept {
+    using K=WorldMapPlayerHolderRepeatKind;
+    if (!out || (kind!=K::Duration && kind!=K::Count) || (kind==K::Duration && !now)) return false;
+    auto after=state;
+    if (kind==K::Duration) {after.restart_deadline_24=*now+value;after.restart_limit_28=0;}
+    else after.restart_limit_28=value;
+    *out=after;return true;
+}
+bool WorldMapPlayerAnimationHolder::configure_repeats(WorldMapPlayerHolderRepeatKind kind,uint32_t value) noexcept {
+    const auto now=kind==WorldMapPlayerHolderRepeatKind::Duration && game_clock_ ?
+        std::optional<uint32_t>(game_clock_->state().raw_time):std::nullopt;
+    return prepare_world_map_player_holder_repeat(state_,kind,value,now,&state_);
 }
 WorldMapPlayerHolderProgressResult WorldMapPlayerAnimationHolder::advance_animation() {
     using S=WorldMapPlayerHolderProgressStatus;using C=WorldMapAnimationChannelStatus;
@@ -125,19 +175,76 @@ WorldMapPlayerHolderProgressResult WorldMapPlayerAnimationHolder::advance_animat
         result.primary_completed=progress.completed;
         if (((descriptor_.word_4>>11)&127u)!=127) { result.status=S::RequiresSecondary;return result; }
         const auto now=game_clock_?std::optional<uint32_t>(game_clock_->state().raw_time):std::nullopt;
+        const auto resolve=[&](uint64_t key)->std::optional<WorldMapActorAnimationDescriptor> {
+            WorldMapActorAnimationDescriptor record;
+            if (tables_ && tables_->sequence_record(state_.base_descriptor_4,key,&record)) return record;
+            return {};
+        };
+        const auto observations=[&](const WorldMapPlayerAnimationHolderState& state) {
+            WorldMapAnimationInitializerObservations obs;obs.clock=now;
+            if (state.feature_38 && timer_assets_) {
+                using B=WorldMapPlayerTimerBank;
+                obs.fallback_table_38=timer_assets_->table_identity(B::Eyes);obs.fallback_table_24=timer_assets_->table_identity(B::Mouth);
+                for (uint32_t channel_index=0;channel_index<2;++channel_index) {
+                    const auto type=channel_index?state.feature_38->type_4:state.feature_38->type_0;
+                    const uint32_t minimum=channel_index?0x24u:0x3au;
+                    WorldMapPlayerTimerResourceView resource;const auto bank=channel_index?B::Mouth:B::Eyes;
+                    if (type>=minimum && type<=INT32_MAX && timer_assets_->resource(bank,type-minimum,0,&resource))
+                        obs.rows.push_back({timer_assets_->table_identity(bank),type-minimum,0,resource.identity});
+                }
+            }
+            return obs;
+        };
+        std::optional<WorldMapModelLinkState> links;
+        const auto initialize=[&](WorldMapPlayerAnimationHolderState& state,WorldMapActorAnimationDescriptor& descriptor) {
+            const auto record=resolve(state.current_descriptor_0);
+            if (!record) return S::RequiresInitialization;
+            WorldMapPlayerAnimationGroupBinding group;
+            if (bind_world_map_player_animation_group(record->word_0,animations_,&group)!=WorldMapPlayerAnimationAssetsStatus::Bound) {
+                result.initializer_status=WorldMapAnimationInitializerStatus::RequiresBinding;return S::RequiresInitialization;
+            }
+            const auto* bank=model.animation_bank(group.primary.bank_identity);
+            if (!bank || !bank->same_contents(group.assets->primary_animations())) return S::InvalidInput;
+            if (!links) {links.emplace();for (const auto* owner:models_) links->nodes.push_back(owner->model_links());}
+            const auto metadata=supplied_metadata(state);
+            WorldMapPartialAnimationInitializerState supplied;
+            supplied.animation=metadata.animation;supplied.primary=progress.update.after;supplied.records=progress.update.records_after;
+            supplied.has_optional_bindings=true;supplied.feature_38=state.feature_38;supplied.feature_3c=state.feature_3c;
+            supplied.secondary_model_c0=state.secondary_model_c0;supplied.model_links=links;
+            WorldMapPartialAnimationInitializerStep prepared;
+            result.initializer_status=prepare_world_map_partial_animation_current_initializer(supplied,record,group.primary,binding,bank,observations(state),&prepared);
+            result.required_row=prepared.required_row;result.secondary_index=prepared.secondary_index;
+            for (const auto* step:{&prepared.setup,&prepared.settings}) if (*step && ((*step)->required_record || (*step)->required_fields)) {
+                result.required_record=(*step)->required_record;result.required_playback_fields=(*step)->required_fields;
+            }
+            if (*result.initializer_status==WorldMapAnimationInitializerStatus::InvalidInput) return S::InvalidInput;
+            if (*result.initializer_status!=WorldMapAnimationInitializerStatus::Prepared) return S::RequiresInitialization;
+            if (!prepared.after.model_links || prepared.after.model_links->nodes.size()!=models_.size()) return S::InvalidInput;
+            auto after=metadata;after.animation=prepared.after.animation;after.feature_38=prepared.after.feature_38;after.feature_3c=prepared.after.feature_3c;
+            publish_current_fields(state,after,*record);descriptor=*record;
+            progress.update.after=prepared.after.primary;progress.update.records_after.swap(prepared.after.records);
+            links=std::move(prepared.after.model_links);++result.initialized_records;return S::Prepared;
+        };
+        const auto reset=[&](WorldMapPlayerAnimationHolderState& state) {
+            WorldMapAnimationFeatureStep prepared;
+            result.feature_status=prepare_world_map_animation_feature38(*state.feature_38,UINT32_MAX,observations(state),&prepared);
+            result.required_row=prepared.required_row;
+            if (*result.feature_status==WorldMapAnimationFeatureStatus::InvalidInput) return S::InvalidInput;
+            if (*result.feature_status!=WorldMapAnimationFeatureStatus::Prepared) return S::RequiresFeatureReset;
+            state.feature_38=prepared.after;result.terminal_feature_reset=true;return S::Prepared;
+        };
+        const auto disable=[&](bool secondary) {
+            if (secondary) return S::RequiresSecondary;
+            // This write precedes any subsequent DB28 setup/settings.
+            for (auto& record:progress.update.records_after) if (record.identity==progress.update.after.target_8) {
+                record.state.word_8=0u;return S::Prepared;
+            }
+            return S::InvalidInput;
+        };
         WorldMapPlayerHolderPolicyStep policy;
-        result.status=prepare_world_map_player_holder_policy(state_,descriptor_,progress.completed,now,std::nullopt,&policy);
+        result.status=prepare_holder_policy(state_,descriptor_,progress.completed,now,resolve,initialize,reset,disable,&policy);
         result.required_descriptor=policy.required_descriptor;result.required_field=policy.required_field;
         if (result.status!=S::Prepared) return result;
-        // 69C4 already copied the model. 6C4C changes ONLY the target loop
-        // word afterward; rebinding the model here would change that order.
-        if (policy.disable_primary_loop) {
-            bool found=false;
-            for (auto& record:progress.update.records_after) if (record.identity==progress.update.after.target_8) {
-                record.state.word_8=0;found=true;break;
-            }
-            if (!found) { result.status=S::InvalidInput;return result; }
-        }
         if (!policy.after.feature_38) result.timers=WorldMapTextureTimerResult{WorldMapTextureTimerStatus::RequiresFeature};
         else {
             WorldMapAnimationFeature38 timers;
@@ -150,6 +257,7 @@ WorldMapPlayerHolderProgressResult WorldMapPlayerAnimationHolder::advance_animat
         const auto model_after=progress.update.records_after.back().state;
         progress.update.records_after.pop_back();
         model.set_playback(model_after);channel.state_=progress.update.after;channel.records_.swap(progress.update.records_after);
+        if (links) for (size_t i=0;i<models_.size();++i) models_[i]->publish_links(links->nodes[i]);
         state_=policy.after;descriptor_=policy.descriptor;
         result.status=S::Advanced;return result;
     } catch (const std::bad_alloc&) { result.status=S::AllocationFailure;return result; }

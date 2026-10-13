@@ -82,6 +82,12 @@ struct WorldMapActorAnimationStep {
     const WorldMapActorAnimationState& state, uint64_t descriptor_identity,
     const std::optional<WorldMapActorAnimationDescriptor>& descriptor,
     const std::optional<WorldMapActorAnimationGroup>& group, WorldMapActorAnimationStep* out);
+// DB28's unconditional current-record setup prefix. Never compares or changes
+// base, completed/restart fields, or current. Descriptor must match current.
+[[nodiscard]] WorldMapActorAnimationStatus prepare_world_map_actor_animation_current(
+    const WorldMapActorAnimationState& state,
+    const std::optional<WorldMapActorAnimationDescriptor>& descriptor,
+    const std::optional<WorldMapActorAnimationGroup>& group, WorldMapActorAnimationStep* out);
 
 struct WorldMapActorPresentationToggleState {
     uint32_t type_128 = 0; // Signed comparison in FUN_8002F674.

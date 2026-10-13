@@ -254,6 +254,9 @@ public:
     [[nodiscard]] WorldMapPlayerHolderProgressResult advance_animation() {
         return model_->advance_animation();
     }
+    [[nodiscard]] bool configure_animation_repeats(WorldMapPlayerHolderRepeatKind kind,uint32_t value) noexcept {
+        return model_->configure_repeats(kind,value);
+    }
 private:
     WorldMapPlayerStartup() = default;
     [[nodiscard]] WorldMapPlayerState29CameraStep prepare_state29_camera(

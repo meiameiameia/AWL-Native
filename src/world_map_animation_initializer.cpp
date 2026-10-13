@@ -286,13 +286,14 @@ WorldMapAnimationInitializerStatus prepare_initializer(
     const std::optional<WorldMapActorAnimationDescriptor>& descriptor,
     const std::optional<WorldMapActorAnimationGroup>& group,
     const std::optional<WorldMapAnimationModelBinding>& model, const WorldMapAnimationBank* bank,
-    const WorldMapAnimationInitializerObservations& observations, Step* out) {
+    const WorldMapAnimationInitializerObservations& observations, Step* out, bool current=false) {
     using Status = WorldMapAnimationInitializerStatus;
     if (out == nullptr || &state == &out->after) return Status::InvalidInput;
     Step step; step.after = state;
     auto finish = [&](Status status) { *out = std::move(step); return status; };
     WorldMapActorAnimationStep start;
-    const auto begin = prepare_world_map_actor_animation_start(state.animation, requested, descriptor, group, &start);
+    const auto begin = current ? prepare_world_map_actor_animation_current(state.animation,descriptor,group,&start) :
+        prepare_world_map_actor_animation_start(state.animation, requested, descriptor, group, &start);
     if (begin == WorldMapActorAnimationStatus::InvalidInput) return Status::InvalidInput;
     step.start = start; step.after.animation = start.after;
     if (begin == WorldMapActorAnimationStatus::Unchanged) return finish(Status::Unchanged);
@@ -416,5 +417,14 @@ WorldMapAnimationInitializerStatus prepare_world_map_partial_animation_initializ
     const WorldMapAnimationInitializerObservations& observations, WorldMapPartialAnimationInitializerStep* out) {
     return prepare_initializer<WorldMapPartialAnimationInitializerState, WorldMapPartialAnimationInitializerStep, WorldMapAnimationPartialChannelStep>(
         state, requested, descriptor, group, model, bank, observations, out);
+}
+WorldMapAnimationInitializerStatus prepare_world_map_partial_animation_current_initializer(
+    const WorldMapPartialAnimationInitializerState& state,
+    const std::optional<WorldMapActorAnimationDescriptor>& descriptor,
+    const std::optional<WorldMapActorAnimationGroup>& group,
+    const std::optional<WorldMapAnimationModelBinding>& model, const WorldMapAnimationBank* bank,
+    const WorldMapAnimationInitializerObservations& observations, WorldMapPartialAnimationInitializerStep* out) {
+    return prepare_initializer<WorldMapPartialAnimationInitializerState, WorldMapPartialAnimationInitializerStep, WorldMapAnimationPartialChannelStep>(
+        state,state.animation.current_descriptor_0,descriptor,group,model,bank,observations,out,true);
 }
 } // namespace awl

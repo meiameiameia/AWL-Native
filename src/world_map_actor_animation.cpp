@@ -41,8 +41,21 @@ WorldMapActorAnimationStatus prepare_world_map_actor_animation_start(
     step.after.current_descriptor_0 = step.after.base_descriptor_4 = descriptor_identity;
     step.after.completed_20 = step.after.flag_21 = 0;
     step.after.restart_count_2c = 0;
+    WorldMapActorAnimationStep current;
+    const auto status=prepare_world_map_actor_animation_current(step.after,descriptor,group,&current);
+    if (status==Status::InvalidInput) return status;
+    current.descriptor_changed=true;*out=current;return status;
+}
+WorldMapActorAnimationStatus prepare_world_map_actor_animation_current(
+    const WorldMapActorAnimationState& state,
+    const std::optional<WorldMapActorAnimationDescriptor>& descriptor,
+    const std::optional<WorldMapActorAnimationGroup>& group, WorldMapActorAnimationStep* out) {
+    using Status=WorldMapActorAnimationStatus;
+    if (!out || &state==&out->after || !state.current_descriptor_0) return Status::InvalidInput;
+    WorldMapActorAnimationStep step;step.after=state;
+    const auto finish=[&](Status status){*out=step;return status;};
     if (!descriptor) return finish(Status::RequiresDescriptor);
-    if (descriptor->identity != descriptor_identity) return Status::InvalidInput;
+    if (descriptor->identity != state.current_descriptor_0) return Status::InvalidInput;
     step.fields = decode_fields(*descriptor);
     if (group && group->group_index != step.fields->group_index) return Status::InvalidInput;
     if (!group || state.model_identity_30 == 0) return finish(Status::RequiresBinding);
