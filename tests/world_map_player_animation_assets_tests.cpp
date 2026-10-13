@@ -2,14 +2,17 @@
 #include "awl/world_map_player_start_animation.h"
 #include "awl/world_map_animation_channel_owner.h"
 #include "awl/world_map_model_initialization.h"
+#include "awl/world_map_player_secondary.h"
 #include "awl/filesystem.h"
 
 #include <chrono>
+#include <cfenv>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <new>
 #include <stdexcept>
 #include <string>
@@ -599,6 +602,108 @@ uint64_t native_start_snapshot(const awl::WorldMapNativeAnimationInitializerMeta
     for(const auto& n:core.nodes){key(n.feature_8);hash(h,uint32_t(n.next_feature_14.has_value()));if(n.next_feature_14)hash(h,*n.next_feature_14);}
     return h;
 }
+uint64_t secondary_snapshot(const awl::WorldMapPlayerSecondaryOwner& owner) {
+    return native_start_snapshot({},owner.channel(),owner.model());
+}
+void hash_secondary(uint64_t& h,const awl::WorldMapPlayerSecondaryOwner& owner) {
+    const auto& channel=owner.channel();const auto& state=channel.state();const auto binding=owner.model().binding();
+    const auto key=[&](uint64_t value) {
+        if(!value)return 0u;if(value==binding.playback_178)return 1u;
+        for(size_t i=0;i<channel.records().size();++i)if(value==channel.records()[i].identity)return uint32_t(i+2);
+        expect(false,"fresh owned secondary cannot borrow an external blend record");return UINT32_MAX;
+    };
+    for(uint32_t w:{state.elapsed_0,state.duration_4,key(state.older_10),key(state.previous_c),key(state.target_8),
+        uint32_t(state.blend_14.has_value()),state.blend_14?bits(*state.blend_14):0u,state.mode_18})hash(h,w);
+    const auto playback=[&](uint32_t id,const awl::WorldMapAnimationPartialPlayback& p) {
+        const uint32_t known=uint32_t(p.word_8.has_value())|(uint32_t(p.limit_c.has_value())<<1)|(uint32_t(p.value_18.has_value())<<2);
+        for(uint32_t w:{id,bits(p.position_0),bits(p.rate_4),known,p.word_8.value_or(0),p.limit_c?bits(*p.limit_c):0u,
+            uint32_t(p.clip_10.has_value()),p.clip_10?owner.selected_index()-1:0u,key(p.link_14),p.value_18?bits(*p.value_18):0u})hash(h,w);
+    };
+    for(size_t i=0;i<channel.records().size();++i)playback(uint32_t(i+2),channel.records()[i].state);
+    playback(1,owner.model().partial_playback());
+}
+void secondary_owner_synthetic() {
+    using S=awl::WorldMapPlayerSecondaryStatus;using C=awl::WorldMapAnimationChannelStatus;
+    Fixture fixture;fixture.complete();std::shared_ptr<const Assets> assets;
+    expect(awl::load_world_map_player_animation_assets(&assets)==Status::Loaded,"secondary owner fixture loads");if(!assets)return;
+    std::unique_ptr<awl::WorldMapPlayerSecondaryOwner> owner;
+    expect(awl::construct_world_map_player_secondary(assets,0,1u<<11,1,1,&owner).status==S::ConstructedCpuSecondary && owner,
+        "fresh selected secondary publishes model, retained clip and channel together");if(!owner)return;
+    const auto before=secondary_snapshot(*owner);const auto* original=owner.get();
+    expect(awl::construct_world_map_player_secondary({},UINT32_MAX,127u<<11,0,0,&owner).status==S::RequiresSelection && owner.get()==original,
+        "absent-secondary selection reads no assets and does not release an existing owner");
+    expect(awl::construct_world_map_player_secondary({},0,1u<<11,0,0,&owner).status==S::RequiresAssets &&
+        awl::construct_world_map_player_secondary({},1u<<25,1u<<11,0,0,&owner).status==S::RequiresGroup &&
+        awl::construct_world_map_player_secondary(assets,0,0,0,0,&owner).status==S::InvalidInput &&
+        awl::construct_world_map_player_secondary(assets,0,3u<<11,0,0,&owner).status==S::InvalidInput &&
+        secondary_snapshot(*owner)==before,"missing providers, unsupported group/root index and out-of-bank model preserve the old owner");
+    auto rejected=awl::construct_world_map_player_secondary(assets,0,2u<<11,0,std::numeric_limits<float>::quiet_NaN(),&owner);
+    expect(rejected.status==S::InvalidInput && rejected.construction && rejected.construction->status==awl::WorldMapModelConstructionStatus::Constructed &&
+        rejected.applying_settings && rejected.channel_status==C::InvalidInput && owner.get()==original && secondary_snapshot(*owner)==before,
+        "late settings rejection frees the staged model/channel without replacing accepted playback");
+    expect(awl::construct_world_map_player_secondary(assets,0,1u<<11,1,1,nullptr).status==S::InvalidInput &&
+        owner->progress(nullptr)==C::InvalidInput && secondary_snapshot(*owner)==before,"null outputs reject without publishing work");
+    fixture.write("boy_0_subanm.arc",archive({clip(11)}));std::shared_ptr<const Assets> short_animations;
+    expect(awl::load_world_map_player_animation_assets(&short_animations)==Status::Loaded,"truncated clip catalog is a bounded archive");
+    rejected=awl::construct_world_map_player_secondary(short_animations,0,2u<<11,1,1,&owner);
+    expect(rejected.status==S::InvalidInput && rejected.construction && !rejected.applying_settings && rejected.channel_status==C::InvalidInput &&
+        owner.get()==original && secondary_snapshot(*owner)==before,"missing selected clip rejects after model construction without publishing a prefix");
+    fixture.complete();auto euler=model();word(euler,64,2u<<24);word(euler,80,bits(1));
+    fixture.write("boy_0_subact.arc",archive({euler,model()}));std::shared_ptr<const Assets> unsupported;
+    expect(awl::load_world_map_player_animation_assets(&unsupported)==Status::Loaded,"opaque model catalog does not certify pose support");
+    rejected=awl::construct_world_map_player_secondary(unsupported,0,1u<<11,1,1,&owner);
+    expect(rejected.status==S::SetupIncomplete && rejected.setup_status==awl::WorldMapSecondarySetupStatus::RequiresResourcePreparation &&
+        !rejected.construction && owner.get()==original && secondary_snapshot(*owner)==before,"reached unsupported Euler preparation stops before construction");
+#if !defined(_MSC_VER) || !defined(_DEBUG)
+    {
+    const auto live=allocation_probe::live;size_t failed=0;bool reached=false;
+    for(size_t fail=0;fail<128;++fail) {
+        allocation_probe::remaining=fail;allocation_probe::enabled=true;
+        const auto result=awl::construct_world_map_player_secondary(assets,0,2u<<11,1,-1,&owner);allocation_probe::enabled=false;
+        if(result.status==S::ConstructedCpuSecondary){reached=true;break;}++failed;
+        expect(result.status==S::AllocationFailure && owner.get()==original && secondary_snapshot(*owner)==before && allocation_probe::live==live,
+            "every caught secondary construction/setup/settings allocation failure preserves the old owner and frees staging");
+    }
+    expect(reached && failed>20,"secondary owner allocation sweep crosses construction, bank retention and settings");
+    std::cout<<"PLAYER_SECONDARY_OWNER_ALLOCATION_FAILURES "<<failed<<'\n';
+    const auto accepted=secondary_snapshot(*owner),progress_live=allocation_probe::live;size_t progress_failed=0;bool advanced=false;
+    awl::WorldMapAnimationChannelProgressStep step;
+    for(size_t fail=0;fail<32;++fail) {
+        allocation_probe::remaining=fail;allocation_probe::enabled=true;const auto status=owner->progress(&step);allocation_probe::enabled=false;
+        if(status==C::Advanced){advanced=true;break;}++progress_failed;
+        expect(status==C::AllocationFailure && secondary_snapshot(*owner)==accepted && allocation_probe::live==progress_live,
+            "secondary progression allocation failure preserves both owners and frees staging");
+    }
+    expect(advanced && progress_failed>=3,"secondary progression allocation sweep reaches publication");
+    std::cout<<"PLAYER_SECONDARY_PROGRESS_ALLOCATION_FAILURES "<<progress_failed<<'\n';
+    }
+#endif
+    uint64_t digest=14695981039346656037ull;uint32_t cases=0;
+    for(uint32_t index:{1u,2u})for(uint32_t blend=0;blend<32;++blend)for(uint32_t loop:{0u,1u,256u,UINT32_MAX})for(float rate:{-1.0f,-0.0f,0.5f,2.0f}) {
+        const auto result=awl::construct_world_map_player_secondary(assets,0,(index<<11)|(blend<<6),loop,rate,&owner);
+        expect(result.status==S::ConstructedCpuSecondary,"every fresh secondary matrix case constructs");if(result.status!=S::ConstructedCpuSecondary)continue;
+        for(uint32_t w:{index,blend,loop,bits(rate)})hash(digest,w);hash_secondary(digest,*owner);
+        for(uint32_t tick=0;tick<16;++tick) {
+            awl::WorldMapAnimationChannelProgressStep step;const auto status=owner->progress(&step);
+            expect(status==C::Advanced,"fresh owned secondary progresses without fabricated unknown fields");
+            hash(digest,uint32_t(status==C::Advanced));hash(digest,uint32_t(step.completed));hash_secondary(digest,*owner);
+        }
+        ++cases;
+    }
+    std::cout<<"PLAYER_SECONDARY_OWNER_MATRIX "<<cases<<' '<<std::hex<<digest<<std::dec<<'\n';
+    // Actual FDE8/6878/settings/69C4 with supplied resolved clip bodies and
+    // constructor channel fields; catalog/construction comparisons are separate.
+    expect(cases==1024 && digest==0x2b614a2127b703c9ull,
+        "secondary owner setup/settings/sixteen updates match independently executed original instructions");
+    const auto accepted=secondary_snapshot(*owner);const int rounding=std::fegetround();
+    expect(std::fesetround(FE_UPWARD)==0,"select rejected secondary numerical profile");awl::WorldMapAnimationChannelProgressStep step;
+    expect(owner->progress(&step)==C::UnsupportedNumerics && secondary_snapshot(*owner)==accepted && std::fegetround()==FE_UPWARD,
+        "unsupported numerical profile rolls back secondary progression without changing caller rounding");
+    expect(std::fesetround(rounding)==0,"restore secondary numerical profile");
+    std::weak_ptr<const Assets> lifetime=assets;const auto bank=assets->secondary_animations().identity();assets.reset();
+    expect(lifetime.expired() && owner->model().animation_bank(bank) && owner->model().bank().loaded() && owner->progress(&step)==C::Advanced,
+        "owned secondary model/clip/channel survive release of the source asset provider");
+}
 void start_animation_native_synthetic() {
     using S=awl::WorldMapPlayerStartAnimationStatus;using Init=awl::WorldMapAnimationInitializerStatus;
     Fixture fixture;fixture.complete();std::shared_ptr<const Assets> assets;
@@ -754,6 +859,57 @@ void start_animation_local(const char* disc) {
         native_start_snapshot(metadata,*channel,*model)==accepted,"actual action selection rolls back diagnostic native reinitialization at secondary setup");
     std::cout<<"LOCAL_NATIVE_START: clip0 initializes diagnostic no-skin owners; action rolls back; real primary/parent acceptance pending\n";
 }
+void secondary_owner_local(const char* disc) {
+    using S=awl::WorldMapPlayerSecondaryStatus;using C=awl::WorldMapAnimationChannelStatus;
+    expect(awl::filesystem_mount("/",disc),"secondary local disc mount succeeds");
+    std::shared_ptr<const Assets> assets;std::shared_ptr<const awl::WorldMapPlayerStartAnimationTables> tables;
+    expect(awl::load_world_map_player_animation_assets(&assets)==Status::Loaded &&
+        awl::load_world_map_player_start_animation_tables(&tables)==awl::WorldMapPlayerStartAnimationStatus::Loaded && tables->target_verified(),
+        "secondary local providers and target DOL verify");if(!assets || !tables)return;
+    std::vector<std::unique_ptr<awl::WorldMapPlayerSecondaryOwner>> selected;
+    for(uint32_t choice=0;choice<4;++choice) {
+        awl::WorldMapPlayerStartAnimationCommand command;command.action=choice==2?1u:0u;command.item=(choice==1 || choice==3)?7u:0u;
+        std::optional<awl::WorldMapPlayerStartItemType> type;
+        if(command.item)type=awl::WorldMapPlayerStartItemType{7,uint8_t(choice==3?1:5)};
+        awl::WorldMapPlayerStartAnimationSelection selection;
+        expect(tables->select(command,type,&selection)==awl::WorldMapPlayerStartAnimationStatus::Selected && selection.choice==choice,
+            "diagnostic command resolves each actual selector-one choice");
+        const auto& descriptor=selection.descriptor;std::unique_ptr<awl::WorldMapPlayerSecondaryOwner> owner;
+        const auto result=awl::construct_world_map_player_secondary(assets,descriptor.word_0,descriptor.word_4,1,1,&owner);
+        if(choice==0) {expect(result.status==S::RequiresSelection && !owner,"actual no-item choice needs no secondary");continue;}
+        expect(result.status==S::ConstructedCpuSecondary && owner,"actual selected secondary constructs with supplied common settings");if(!owner)return;
+        const uint32_t index=(descriptor.word_4>>11)&127u;awl::WorldMapModelResource resource;awl::WorldMapAnimationClip clip;
+        expect(assets->secondary_models().resolve(index,&resource) && assets->secondary_animations().resolve(index-1,&clip) &&
+            owner->model().core().resource.reference.offset==resource.reference.offset && owner->model().record().count_4==resource.count_6 &&
+            owner->model().playback() && owner->model().playback()->clip_10 && owner->model().playback()->clip_10->offset==clip.reference.offset &&
+            owner->model().playback()->limit_c==clip.parameter_zero,"actual selection binds the reached ACT and index-minus-one clip");
+        std::cout<<"LOCAL_PLAYER_SELECTED_SECONDARY "<<choice<<" index "<<index<<" nodes "<<resource.count_6<<'\n';
+        selected.push_back(std::move(owner));
+    }
+    expect(assets->secondary_models().file_count()==96 && assets->secondary_animations().clip_count()==96,"local secondary catalog extent remains known");
+    uint32_t crossed=0;uint64_t ticks=0;
+    for(uint32_t index=1;index<=96;++index) {
+        std::unique_ptr<awl::WorldMapPlayerSecondaryOwner> owner;
+        const auto result=awl::construct_world_map_player_secondary(assets,0,(index<<11)|(31u<<6),1,index%2?-1.0f:1.0f,&owner);
+        expect(result.status==S::ConstructedCpuSecondary && owner,"each actual paired secondary constructs atomically");if(!owner)return;
+        bool complete=false;
+        for(uint32_t tick=0;tick<4096;++tick) {
+            awl::WorldMapAnimationChannelProgressStep step;const auto status=owner->progress(&step);
+            expect(status==C::Advanced,"actual owned secondary progresses through a natural clip boundary");if(status!=C::Advanced)break;
+            ++ticks;if(step.completed){complete=true;break;}
+        }
+        expect(complete,"actual owned secondary reaches a boundary within the diagnostic native tick cap");if(complete)++crossed;
+    }
+    std::weak_ptr<const Assets> lifetime=assets;const auto bank=assets->secondary_animations().identity();assets.reset();
+    expect(lifetime.expired(),"no selected secondary borrows the source asset provider's lifetime");
+    for(const auto& owner:selected) {
+        awl::WorldMapAnimationChannelProgressStep step;
+        expect(owner->model().animation_bank(bank) && owner->progress(&step)==C::Advanced,
+            "actual selected secondary retains its private ACT/animation data after provider release");
+    }
+    std::cout<<"LOCAL_PLAYER_SECONDARY_OWNERS "<<selected.size()<<" selected choices; "<<crossed<<" catalog boundaries / "<<ticks
+        <<" diagnostic updates; supplied loop/rate; holder integration, attachments, frame and gameplay comparison pending\n";
+}
 void start_animation_choice_matrix() {
     uint64_t digest=14695981039346656037ull;unsigned cases=0;
     for(uint32_t item:{0u,1u,0x4FFu,0x500u,UINT32_MAX}) {
@@ -778,8 +934,10 @@ int main(int argc,char** argv){
     synthetic();channel_constructor();awl::filesystem_shutdown();
     start_animation_synthetic();start_animation_choice_matrix();awl::filesystem_shutdown();
     start_animation_native_synthetic();awl::filesystem_shutdown();
+    secondary_owner_synthetic();awl::filesystem_shutdown();
     if(argc==3 && std::string(argv[1])=="--player-banks-local")local(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-start-animation-local")start_animation_local(argv[2]);
-    else if(argc!=1)expect(false,"usage: --player-banks-local <disc> | --player-start-animation-local <disc>");
+    else if(argc==3 && std::string(argv[1])=="--player-secondary-local")secondary_owner_local(argv[2]);
+    else if(argc!=1)expect(false,"usage: --player-banks-local <disc> | --player-start-animation-local <disc> | --player-secondary-local <disc>");
     awl::filesystem_shutdown();return failures?1:0;
 }

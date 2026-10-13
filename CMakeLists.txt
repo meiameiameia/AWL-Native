@@ -75,6 +75,7 @@ set(SOURCES
     src/world_map_player_frame.cpp
     src/world_map_player_animation_assets.cpp
     src/world_map_player_model_assets.cpp
+    src/world_map_player_secondary.cpp
     src/world_map_camera.cpp
     src/world_map_scene_index.cpp
     src/world_map_collision_registry.cpp
@@ -626,6 +627,7 @@ add_test(NAME world_map_held_item_assets_tests COMMAND world_map_held_item_asset
 add_executable(world_map_player_animation_assets_tests
     tests/world_map_player_animation_assets_tests.cpp
     src/world_map_player_animation_assets.cpp
+    src/world_map_player_secondary.cpp
     src/world_map_player_start_animation.cpp
     src/world_map_player_status.cpp
     src/disc_identity.cpp
