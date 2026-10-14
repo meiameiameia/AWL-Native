@@ -689,6 +689,8 @@ add_test(NAME world_map_player_animation_assets_tests COMMAND world_map_player_a
 
 add_executable(world_map_player_model_assets_tests
     tests/world_map_player_model_assets_tests.cpp
+    src/world_map_player_movement.cpp src/world_map_movement.cpp src/player_input.cpp
+    src/world_map_contact.cpp src/world_map_trigger_asset.cpp
     src/world_map_player_model_assets.cpp
     src/world_map_player_model_auxiliary.cpp
     src/world_map_player_model_setup.cpp

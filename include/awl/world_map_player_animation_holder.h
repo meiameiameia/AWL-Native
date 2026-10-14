@@ -190,7 +190,31 @@ public:
         return primary_->advance(input,primary_channel_.get(),&features);
     }
 private:
-    struct Initialization;
+    struct Initialization {
+        WorldMapAnimationPartialChannelStep primary,secondary;
+        std::vector<std::shared_ptr<const WorldMapAnimationBank>> primary_banks,secondary_banks;
+        std::vector<WorldMapNativeModel*> models;
+        WorldMapModelLinkState links;
+        std::unique_ptr<WorldMapNativeModel> replacement;
+        bool replace_secondary=false;
+    };
+    struct StartPreparation {
+        Initialization initialization;
+        WorldMapPlayerAnimationHolderState state;
+        WorldMapActorAnimationDescriptor descriptor;
+        std::shared_ptr<const WorldMapPlayerStartAnimationTables> tables;
+        bool initialization_staged=false;
+    };
+    void seed_start(StartPreparation&) const noexcept;
+    WorldMapPlayerAnimationHolderStartResult prepare_start(
+        const std::shared_ptr<const WorldMapPlayerStartAnimationTables>&,
+        const WorldMapPlayerStartAnimationCommand&,const std::optional<WorldMapPlayerStartItemType>&,
+        const WorldMapAnimationInitializerObservations&,StartPreparation*);
+    WorldMapPlayerAnimationHolderStartResult prepare_start_with_timers(
+        const std::shared_ptr<const WorldMapPlayerStartAnimationTables>&,
+        const WorldMapPlayerStartAnimationCommand&,const std::optional<WorldMapPlayerStartItemType>&,StartPreparation*);
+    WorldMapAnimationChannelStatus prepare_speed(StartPreparation&,float);
+    void publish_start(StartPreparation&) noexcept;
     void stage_initialization(Initialization&,const WorldMapAnimationPartialChannelStep* primary=nullptr,
         const WorldMapAnimationPartialChannelStep* secondary=nullptr) const;
     WorldMapNativeAnimationInitializerStatus prepare_owned_initializer(

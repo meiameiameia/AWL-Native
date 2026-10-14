@@ -24,43 +24,50 @@ uint32_t classify_world_map_player_start_animation(uint32_t item, uint32_t actio
 bool WorldMapPlayerStartAnimationTables::decode(const uint8_t* data, size_t size) {
     DolView view;
     if (!view.initialize(data,size)) return false;
-    const auto* jump = view.read(0x8029E4BC,4);
-    const auto* row = view.read(0x80249238,8);
     const auto* empty = view.read(0x80282DF8,1);
-    if (!jump || dol_word(jump) != 0x800289A8 || !row || !empty) return false;
-    std::array<WorldMapPlayerStartAnimationSelection,4> entries;
-    std::array<std::optional<uint16_t>,4> rates;
-    for (uint32_t i = 0; i < 4; ++i) {
-        const uint16_t index = static_cast<uint16_t>((uint16_t(row[i * 2]) << 8) | row[i * 2 + 1]);
-        const auto* slot = view.read(0x8029BECC + uint32_t(index) * 4,4);
-        if (!slot) return false;
-        const uint32_t address = dol_word(slot);
-        if (address == 0 || (address & 3) != 0) return false;
-        const auto* descriptor = view.read(address,12);
-        if (!descriptor) return false;
-        entries[i] = {i,index,{address,dol_word(descriptor),dol_word(descriptor + 4),dol_word(descriptor + 8)}};
-        // Native resource bound, not an inferred original table length.
-        // Require an explicit terminal within 256 twelve-byte records.
-        for (uint32_t record=0;record<256;++record) {
-            const uint64_t key=uint64_t(address)+uint64_t(record)*12;
-            if (key>UINT32_MAX) return false;
-            const auto* words=view.read(static_cast<uint32_t>(key),12);
-            if (!words) return false;
-            sequences_[i].push_back({key,dol_word(words),dol_word(words+4),dol_word(words+8)});
-            if ((dol_word(words)&1023u)==1023) break;
+    if(!empty)return false;
+    for(uint32_t selector=0;selector<4;++selector){
+        const auto jump_address=0x8029E4B8+selector*4,row_address=0x80249230+selector*8;
+        // Selector one remains mandatory. Older synthetic startup-only profiles
+        // may omit other entire rows; partially mapped rows/witnesses reject.
+        if(selector!=1 && !view.read(jump_address,1) && !view.read(row_address,1))continue;
+        const auto* jump=view.read(jump_address,4);const auto* row=view.read(row_address,8);
+        if(!jump || dol_word(jump)!=0x800289A8 || !row)return false;
+        std::array<WorldMapPlayerStartAnimationSelection,4> entries;
+        std::array<std::optional<uint16_t>,4> rates;
+        for (uint32_t i = 0; i < 4; ++i) {
+            const uint16_t index = static_cast<uint16_t>((uint16_t(row[i * 2]) << 8) | row[i * 2 + 1]);
+            const auto* slot = view.read(0x8029BECC + uint32_t(index) * 4,4);
+            if (!slot) return false;
+            const uint32_t address = dol_word(slot);
+            if (address == 0 || (address & 3) != 0) return false;
+            const auto* descriptor = view.read(address,12);
+            if (!descriptor) return false;
+            entries[i] = {i,index,{address,dol_word(descriptor),dol_word(descriptor + 4),dol_word(descriptor + 8)}};
+            // Native resource bound, not an inferred original table length.
+            // Require an explicit terminal within 256 twelve-byte records.
+            for (uint32_t record=0;record<256;++record) {
+                const uint64_t key=uint64_t(address)+uint64_t(record)*12;
+                if (key>UINT32_MAX) return false;
+                const auto* words=view.read(static_cast<uint32_t>(key),12);
+                if (!words) return false;
+                sequences_[selector][i].push_back({key,dol_word(words),dol_word(words+4),dol_word(words+8)});
+                if ((dol_word(words)&1023u)==1023) break;
+            }
+            if ((sequences_[selector][i].back().word_0&1023u)!=1023) return false;
+            const uint32_t code = entries[i].descriptor.word_8;
+            // Preserve unsupported negative descriptors for the later status
+            // consumer; they cannot authorize a read before a rate table.
+            if (code <= INT32_MAX) {
+                const uint64_t rate_address = code < 64 ? 0x802929E0ull + uint64_t(code) * 2 :
+                    0x80292A14ull + uint64_t(code - 64) * 2;
+                if (rate_address > UINT32_MAX) return false;
+                const auto* rate = view.read(static_cast<uint32_t>(rate_address),2);
+                if (!rate) return false;
+                rates[i] = static_cast<uint16_t>((uint16_t(rate[0]) << 8) | rate[1]);
+            }
         }
-        if ((sequences_[i].back().word_0&1023u)!=1023) return false;
-        const uint32_t code = entries[i].descriptor.word_8;
-        // Preserve unsupported negative descriptors for the later status
-        // consumer; they cannot authorize a read before a rate table.
-        if (code <= INT32_MAX) {
-            const uint64_t rate_address = code < 64 ? 0x802929E0ull + uint64_t(code) * 2 :
-                0x80292A14ull + uint64_t(code - 64) * 2;
-            if (rate_address > UINT32_MAX) return false;
-            const auto* rate = view.read(static_cast<uint32_t>(rate_address),2);
-            if (!rate) return false;
-            rates[i] = static_cast<uint16_t>((uint16_t(rate[0]) << 8) | rate[1]);
-        }
+        entries_[selector]=entries;status_rates_[selector]=rates;
     }
     constexpr uint32_t addresses[]{0x80346B00,0x80346B04,0x80346B10,0x80346B14,0x80346B20,
         0x80346B24,0x80346B28,0x80346B2C,0x80346B30,0x80346B34,0x80346B38,0x80346B3C,0x80346B40};
@@ -73,14 +80,14 @@ bool WorldMapPlayerStartAnimationTables::decode(const uint8_t* data, size_t size
     const auto* reset = view.read(0x8034A360,12);
     if (!reset) return false;
     status_reset_ = {dol_word(reset),dol_word(reset + 4),dol_word(reset + 8)};
-    entries_ = entries; status_rates_ = rates; empty_item_type_ = *empty;
+    empty_item_type_ = *empty;
     return true;
 }
 
 bool WorldMapPlayerStartAnimationTables::sequence_record(uint64_t base,uint64_t current,WorldMapActorAnimationDescriptor* out) const noexcept {
     if (!out) return false;
-    for (size_t i=0;i<entries_.size();++i) if (entries_[i].descriptor.identity==base) {
-        for (const auto& record:sequences_[i]) if (record.identity==current) {*out=record;return true;}
+    for(size_t s=0;s<entries_.size();++s)if(entries_[s])for(size_t i=0;i<4;++i)if((*entries_[s])[i].descriptor.identity==base){
+        for (const auto& record:sequences_[s][i]) if (record.identity==current) {*out=record;return true;}
         return false;
     }
     return false;
@@ -89,12 +96,12 @@ WorldMapPlayerStatusFactors WorldMapPlayerStartAnimationTables::status_factors(
     const WorldMapActorAnimationDescriptor& current) const noexcept {
     WorldMapPlayerStatusFactors result;
     for (size_t i = 0; i < result.globals.size(); ++i) result.globals[i] = status_globals_[i];
-    for (size_t i = 0; i < entries_.size(); ++i) {
-        const auto& known = entries_[i].descriptor;
+    for(size_t s=0;s<entries_.size();++s)if(entries_[s])for(size_t i=0;i<4;++i){
+        const auto& known = (*entries_[s])[i].descriptor;
         if (known.identity == current.identity && known.word_0 == current.word_0 &&
-            known.word_4 == current.word_4 && known.word_8 == current.word_8 && status_rates_[i]) {
-            result.rate = WorldMapPlayerStatusRate{current.word_8,*status_rates_[i]};
-            break;
+            known.word_4 == current.word_4 && known.word_8 == current.word_8 && status_rates_[s][i]) {
+            result.rate = WorldMapPlayerStatusRate{current.word_8,*status_rates_[s][i]};
+            return result;
         }
     }
     return result;
@@ -112,12 +119,13 @@ WorldMapPlayerStatusCode WorldMapPlayerStartAnimationTables::prepare_fresh_statu
 Status WorldMapPlayerStartAnimationTables::select(const WorldMapPlayerStartAnimationCommand& command,
     const std::optional<WorldMapPlayerStartItemType>& item_type, WorldMapPlayerStartAnimationSelection* out) const {
     if (!out) return Status::InvalidInput;
-    if (command.selector != 1) return Status::UnsupportedCommand;
+    if (command.selector > 3) return Status::UnsupportedCommand;
     if (item_type && item_type->item != command.item) return Status::InvalidInput;
     if (command.item != 0 && !item_type) return Status::RequiresItemType;
     if (command.item == 0 && item_type && item_type->type != empty_item_type_) return Status::InvalidInput;
     const uint8_t type = command.item == 0 ? empty_item_type_ : item_type->type;
-    *out = entries_[classify_world_map_player_start_animation(command.item,command.action,type)];
+    if(!entries_[command.selector])return Status::RequiresSelectorTables;
+    *out = (*entries_[command.selector])[classify_world_map_player_start_animation(command.item,command.action,type)];
     return Status::Selected;
 }
 

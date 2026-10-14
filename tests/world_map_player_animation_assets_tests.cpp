@@ -417,8 +417,8 @@ void start_animation_synthetic() {
     expect(tables->select(command,awl::WorldMapPlayerStartItemType{0,1},&selection)==S::InvalidInput,
         "supplied empty-item byte must agree with owned table evidence");
     command.selector=2;
-    expect(tables->select(command,std::nullopt,&selection)==S::UnsupportedCommand &&
-        tables->select(command,std::nullopt,nullptr)==S::InvalidInput,"other selectors and missing output reject");
+    expect(tables->select(command,std::nullopt,&selection)==S::RequiresSelectorTables &&
+        tables->select(command,std::nullopt,nullptr)==S::InvalidInput,"omitted supported selector row and missing output reject");
     command.selector=1;
     for(size_t cut=0;cut<b.size();++cut)
         expect(awl::decode_world_map_player_start_animation_tables(b.data(),cut,&tables)==S::UnsupportedLayout && tables.get()==original,

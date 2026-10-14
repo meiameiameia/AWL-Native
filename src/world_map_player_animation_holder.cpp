@@ -1,4 +1,5 @@
 #include "awl/world_map_player_animation_holder.h"
+#include <cmath>
 #include <new>
 #include <type_traits>
 #include <utility>
@@ -159,14 +160,6 @@ bool WorldMapPlayerAnimationHolder::configure_repeats(WorldMapPlayerHolderRepeat
         std::optional<uint32_t>(game_clock_->state().raw_time):std::nullopt;
     return prepare_world_map_player_holder_repeat(state_,kind,value,now,&state_);
 }
-struct WorldMapPlayerAnimationHolder::Initialization {
-    WorldMapAnimationPartialChannelStep primary, secondary;
-    std::vector<std::shared_ptr<const WorldMapAnimationBank>> primary_banks, secondary_banks;
-    std::vector<WorldMapNativeModel*> models;
-    WorldMapModelLinkState links;
-    std::unique_ptr<WorldMapNativeModel> replacement;
-    bool replace_secondary = false;
-};
 void WorldMapPlayerAnimationHolder::stage_initialization(Initialization& staged,
     const WorldMapAnimationPartialChannelStep* primary,const WorldMapAnimationPartialChannelStep* secondary) const {
     if (primary) staged.primary=*primary;
@@ -570,15 +563,64 @@ WorldMapPlayerAnimationHolderResult construct_world_map_player_animation_holder(
         *out = std::move(holder); result.status = Status::ConstructedCpuHolder; return result;
     } catch (const std::bad_alloc&) { return {Status::AllocationFailure}; }
 }
+void WorldMapPlayerAnimationHolder::seed_start(StartPreparation& prepared) const noexcept {
+    prepared.state=state_;prepared.descriptor=descriptor_;prepared.tables=tables_;
+}
+void WorldMapPlayerAnimationHolder::publish_start(StartPreparation& prepared) noexcept {
+    if(prepared.initialization_staged)publish_initialization(prepared.initialization);
+    state_=prepared.state;descriptor_=prepared.descriptor;tables_=std::move(prepared.tables);
+}
 WorldMapPlayerAnimationHolderStartResult WorldMapPlayerAnimationHolder::start(
+    const std::shared_ptr<const WorldMapPlayerStartAnimationTables>& tables,const WorldMapPlayerStartAnimationCommand& command,
+    const std::optional<WorldMapPlayerStartItemType>& item_type,const WorldMapAnimationInitializerObservations& observations) {
+    StartPreparation prepared;auto result=prepare_start(tables,command,item_type,observations,&prepared);
+    if(result.status==WorldMapPlayerStartAnimationStatus::Advanced)publish_start(prepared);
+    return result;
+}
+WorldMapPlayerAnimationHolderStartResult WorldMapPlayerAnimationHolder::prepare_start_with_timers(
+    const std::shared_ptr<const WorldMapPlayerStartAnimationTables>& tables,const WorldMapPlayerStartAnimationCommand& command,
+    const std::optional<WorldMapPlayerStartItemType>& item_type,StartPreparation* out){
+    try {
+        WorldMapAnimationInitializerObservations observations;if(game_clock_)observations.clock=game_clock_->state().raw_time;
+        if(timer_assets_){observations.fallback_table_38=timer_assets_->table_identity(WorldMapPlayerTimerBank::Eyes);observations.fallback_table_24=timer_assets_->table_identity(WorldMapPlayerTimerBank::Mouth);}
+        for(size_t attempt=0;;++attempt){auto result=prepare_start(tables,command,item_type,observations,out);
+            if(result.status!=WorldMapPlayerStartAnimationStatus::InitializerIncomplete || !result.required_row || attempt>=2)return result;
+            if(!timer_assets_)return result;const auto row=*result.required_row;WorldMapPlayerTimerBank bank;
+            if(row.table_identity==*observations.fallback_table_38)bank=WorldMapPlayerTimerBank::Eyes;
+            else if(row.table_identity==*observations.fallback_table_24)bank=WorldMapPlayerTimerBank::Mouth;else return result;
+            WorldMapPlayerTimerResourceView resource;if(!timer_assets_->resource(bank,row.index,row.column,&resource))return result;
+            observations.rows.push_back({row.table_identity,row.index,row.column,resource.identity});
+        }
+    }catch(const std::bad_alloc&){return {WorldMapPlayerStartAnimationStatus::AllocationFailure};}
+}
+WorldMapAnimationChannelStatus WorldMapPlayerAnimationHolder::prepare_speed(StartPreparation& prepared,float speed){
+    using S=WorldMapAnimationChannelStatus;if(!std::isfinite(speed))return S::InvalidInput;
+    prepared.state.speed_8=speed;
+    if(!(prepared.descriptor.word_0&0x1000u))return S::Prepared;
+    if(!prepared.initialization_staged){stage_initialization(prepared.initialization);prepared.initialization_staged=true;}
+    auto& staged=prepared.initialization;
+    const float rate=(prepared.descriptor.word_0&0x01000000u?-1.0f:1.0f)*speed;
+    WorldMapAnimationPartialChannelStep primary;
+    auto status=prepare_world_map_partial_animation_channel_rate(staged.primary.after,staged.primary.records_after,rate,&primary);
+    if(status!=S::Prepared)return status;staged.primary=std::move(primary);
+    if(((prepared.descriptor.word_4>>11)&127u)!=127u){
+        WorldMapAnimationPartialChannelStep secondary;
+        status=prepare_world_map_partial_animation_channel_rate(staged.secondary.after,staged.secondary.records_after,rate,&secondary);
+        if(status!=S::Prepared)return status;staged.secondary=std::move(secondary);
+    }
+    return S::Prepared;
+}
+WorldMapPlayerAnimationHolderStartResult WorldMapPlayerAnimationHolder::prepare_start(
     const std::shared_ptr<const WorldMapPlayerStartAnimationTables>& tables,
     const WorldMapPlayerStartAnimationCommand& command,
     const std::optional<WorldMapPlayerStartItemType>& item_type,
-    const WorldMapAnimationInitializerObservations& observations) {
+    const WorldMapAnimationInitializerObservations& observations,StartPreparation* out) {
     using Status = WorldMapPlayerStartAnimationStatus;
     static_assert(std::is_nothrow_copy_assignable_v<WorldMapPlayerAnimationHolderState>);
     static_assert(std::is_nothrow_copy_assignable_v<WorldMapPlayerAnimationHolderStartResult>);
     try {
+        if(!out)return {};
+        *out=StartPreparation{};seed_start(*out);
         WorldMapPlayerAnimationHolderStartResult result;
         if (!tables) return {Status::RequiresTables};
         WorldMapPlayerStartAnimationSelection selection;
@@ -592,7 +634,7 @@ WorldMapPlayerAnimationHolderStartResult WorldMapPlayerAnimationHolder::start(
         const auto bound=bind_world_map_player_animation_group(descriptor.word_0,animations_,&group);
         if (bound==WorldMapPlayerAnimationAssetsStatus::RequiresGroup) return {Status::RequiresGroup,selection};
         if (bound!=WorldMapPlayerAnimationAssetsStatus::Bound) return {Status::RequiresAssets,selection};
-        Initialization staged;stage_initialization(staged);auto state=state_;
+        auto& staged=out->initialization;stage_initialization(staged);auto state=state_;
         WorldMapPartialAnimationInitializerStep prepared;WorldMapAnimationInitializerStatus initializer_status;
         const auto status=prepare_owned_initializer(state,descriptor,group,observations,false,staged,&prepared,initializer_status);
         result.initializer_status=initializer_status;result.secondary_index=prepared.secondary_index;result.required_row=prepared.required_row;
@@ -605,7 +647,7 @@ WorldMapPlayerAnimationHolderStartResult WorldMapPlayerAnimationHolder::start(
         else if (status==WorldMapNativeAnimationInitializerStatus::InvalidInput) result.status=Status::InvalidInput;
         else if (status!=WorldMapNativeAnimationInitializerStatus::Advanced) result.status=Status::InitializerIncomplete;
         else {
-            publish_initialization(staged);state_=state;descriptor_=descriptor;tables_=tables;result.status=Status::Advanced;
+            out->state=state;out->descriptor=descriptor;out->tables=tables;out->initialization_staged=true;result.status=Status::Advanced;
         }
         return result;
     } catch (const std::bad_alloc&) { return {Status::AllocationFailure}; }

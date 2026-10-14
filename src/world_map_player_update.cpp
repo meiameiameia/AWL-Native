@@ -1,10 +1,38 @@
 #include "awl/world_map_player_update.h"
 #include <algorithm>
 #include <cmath>
+#include <cfenv>
 #include <new>
 #include <utility>
 
 namespace awl {
+WorldMapPlayerState1AnimationResult prepare_world_map_player_state1_animation(
+    std::optional<uint32_t> control,const std::optional<WorldMapPlayerState1AnimationProfile>& profile,
+    std::optional<float> intensity,std::optional<float> speed,const std::optional<WorldMapPlayerUpdateGuards>& guards,
+    std::optional<uint32_t> item,std::optional<uint32_t> action) noexcept {
+    using S=WorldMapPlayerState1AnimationStatus;WorldMapPlayerState1AnimationResult result;
+    const auto stop=[&](S status){result.status=status;return result;};
+    if(!control)return stop(S::RequiresControl);if(*control&0x800u)return stop(S::SkippedByControl);
+    if(!profile)return stop(S::RequiresProfile);if(!intensity)return stop(S::RequiresIntensity);
+    if(!std::isfinite(profile->zero) || !std::isfinite(profile->unit) || !std::isfinite(profile->multiplier) ||
+        !std::isfinite(profile->divisor) || profile->divisor==0 || !std::isfinite(*intensity) || std::fegetround()!=FE_TONEAREST)return stop(S::UnsupportedNumerics);
+    uint32_t selector=*intensity==profile->unit?3u:2u;
+    if(*intensity==profile->zero){
+        selector=0;result.final_speed=profile->unit;
+        if(!guards)return stop(S::RequiresGuards);
+        bool skip=guards->word_680!=-1;
+        if(!skip){if(!guards->word_58c)return stop(S::RequiresGuardWord58c);skip=*guards->word_58c!=0;}
+        if(skip)return stop(S::Prepared);
+    }
+    if(!speed)return stop(S::RequiresSpeed);
+    const float multiplied=profile->multiplier * *speed;
+    const float rate=multiplied/profile->divisor;
+    if(!std::isfinite(rate))return stop(S::UnsupportedNumerics);
+    if(!action)return stop(S::RequiresAction);if(!item)return stop(S::RequiresItem);
+    result.command=WorldMapPlayerStartAnimationCommand{selector,0x35,*item,*action,4};result.command_speed=rate;
+    if(!result.final_speed)result.final_speed=rate;
+    return stop(S::Prepared);
+}
 WorldMapPlayerState1InitializerResult prepare_world_map_player_state1_initializer(
     std::optional<int32_t> action,std::optional<uint32_t> mask,bool owner) noexcept {
     using S=WorldMapPlayerState1InitializerStatus;

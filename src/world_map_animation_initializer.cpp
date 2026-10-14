@@ -194,6 +194,17 @@ WorldMapAnimationChannelStatus prepare_world_map_partial_animation_channel_setti
     *out=std::move(prepared);return status;
 }
 
+WorldMapAnimationChannelStatus prepare_world_map_partial_animation_channel_rate(
+    const WorldMapAnimationChannelState& channel,const std::vector<WorldMapAnimationPartialPlaybackRecord>& records,
+    float rate,WorldMapAnimationPartialChannelStep* out){
+    using S=WorldMapAnimationChannelStatus;
+    if(!out || &channel==&out->after || &records==&out->records_after || !std::isfinite(rate) || !channel.target_8)return S::InvalidInput;
+    for(size_t i=0;i<records.size();++i){if(!records[i].identity)return S::InvalidInput;for(size_t j=0;j<i;++j)if(records[i].identity==records[j].identity)return S::InvalidInput;}
+    WorldMapAnimationPartialChannelStep step;step.after=channel;step.records_after=records;
+    for(auto& record:step.records_after)if(record.identity==channel.target_8){record.state.rate_4=rate;*out=std::move(step);return S::Prepared;}
+    step.required_record=channel.target_8;*out=std::move(step);return S::RequiresPlaybackRecord;
+}
+
 WorldMapAnimationPlaybackProgressResult prepare_world_map_animation_playback_progress(
     const WorldMapAnimationPartialPlayback& playback, WorldMapAnimationPartialPlayback* out) noexcept {
     using S=WorldMapAnimationChannelStatus;

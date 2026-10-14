@@ -48,6 +48,7 @@ public:
     // 32B60's immutable r2-7C74 word, reached by state-one initialization
     // only for actions other than zero/two. Older synthetic profiles may omit it.
     const std::optional<uint32_t>& state1_action_mask() const noexcept {return state1_action_mask_;}
+    const std::optional<WorldMapPlayerState1AnimationProfile>& state1_animation_profile() const noexcept {return state1_animation_profile_;}
 private:
     WorldMapPlayerInitialAnimationInputs() = default;
     bool decode(const uint8_t* data, size_t size);
@@ -61,6 +62,7 @@ private:
     std::array<std::array<std::array<uint32_t,2>,4>,6> model_types_{};
     std::array<float,6> scales_{};
     std::optional<uint32_t> state1_action_mask_;
+    std::optional<WorldMapPlayerState1AnimationProfile> state1_animation_profile_;
     bool target_verified_ = false;
 };
 // Synthetic decoder validates all reached extents and both changed timer

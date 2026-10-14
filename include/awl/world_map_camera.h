@@ -262,6 +262,8 @@ public:
     void clear();
     [[nodiscard]] bool loaded() const { return !bytes_.empty(); }
     [[nodiscard]] size_t size() const { return bytes_.size(); }
+    // Same owned slot-one height route used by the camera update helpers.
+    [[nodiscard]] bool sample_height(const std::array<float,3>&,float*) const;
     [[nodiscard]] bool calculate_post_update(
         const WorldMapCameraViewQuery& query,
         WorldMapCameraPostUpdate* output) const;

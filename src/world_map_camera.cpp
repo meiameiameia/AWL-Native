@@ -652,6 +652,11 @@ bool WorldMapCameraCollisionAsset::load() {
 void WorldMapCameraCollisionAsset::clear() {
     bytes_.clear();
 }
+bool WorldMapCameraCollisionAsset::sample_height(const std::array<float,3>& point,float* out) const {
+    if(bytes_.empty() || !out)return false;
+    CameraCollisionContext context{bytes_.data(),bytes_.size()};
+    return sample_camera_collision_height(point,out,&context);
+}
 
 bool WorldMapCameraCollisionAsset::calculate_post_update(
     const WorldMapCameraViewQuery& query,

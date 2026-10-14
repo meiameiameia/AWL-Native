@@ -63,6 +63,13 @@ bool WorldMapPlayerInitialAnimationInputs::decode(const uint8_t* data, size_t si
         const auto* mask=view.read(0x8034a1cc,4);if(!mask)return false;
         state1_action_mask_=detail::dol_word(mask);
     }
+    if(view.read(0x8034a250,1)){
+        const auto* words=view.read(0x8034a250,16);if(!words)return false;
+        std::array<float,4> constants{};
+        for(size_t i=0;i<4;++i){const auto word=detail::dol_word(words+i*4);std::memcpy(&constants[i],&word,4);if(!std::isfinite(constants[i]))return false;}
+        if(constants[2]==0.0f)return false;
+        state1_animation_profile_=WorldMapPlayerState1AnimationProfile{constants[0],constants[1],constants[2],constants[3]};
+    }
     return true;
 }
 bool WorldMapPlayerInitialAnimationInputs::select_model_type(uint32_t phase, uint32_t selector,

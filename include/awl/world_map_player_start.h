@@ -123,6 +123,9 @@ struct WorldMapPlayerStartStateQuery {
 struct WorldMapPlayerStartAnimationCommand {
     uint32_t selector = 1, variant = 0, item = 0, action = 0, mode = 4;
 };
+struct WorldMapPlayerState1AnimationProfile {
+    float zero=0,multiplier=0,divisor=0,unit=0;
+};
 struct WorldMapPlayerStartStateStep {
     WorldMapPlayerStartState after;
     uint32_t model_selector = 0, model_slot = 0, callback_address = 0;

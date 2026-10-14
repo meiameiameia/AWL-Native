@@ -20,10 +20,10 @@ enum class WorldMapPlayerStartAnimationStatus {
     Decoded, Loaded, Selected, Prepared, Unchanged, InvalidInput,
     UnsupportedLayout, UnsupportedCommand, RequiresTables, RequiresItemType,
     RequiresAssets, RequiresGroup, InitializerIncomplete,
-    ReadFailure, WrongDol, AllocationFailure, Advanced
+    ReadFailure, WrongDol, AllocationFailure, Advanced, RequiresSelectorTables
 };
 
-// Immutable bounded sequences of selector 1's four descriptor choices,
+// Immutable bounded sequences of selectors 0..3's four descriptor choices,
 // including their first terminal clip-1023 record. Logical DOL addresses are
 // equality keys, never host pointers. Metadata ownership is not playback.
 // Also retains initial DOL coefficients and the reached status halfword for
@@ -34,7 +34,7 @@ public:
     WorldMapPlayerStartAnimationTables(const WorldMapPlayerStartAnimationTables&) = delete;
     WorldMapPlayerStartAnimationTables& operator=(const WorldMapPlayerStartAnimationTables&) = delete;
     bool target_verified() const { return target_verified_; }
-    // Selector 1 ignores variant/mode. Item zero's type comes from the
+    // These selectors ignore variant/mode. Item zero's type comes from the
     // owned table snapshot; other items require keyed observed metadata.
     // Stops preserve output; no item table is inferred from mapped extent.
     [[nodiscard]] WorldMapPlayerStartAnimationStatus select(
@@ -61,9 +61,9 @@ private:
         const uint8_t*, size_t, std::shared_ptr<const WorldMapPlayerStartAnimationTables>*);
     friend WorldMapPlayerStartAnimationStatus load_world_map_player_start_animation_tables(
         std::shared_ptr<const WorldMapPlayerStartAnimationTables>*);
-    std::array<WorldMapPlayerStartAnimationSelection,4> entries_{};
-    std::array<std::vector<WorldMapActorAnimationDescriptor>,4> sequences_;
-    std::array<std::optional<uint16_t>,4> status_rates_{};
+    std::array<std::optional<std::array<WorldMapPlayerStartAnimationSelection,4>>,4> entries_{};
+    std::array<std::array<std::vector<WorldMapActorAnimationDescriptor>,4>,4> sequences_;
+    std::array<std::array<std::optional<uint16_t>,4>,4> status_rates_{};
     std::array<uint32_t,static_cast<size_t>(WorldMapPlayerStatusGlobal::Count)> status_globals_{};
     WorldMapPlayerStatusResetValues status_reset_;
     uint8_t empty_item_type_ = 0;

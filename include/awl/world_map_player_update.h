@@ -1,6 +1,7 @@
 #pragma once
 #include "awl/world_map_scene_index.h"
 #include "awl/world_map_player_status.h"
+#include "awl/world_map_player_start.h"
 #include <optional>
 
 namespace awl {
@@ -44,7 +45,8 @@ enum class WorldMapPlayerUpdateStatus {
     RequiresSceneTransition, RequiresStatusUpdate, RequiresEffectOwners,
     RequiresScenePositionOwner, RequiresQueueNode, InvalidQueue,
     UnsupportedQueuePriorityChange, CameraIncomplete, UnsupportedState, InvalidInput,
-    AllocationFailure, SkippedByDispatchFilter, RequiresDispatchControl, AppearanceIncomplete
+    AllocationFailure, SkippedByDispatchFilter, RequiresDispatchControl, AppearanceIncomplete,
+    MovementIncomplete,AnimationIncomplete,RequiresPose,RequiresMovementOwners,RequiresMovementCamera,RequiresAnimationCommand
 };
 // FUN_80031144's pre-callback decisions, restricted to state 29. The guard
 // transition and scene transition are separate, ordered dependencies.
@@ -105,6 +107,23 @@ struct WorldMapPlayerState1InitializerResult {
     WorldMapPlayerState1InitializerStatus status=WorldMapPlayerState1InitializerStatus::RequiresAction;
     std::optional<uint32_t> mask;
 };
+enum class WorldMapPlayerState1AnimationStatus {
+    Prepared,SkippedByControl,RequiresControl,RequiresProfile,RequiresIntensity,RequiresSpeed,
+    RequiresGuards,RequiresGuardWord58c,RequiresItem,RequiresAction,UnsupportedNumerics
+};
+struct WorldMapPlayerState1AnimationResult {
+    WorldMapPlayerState1AnimationStatus status=WorldMapPlayerState1AnimationStatus::RequiresControl;
+    std::optional<WorldMapPlayerStartAnimationCommand> command;
+    std::optional<float> command_speed,final_speed;
+};
+// 42CA8 after the supported movement return. 800 skips every body read;
+// zero rechecks guards before selector zero, then always sets unit speed.
+// Unit intensity selects three; all other finite intensities select two.
+[[nodiscard]] WorldMapPlayerState1AnimationResult prepare_world_map_player_state1_animation(
+    std::optional<uint32_t> control,const std::optional<WorldMapPlayerState1AnimationProfile>&,
+    std::optional<float> intensity,std::optional<float> current_speed,
+    const std::optional<WorldMapPlayerUpdateGuards>&,
+    std::optional<uint32_t> item,std::optional<uint32_t> action) noexcept;
 // Complete 42C7C -> 32B60 -> 7AFFC selection. Action zero/two skips the
 // constant; all other signed words select that exact mask, replacing +88.
 // Reached item owner is required after selection; no model/state writes here.

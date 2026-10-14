@@ -83,6 +83,11 @@ struct WorldMapAnimationFeatureStep {
     const std::vector<WorldMapAnimationPartialPlaybackRecord>& records,
     uint64_t model_identity, const std::optional<WorldMapAnimationModelBinding>& model,
     uint32_t loop, float rate, WorldMapAnimationPartialChannelStep* out);
+// 6C28 -> FEA4 changes only the target's +4 rate. It does not reset its
+// position/loop or copy channel playback into a model.
+[[nodiscard]] WorldMapAnimationChannelStatus prepare_world_map_partial_animation_channel_rate(
+    const WorldMapAnimationChannelState&,const std::vector<WorldMapAnimationPartialPlaybackRecord>&,
+    float rate,WorldMapAnimationPartialChannelStep*);
 
 struct WorldMapAnimationPlaybackProgressResult {
     WorldMapAnimationChannelStatus status = WorldMapAnimationChannelStatus::InvalidInput;
