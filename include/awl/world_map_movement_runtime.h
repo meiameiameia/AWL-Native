@@ -33,10 +33,11 @@ public:
     [[nodiscard]] bool tick(const PadSample& sample,
                             WorldMapMovementQuery dependencies,
                             WorldMapMovementRuntimeStep* output);
-    // Native focus policy: clear held PAD/steering, retain scene and pose.
+    // Native focus policy: clear held PAD/motion, retain scene and facing.
     void pause();
     const std::array<float, 3>& position() const { return position_; }
     const std::array<float, 3>& starting_heading() const { return axis_; }
+    const std::array<float, 3>& heading() const { return heading_; }
     const WorldMapSteeringState& steering() const { return steering_; }
     const HsdPadFrame& pad() const { return filter_.frame(); }
     uint64_t tick_count() const { return tick_; }
@@ -47,6 +48,7 @@ private:
     WorldMapSteeringState steering_;
     std::array<float, 3> position_{};
     std::array<float, 3> axis_{};
+    std::array<float, 3> heading_{};
     uint64_t tick_ = 0;
     bool initialized_ = false;
 };

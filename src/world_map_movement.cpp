@@ -87,6 +87,7 @@ bool calculate_world_map_movement_candidate(
     result.steering = query.steering;
     result.proposed_position = query.current_position;
     result.resolved_position = query.current_position;
+    result.heading_after = query.current_axis;
     result.camera_yaw_after_proposal = query.camera_yaw_radians;
     if (query.state_680 != -1 || query.state_58c != 0) {
         *candidate = result;
@@ -128,6 +129,9 @@ bool calculate_world_map_movement_candidate(
     if (!finite_steering(result.steering)) {
         return false;
     }
+    if(query.pad.stick_x!=0 || query.pad.stick_y!=0){
+        result.heading_after={result.steering.facing_x,0.0f,result.steering.facing_z};
+    }
     const WorldMapPosition current{query.current_position[0],
                                    query.current_position[1],
                                    query.current_position[2]};
@@ -145,7 +149,7 @@ bool calculate_world_map_movement_candidate(
     if (!query_world_map_directional_contact(
             query.directional_objects, query.directional_object_count, 1,
             query.current_position, result.proposed_position,
-            query.current_axis, &result.directional_contact)) {
+            result.heading_after, &result.directional_contact)) {
         return false;
     }
 

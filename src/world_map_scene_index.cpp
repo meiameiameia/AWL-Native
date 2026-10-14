@@ -87,6 +87,12 @@ bool WorldMapSceneBucketRegistry::register_object(
     return true;
 }
 
+const WorldMapSceneObject* WorldMapSceneBucketRegistry::object(uint64_t identity) const noexcept {
+    if(!identity)return nullptr;
+    for(const auto& bucket:buckets_)for(const auto& entry:bucket)if(entry.identity==identity)return &entry;
+    return nullptr;
+}
+
 bool WorldMapSceneBucketRegistry::update_position(
     uint64_t identity,
     const std::array<float, 3>& position,

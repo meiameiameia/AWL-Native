@@ -22,6 +22,7 @@ set(SOURCES
     src/player_input.cpp
     src/world_map_contact.cpp
     src/world_map_movement.cpp
+    src/world_map_player_movement.cpp
     src/world_map_movement_runtime.cpp
     src/world_map_player_start.cpp
     src/world_map_player_start_animation.cpp
@@ -415,6 +416,23 @@ elseif(MSVC)
     target_compile_options(collision_asset_tests PRIVATE /W4)
 endif()
 add_test(NAME collision_asset_tests COMMAND collision_asset_tests)
+
+add_executable(world_map_player_movement_tests
+    tests/world_map_player_movement_tests.cpp
+    src/world_map_player_movement.cpp src/world_map_movement.cpp
+    src/world_map_contact.cpp src/collision_asset.cpp
+    src/world_map_camera.cpp src/world_map_scene_index.cpp
+    src/world_map_trigger_asset.cpp src/world_map_update_inputs.cpp src/game_clock.cpp
+    src/input.cpp src/player_input.cpp src/filesystem.cpp src/platform.cpp
+    src/memory.cpp src/disc_identity.cpp
+)
+target_include_directories(world_map_player_movement_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(world_map_player_movement_tests PRIVATE AWL_PLATFORM_WINDOWS _CRT_SECURE_NO_WARNINGS)
+target_link_libraries(world_map_player_movement_tests PRIVATE xinput bcrypt)
+if(MSVC)
+    target_compile_options(world_map_player_movement_tests PRIVATE /W4)
+endif()
+add_test(NAME world_map_player_movement_tests COMMAND world_map_player_movement_tests)
 
 # Native startup and evidence format; all fixtures are invented and window-free.
 add_executable(startup_evidence_tests

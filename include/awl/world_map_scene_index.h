@@ -72,6 +72,9 @@ public:
         uint64_t identity,const WorldMapPlayerContextMetadata&) noexcept;
     void clear();
     [[nodiscard]] size_t size(int32_t bucket) const;
+    // Borrowed entry for synchronous owner binding; any registry mutation
+    // can invalidate it. No allocation or scene discovery is performed.
+    const WorldMapSceneObject* object(uint64_t identity) const noexcept;
     [[nodiscard]] std::vector<WorldMapSceneObject> snapshot(int32_t bucket) const;
 
 private:

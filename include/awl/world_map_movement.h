@@ -32,6 +32,7 @@ struct WorldMapMovementCandidate {
     WorldMapSteeringState steering{};
     std::array<float, 3> proposed_position{};
     std::array<float, 3> resolved_position{};
+    std::array<float, 3> heading_after{}; // +58..+60, before directional miss fallback
     float camera_yaw_after_proposal = 0.0f;
     bool camera_yaw_written = false;
     WorldMapContactResult directional_contact{};

@@ -7986,6 +7986,9 @@ void test_simulation_clock_and_runtime() {
     auto held = recorded_movement_input(0);
     expect(runtime.tick(held, query, &step) && step.movement.movement_enabled,
            "runtime owns filtered input, movement and scene commit together");
+    expect(runtime.heading()==step.movement.heading_after &&
+        step.movement.directional_contact.heading_axis==runtime.heading(),
+        "runtime owns the current facing separately from its retained starting heading");
     const auto previous_step = step;
     const uint64_t signature = movement_runtime_signature(runtime, step);
     auto bad_query = query;
@@ -8014,6 +8017,10 @@ void test_simulation_clock_and_runtime() {
     expect(runtime.position() == paused_position && runtime.tick_count() == paused_tick &&
            runtime.steering().current_speed == 0 && runtime.pad().current == 0,
            "native focus pause clears PAD and steering without losing scene pose");
+    query.state_680=-1;
+    expect(runtime.tick({true,0},query,&step) && step.movement.directional_contact.heading_axis==runtime.heading(),
+        "neutral input after focus pause retains the current directional fallback facing");
+    query.state_680=0;
     held = {}; held.connected = true;
     held.buttons = awl::pad_button_mask(awl::PadButton::A);
     for (uint32_t tick = 1; tick <= 19; ++tick) {

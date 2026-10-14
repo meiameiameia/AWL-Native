@@ -20,6 +20,7 @@ bool WorldMapMovementRuntime::initialize(const std::array<float, 3>& position,
     }
     position_ = position;
     axis_ = axis;
+    heading_ = axis;
     tick_ = 0;
     initialized_ = true;
     pause();
@@ -44,6 +45,7 @@ WorldMapPlayerStartStatus WorldMapMovementRuntime::initialize_player_start(
 
 void WorldMapMovementRuntime::pause() {
     steering_ = {};
+    steering_.facing_x=heading_[0];steering_.facing_z=heading_[2];
     filter_.reset();
     // World-map scene mode 4 has divisor two: max(1,30/2), max(1,6/2).
     filter_.set_repeat_timing(15, 3);
@@ -58,7 +60,7 @@ bool WorldMapMovementRuntime::tick(const PadSample& sample,
     filter.begin_frame(sample);
     query.pad = filter.frame();
     query.current_position = position_;
-    query.current_axis = axis_;
+    query.current_axis = heading_;
     query.steering = steering_;
     WorldMapMovementRuntimeStep next;
     next.tick = tick_ + 1;
@@ -73,6 +75,7 @@ bool WorldMapMovementRuntime::tick(const PadSample& sample,
             return false;
         }
         position_ = next.movement.resolved_position;
+        heading_ = next.movement.heading_after;
         steering_ = next.movement.steering;
     }
     filter_ = filter;
