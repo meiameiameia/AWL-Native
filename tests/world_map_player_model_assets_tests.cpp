@@ -2298,7 +2298,7 @@ void local_holder(const char* disc) {
         "all holder frames/meshes preserve the previous local primary wiring fingerprints under documented native numerics");
     std::cout<<"LOCAL_PLAYER_HOLDER "<<checked<<" phases / two owned channels / unknown counters retained / prior CPU fingerprints unchanged; actor startup and GPU pending\n";
 }
-std::vector<uint8_t> initial_input_dol() {
+std::vector<uint8_t> initial_input_dol(bool state1_profile=false) {
     // Invented sections, indices, descriptors, phase rows and scale catalog.
     std::vector<uint8_t> b(0x368);
     constexpr uint32_t addresses[]{0x80249230,0x8029E4B8,0x80282DF8,0x8029BECC,0x81000000,0x8029F818,0x81000100,0x8024A6E0,0x80249A6C,0x81000130};
@@ -2313,6 +2313,7 @@ std::vector<uint8_t> initial_input_dol() {
     constexpr uint32_t scale_words[]{0x3F800001,0x80000000,0,0x3F000000,0xC0400000,0x40000000};
     for(size_t i=0;i<6;++i){b[0x1B0+i]=catalog[i];word(b,0x1BC+i*24,scale_words[i]);}
     for(uint32_t i=6;i<42;++i){word(b,0x248+(i-6)*8,0x3A+i%6);word(b,0x24C+(i-6)*8,0x24+i%6);}
+    if(state1_profile){b.resize(0x36c);word(b,0x28,0x368);word(b,0x70,0x8034a1cc);word(b,0xb8,4);word(b,0x368,0x40000080);}
     return b;
 }
 awl::WorldMapAnimationInitializerObservations initial_timers(const awl::WorldMapPlayerInitialAnimationSelection& selection,uint32_t clock) {
@@ -2854,7 +2855,7 @@ uint64_t startup_snapshot(const awl::WorldMapPlayerStartup& owner) {
     }
     hash(h,owner.state0_third_loop().has_value());if(owner.state0_third_loop()){
         const auto& third=*owner.state0_third_loop();hash(h,third.loop_count);hash(h,third.raw_time);
-        hash(h,uint32_t(third.inputs_owner>>32));hash(h,uint32_t(third.inputs_owner));hash(h,uint32_t(third.completion));}
+        hash(h,uint32_t(third.inputs_owner>>32));hash(h,uint32_t(third.inputs_owner));hash(h,uint32_t(third.completion));hash(h,uint32_t(third.state));}
     hash(h,owner.animation_loop().has_value());if(owner.animation_loop()){
         hash(h,owner.animation_loop()->loop_count);hash(h,owner.animation_loop()->raw_time);hash(h,owner.animation_loop()->valid);}
     hash(h,owner.primary_loop().has_value());if(owner.primary_loop()){
@@ -2866,7 +2867,7 @@ uint64_t startup_snapshot(const awl::WorldMapPlayerStartup& owner) {
         hash(h,uint32_t(owner.primary_loop()->inputs_owner>>32));hash(h,uint32_t(owner.primary_loop()->inputs_owner));
         hash(h,owner.primary_loop()->pending_state_request.has_value());hash(h,uint32_t(owner.primary_loop()->pending_state_request.value_or(-1)));
         hash(h,owner.primary_loop()->state0_transition_completed);hash(h,owner.primary_loop()->state0_parent_completed);
-        hash(h,owner.primary_loop()->state0_secondary_completed);}
+        hash(h,owner.primary_loop()->state0_secondary_completed);hash(h,owner.primary_loop()->state1_transition_completed);}
     const auto key=reinterpret_cast<uintptr_t>(owner.starts().get());hash(h,uint32_t(uint64_t(key)>>32));hash(h,uint32_t(key));
     hash(h,owner.camera().has_value());if(owner.camera()){const auto camera=camera_snapshot(*owner.camera());hash(h,uint32_t(camera>>32));hash(h,uint32_t(camera));}
     const auto& actor=owner.actor_metadata();hash(h,actor.flag_15d);hash(h,actor.flag_15e);hash(h,actor.flag_15f);
@@ -2888,6 +2889,7 @@ uint64_t update_owners_snapshot(const awl::WorldMapPlayerUpdateOwners& owners) {
     if(owners.status){const auto& s=*owners.status;hash(h,1);
         for(uint32_t v:{s.word_4,s.word_8,s.word_c,s.word_14,s.word_18,s.word_1c,s.word_20,s.word_24,s.word_28,
             uint32_t(s.byte_2e),uint32_t(s.byte_32),s.word_12c,s.word_150,s.word_154,s.word_160})hash(h,v);}
+    hash(h,owners.item_owner.has_value());if(owners.item_owner)hash(h,owners.item_owner->mask_88);
     hash(h,uint32_t(owners.queue.size()));for(const auto& e:owners.queue){hash(h,uint32_t(e.node_identity>>32));hash(h,uint32_t(e.node_identity));hash(h,e.priority);}return h;
 }
 uint32_t fade_color_word(const awl::WorldMapFadeColor& color) {
@@ -3494,6 +3496,40 @@ void state0_secondary_checks() {
         for(uint32_t v:{state,uint32_t(saved),uint32_t(status==awl::WorldMapPlayerActorGateStatus::RequiresAuxiliaryCallback),0x1234u})hash(digest,v);
     }
     expect(digest==0x35074d0894ca46e2ull,"both supported actor prefixes agree with original saved-UI routing");
+}
+void state1_initializer_checks() {
+    using S=awl::WorldMapPlayerState1InitializerStatus;using D=awl::WorldMapPlayerInitialAnimationStatus;
+    for(bool invented:{false,true}){uint64_t digest=14695981039346656037ull;const uint32_t mask=invented?0x40000080u:2u;
+        for(uint32_t seed=0;seed<512;++seed){const auto action=std::array<int32_t,8>{INT32_MIN,-1,0,1,2,3,INT32_MAX,INT32_MIN+1}[seed%8];
+            const uint32_t old=seed*0x1020304u^0x89abcdefu;const auto result=awl::prepare_world_map_player_state1_initializer(action,mask,true);
+            expect(result.status==S::Prepared && result.mask,"complete initializer yields a mask without touching other state");
+            for(uint32_t v:{seed,uint32_t(action),old,result.mask.value_or(UINT32_MAX)})hash(digest,v);}
+        expect(digest==(invented?0x0bd2e42caa1bb83full:0xc35cec3fb4fcb873ull),"512 full original state-one initializer/setter cases agree, including mask replacement and signed action boundaries");}
+    expect(awl::prepare_world_map_player_state1_initializer({}, {},false).status==S::RequiresAction,"action read precedes constant/item owner");
+    expect(awl::prepare_world_map_player_state1_initializer(3,{},false).status==S::RequiresMask,"nonzero/non-two action requires constant before item owner");
+    for(int32_t action:{0,2})expect(awl::prepare_world_map_player_state1_initializer(action,{},true).mask==0u &&
+        awl::prepare_world_map_player_state1_initializer(action,{},false).status==S::RequiresItemOwner,"zero/two actions skip unknown constants but require the reached item owner");
+    auto bytes=initial_input_dol(true);std::shared_ptr<const awl::WorldMapPlayerInitialAnimationInputs> profile;
+    expect(awl::decode_world_map_player_initial_animation_inputs(bytes.data(),bytes.size(),&profile)==D::Decoded && profile->state1_action_mask()==0x40000080u,"invented reached mask metadata decodes separately from instruction bodies");
+    word(bytes,0x368,0);expect(profile->state1_action_mask()==0x40000080u,"mask metadata owns copied values after source mutation");
+    const auto* old=profile.get();word(bytes,0xb8,3);
+    expect(awl::decode_world_map_player_initial_animation_inputs(bytes.data(),bytes.size(),&profile)==D::UnsupportedLayout && profile.get()==old,"partial mapped action mask rejects and preserves metadata owner");
+    bytes=initial_input_dol();expect(awl::decode_world_map_player_initial_animation_inputs(bytes.data(),bytes.size(),&profile)==D::Decoded && !profile->state1_action_mask(),"legacy profile stays valid without inventing transition constants");
+    uint64_t digest=14695981039346656037ull;
+    for(uint32_t state:{0u,1u})for(uint32_t seed=0;seed<128;++seed){auto clock=std::make_shared<awl::GameClock>();expect(clock->advance(),"third comparison clock samples loop one");awl::WorldMapUpdateInputs inputs(clock);
+        const uint32_t control=seed%2?0x800u:0u;const int32_t g680=seed/2%2?0:-1,g58=int32_t(seed/4%2);
+        inputs.observe_control_sources({awl::WorldMapControlPhase{uint8_t{1},11u,uint8_t(seed%2)},0});expect(inputs.capture_control()==awl::WorldMapControlStatus::Captured,"shared third captures derived control");
+        awl::WorldMapPlayerState0ThirdInput observed;observed.guards=awl::WorldMapPlayerUpdateGuards{g680,g58};awl::WorldMapPlayerState0ThirdState before{0x1234u,{}},after=before;
+        const auto result=awl::prepare_world_map_player_normal_third(inputs,{},before,observed,&after);
+        const bool common=result.status==awl::WorldMapPlayerState0ThirdStatus::RequiresContextInput;
+        expect(common || result.status==awl::WorldMapPlayerState0ThirdStatus::SkippedByGuard,"both supported third entries reach original common/skip routes");
+        expect(after.control_word_1384==(common?0x1234u:control),"native missing-context stop rolls back original earlier control store");
+        for(uint32_t v:{state,seed,control,uint32_t(g680),uint32_t(g58),uint32_t(common),inputs.control()->dispatch_word})hash(digest,v);}
+    expect(digest==0xc888a50ce5b88f25ull,"shared third entries agree with actual state-zero/one rows and guard/control decisions");
+    digest=14695981039346656037ull;
+    for(uint32_t state:{0u,1u,0x29u})for(uint8_t saved:{uint8_t{0},uint8_t{1},uint8_t{255}}){const auto gate=awl::prepare_world_map_player_normal_actor_gate(saved,{});
+        for(uint32_t v:{state,uint32_t(saved),uint32_t(gate==awl::WorldMapPlayerActorGateStatus::RequiresAuxiliaryCallback),0x1234u})hash(digest,v);}
+    expect(digest==0xa5fc864a0707c481ull,"three supported actor prefixes agree with original auxiliary-before-script routing");
 }
 void followup_decision_checks() {
     using S=awl::WorldMapPlayerFollowupStatus;
@@ -4800,7 +4836,7 @@ void startup_owner_checks() {
     Fixture fixture;auto payloads=files();payloads[0]=setup_model();payloads[1]=geometry_gpl();payloads[2]=execution_skin(1);
     fixture.write("boy_0.arc",archive(payloads));fixture.write("boy_0.anm.arc",archive({owner_frame_clip(),owner_frame_clip(4)}));
     fixture.write("boy_0_subanm.arc",archive({owner_frame_clip()}));fixture.write("boy_0_subact.arc",archive({setup_model()}));
-    auto initial_bytes=initial_input_dol(),start_bytes=holder_start_tables();awl::WorldMapPlayerStartupProviders p;
+    auto initial_bytes=initial_input_dol(true),start_bytes=holder_start_tables();awl::WorldMapPlayerStartupProviders p;
     expect(awl::load_world_map_player_model_assets(0,&p.models)==Status::Loaded &&
         awl::load_world_map_player_animation_assets(&p.animations)==awl::WorldMapPlayerAnimationAssetsStatus::Loaded &&
         awl::decode_world_map_player_initial_animation_inputs(initial_bytes.data(),initial_bytes.size(),&p.initial)==awl::WorldMapPlayerInitialAnimationStatus::Decoded &&
@@ -5126,6 +5162,109 @@ void primary_slice_owner_checks(const awl::WorldMapPlayerStartupProviders& sourc
     expect(step.status==S::RequiresNextLoop && startup_snapshot(*player)==before,"ordered primary facade rejects executing a parent retroactively after independent model progression");
     std::cout<<"PLAYER_PRIMARY_SLICE ordered parent/model, secondary/tertiary callbacks, transition stop, filtered passes and retry preservation\n";
 }
+void state1_transition_owner_checks(awl::WorldMapPlayerStartup& player,awl::WorldMapUpdateInputs& inputs,
+    awl::WorldMapPlayerUpdateOwners& owners,awl::WorldMapPlayerActorQueue& render,
+    const awl::WorldMapPlayerStartupQueuedActorInput& frame_actor,
+    const awl::WorldMapPlayerContextUpdateSources* context_sources,bool allocations) {
+    using S=awl::WorldMapPlayerState1TransitionStatus;using Second=awl::WorldMapPlayerState0SecondaryStatus;
+    using Third=awl::WorldMapPlayerState0ThirdStatus;using Q=awl::WorldMapPlayerStartupQueueStatus;using A=awl::WorldMapPlayerState0TransitionStatus;
+    expect(inputs.game_clock()->advance(),"state-one diagnostic loop advances explicitly");
+    inputs.request_scene_mode(4,0);expect(inputs.capture_control()==awl::WorldMapControlStatus::Captured,"state-one fixture captures active control before scene commit");
+    awl::WorldMapSceneModeCommit commit;expect(inputs.commit_scene_fields(0,uint8_t{0},&commit)==awl::WorldMapSceneFilterStatus::CommittedFields && inputs.scene().scene_type_68==1,"actual owned manager scene one selects the audio dependency");
+    owners.status->word_20=0;awl::WorldMapPlayerState0ParentInput parent;parent.guards=awl::WorldMapPlayerUpdateGuards{-1,0};parent.scene_child_word_4=0;
+    parent.pose=owners.saved_pose;parent.saved_subobject_byte_14c=uint8_t{0};
+    expect(player.advance_state0_primary_slice(inputs,parent,&owners).status==awl::WorldMapPlayerPrimarySliceStatus::Completed,"state-one fixture owns a fresh normal parent/model prefix");
+    expect(player.advance_state1_transition(inputs,{},&owners).status==S::RequiresPendingTransition,"state-one initialization requires an explicitly retained request after an eligible owned prefix");
+    const auto request=player.request_state1_transition(inputs,awl::WorldMapPlayerUpdateGuards{-1,0});
+    if(request.status!=Second::TransitionRequired){expect(request.status==Second::RequiresMovement && !player.primary_loop()->pending_state_request && player.state().state_1364==0,"movement-required owner cannot fabricate a completed-holder state-one request");
+        std::cout<<"PLAYER_STATE1_BOUNDARY movement still required\n";return;}
+    expect(request.requested_state==1 && player.primary_loop()->pending_state_request==1 && !player.primary_loop()->state0_secondary_completed,"completed-holder request is retained without accepting a transition or second pass");
+    auto before=startup_snapshot(player),effects=update_owners_snapshot(owners),draw=actor_queue_snapshot(render);
+    const auto preserved=[&](){return startup_snapshot(player)==before && update_owners_snapshot(owners)==effects && actor_queue_snapshot(render)==draw;};
+    expect(player.advance_state0_secondary(inputs,awl::WorldMapPlayerUpdateGuards{0,{}}).requested_state==1 &&
+        player.request_state1_transition(inputs,{}).requested_state==1 && preserved(),"retry cannot discard a retained state-one request by replacing guards");
+    {auto other=owners;expect(player.advance_state1_transition(inputs,{},&other).status==S::InvalidInput && preserved(),"transition binds the accepted update owner");}
+    awl::WorldMapUpdateInputs other_inputs(inputs.game_clock());other_inputs.observe_control_sources(inputs.sources());
+    expect(other_inputs.capture_control()==awl::WorldMapControlStatus::Captured && player.advance_state1_transition(other_inputs,{},&owners).status==S::InvalidInput && preserved(),"same-clock replacement input cannot supply a different transition source");
+    awl::WorldMapPlayerState1TransitionInput transition;
+    const auto stopped=[&](S expected){const auto result=player.advance_state1_transition(inputs,transition,&owners);
+        expect(result.status==expected && preserved(),"missing/unsupported state-one dependencies preserve pending request and all accepted game/model/item/queue state");return result;};
+    stopped(S::RequiresSavedRemapByte);transition.saved_byte_14d35=uint8_t{0};stopped(S::RequiresSecondaryRemapByte);
+    uint64_t digest=14695981039346656037ull;
+    for(uint32_t seed=0;seed<512;++seed){transition.saved_byte_14d35=uint8_t(seed%256);transition.secondary_byte_3f1=uint8_t(seed/256*255);
+        const auto result=stopped(seed%256 || seed/256?S::UnsupportedRemappedState:S::RequiresAudioByte);
+        for(uint32_t v:{seed,uint32_t(*transition.saved_byte_14d35),uint32_t(*transition.secondary_byte_3f1),uint32_t(result.remapped_state.value_or(-1))})hash(digest,v);}
+    expect(digest==0x36607f6f7e377b58ull,"512 retained requested-one remaps agree with actual 31D7C precedence");
+    transition.saved_byte_14d35=uint8_t{0};transition.secondary_byte_3f1=uint8_t{0};transition.audio_byte_90=uint8_t{255};stopped(S::RequiresAudioStop);
+    transition.audio_byte_90=uint8_t{0};expect(stopped(S::AppearanceIncomplete).appearance->status==A::RequiresModelByte,"appearance follows remap/audio checks");
+    transition.saved_subobject_byte_14c=uint8_t{0};
+    {const auto status=owners.status;owners.status.reset();effects=update_owners_snapshot(owners);expect(stopped(S::AppearanceIncomplete).appearance->status==A::RequiresStatus,"reached appearance selector requires the pointed owned status");owners.status=status;effects=update_owners_snapshot(owners);}
+    const auto sources=inputs.sources();auto phase_sources=sources;phase_sources.phase->raw_word_0.reset();inputs.observe_control_sources(phase_sources);
+    expect(stopped(S::AppearanceIncomplete).appearance->status==A::RequiresPhaseRaw,"appearance cannot substitute the game clock for current phase");
+    phase_sources=sources;const auto phase=(awl::derive_world_map_phase(*sources.phase->raw_word_0)+2)%6;
+    constexpr std::array<uint32_t,6> phase_origins{0,34560000,103680000,207360000,276480000,311040000};phase_sources.phase->raw_word_0=phase_origins[phase]+123456;
+    inputs.observe_control_sources(phase_sources);owners.status->word_20=75000;effects=update_owners_snapshot(owners);
+    auto result=stopped(S::InitializerIncomplete);expect(result.initializer && result.initializer->status==awl::WorldMapPlayerState1InitializerStatus::RequiresAction && result.appearance->model_row->selector==1,"refreshed appearance stages before the initializer action read");
+    transition.action_148=3;result=stopped(S::InitializerIncomplete);
+    expect(result.initializer->status==awl::WorldMapPlayerState1InitializerStatus::RequiresItemOwner && result.initializer->mask==player.model().initial_inputs()->state1_action_mask(),"nonzero action chooses the retained metadata mask before requiring its separate owner");
+    owners.item_owner=awl::WorldMapPlayerItemOwnerState{0xf0f0f0f0};effects=update_owners_snapshot(owners);transition.action_148.reset();
+#if !defined(_DEBUG)
+    if(allocations)for(size_t allocation=0;allocation<2;++allocation){const auto live=allocation_probe::live;allocation_probe::remaining=allocation;allocation_probe::enabled=true;
+        const auto failed=player.advance_state1_transition(inputs,transition,&owners);allocation_probe::enabled=false;
+        expect(failed.status==S::AllocationFailure && preserved() && allocation_probe::live==live,"both reached appearance timer allocations preserve the pending state-one transition and release staging");}
+#else
+    (void)allocations;
+#endif
+    transition.action_148=phase%2?2:0;
+    const auto prior_holder=player.model().state();const auto prior_counter=player.state().counter_1368;const auto prior_frame=primary_snapshot(player.model().primary());
+    const auto prior_playback=progression_playback_snapshot(player.model().primary().model().partial_playback());
+    const auto prior_camera=player.camera()?camera_snapshot(*player.camera()):0;
+    const auto prior_queue=owners.queue;const auto prior_raw=inputs.game_clock()->state().raw_time,prior_loop=inputs.game_clock()->state().loop_count;
+    result=player.advance_state1_transition(inputs,transition,&owners);
+    awl::WorldMapPlayerModelTypeRow row;expect(player.model().initial_inputs()->select_model_type(phase,1,&row),"current-phase expected model row resolves");
+    expect(result.status==S::Advanced && result.remapped_state==1 && player.state().state_1364==1 && player.state().secondary_byte_3f0==0 && owners.item_owner->mask_88==0 &&
+        !player.primary_loop()->pending_state_request && player.primary_loop()->state1_transition_completed && player.primary_loop()->state0_secondary_completed && !player.primary_loop()->followups_completed,
+        "state-one transition atomically publishes appearance, replacement mask, state and secondary clear without acknowledging third/queue work");
+    expect(player.model().state().feature_38->type_0==row.type_0 && player.model().state().feature_38->type_4==row.type_4 &&
+        player.model().state().feature_38->index_8==prior_holder.feature_38->index_8 && player.model().state().current_descriptor_0==prior_holder.current_descriptor_0 &&
+        player.model().state().base_descriptor_4==prior_holder.base_descriptor_4 && player.model().state().completed_20==prior_holder.completed_20 &&
+        primary_snapshot(player.model().primary())==prior_frame && progression_playback_snapshot(player.model().primary().model().partial_playback())==prior_playback &&
+        player.state().counter_1368==prior_counter && (player.camera()?camera_snapshot(*player.camera()):0)==prior_camera && actor_queue_snapshot(render)==draw &&
+        owners.queue.size()==prior_queue.size() && inputs.game_clock()->state().raw_time==prior_raw && inputs.game_clock()->state().loop_count==prior_loop,
+        "state-one initializer changes no animation command, counter, camera, CPU frame, playback, scheduling or time");
+    before=startup_snapshot(player);effects=update_owners_snapshot(owners);
+    expect(player.advance_state1_transition(inputs,{},&owners).status==S::AlreadyAdvanced && preserved(),"completed transition ignores replacement initializer observations");
+    expect(player.advance_state0_third(inputs,{},{}).status==Third::RequiresPrimary && player.consume_state0_update_after_third(inputs,{},&owners,&render).status==Q::RequiresPrimary && preserved(),"state-zero-only APIs cannot acknowledge state-one callbacks");
+    expect(player.consume_state1_update_after_third(inputs,{},&owners,&render).status==Q::RequiresThird && preserved(),"state-one queue requires its current third pass");
+    expect(player.advance_state1_third(inputs,{},{}).status==Third::RequiresGuards && preserved(),"state-one shared third requires its own outer guards");
+    awl::WorldMapPlayerState0ThirdInput third;third.guards=awl::WorldMapPlayerUpdateGuards{0,{}};
+    if(context_sources){third.guards=awl::WorldMapPlayerUpdateGuards{-1,0};third.context.emplace();third.context->scene_type=2;third.context->current_key=17;
+        third.context->action=*transition.action_148;third.context->facing={0,0,1};third.context->held_row=awl::WorldMapPlayerContextItemRow{0,uint8_t{0},uint8_t{0},0u};third.context->tracked_14ac=0;
+        third.context->label_observations.terrain_clear={true,true};third.context->label_observations.secondary_ground_available=true;
+        expect(player.advance_state1_third(inputs,*context_sources,third).status==Third::RequiresPad && preserved(),"new state-one common staging cannot consume stale PAD or partially publish context");}
+    inputs.observe_pad_sample({true,0});expect(inputs.capture_pad()==awl::WorldMapPadCaptureStatus::Captured,"state-one PAD captures explicitly");
+    expect(player.advance_state1_third(inputs,context_sources?*context_sources:awl::WorldMapPlayerContextUpdateSources{},third).status==(context_sources?Third::Prepared:Third::SkippedByGuard) &&
+        player.state0_third_loop()->state==1 && player.primary_loop()->followups_completed,"state-one direct 43120 row uses the shared bounded third transaction with a state-qualified receipt");
+    awl::WorldMapPlayerStartupQueuedActorInput actor;actor.actor.saved_byte_29a01=uint8_t{255};before=startup_snapshot(player);effects=update_owners_snapshot(owners);
+    expect(player.consume_state1_update_after_third(inputs,actor,&owners,&render).status==Q::CallbackIncomplete && preserved(),"state-one queued actor retains the original auxiliary UI dependency");
+    if(context_sources){
+        actor=frame_actor;actor.actor.script->flag_bytes[0]=0;
+        auto invalid=*actor.actor.visibility->view;invalid[11]=std::numeric_limits<float>::quiet_NaN();actor.actor.frame.node_post_transforms.back()=invalid;
+        expect(player.consume_state1_update_after_third(inputs,actor,&owners,&render).status==Q::CallbackIncomplete && preserved(),"late state-one frame failure preserves the transitioned appearance/context and both queues");
+        actor.actor.frame.node_post_transforms.back().reset();
+        const auto queued=player.consume_state1_update_after_third(inputs,actor,&owners,&render);
+        expect(queued.status==Q::Completed && queued.callback && queued.callback->status==awl::WorldMapPlayerStartupActorCallbackStatus::Completed &&
+            player.model().primary().cpu().frame() && owners.queue.size()==1 && owners.queue.front().node_identity==900,"state-one queued callback publishes an actual local CPU frame after appearance refresh and removes only its owned node");
+    }else{
+        actor.actor.saved_byte_29a01=uint8_t{0};actor.actor.script.emplace();actor.actor.script->flag_width_4=1;actor.actor.script->flag_bytes={1};
+        expect(player.consume_state1_update_after_third(inputs,actor,&owners,nullptr).status==Q::Completed && owners.queue.size()==1 && owners.queue.front().node_identity==900,"shared state-one script-blocked queued callback completes only its owned node");
+    }
+    before=startup_snapshot(player);effects=update_owners_snapshot(owners);draw=actor_queue_snapshot(render);
+    expect(player.advance_state1_third(inputs,{},{}).status==Third::AlreadyCompleted && player.consume_state1_update_after_third(inputs,{},&owners,nullptr).status==Q::AlreadyCompleted && preserved(),"same-loop state-one retries cannot repeat context or consume foreign work");
+    expect(inputs.game_clock()->advance() && inputs.capture_control()==awl::WorldMapControlStatus::Captured,"next diagnostic state-one loop captures fresh control");
+    expect(player.advance_state1_third(inputs,{},{}).status==Third::RequiresPrimary && player.advance_state0_primary_slice(inputs,{},&owners).status==awl::WorldMapPlayerPrimarySliceStatus::InvalidInput,"state-one next-loop movement/primary dependencies cannot be replaced by state-zero work");
+    std::cout<<"PLAYER_STATE1_TRANSITION advanced / mask replaced / shared third and queued completion / next-loop primary remains open\n";
+}
 void state0_normal_owner_checks(awl::WorldMapPlayerStartup& player,awl::WorldMapUpdateInputs& inputs,
     awl::WorldMapPlayerUpdateOwners& owners,awl::WorldMapPlayerActorQueue& render,
     const awl::WorldMapPlayerContextUpdateSources* context_sources,bool allocations) {
@@ -5251,6 +5390,7 @@ void state0_normal_owner_checks(awl::WorldMapPlayerStartup& player,awl::WorldMap
         "filtered normal second and third require no guard, holder, context or PAD observations");
     expect(update_owners_snapshot(owners)==effects && actor_queue_snapshot(render)==draw &&
         player.consume_state0_update_after_third(inputs,{},&owners,nullptr).status==Q::UnsupportedNode,"filtered player callbacks cannot invent an owned update or consume remaining foreign work");
+    state1_transition_owner_checks(player,inputs,owners,render,actor,context_sources,allocations);
     std::cout<<"PLAYER_STATE0_NORMAL owned startup-transition CPU frame / next-loop parent-model / second route "<<int(expected)<<" / explicit blocked-guard completion / script-blocked queued node\n";
 }
 void startup_tick_owner_checks(const awl::WorldMapPlayerStartupProviders& source,const awl::WorldMapPlayerStartupQuery& query,
@@ -6570,7 +6710,7 @@ int main(int argc,char** argv){
     }
 #endif
     actor_placement_comparisons();embedded_tpl();skin_metadata_checks();auxiliary_checks();awl::filesystem_shutdown();setup_checks();awl::filesystem_shutdown();draw_checks();awl::filesystem_shutdown();skin_work_checks();awl::filesystem_shutdown();skin_execution_checks();awl::filesystem_shutdown();frame_checks();awl::filesystem_shutdown();animation_frame_checks();awl::filesystem_shutdown();attachment_frame_checks();awl::filesystem_shutdown();hierarchy_frame_checks();awl::filesystem_shutdown();partial_frame_sampling_checks();owned_hierarchy_frame_checks();awl::filesystem_shutdown();primary_frame_owner_checks();awl::filesystem_shutdown();topology_checks();awl::filesystem_shutdown();geometry_checks();awl::filesystem_shutdown();primary_owner_checks();awl::filesystem_shutdown();holder_checks();awl::filesystem_shutdown();initial_root_scale_checks();initial_input_checks();awl::filesystem_shutdown();timer_asset_checks();awl::filesystem_shutdown();texture_feature_checks();awl::filesystem_shutdown();state29_camera_checks();parent_update_checks();startup_owner_checks();awl::filesystem_shutdown();feature_draw_state_checks();awl::filesystem_shutdown();synthetic();awl::filesystem_shutdown();
-    fade_checks();context_checks();context_label_checks();state0_initializer_checks();state0_secondary_checks();followup_decision_checks();holder_policy_checks();holder_pair_checks();awl::filesystem_shutdown();holder_lifecycle_checks();awl::filesystem_shutdown();
+    fade_checks();context_checks();context_label_checks();state0_initializer_checks();state0_secondary_checks();state1_initializer_checks();followup_decision_checks();holder_policy_checks();holder_pair_checks();awl::filesystem_shutdown();holder_lifecycle_checks();awl::filesystem_shutdown();
     if(argc==3 && std::string(argv[1])=="--player-model-local")local(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-frame-local")local(argv[2],true);
     else if(argc==3 && std::string(argv[1])=="--player-primary-local")local_primary(argv[2]);

@@ -5,6 +5,14 @@
 #include <utility>
 
 namespace awl {
+WorldMapPlayerState1InitializerResult prepare_world_map_player_state1_initializer(
+    std::optional<int32_t> action,std::optional<uint32_t> mask,bool owner) noexcept {
+    using S=WorldMapPlayerState1InitializerStatus;
+    if(!action)return {S::RequiresAction};
+    uint32_t selected=0;
+    if(*action!=0 && *action!=2){if(!mask)return {S::RequiresMask};selected=*mask;}
+    return {owner?S::Prepared:S::RequiresItemOwner,selected};
+}
 WorldMapPlayerState0SecondaryResult prepare_world_map_player_state0_secondary(
     const std::optional<WorldMapPlayerUpdateGuards>& guards,std::optional<uint8_t> completed,
     std::optional<uint8_t> flag) noexcept {

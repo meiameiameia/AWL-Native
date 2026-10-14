@@ -28,6 +28,7 @@ struct WorldMapPlayerState0ThirdLoop {
     uint32_t loop_count=0,raw_time=0;
     uint64_t inputs_owner=0;
     WorldMapPlayerState0ThirdStatus completion=WorldMapPlayerState0ThirdStatus::Prepared;
+    int32_t state=0;
 };
 // 31504's state-zero outer guards -> 42C5C -> 43120's control/scene prefix,
 // supported context transaction and idle pressed-bit exits. Eligibility,
@@ -38,6 +39,13 @@ struct WorldMapPlayerState0ThirdLoop {
 // context staging. Filtered does not store control; guard skips do. No heap,
 // clock/input advancement, full primary-pass/queue or gameplay receipt.
 [[nodiscard]] WorldMapPlayerState0ThirdResult prepare_world_map_player_state0_third(
+    const WorldMapUpdateInputs&,const WorldMapPlayerContextUpdateSources&,
+    const WorldMapPlayerState0ThirdState&,const WorldMapPlayerState0ThirdInput&,
+    WorldMapPlayerState0ThirdState* out) noexcept;
+// State one enters 43120 directly; its outer 31504 guards are the same.
+// The caller must establish supported state zero/one; this envelope has no
+// state-transition authority and preserves the same atomic/idle scope.
+[[nodiscard]] WorldMapPlayerState0ThirdResult prepare_world_map_player_normal_third(
     const WorldMapUpdateInputs&,const WorldMapPlayerContextUpdateSources&,
     const WorldMapPlayerState0ThirdState&,const WorldMapPlayerState0ThirdInput&,
     WorldMapPlayerState0ThirdState* out) noexcept;

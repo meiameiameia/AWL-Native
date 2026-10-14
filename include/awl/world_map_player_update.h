@@ -19,6 +19,8 @@ struct WorldMapPlayerUpdateQueueEntry {
     uint64_t node_identity = 0; // Opaque nonzero key, never a host pointer.
     uint32_t priority = 0;
 };
+// Explicit projection, not a translated item-owner constructor.
+struct WorldMapPlayerItemOwnerState {uint32_t mask_88=0;};
 // Supplied CPU counterparts of the reached global owners. No save-file
 // format, live globals, renderer or queue processing is implied. The caller
 // may consume nodes between updates. A node already in this queue at 1010
@@ -33,6 +35,8 @@ struct WorldMapPlayerUpdateOwners {
     // Supplied snapshot or explicitly initialized fresh projection, needed
     // only without control bit 800. Other saved-owner fields remain separate.
     std::optional<WorldMapPlayerStatusState> status;
+    // r13-5854's separate item owner; only its 7AFFC mask store is owned.
+    std::optional<WorldMapPlayerItemOwnerState> item_owner;
 };
 enum class WorldMapPlayerUpdateStatus {
     Prepared, Advanced, RequiresControlWord, RequiresGuardOwner,
@@ -96,6 +100,16 @@ struct WorldMapPlayerState0SecondaryResult {
 [[nodiscard]] WorldMapPlayerState0SecondaryResult prepare_world_map_player_state0_secondary(
     const std::optional<WorldMapPlayerUpdateGuards>&,std::optional<uint8_t> completed_20,
     std::optional<uint8_t> flag_21) noexcept;
+enum class WorldMapPlayerState1InitializerStatus {Prepared,RequiresAction,RequiresMask,RequiresItemOwner};
+struct WorldMapPlayerState1InitializerResult {
+    WorldMapPlayerState1InitializerStatus status=WorldMapPlayerState1InitializerStatus::RequiresAction;
+    std::optional<uint32_t> mask;
+};
+// Complete 42C7C -> 32B60 -> 7AFFC selection. Action zero/two skips the
+// constant; all other signed words select that exact mask, replacing +88.
+// Reached item owner is required after selection; no model/state writes here.
+[[nodiscard]] WorldMapPlayerState1InitializerResult prepare_world_map_player_state1_initializer(
+    std::optional<int32_t> action,std::optional<uint32_t> mask,bool item_owner_present) noexcept;
 // 31504 -> row +24 -> 34CA8 (blr), including its earlier guard decisions.
 [[nodiscard]] WorldMapPlayerFollowupStatus prepare_world_map_player_state29_tertiary(
     const std::optional<WorldMapPlayerUpdateGuards>&) noexcept;

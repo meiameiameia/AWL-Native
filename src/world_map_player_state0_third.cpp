@@ -6,6 +6,12 @@ WorldMapPlayerState0ThirdResult prepare_world_map_player_state0_third(
     const WorldMapUpdateInputs& inputs,const WorldMapPlayerContextUpdateSources& sources,
     const WorldMapPlayerState0ThirdState& input,const WorldMapPlayerState0ThirdInput& observations,
     WorldMapPlayerState0ThirdState* out) noexcept {
+    return prepare_world_map_player_normal_third(inputs,sources,input,observations,out);
+}
+WorldMapPlayerState0ThirdResult prepare_world_map_player_normal_third(
+    const WorldMapUpdateInputs& inputs,const WorldMapPlayerContextUpdateSources& sources,
+    const WorldMapPlayerState0ThirdState& input,const WorldMapPlayerState0ThirdInput& observations,
+    WorldMapPlayerState0ThirdState* out) noexcept {
     using S=WorldMapPlayerState0ThirdStatus;WorldMapPlayerState0ThirdResult result;if(!out)return result;
     const auto dispatch=inputs.dispatch(0x5001);
     if(dispatch.status==WorldMapDispatchStatus::RequiresControl){result.status=S::RequiresControl;return result;}

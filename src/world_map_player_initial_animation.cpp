@@ -59,6 +59,10 @@ bool WorldMapPlayerInitialAnimationInputs::decode(const uint8_t* data, size_t si
         std::memcpy(&scales_[phase], &word, sizeof(word));
         if (!std::isfinite(scales_[phase])) return false;
     }
+    if(view.read(0x8034a1cc,1)){
+        const auto* mask=view.read(0x8034a1cc,4);if(!mask)return false;
+        state1_action_mask_=detail::dol_word(mask);
+    }
     return true;
 }
 bool WorldMapPlayerInitialAnimationInputs::select_model_type(uint32_t phase, uint32_t selector,

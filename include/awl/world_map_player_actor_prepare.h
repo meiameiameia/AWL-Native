@@ -28,8 +28,8 @@ enum class WorldMapPlayerActorGateStatus {
 [[nodiscard]] WorldMapPlayerActorGateStatus prepare_world_map_player_state29_actor_gate(
     std::optional<uint8_t> saved_byte_29a01,
     const std::optional<WorldMapPlayerActorScriptOwner>& script) noexcept;
-// State zero reaches the same nonzero-saved-byte auxiliary branch as 29.
-// Only these two supported normal states are established by the owner.
+// States zero/one reach the same nonzero-saved-byte auxiliary branch as 29.
+// Only these three supported normal states are established by the owner.
 [[nodiscard]] WorldMapPlayerActorGateStatus prepare_world_map_player_normal_actor_gate(
     std::optional<uint8_t>,const std::optional<WorldMapPlayerActorScriptOwner>&) noexcept;
 
