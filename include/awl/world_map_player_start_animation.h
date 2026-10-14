@@ -50,6 +50,7 @@ public:
     // keep the coefficients but leave the rate unknown for the ordered consumer.
     [[nodiscard]] WorldMapPlayerStatusFactors status_factors(
         const WorldMapActorAnimationDescriptor& current) const noexcept;
+    const WorldMapPlayerStatusConditionFactors& condition_factors() const noexcept {return condition_factors_;}
     // Fresh constructor projection followed by 13AE0's B9E4 reset using the
     // privately retained initial r2 constants. No scene setup or save restore.
     [[nodiscard]] WorldMapPlayerStatusCode prepare_fresh_status(
@@ -66,6 +67,7 @@ private:
     std::array<std::array<std::optional<uint16_t>,4>,4> status_rates_{};
     std::array<uint32_t,static_cast<size_t>(WorldMapPlayerStatusGlobal::Count)> status_globals_{};
     WorldMapPlayerStatusResetValues status_reset_;
+    WorldMapPlayerStatusConditionFactors condition_factors_;
     uint8_t empty_item_type_ = 0;
     bool target_verified_ = false;
 };

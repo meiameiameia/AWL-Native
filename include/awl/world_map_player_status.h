@@ -7,14 +7,44 @@
 namespace awl {
 // CPU projection of player +135C's saved-owner subobject, not a serialized
 // save format or the entire constructor. Raw words preserve PPC wrapping
-// arithmetic/signed comparisons. The update changes only +4/+14/+150/+154.
+// arithmetic/signed comparisons. The C87C/C7E8 pair changes only
+// +4/+14/+150/+154; the separate condition transaction stages its latches.
 struct WorldMapPlayerStatusState {
     uint32_t word_4 = 0, word_8 = 0, word_c = 0;
     uint32_t word_14 = 0, word_18 = 0, word_1c = 0, word_20 = 0;
     uint32_t word_24 = 0, word_28 = 0;
     uint8_t byte_2e = 0, byte_32 = 0;
     uint32_t word_12c = 0, word_150 = 0, word_154 = 0, word_160 = 0;
+    // Conditions C8F4..CB58 use these additional deadline/latch fields.
+    // A partial observed status keeps them unknown until reached. Fresh
+    // construction establishes them; later saved restoration is separate.
+    std::optional<uint32_t> word_134,word_13c;
+    std::optional<uint8_t> byte_14c,byte_158,byte_159,byte_15a,byte_15b,byte_15c;
 };
+enum class WorldMapPlayerStatusConditionGlobal : uint8_t {
+    Word7ee0,Word7edc,Word7ed8,Word7ed4,Word7ed0,Word7ec4,Word7ec8,Count
+};
+struct WorldMapPlayerStatusConditionFactors {
+    std::array<std::optional<uint32_t>,static_cast<size_t>(WorldMapPlayerStatusConditionGlobal::Count)> globals;
+};
+enum class WorldMapPlayerStatusConditionCode {
+    Prepared,TransitionRequired,RequiresPhaseRaw,RequiresField,RequiresGlobal,UnsupportedNumerics
+};
+struct WorldMapPlayerStatusConditionStep {
+    WorldMapPlayerStatusConditionCode status=WorldMapPlayerStatusConditionCode::RequiresPhaseRaw;
+    std::optional<uint8_t> gate;
+    std::optional<WorldMapPlayerStatusConditionGlobal> required_global;
+    std::optional<uint32_t> required_field,requested_state;
+    // Complete condition proposals only. Transition proposals stop before
+    // 326B4's vector writes, reset/cleanup and state initializer effects.
+    std::optional<WorldMapPlayerStatusState> after;
+};
+// 326B4's seven ordered C8F4/C92C/C9D0/CA04/CA74/CB58/CB18 checks.
+// Signed products wrap before division; deadlines compare unsigned words.
+// First selected transition stops later checks. No live status/state writes.
+[[nodiscard]] WorldMapPlayerStatusConditionStep prepare_world_map_player_status_conditions(
+    const WorldMapPlayerStatusState&,const WorldMapPlayerStatusConditionFactors&,
+    std::optional<uint32_t> phase_raw,uint32_t action) noexcept;
 // Reached r13 words, in address order. Later writers/ownership are not
 // inferred from their initial DOL values. Unreached slots may stay unknown.
 enum class WorldMapPlayerStatusGlobal : uint8_t {

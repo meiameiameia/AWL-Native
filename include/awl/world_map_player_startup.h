@@ -8,6 +8,7 @@
 #include "awl/world_map_fade.h"
 #include "awl/world_map_player_state0_third.h"
 #include "awl/world_map_player_movement.h"
+#include "awl/world_map_player_state1_secondary.h"
 
 namespace awl {
 struct WorldMapPlayerStartupProviders {
@@ -188,6 +189,8 @@ struct WorldMapPlayerPrimaryLoop {
     bool state1_transition_completed = false;
     bool state1_parent_completed=false,state1_secondary_completed=false;
     uint64_t movement_owner=0,scene_owner=0;
+    // Observed first-callback item/action, retained through this same loop.
+    std::optional<uint32_t> item_144,action_148;
 };
 struct WorldMapPlayerPrimarySliceResult {
     WorldMapPlayerPrimarySliceStatus status = WorldMapPlayerPrimarySliceStatus::InvalidInput;
@@ -326,10 +329,7 @@ struct WorldMapPlayerState1PrimarySliceResult {
     std::optional<WorldMapPlayerAnimationLoopResult> animation;
     bool parent_reused=false;
 };
-enum class WorldMapPlayerState1SecondaryStatus {
-    Completed,AlreadyCompleted,Filtered,RequiresControl,RequiresPrimary,RequiresAnimation,
-    RequiresGuards,RequiresGuardWord58c,RequiresBody,InvalidInput
-};
+
 // 42B18's no-reached-attachment path, then 31F1C..31F60 for state zero.
 // Remap/audio/model observations in input are unused here. Item attachment
 // takes precedence over action; completed flag can skip the holder +21 read.
@@ -400,12 +400,19 @@ public:
     [[nodiscard]] WorldMapPlayerState1PrimarySliceResult advance_state1_primary_slice(
         const WorldMapUpdateInputs&,const WorldMapPlayerState1ParentInput&,WorldMapPlayerUpdateOwners*,
         WorldMapPlayerMovementState*,WorldMapSceneBucketRegistry*);
-    // 31484/42DFC guard/filter/control-800 skips only. The active action and
-    // terrain body remains an explicit stop; it cannot authorize third/queue.
+    // Minimal guard/filter/control-800 entry; active work requires the
+    // richer overload below, never fabricated skip observations.
     [[nodiscard]] WorldMapPlayerState1SecondaryStatus advance_state1_secondary(
         const WorldMapUpdateInputs&,const std::optional<WorldMapPlayerUpdateGuards>&) noexcept;
     [[nodiscard]] WorldMapPlayerStartupQueueResult consume_state1_update_after_third(
         const WorldMapUpdateInputs&,const WorldMapPlayerStartupQueuedActorInput&,WorldMapPlayerUpdateOwners*,WorldMapPlayerActorQueue*);
+    // Supported active second: owned status/phase/item/action/PAD/pose,
+    // ordered conditions and slot-five probe. No-event completion publishes
+    // latches and its receipt atomically. Reached requests/terrain handlers
+    // preserve the accepted first/model and do not authorize third/queue.
+    [[nodiscard]] WorldMapPlayerState1SecondaryResult advance_state1_secondary(
+        const WorldMapUpdateInputs&,const WorldMapPlayerState1SecondaryInput&,
+        WorldMapPlayerUpdateOwners*,const WorldMapPlayerMovementState*);
     // Either the startup transition's completed idle third or the normal
     // first/second/third sequence must precede the shared 31584 actor path.
     // Saved +29A01 != 0 still requires untranslated UI delivery. Successful

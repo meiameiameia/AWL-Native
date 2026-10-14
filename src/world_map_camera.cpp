@@ -168,6 +168,13 @@ bool sample_camera_collision_height(const std::array<float, 3>& target,
 
 } // namespace
 
+int32_t classify_world_map_camera_region(int32_t category,const std::array<float,3>& position) noexcept {
+    if(category!=1)return -1;
+    for(int32_t i=0;i<3;++i){const auto& region=kRegions[i];
+        if(position[0]>=region.min_x && position[0]<=region.max_x && position[2]>=region.min_z && position[2]<=region.max_z)return i;
+    }
+    return -1;
+}
 bool plan_world_map_camera_followup(
     const WorldMapCameraFollowupState& previous, int32_t category,
     const std::array<float, 3>& resolved_position,

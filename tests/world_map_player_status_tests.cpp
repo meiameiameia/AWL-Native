@@ -224,8 +224,37 @@ void elapsed_checks() {
     }
     expect(std::fesetround(original_rounding)==0,"restore original rounding mode");
 }
+void condition_checks(){
+    using C=awl::WorldMapPlayerStatusConditionCode;using CG=awl::WorldMapPlayerStatusConditionGlobal;
+    constexpr uint32_t energy[]{0,10000,20000,24999,25000,39999,40000,44999,45000,100000,UINT32_MAX,0x80000000u,0x7fffffffu};
+    constexpr uint32_t fatigue[]{0,135000,270000,1350000,UINT32_MAX,0x80000000u,0x7fffffffu};
+    constexpr uint8_t flags[]{0,1,2,255};constexpr uint32_t coefficients[]{100,99,101,0,UINT32_MAX,0x80000000u};
+    constexpr uint32_t deltas[]{2160000,1584000,1,0,576001,UINT32_MAX,1368000};uint64_t digest=14695981039346656037ull;uint32_t routes=0;
+    for(uint32_t seed=0;seed<4096;++seed){const uint32_t phase=100000+seed%7,action=seed%2*7;awl::WorldMapPlayerStatusState state;
+        state.word_4=energy[seed%13];state.word_14=fatigue[seed/13%7];state.word_12c=phase+deltas[seed/13%7];state.word_134=phase+(seed%3?576000u:0u);state.word_13c=phase+(seed%2?1u:UINT32_MAX);
+        state.byte_158=flags[seed/7%4];state.byte_159=flags[seed/14%4];state.byte_15a=flags[seed/21%4];state.byte_15b=flags[seed/28%4];state.byte_15c=flags[seed/35%4];
+        awl::WorldMapPlayerStatusConditionFactors factors;for(size_t i=0;i<7;++i)factors.globals[i]=coefficients[seed/(13*(i+1))%6];
+        const auto r=awl::prepare_world_map_player_status_conditions(state,factors,phase,action);
+        expect((r.status==C::Prepared || r.status==C::TransitionRequired) && r.after,"complete condition observations yield an atomic proposal or an explicit transition");if(!r.after)continue;
+        const auto fields=[](const auto& st){return std::array<uint32_t,10>{st.word_4,st.word_14,st.word_12c,*st.word_134,*st.word_13c,*st.byte_158,*st.byte_159,*st.byte_15a,*st.byte_15b,*st.byte_15c};};
+        for(uint32_t v:{seed,phase,action})hash(digest,v);for(uint32_t v:fields(state))hash(digest,v);for(const auto& v:factors.globals)hash(digest,*v);
+        hash(digest,r.gate?*r.gate:UINT32_MAX);hash(digest,r.requested_state.value_or(UINT32_MAX));for(uint32_t v:fields(*r.after))hash(digest,v);
+        routes|=1u<<(r.gate?*r.gate:7);
+    }
+    expect(digest==0x00a639494f8afc7full && routes==255,"4096 original seven-condition priority/latch/deadline/wrapping cases match, including every selected gate and no-event route");
+    std::cout<<"STATE1_STATUS_CONDITIONS 4096 "<<std::hex<<digest<<std::dec<<'\n';
+    awl::WorldMapPlayerStatusState fresh;expect(awl::construct_world_map_player_status(UINT32_MAX,&fresh)==S::Prepared && fresh.word_134==575999u && fresh.word_13c==UINT32_MAX && fresh.byte_14c==uint8_t{0} && fresh.byte_158==uint8_t{0} && fresh.byte_159==uint8_t{0} && fresh.byte_15a==uint8_t{0} && fresh.byte_15b==uint8_t{0} && fresh.byte_15c==uint8_t{0},"fresh deadline and condition latch extension follows original constructor writes with unsigned wrap");
+    awl::WorldMapPlayerStatusState observed;observed.word_12c=1000;awl::WorldMapPlayerStatusConditionFactors factors;
+    expect(awl::prepare_world_map_player_status_conditions(observed,factors,{},0).status==C::RequiresPhaseRaw,"first condition requires phase before every status field/global");
+    auto r=awl::prepare_world_map_player_status_conditions(observed,factors,1000,7);expect(r.status==C::TransitionRequired && r.gate==uint8_t{0} && r.requested_state==0x1fu,"expired first condition skips all unknown later fields and globals");
+    r=awl::prepare_world_map_player_status_conditions(observed,factors,999,0);expect(r.status==C::RequiresField && r.required_field==0x134u && !r.after,"unreached constructor extension cannot be silently filled");
+    observed.word_134=1000;r=awl::prepare_world_map_player_status_conditions(observed,factors,999,0);expect(r.status==C::RequiresGlobal && r.required_global==CG::Word7ee0 && !r.after,"clock-gated second condition skips unknown latch and requires only next reached global");
+    factors.globals[0]=100;observed.word_4=100000;r=awl::prepare_world_map_player_status_conditions(observed,factors,999,0);expect(r.status==C::RequiresField && r.required_field==0x158u && !r.after,"reached missing first hysteresis latch preserves the prior owner");
+    observed.byte_158=uint8_t{0};r=awl::prepare_world_map_player_status_conditions(observed,factors,999,0);expect(r.status==C::RequiresGlobal && r.required_global==CG::Word7edc && !r.after,"zero latch selects entry coefficient before reset coefficient");
+    observed.byte_158=uint8_t{255};r=awl::prepare_world_map_player_status_conditions(observed,factors,999,0);expect(r.status==C::RequiresGlobal && r.required_global==CG::Word7ed8,"every nonzero latch selects the separate reset coefficient");
+}
 } // namespace
 int main() {
-    construction_checks(); scalar_checks(); dependency_checks(); matrices(false); matrices(true); elapsed_checks();
+    construction_checks(); condition_checks(); scalar_checks(); dependency_checks(); matrices(false); matrices(true); elapsed_checks();
     return failures ? 1 : 0;
 }

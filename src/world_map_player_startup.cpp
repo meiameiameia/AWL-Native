@@ -678,7 +678,8 @@ WorldMapPlayerState1PrimarySliceResult WorldMapPlayerStartup::advance_state1_pri
         if(result.parent->status!=P::Advanced && result.parent->status!=P::SkippedByDispatchFilter){result.status=S::ParentIncomplete;return result;}
         primary_loop_=WorldMapPlayerPrimaryLoop{clock.loop_count,clock.raw_time,true,result.parent->status==P::Advanced?key(owners):0};
         primary_loop_->inputs_owner=key(&inputs);primary_loop_->state1_parent_completed=true;
-        if(result.parent->status==P::Advanced){primary_loop_->movement_owner=key(movement);primary_loop_->scene_owner=key(scene);}
+        if(result.parent->status==P::Advanced){primary_loop_->movement_owner=key(movement);primary_loop_->scene_owner=key(scene);
+            if(result.parent->movement){primary_loop_->item_144=input.item_144;primary_loop_->action_148=input.action_148;}}
     }
     result.animation=dispatch_animation_for_loop(inputs);
     if(result.animation->status==A::RequiresNextLoop)result.status=S::RequiresNextLoop;
@@ -699,6 +700,34 @@ WorldMapPlayerState1SecondaryStatus WorldMapPlayerStartup::advance_state1_second
     bool skip=guards->word_680!=-1;if(!skip){if(!guards->word_58c)return S::RequiresGuardWord58c;skip=*guards->word_58c!=0;}
     if(!skip && (*control.control_word&0x800u)==0)return S::RequiresBody;
     state_.control_word_1384=*control.control_word;primary_loop_->state1_secondary_completed=true;return S::Completed;
+}
+WorldMapPlayerState1SecondaryResult WorldMapPlayerStartup::advance_state1_secondary(
+    const WorldMapUpdateInputs& inputs,const WorldMapPlayerState1SecondaryInput& input,
+    WorldMapPlayerUpdateOwners* owners,const WorldMapPlayerMovementState* movement){
+    using S=WorldMapPlayerState1SecondaryStatus;
+    static_assert(std::is_nothrow_copy_assignable_v<WorldMapPlayerStatusState>);
+    static_assert(std::is_nothrow_copy_constructible_v<WorldMapPlayerState1SecondaryResult>);
+    const auto key=[](const auto* owner){return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(owner));};
+    const auto prefix=advance_state1_secondary(inputs,input.guards);
+    if(prefix==S::AlreadyCompleted && primary_loop_->updates_owner &&
+        ((owners && primary_loop_->updates_owner!=key(owners)) || (movement && primary_loop_->movement_owner!=key(movement))))return {S::InvalidInput};
+    if(prefix!=S::RequiresBody)return {prefix};
+    if(!owners)return {S::RequiresUpdateOwners};
+    if(primary_loop_->updates_owner!=key(owners) || (movement && primary_loop_->movement_owner!=key(movement)))return {S::InvalidInput};
+    if(movement && (movement->pose.scene_type!=owners->saved_pose.scene_type || movement->pose.position!=owners->saved_pose.position || movement->pose.heading!=owners->saved_pose.heading))return {S::InvalidInput};
+    WorldMapPlayerState1SecondaryQuery query;query.control=inputs.queue_control().control_word;
+    query.action=primary_loop_->action_148;query.item=primary_loop_->item_144;
+    query.status=owners->status?&*owners->status:nullptr;
+    query.factors=input.condition_factors_override?*input.condition_factors_override:starts_->condition_factors();
+    if(inputs.sources().phase)query.phase_raw=inputs.sources().phase->raw_word_0;
+    if(const auto* pad=inputs.pad_for_loop())query.pressed=pad->frame.pressed;
+    if(movement)query.pose=movement->pose;query.manager_scene_type=inputs.scene().scene_type_68;query.dependencies=input;
+    auto result=prepare_world_map_player_state1_secondary(query);
+    if(result.status==S::Completed){
+        if(result.conditions && result.conditions->after)owners->status=result.conditions->after;
+        state_.control_word_1384=*query.control;primary_loop_->state1_secondary_completed=true;
+    }
+    return result;
 }
 WorldMapPlayerState0PrimarySliceResult WorldMapPlayerStartup::advance_state0_primary_slice(
     const WorldMapUpdateInputs& inputs,const WorldMapPlayerState0ParentInput& input,WorldMapPlayerUpdateOwners* owners) {

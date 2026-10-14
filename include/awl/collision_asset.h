@@ -29,6 +29,20 @@ struct CollisionSurfaceSample {
     uint32_t leaf_offset = 0;
     uint32_t triangle_index = 0;
 };
+struct CollisionDirectedTriangleSample {
+    bool found=false;
+    uint16_t surface_flags=0;
+    uint32_t leaf_offset=0,triangle_index=0;
+    uint8_t edge_index=0;
+    std::array<std::array<float,3>,3> triangle{};
+};
+// 1FF40/91730 -> type-one virtual +14, 1938C8: choose the start's
+// leaf and first triangle/edge crossing in serialized order, not nearest.
+// C02C uses XZ with both segment parameters in [0,1); Y is unread.
+// Empty valid leaves are successful misses. Failure preserves output.
+[[nodiscard]] bool query_type1_collision_directed_triangle(
+    const uint8_t*,size_t,const std::array<float,3>& start,
+    const std::array<float,3>& end,CollisionDirectedTriangleSample*);
 
 struct CollisionEdgeSample {
     std::array<float, 3> position{};

@@ -79,6 +79,44 @@ private:
     const WorldMapPlayerStatusInputs& inputs;
 };
 } // namespace
+WorldMapPlayerStatusConditionStep prepare_world_map_player_status_conditions(
+    const WorldMapPlayerStatusState& before,const WorldMapPlayerStatusConditionFactors& factors,
+    std::optional<uint32_t> phase,uint32_t action) noexcept {
+    using C=WorldMapPlayerStatusConditionCode;using CG=WorldMapPlayerStatusConditionGlobal;
+    WorldMapPlayerStatusConditionStep result;auto state=before;
+    const auto finish=[&](C code){result.status=code;if(code==C::Prepared || code==C::TransitionRequired)result.after=state;return result;};
+    const auto field=[&](const auto& value,uint32_t offset){if(value)return true;result.status=C::RequiresField;result.required_field=offset;return false;};
+    const auto ratio=[&](CG key,uint32_t value,uint32_t divisor,int64_t* out){const auto& coefficient=factors.globals[static_cast<size_t>(key)];
+        if(!coefficient){result.status=C::RequiresGlobal;result.required_global=key;return false;}*out=signed_word(value * *coefficient)/divisor;return true;};
+    const auto transition=[&](uint32_t state_id){result.requested_state=state_id;return finish(C::TransitionRequired);};
+    if(!phase)return finish(C::RequiresPhaseRaw);
+    result.gate=uint8_t{0};if(*phase>=state.word_12c)return transition(action?0x1fu:0x21u);
+    result.gate=uint8_t{1};if(!field(state.word_134,0x134))return result;
+    if(*phase>=*state.word_134){uint32_t elapsed=0;
+        if(prepare_world_map_player_status_elapsed(state.word_12c,*phase,&elapsed)!=WorldMapPlayerStatusCode::Prepared)return finish(C::UnsupportedNumerics);
+        if(elapsed==150){if(!field(state.byte_15c,0x15c))return result;if(!*state.byte_15c)state.byte_15c=uint8_t{1};}
+        else state.byte_15c=uint8_t{0};
+        if(state.byte_15c==uint8_t{1})return transition(0x1b);
+    }
+    int64_t value=0;result.gate=uint8_t{2};if(!ratio(CG::Word7ee0,state.word_4,100000,&value))return result;
+    if(value<=10)return transition(action?0x23u:0x25u);
+    result.gate=uint8_t{3};if(!field(state.byte_158,0x158))return result;
+    if(!*state.byte_158){if(!ratio(CG::Word7edc,state.word_4,100000,&value))return result;if(value<=20){state.byte_158=uint8_t{1};return transition(action?0x1cu:0x1eu);}}
+    else {if(!ratio(CG::Word7ed8,state.word_4,100000,&value))return result;if(value>=25)state.byte_158=uint8_t{0};}
+    result.gate=uint8_t{4};if(!field(state.byte_159,0x159))return result;
+    if(!*state.byte_159){if(!ratio(CG::Word7ed4,state.word_4,100000,&value))return result;if(value<=40){state.byte_159=uint8_t{1};return transition(action?0x1cu:0x1eu);}}
+    else {if(!ratio(CG::Word7ed0,state.word_4,100000,&value))return result;if(value>=45)state.byte_159=uint8_t{0};}
+    result.gate=uint8_t{5};if(!ratio(CG::Word7ec4,state.word_14,1350000,&value))return result;
+    if(value<=10){state.byte_15b=uint8_t{1};if(!field(state.byte_15a,0x15a))return result;
+        bool request=!*state.byte_15a;
+        if(!request){if(!field(state.word_13c,0x13c))return result;request=*phase>=*state.word_13c;}
+        if(request){state.word_13c=*phase+36000u;return transition(0x1b);}
+    }else state.byte_15a=uint8_t{0};
+    result.gate=uint8_t{6};if(!ratio(CG::Word7ec8,state.word_14,1350000,&value))return result;
+    if(value<=20){if(!field(state.byte_15b,0x15b))return result;if(!*state.byte_15b)return transition(0x1b);}
+    else state.byte_15b=uint8_t{0};
+    result.gate.reset();return finish(C::Prepared);
+}
 WorldMapPlayerStatusCode construct_world_map_player_status(
     std::optional<uint32_t> phase_raw, WorldMapPlayerStatusState* out) noexcept {
     if (!out) return S::InvalidInput;
@@ -89,6 +127,8 @@ WorldMapPlayerStatusCode construct_world_map_player_status(
     next.word_20 = 50000; next.word_24 = 99999; next.word_28 = 0;
     next.byte_2e = next.byte_32 = 1;
     next.word_12c = *phase_raw + 2160000u;
+    next.word_134 = *phase_raw + 576000u; next.word_13c = *phase_raw;
+    next.byte_14c=next.byte_158=next.byte_159=next.byte_15a=next.byte_15b=next.byte_15c=uint8_t{0};
     next.word_150 = next.word_154 = 100; next.word_160 = 0;
     *out = next;
     return S::Prepared;

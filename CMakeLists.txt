@@ -63,6 +63,7 @@ set(SOURCES
     src/world_map_player_texture_features.cpp
     src/world_map_player_animation_holder.cpp
     src/world_map_player_startup.cpp
+    src/world_map_player_state1_secondary.cpp
     src/world_map_player_actor_prepare.cpp
     src/world_map_player_actor_schedule.cpp
     src/world_map_player_update.cpp
@@ -209,7 +210,8 @@ endif()
 enable_testing()
 set_source_files_properties(src/game_clock.cpp src/world_map_player_status.cpp
     src/world_map_player_frame.cpp src/world_map_secondary_model.cpp src/world_map_player_actor_prepare.cpp
-    src/world_map_player_texture_features.cpp src/world_map_animation_initializer.cpp PROPERTIES
+    src/world_map_player_texture_features.cpp src/world_map_animation_initializer.cpp
+    src/world_map_player_state1_secondary.cpp PROPERTIES
     COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:strict>"
 )
 add_executable(game_clock_tests tests/game_clock_tests.cpp src/game_clock.cpp)
@@ -701,6 +703,7 @@ add_executable(world_map_player_model_assets_tests
     src/world_map_player_texture_features.cpp
     src/world_map_player_animation_holder.cpp
     src/world_map_player_startup.cpp
+    src/world_map_player_state1_secondary.cpp
     src/world_map_player_actor_prepare.cpp
     src/world_map_player_actor_schedule.cpp
     src/world_map_player_update.cpp

@@ -9,6 +9,10 @@
 #include <vector>
 
 namespace awl {
+// 1D0E8's ordered inclusive XZ rectangles. Other categories and unordered
+// coordinates return -1. No camera/state/height work; Y is unread.
+[[nodiscard]] int32_t classify_world_map_camera_region(
+    int32_t category,const std::array<float,3>& position) noexcept;
 
 // Fields observed in FUN_80030E18. The caller owns the camera and supplies
 // the resolved position; this structure is not a native runtime camera.

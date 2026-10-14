@@ -77,6 +77,9 @@ bool WorldMapPlayerStartAnimationTables::decode(const uint8_t* data, size_t size
         if (!word) return false;
         status_globals_[i] = dol_word(word);
     }
+    constexpr uint32_t condition_addresses[]{0x80346ae0,0x80346ae4,0x80346ae8,0x80346aec,0x80346af0,0x80346afc,0x80346af8};
+    for(size_t i=0;i<condition_factors_.globals.size();++i)if(view.read(condition_addresses[i],1)){
+        const auto* value=view.read(condition_addresses[i],4);if(!value)return false;condition_factors_.globals[i]=dol_word(value);}
     const auto* reset = view.read(0x8034A360,12);
     if (!reset) return false;
     status_reset_ = {dol_word(reset),dol_word(reset + 4),dol_word(reset + 8)};

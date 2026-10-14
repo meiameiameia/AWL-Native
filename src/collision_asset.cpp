@@ -355,6 +355,24 @@ bool sample_surface_in_leaf(const uint8_t* data,
 
 } // namespace
 
+bool query_type1_collision_directed_triangle(const uint8_t* data,size_t size,
+    const std::array<float,3>& start,const std::array<float,3>& end,CollisionDirectedTriangleSample* out){
+    if(!out)return false;for(float f:{start[0],start[2],end[0],end[2]})if(!std::isfinite(f))return false;
+    CollisionTreeAnalysis analysis;if(!analyze_type1_collision_asset(data,size,&analysis))return false;
+    CollisionDirectedTriangleSample result;result.leaf_offset=select_leaf(data,analysis.coordinate_scale,start[0],start[2]);
+    const auto payload=leaf_payload(data,result.leaf_offset);
+    for(uint32_t i=0;i<payload.triangle_count;++i){const auto* record=data+payload.triangles+size_t(i)*8;const auto triangle=decode_triangle(data,payload.vertices,record,analysis.coordinate_scale);
+        for(uint8_t edge=0;edge<3;++edge){const auto& a=triangle[edge];const auto& b=triangle[(edge+1)%3];
+            const float ex=b.x-a.x,ez=b.z-a.z,mx=end[0]-start[0],mz=end[2]-start[2],x=start[0]-a.x,z=start[2]-a.z;
+            const float denominator=ez*mx-ex*mz;if(!std::isfinite(denominator))return false;if(denominator==0)continue;
+            const float first=(z*mx-x*mz)/denominator;if(!std::isfinite(first))return false;if(!(first>=0 && first<1))continue;
+            const float second=(z*ex-x*ez)/denominator;if(!std::isfinite(second))return false;if(!(second>=0 && second<1))continue;
+            result.found=true;result.surface_flags=read_be16(record);result.triangle_index=i;result.edge_index=edge;
+            for(size_t j=0;j<3;++j)result.triangle[j]={triangle[j].x,triangle[j].y,triangle[j].z};*out=result;return true;
+        }
+    }
+    *out=result;return true;
+}
 bool sample_type1_collision_surface(const uint8_t* data,
                                     size_t size,
                                     float x,
