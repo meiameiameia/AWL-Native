@@ -28,6 +28,52 @@ bool prepared_actor(const WorldMapPreparedSceneActor& actor){
 }
 WorldMapSceneAssemblyResult WorldMapSceneAssembly::create(const WorldMapPlayerStartupProviders& providers,
     const WorldMapSceneAssemblyQuery& query,std::unique_ptr<WorldMapSceneAssembly>* out){
+    if(!out || !providers.clock)return {};
+    try {return assemble(providers,query,std::unique_ptr<WorldMapSceneAssembly>(new WorldMapSceneAssembly(providers.clock)),false,out);}
+    catch(const std::bad_alloc&){return {WorldMapSceneAssemblyStatus::AllocationFailure};}
+}
+WorldMapSceneAssemblyResult WorldMapSceneAssembly::create_from_sources(const WorldMapPlayerStartupProviders& providers,
+    const WorldMapPlayerSourcesSeed& seed,const WorldMapPlayerStartupQuery& startup,WorldMapUpdateInputs& inputs,
+    std::shared_ptr<const WorldMapSceneConstructorTables> tables,std::shared_ptr<WorldMapSceneConstructorState> state,
+    std::shared_ptr<const WorldMapPlayerCollisionSources> collision,std::unique_ptr<WorldMapSceneAssembly>* out){
+    using S=WorldMapSceneAssemblyStatus;WorldMapSceneAssemblyResult result;
+    if(!out || !providers.clock || providers.clock!=inputs.game_clock())return result;
+    // Replacing an owning diagnostic scene must not destroy the input owner
+    // that the new scene would borrow. An externally owned manager is stable.
+    if(*out && (*out)->owned_inputs_.get()==&inputs)return result;
+    if(!tables || !state || !collision){result.status=S::RequiresConstructorSources;return result;}
+    if(inputs.queue_control().status!=WorldMapDispatchStatus::Ready){result.status=S::RequiresControl;return result;}
+    if(inputs.scene().mode_58!=-1 || inputs.scene().previous_mode_5c!=4 || inputs.scene().scene_type_68!=1){result.status=S::RequiresSceneCommit;return result;}
+    if(!collision->pools_){result.status=S::RequiresRecordPools;return result;}
+    try {
+        auto next=std::unique_ptr<WorldMapSceneAssembly>(new WorldMapSceneAssembly(inputs));
+        const auto key=[&](size_t i){return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&next->constructor_keys_[i]));};
+        std::array<uint64_t,5> spatial;for(size_t i=0;i<5;++i)spatial[i]=key(25+i);
+        if((state->actor_a_29a64>=0x29 && state->actor_a_29a64<=0x2b) || state->actor_b_29a60==0x27 || state->actor_b_29a60==0x28){
+            result.status=S::ConstructorIncomplete;result.constructors=WorldMapSceneConstructorStatus::RequiresOptionalConstructor;return result;}
+        WorldMapSceneAssemblyQuery query;query.control=inputs.sources();query.player=seed;query.startup=startup;query.collision=collision;
+        query.fixed_state=state->fixed;query.saved_actor_a_29a64=state->actor_a_29a64;query.saved_actor_b_29a60=state->actor_b_29a60;
+        query.mandatory_actor_id=state->actor_3f8;query.camera=tables->camera();
+        query.previous_mode=inputs.scene().prior_mode_60;query.sequence_request_byte=inputs.scene().scene_byte_78;
+        constexpr CollisionAffineTransform identity{1,0,0,0,0,1,0,0,0,0,1,0};
+        constexpr CollisionAffineTransform inverse{1,0,0,-0.0f,0,1,0,-0.0f,0,0,1,-0.0f};
+        const auto records=world_map_fixed_collision_record_keys();
+        for(size_t i=0;i<25;++i){WorldMapCollisionRecordView view;
+            if(!collision->pools_->lookup(1,records[i].archive_index,&view))return {};
+            auto& object=query.fixed_objects[i];object.collision.identity=key(i);object.collision.radius=view.radius_local;
+            object.collision.world_to_object=inverse;object.collision.object_to_world=identity;
+            object.collision.center_world=view.center_local;
+        }
+        for(size_t i=0;i<5;++i)query.spatial_objects[i].scene.identity=spatial[i];
+        query.mandatory_actor.object.scene.identity=key(30);query.mandatory_actor.collision.collision.identity=key(30);
+        next->constructor_tables_=std::move(tables);next->constructor_state_=state;
+        next->sources_.constructor_state_=state;next->sources_.constructor_payload_keys_={spatial[2],spatial[3]};
+        return assemble(providers,query,std::move(next),true,out);
+    }catch(const std::bad_alloc&){result.status=S::AllocationFailure;return result;}
+}
+WorldMapSceneAssemblyResult WorldMapSceneAssembly::assemble(const WorldMapPlayerStartupProviders& providers,
+    const WorldMapSceneAssemblyQuery& query,std::unique_ptr<WorldMapSceneAssembly> next,bool borrowed,
+    std::unique_ptr<WorldMapSceneAssembly>* out){
     using S=WorldMapSceneAssemblyStatus;
     WorldMapSceneAssemblyResult result;
     const auto stop=[&](S s){result.status=s;return result;};
@@ -51,9 +97,10 @@ WorldMapSceneAssemblyResult WorldMapSceneAssembly::create(const WorldMapPlayerSt
     if(*query.previous_mode==4 || *query.previous_mode==6){
         if(!query.sequence_request_byte)return stop(S::RequiresEntrySources);
         if(*query.sequence_request_byte)return stop(S::SequenceRequired);
-    }else if(*query.previous_mode==0x28 || *query.previous_mode==0x29 || *query.previous_mode==0x30)return stop(S::SequenceRequired);
+    }
+    WorldMapSceneModeRequestState route;route.prior_mode_60=*query.previous_mode;route.scene_byte_78=query.sequence_request_byte.value_or(0);
+    if(world_map_scene_entry_request(route).requested)return stop(S::SequenceRequired);
     try {
-        auto next=std::unique_ptr<WorldMapSceneAssembly>(new WorldMapSceneAssembly(providers.clock));
         auto seed=query.player;
         if(query.status_mode==WorldMapPlayerSourcesInitialization::Fresh){
             if(seed.updates.status || seed.updates.saved_selection)return result;
@@ -105,12 +152,13 @@ WorldMapSceneAssemblyResult WorldMapSceneAssembly::create(const WorldMapPlayerSt
         // Do not retain transient snapshot pointers in any scene/owner state.
         seed.movement={seed.movement.scene_identity,next->placement_.pose,next->placement_.steering,{},{},{}};
         seed.fields.scene_child_word_4=0;
-        next->inputs_.observe_control_sources(query.control);
-        next->inputs_.scene_.previous_mode_5c=*query.previous_mode;
-        next->inputs_.request_scene_mode(4,0);
-        if(next->inputs_.capture_control()!=WorldMapControlStatus::Captured)return stop(S::RequiresEntrySources);
-        WorldMapSceneModeCommit committed;
-        if(next->inputs_.commit_scene_fields(0,uint8_t{0},&committed)!=WorldMapSceneFilterStatus::CommittedFields)return result;
+        if(!borrowed){next->inputs_.observe_control_sources(query.control);
+            next->inputs_.scene_.previous_mode_5c=*query.previous_mode;
+            next->inputs_.request_scene_mode(4,0);
+            if(next->inputs_.capture_control()!=WorldMapControlStatus::Captured)return stop(S::RequiresEntrySources);
+            WorldMapSceneModeCommit committed;
+            if(next->inputs_.commit_scene_fields(0,uint8_t{0},&committed)!=WorldMapSceneFilterStatus::CommittedFields)return result;
+        }
         if(next->sources_.initialize(*next->player_,seed,WorldMapPlayerSourcesInitialization::Observed)!=WorldMapPlayerSourcesStatus::Initialized)return stop(S::AllocationFailure);
         WorldMapPreparedSceneObject player_object;player_object.scene.identity=seed.movement.scene_identity;
         player_object.scene.scene_type=1;player_object.scene.position=next->placement_.pose.position;player_object.positioned=true;
@@ -121,18 +169,41 @@ WorldMapSceneAssemblyResult WorldMapSceneAssembly::create(const WorldMapPlayerSt
         self.collision.category=1;self.collision.collision_flags=1;self.collision.radius=0.3f;
         self.world_position=self.collision.center_world=next->placement_.pose.position;self.heading_axis=next->placement_.pose.heading;
         if(!objects.register_object(WorldMapCollisionList::Third,self))return result;
+        WorldMapSceneConstructorProjection constructed;
+        if(borrowed){std::array<uint64_t,5> spatial;
+            for(size_t i=0;i<5;++i)spatial[i]=query.spatial_objects[i].scene.identity;
+            result.constructors=next->constructor_tables_->prepare_spatial(query.collision->movement(),*next->constructor_state_,spatial,&constructed);
+            if(*result.constructors!=WorldMapSceneConstructorStatus::Prepared)return stop(S::ConstructorIncomplete);
+        }
         // The five other spatial owners precede 14358's mandatory actor.
-        for(size_t i=0;i<query.spatial_objects.size();++i){const auto& object=query.spatial_objects[i];
+        for(size_t i=0;i<query.spatial_objects.size();++i){auto object=query.spatial_objects[i];
+            if(borrowed){object.scene=constructed.spatial[i];object.positioned=i!=0;}
             if(object.positioned!=(i!=0) || !add_key(object.scene.identity) || !register_scene(object,scene))return result;
         }
-        if(query.mandatory_actor_id<0x2c || query.mandatory_actor_id>0x30 || !add_key(query.mandatory_actor.object.scene.identity))return result;
+        auto mandatory_actor=query.mandatory_actor;
+        if(query.mandatory_actor_id<0x2c || query.mandatory_actor_id>0x30 || !add_key(mandatory_actor.object.scene.identity))return result;
         WorldMapSceneFirstCollisionObjects mandatory;mandatory.category1_actor_id=query.mandatory_actor_id;
-        mandatory.category1_actor=query.mandatory_actor.collision;
-        if(!finite(mandatory.category1_actor.heading_axis) || mandatory.category1_actor.collision.identity!=query.mandatory_actor.object.scene.identity ||
+        if(borrowed){
+            // 159CE0..D2C places the mandatory actor before 159DA8's RNG read.
+            // Keep an unsupported height leaf ahead of an unread RNG source.
+            if(query.mandatory_actor_id!=0x30){std::array<float,3> point;
+                if(!world_map_first_actor_initial_position(query.mandatory_actor_id,0.0f,&point))return result;
+                const auto& bytes=query.collision->movement().terrain_bytes();CollisionResolverHeightAdjustment height;
+                if(!resample_type1_collision_resolver_height(bytes.data(),bytes.size(),point,&height)){
+                    result.constructors=WorldMapSceneConstructorStatus::TerrainIncomplete;return stop(S::ConstructorIncomplete);}
+                mandatory.category1_actor_height_query_result=height.position[1];
+            }
+            result.constructors=next->constructor_tables_->prepare_mandatory(*next->constructor_state_,&constructed);
+            if(*result.constructors!=WorldMapSceneConstructorStatus::Prepared)return stop(S::ConstructorIncomplete);
+            mandatory_actor.object.scene.context=constructed.mandatory_context;mandatory_actor.collision.heading_axis=constructed.mandatory_heading;
+        }
+        mandatory.category1_actor=mandatory_actor.collision;
+        if(!finite(mandatory.category1_actor.heading_axis) || mandatory.category1_actor.collision.identity!=mandatory_actor.object.scene.identity ||
             mandatory.category1_actor.collision.data || mandatory.category1_actor.collision.size)return result;
-        if(!register_world_map_scene_first_collision_objects_from_assets(mandatory,query.collision->movement(),&objects))return result;
+        if(borrowed){if(!register_world_map_scene_first_collision_objects(mandatory,&objects))return result;}
+        else if(!register_world_map_scene_first_collision_objects_from_assets(mandatory,query.collision->movement(),&objects))return result;
         const auto after_player=objects.snapshot();
-        auto actor=query.mandatory_actor.object;actor.positioned=true;actor.scene.scene_type=1;
+        auto actor=mandatory_actor.object;actor.positioned=true;actor.scene.scene_type=1;
         actor.scene.position=after_player.first_resolver.front().center_world;
         actor.scene.context.facing_28=mandatory.category1_actor.heading_axis;
         if(!register_scene(actor,scene))return result;
@@ -140,6 +211,8 @@ WorldMapSceneAssemblyResult WorldMapSceneAssembly::create(const WorldMapPlayerSt
         next->sources_.collision_=query.collision;next->sources_.probe_present_=true;next->camera_=query.camera;
         if(next->fade_.start_world_map_entry()!=WorldMapFadeStatus::Started)return result;
         auto control=query.control;control.phase->byte_8=uint8_t{0};next->inputs_.observe_control_sources(control);
+        if(borrowed){next->constructor_state_->secondary_3f4=constructed.secondary_3f4;
+            if(constructed.rng_after)next->constructor_state_->heading_rng_seed=constructed.rng_after;}
         *out=std::move(next);return stop(S::AssembledCpuScene);
     }catch(const std::bad_alloc&){return stop(S::AllocationFailure);}
 }
@@ -152,7 +225,7 @@ WorldMapCollisionSnapshot WorldMapSceneAssembly::collision_snapshot() const {
     return snapshot;
 }
 WorldMapPlayerSourcesStatus WorldMapSceneAssembly::observe_startup_camera(const WorldMapCameraViewQuery& view) noexcept {
-    if(player_->camera())return WorldMapPlayerSourcesStatus::Busy;
+    if(constructor_tables_ || player_->camera())return WorldMapPlayerSourcesStatus::Busy;
     camera_=view;return WorldMapPlayerSourcesStatus::Completed;
 }
 WorldMapPlayerStartupTickResult WorldMapSceneAssembly::advance_startup(const WorldMapPlayerStartupTickInput& observations,WorldMapPlayerActorQueue* render){
@@ -184,6 +257,7 @@ WorldMapPlayerState0TransitionResult WorldMapSceneAssembly::advance_state0_trans
     return player_->advance_pending_state0_transition(inputs_,input,&fade_,&sources_.updates_);
 }
 WorldMapSceneEntryStatus WorldMapSceneAssembly::advance_entry(std::optional<uint8_t> secondary) noexcept {
+    if(constructor_state_)secondary=constructor_state_->secondary_49;
     if(!entry_pending_)return WorldMapSceneEntryStatus::Completed;
     if(inputs_.queue_control().status!=WorldMapDispatchStatus::Ready)return WorldMapSceneEntryStatus::RequiresControl;
     if(!fade_.loop() || !fade_.loop()->valid)return WorldMapSceneEntryStatus::RequiresFade;
@@ -198,6 +272,9 @@ WorldMapSceneEntryStatus WorldMapSceneAssembly::advance_entry(std::optional<uint
     auto control=inputs_.sources();if(!control.phase)return WorldMapSceneEntryStatus::RequiresFade;
     if(!*secondary){control.phase->byte_8=uint8_t{1};inputs_.observe_control_sources(control);}
     entry_pending_=false;return *secondary?WorldMapSceneEntryStatus::Completed:WorldMapSceneEntryStatus::Released;
+}
+WorldMapSceneEntryStatus WorldMapSceneAssembly::advance_entry() noexcept {
+    return advance_entry(constructor_state_?std::optional<uint8_t>{constructor_state_->secondary_49}:std::nullopt);
 }
 WorldMapPlayerSourcesStatus WorldMapSceneAssembly::observe_actor(uint64_t key,const std::array<float,3>& position,
     const std::array<float,3>& heading,bool enabled,const WorldMapPlayerContextMetadata& metadata){

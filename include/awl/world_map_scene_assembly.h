@@ -1,5 +1,6 @@
 #pragma once
 #include "awl/world_map_player_sources.h"
+#include "awl/world_map_scene_constructors.h"
 
 namespace awl {
 // Prepared observations after untranslated actor/model constructors. Presence
@@ -39,12 +40,13 @@ enum class WorldMapSceneAssemblyStatus {
     AssembledCpuScene,InvalidInput,RequiresStatus,RequiresActorPresence,
     RequiresPreparedActor,RequiresRecordPools,WrongCollisionSelection,
     PlacementIncomplete,PlayerIncomplete,RequiresEntrySources,SequenceRequired,
-    UnsupportedEntryGate,AllocationFailure
+    UnsupportedEntryGate,AllocationFailure,RequiresConstructorSources,ConstructorIncomplete,RequiresSceneCommit,RequiresControl
 };
 struct WorldMapSceneAssemblyResult {
     WorldMapSceneAssemblyStatus status = WorldMapSceneAssemblyStatus::InvalidInput;
     std::optional<WorldMapPlayerStartStatus> placement;
     std::optional<WorldMapPlayerStartupResult> player;
+    std::optional<WorldMapSceneConstructorStatus> constructors;
 };
 enum class WorldMapSceneEntryStatus { WaitingForFade,RequiresSecondaryByte,Released,Completed,RequiresFade,RequiresControl };
 
@@ -58,6 +60,18 @@ class WorldMapSceneAssembly {
 public:
     [[nodiscard]] static WorldMapSceneAssemblyResult create(
         const WorldMapPlayerStartupProviders&,const WorldMapSceneAssemblyQuery&,
+        std::unique_ptr<WorldMapSceneAssembly>* out);
+    // Source-driven CPU adapter: borrow the existing captured/
+    // committed manager, derive all object results from DOL/terrain/current
+    // saved fields, and allocate scene-owned opaque keys. No supplied object
+    // transforms, spatial metadata, camera result or previous-mode override.
+    // Inputs must outlive the scene. The state owner stays current and retained.
+    [[nodiscard]] static WorldMapSceneAssemblyResult create_from_sources(
+        const WorldMapPlayerStartupProviders&,const WorldMapPlayerSourcesSeed&,
+        const WorldMapPlayerStartupQuery&,WorldMapUpdateInputs&,
+        std::shared_ptr<const WorldMapSceneConstructorTables>,
+        std::shared_ptr<WorldMapSceneConstructorState>,
+        std::shared_ptr<const WorldMapPlayerCollisionSources>,
         std::unique_ptr<WorldMapSceneAssembly>* out);
     WorldMapUpdateInputs& inputs() noexcept {return inputs_;}
     WorldMapPlayerSources& sources() noexcept {return sources_;}
@@ -79,19 +93,29 @@ public:
     // never replaces control already captured for this loop. +49 can block
     // enable, but still consumes the original one-shot continuation.
     [[nodiscard]] WorldMapSceneEntryStatus advance_entry(std::optional<uint8_t> secondary_49) noexcept;
+    [[nodiscard]] WorldMapSceneEntryStatus advance_entry() noexcept;
     // Refresh both linked virtual views without re-registering/reordering.
     [[nodiscard]] WorldMapPlayerSourcesStatus observe_actor(uint64_t identity,
         const std::array<float,3>& position,const std::array<float,3>& heading,bool enabled,
         const WorldMapPlayerContextMetadata&);
 private:
-    explicit WorldMapSceneAssembly(std::shared_ptr<GameClock> clock) noexcept
-        : inputs_(clock),sources_(inputs_),fade_(std::move(clock)) {}
-    WorldMapUpdateInputs inputs_;
+    explicit WorldMapSceneAssembly(std::shared_ptr<GameClock> clock)
+        : owned_inputs_(std::make_unique<WorldMapUpdateInputs>(clock)),inputs_(*owned_inputs_),sources_(inputs_),fade_(std::move(clock)) {}
+    explicit WorldMapSceneAssembly(WorldMapUpdateInputs& inputs) noexcept
+        : inputs_(inputs),sources_(inputs_),fade_(inputs.game_clock()) {}
+    static WorldMapSceneAssemblyResult assemble(const WorldMapPlayerStartupProviders&,
+        const WorldMapSceneAssemblyQuery&,std::unique_ptr<WorldMapSceneAssembly>,bool borrowed,
+        std::unique_ptr<WorldMapSceneAssembly>*);
+    std::unique_ptr<WorldMapUpdateInputs> owned_inputs_;
+    WorldMapUpdateInputs& inputs_;
     std::unique_ptr<WorldMapPlayerStartup> player_;
     WorldMapPlayerSources sources_;
     WorldMapFade fade_;
     WorldMapPlayerStart placement_;
     WorldMapCameraViewQuery camera_;
     bool entry_pending_ = true;
+    std::array<uint8_t,31> constructor_keys_{};
+    std::shared_ptr<const WorldMapSceneConstructorTables> constructor_tables_;
+    std::shared_ptr<WorldMapSceneConstructorState> constructor_state_;
 };
 } // namespace awl

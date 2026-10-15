@@ -9,6 +9,7 @@
 #include <utility>
 
 namespace awl {
+struct WorldMapSceneConstructorState;
 enum class WorldMapPlayerSourcesInitialization { Fresh, Observed };
 enum class WorldMapPlayerSourcesStatus {
     Completed,Initialized,AlreadyInitialized,CallbackIncomplete,RequiresInitialization,
@@ -127,5 +128,7 @@ private:
     std::optional<bool> probe_present_;
     std::optional<WorldMapCollisionRegistry> objects_;
     std::optional<std::pair<uint32_t,uint32_t>> collision_loop_;
+    std::shared_ptr<const WorldMapSceneConstructorState> constructor_state_;
+    std::array<uint64_t,2> constructor_payload_keys_{};
 };
 } // namespace awl

@@ -1,4 +1,5 @@
 #include "awl/world_map_player_sources.h"
+#include "awl/world_map_scene_constructors.h"
 #include <cmath>
 #include <cstring>
 #include <new>
@@ -216,6 +217,16 @@ WorldMapPlayerSourcesResult WorldMapPlayerSources::advance_third(WorldMapPlayerS
         input.context->tracked_14ac=player.state().target_14ac;input.context->secondary_byte_3f1=fields_.secondary_byte_3f1;
     }
     auto bound=sources;bound.registry=&scene_;
+    if(constructor_state_){
+        // These two virtual payloads read current saved bytes, not the
+        // values copied by the mode-zero constructor callback.
+        for(size_t i=0;i<2;++i)if(const auto* object=scene_.object(constructor_payload_keys_[i])){
+            auto metadata=object->context;
+            metadata.payload=i?std::array<uint32_t,2>{0x30,constructor_state_->byte_299b0?0x43u:0x42u}:
+                std::array<uint32_t,2>{0x2f,constructor_state_->byte_299aa?0x41u:0x40u};
+            (void)scene_.set_context_metadata(object->identity,metadata);
+        }
+    }
     result.third=player.state().state_1364==0?player.advance_state0_third(inputs_,bound,input):player.advance_state1_third(inputs_,bound,input);
     const auto status=result.third->status;result.status=status==WorldMapPlayerState0ThirdStatus::Prepared || status==WorldMapPlayerState0ThirdStatus::SkippedByGuard ||
         status==WorldMapPlayerState0ThirdStatus::Filtered || status==WorldMapPlayerState0ThirdStatus::AlreadyCompleted?S::Completed:S::CallbackIncomplete;return result;

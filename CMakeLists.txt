@@ -65,6 +65,7 @@ set(SOURCES
     src/world_map_player_startup.cpp
     src/world_map_player_sources.cpp
     src/world_map_scene_assembly.cpp
+    src/world_map_scene_constructors.cpp
     src/world_map_player_state1_secondary.cpp
     src/world_map_player_actor_prepare.cpp
     src/world_map_player_actor_schedule.cpp
@@ -708,6 +709,7 @@ add_executable(world_map_player_model_assets_tests
     src/world_map_player_startup.cpp
     src/world_map_player_sources.cpp
     src/world_map_scene_assembly.cpp
+    src/world_map_scene_constructors.cpp
     src/world_map_player_state1_secondary.cpp
     src/world_map_player_actor_prepare.cpp
     src/world_map_player_actor_schedule.cpp
