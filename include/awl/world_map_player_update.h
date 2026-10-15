@@ -89,7 +89,9 @@ struct WorldMapPlayerState29SecondaryResult {
 enum class WorldMapPlayerState0SecondaryStatus {
     RetainedState,SkippedByGuard,RequiresGuards,RequiresGuardWord58c,
     RequiresHolderCompleted,RequiresHolderFlag,RequiresMovement,TransitionRequired,
-    RequiresControl,RequiresPrimary,RequiresAnimation,AlreadyCompleted,Filtered,InvalidInput
+    RequiresControl,RequiresPrimary,RequiresAnimation,AlreadyCompleted,Filtered,InvalidInput,
+    RequiresBody,RequiresUpdateOwners,RequiresMovementOwners,RequiresMovementCamera,
+    MovementIncomplete,BodyIncomplete,AllocationFailure,UnsupportedNumerics
 };
 struct WorldMapPlayerState0SecondaryResult {
     WorldMapPlayerState0SecondaryStatus status=WorldMapPlayerState0SecondaryStatus::InvalidInput;
@@ -97,11 +99,12 @@ struct WorldMapPlayerState0SecondaryResult {
 };
 // 31484 -> state-zero row +18 -> 42BBC. Owned holder +20/+21 byte getters;
 // completed wins without reading +21. The reached 3083C movement body or
-// state-one transition stops before execution. Control bit 800 does not skip
-// this body. No control/holder/state writes or queue/pass acknowledgement.
+// state-one transition stops before execution. An optional observed movement
+// return resolves the zero/direct-42DFC versus nonzero/state-one branch.
+// Control bit 800 does not skip this body. No control/holder/state writes or queue/pass acknowledgement.
 [[nodiscard]] WorldMapPlayerState0SecondaryResult prepare_world_map_player_state0_secondary(
     const std::optional<WorldMapPlayerUpdateGuards>&,std::optional<uint8_t> completed_20,
-    std::optional<uint8_t> flag_21) noexcept;
+    std::optional<uint8_t> flag_21,std::optional<float> intensity=std::nullopt) noexcept;
 enum class WorldMapPlayerState1InitializerStatus {Prepared,RequiresAction,RequiresMask,RequiresItemOwner};
 struct WorldMapPlayerState1InitializerResult {
     WorldMapPlayerState1InitializerStatus status=WorldMapPlayerState1InitializerStatus::RequiresAction;

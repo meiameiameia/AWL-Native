@@ -788,6 +788,71 @@ WorldMapPlayerState0SecondaryResult WorldMapPlayerStartup::request_state1_transi
         primary_loop_->pending_state_request=1;
     return result;
 }
+WorldMapPlayerState0SecondarySliceResult WorldMapPlayerStartup::advance_state0_secondary(
+    const WorldMapUpdateInputs& inputs,const WorldMapPlayerState0SecondaryInput& input,
+    WorldMapPlayerUpdateOwners* owners,WorldMapPlayerMovementState* movement,WorldMapSceneBucketRegistry* scene){
+    using S=WorldMapPlayerState0SecondaryStatus;using M=WorldMapPlayerMovementStatus;using B=WorldMapPlayerState1SecondaryStatus;
+    static_assert(std::is_nothrow_move_assignable_v<WorldMapPlayerMovementState>);
+    static_assert(std::is_nothrow_move_assignable_v<WorldMapSceneBucketRegistry>);
+    static_assert(std::is_nothrow_copy_assignable_v<WorldMapPlayerStartupCameraState>);
+    static_assert(std::is_nothrow_copy_assignable_v<WorldMapPlayerStatusState>);
+    static_assert(std::is_nothrow_copy_constructible_v<WorldMapPlayerState0SecondarySliceResult>);
+    const auto key=[](const auto* owner){return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(owner));};
+    const auto prefix=advance_state0_secondary(inputs,input.body.guards);
+    if((prefix.status==S::AlreadyCompleted || prefix.status==S::TransitionRequired) && primary_loop_ &&
+        ((owners && primary_loop_->updates_owner && primary_loop_->updates_owner!=key(owners)) ||
+         (movement && primary_loop_->movement_owner && primary_loop_->movement_owner!=key(movement)) ||
+         (scene && primary_loop_->scene_owner && primary_loop_->scene_owner!=key(scene))))return {S::InvalidInput};
+    if(prefix.status==S::TransitionRequired){
+        // Completed holder and previously accepted movement share this request.
+        // No second receipt until the checked initializer has completed.
+        primary_loop_->pending_state_request=prefix.requested_state;
+        return {prefix.status,prefix.requested_state};
+    }
+    if(prefix.status!=S::RequiresMovement)return {prefix.status,prefix.requested_state};
+    if(!owners)return {S::RequiresUpdateOwners};
+    if(primary_loop_->updates_owner!=key(owners))return {S::InvalidInput};
+    if(!movement || !scene)return {S::RequiresMovementOwners};
+    if(movement->pose.scene_type!=owners->saved_pose.scene_type || movement->pose.position!=owners->saved_pose.position ||
+        movement->pose.heading!=owners->saved_pose.heading)return {S::InvalidInput};
+    if(!camera_ || !camera_->collision)return {S::RequiresMovementCamera};
+    if(!input.movement)return {S::RequiresMovement};
+    WorldMapPlayerState0SecondarySliceResult result;
+    const auto stop=[&](S status){result.status=status;return result;};
+    try {
+        auto moving=*movement;auto registry=*scene;moving.camera=camera_->camera;
+        auto dependencies=*input.movement;dependencies.guards=input.body.guards;dependencies.outputs={};
+        dependencies.sample_height=state1_camera_height;
+        dependencies.sample_context=const_cast<WorldMapCameraCollisionAsset*>(camera_->collision.get());
+        result.movement=advance_world_map_player_movement(inputs,dependencies,&moving,&registry);
+        if(result.movement->status!=M::Advanced)return stop(result.movement->status==M::AllocationFailure?S::AllocationFailure:S::MovementIncomplete);
+        const auto route=prepare_world_map_player_state0_secondary(input.body.guards,model_->state_.completed_20,
+            model_->state_.flag_21,result.movement->intensity);
+        if(route.status==S::RequiresBody){
+            WorldMapPlayerState1SecondaryQuery query;query.control=inputs.queue_control().control_word;
+            query.action=input.action_148;query.item=input.item_144;query.status=owners->status?&*owners->status:nullptr;
+            query.factors=input.body.condition_factors_override?*input.body.condition_factors_override:starts_->condition_factors();
+            if(inputs.sources().phase)query.phase_raw=inputs.sources().phase->raw_word_0;
+            if(const auto* pad=inputs.pad_for_loop())query.pressed=pad->frame.pressed;
+            query.pose=moving.pose;query.manager_scene_type=inputs.scene().scene_type_68;query.dependencies=input.body;
+            result.body=prepare_world_map_player_state1_secondary(query);
+            if(result.body->status!=B::Completed)return stop(result.body->status==B::AllocationFailure?S::AllocationFailure:S::BodyIncomplete);
+        }else if(route.status!=S::TransitionRequired)return stop(route.status);
+        // Native publication defers movement until the supported body completes.
+        // The original interleaves these writes. First/model remain accepted on
+        // a stop; a pending state-one initializer is a separate accepted stage.
+        camera_=WorldMapPlayerStartupCameraState{camera_->collision,*moving.camera,moving.camera_update->update};
+        *movement=std::move(moving);*scene=std::move(registry);
+        if(result.body && result.body->conditions && result.body->conditions->after)owners->status=result.body->conditions->after;
+        state_.control_word_1384=*inputs.queue_control().control_word;
+        primary_loop_->movement_owner=key(movement);primary_loop_->scene_owner=key(scene);
+        if(route.status==S::TransitionRequired){
+            result.requested_state=route.requested_state;primary_loop_->pending_state_request=route.requested_state;
+            return stop(S::TransitionRequired);
+        }
+        primary_loop_->state0_secondary_completed=true;return stop(S::RetainedState);
+    }catch(const std::bad_alloc&){return stop(S::AllocationFailure);}
+}
 WorldMapPlayerState1TransitionResult WorldMapPlayerStartup::advance_state1_transition(
     const WorldMapUpdateInputs& inputs,const WorldMapPlayerState1TransitionInput& input,WorldMapPlayerUpdateOwners* owners) {
     using S=WorldMapPlayerState1TransitionStatus;using A=WorldMapPlayerState0TransitionStatus;

@@ -301,6 +301,18 @@ struct WorldMapPlayerState0PrimarySliceResult {
     std::optional<WorldMapPlayerAnimationLoopResult> animation;
     bool parent_reused=false;
 };
+struct WorldMapPlayerState0SecondaryInput {
+    WorldMapPlayerState1SecondaryInput body;
+    const WorldMapPlayerMovementInput* movement=nullptr;
+    // Observed saved-owner fields, reached only by the zero-intensity body.
+    std::optional<uint32_t> item_144,action_148;
+};
+struct WorldMapPlayerState0SecondarySliceResult {
+    WorldMapPlayerState0SecondaryStatus status=WorldMapPlayerState0SecondaryStatus::InvalidInput;
+    std::optional<int32_t> requested_state;
+    std::optional<WorldMapPlayerMovementResult> movement;
+    std::optional<WorldMapPlayerState1SecondaryResult> body;
+};
 struct WorldMapPlayerState1ParentInput {
     std::optional<WorldMapPlayerUpdateGuards> guards;
     std::optional<int32_t> scene_child_word_4;
@@ -377,6 +389,15 @@ public:
     // completes; movement and state-one requests preserve state explicitly.
     [[nodiscard]] WorldMapPlayerState0SecondaryResult advance_state0_secondary(
         const WorldMapUpdateInputs&,const std::optional<WorldMapPlayerUpdateGuards>&) noexcept;
+    // 42BBC with all four movement output pointers null. Zero intensity runs
+    // 42DFC directly while state remains zero; nonzero retains request one
+    // for advance_state1_transition. Movement/camera/scene and a no-event body
+    // publish together; a later initializer failure retains accepted movement.
+    // The saved pose/1010 queue were written in the earlier first callback and
+    // are not rewritten here. Bound retries cannot move or rebind owners.
+    [[nodiscard]] WorldMapPlayerState0SecondarySliceResult advance_state0_secondary(
+        const WorldMapUpdateInputs&,const WorldMapPlayerState0SecondaryInput&,
+        WorldMapPlayerUpdateOwners*,WorldMapPlayerMovementState*,WorldMapSceneBucketRegistry*);
     // Explicitly retain 42BBC's owned completed-holder state-one request.
     // Retry cannot replace it with changed guards; no game state changes yet.
     [[nodiscard]] WorldMapPlayerState0SecondaryResult request_state1_transition(
@@ -384,7 +405,7 @@ public:
     // Current first/model receipts and exact owner binding are required.
     // Remaps/audio -> appearance -> action mask -> state-one tail publish
     // atomically. Scene +68 comes from inputs. Counter/playback/queues/time
-    // are unchanged. State-one first/second movement callbacks remain open.
+    // are unchanged. No extra movement/model progression runs in this initializer.
     [[nodiscard]] WorldMapPlayerState1TransitionResult advance_state1_transition(
         const WorldMapUpdateInputs&,const WorldMapPlayerState1TransitionInput&,WorldMapPlayerUpdateOwners*);
     [[nodiscard]] WorldMapPlayerState0ThirdResult advance_state1_third(

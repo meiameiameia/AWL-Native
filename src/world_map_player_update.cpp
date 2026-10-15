@@ -43,7 +43,7 @@ WorldMapPlayerState1InitializerResult prepare_world_map_player_state1_initialize
 }
 WorldMapPlayerState0SecondaryResult prepare_world_map_player_state0_secondary(
     const std::optional<WorldMapPlayerUpdateGuards>& guards,std::optional<uint8_t> completed,
-    std::optional<uint8_t> flag) noexcept {
+    std::optional<uint8_t> flag,std::optional<float> intensity) noexcept {
     using S=WorldMapPlayerState0SecondaryStatus;
     if(!guards)return {S::RequiresGuards};
     if(guards->word_680!=-1)return {S::SkippedByGuard};
@@ -52,7 +52,11 @@ WorldMapPlayerState0SecondaryResult prepare_world_map_player_state0_secondary(
     if(!completed)return {S::RequiresHolderCompleted};
     if(*completed)return {S::TransitionRequired,1};
     if(!flag)return {S::RequiresHolderFlag};
-    return {*flag?S::RetainedState:S::RequiresMovement};
+    if(*flag)return {S::RetainedState};
+    if(!intensity)return {S::RequiresMovement};
+    if(!std::isfinite(*intensity))return {S::UnsupportedNumerics};
+    return *intensity==0.0f?WorldMapPlayerState0SecondaryResult{S::RequiresBody}:
+        WorldMapPlayerState0SecondaryResult{S::TransitionRequired,1};
 }
 WorldMapPlayerFollowupStatus prepare_world_map_player_state29_tertiary(
     const std::optional<WorldMapPlayerUpdateGuards>& guards) noexcept {
