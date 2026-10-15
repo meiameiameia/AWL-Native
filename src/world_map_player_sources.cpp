@@ -118,6 +118,12 @@ S WorldMapPlayerSources::prepare_movement(const WorldMapPlayerStartup& player,Wo
     if(!fields_.static_flags)return S::RequiresStaticFlags;
     if(!objects_)return S::RequiresCollisionLists;
     snapshot=objects_->snapshot();
+    // Linked player views read the current actor virtually; the native
+    // registration record must not freeze its constructor position.
+    for(auto& c:snapshot.third_resolver)if(c.identity==movement_.scene_identity)c.center_world=movement_.pose.position;
+    for(auto& o:snapshot.third_objects)if(o.collision.identity==movement_.scene_identity){
+        o.collision.center_world=o.world_position=movement_.pose.position;o.heading_axis=movement_.pose.heading;
+    }
     if(!collision_->movement_.bind(&query.collision))return S::RequiresCollision;
     query.collision.static_flags=*fields_.static_flags;query.collision.static_flags.state_299a4=*fields_.terrain_variant_299a4!=0;
     query.collision.source_identity=movement_.scene_identity;

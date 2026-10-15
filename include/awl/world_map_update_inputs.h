@@ -106,6 +106,7 @@ public:
     // Filtered nodes expose no callback control and need no callback inputs.
     [[nodiscard]] WorldMapDispatchInput dispatch(uint32_t priority) const noexcept;
 private:
+    friend class WorldMapSceneAssembly;
     std::shared_ptr<GameClock> clock_;
     WorldMapControlSources sources_;
     WorldMapSceneModeRequestState scene_;

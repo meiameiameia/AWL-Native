@@ -228,7 +228,7 @@ struct WorldMapPlayerStartupTickInput {
 };
 enum class WorldMapPlayerStartupTickStatus {
     Completed, PrimaryIncomplete, FadeIncomplete, PassesIncomplete,
-    TransitionRequired, QueueIncomplete, RequiresNextLoop, InvalidInput
+    TransitionRequired, QueueIncomplete, RequiresNextLoop, InvalidInput, AllocationFailure
 };
 struct WorldMapPlayerStartupTickResult {
     WorldMapPlayerStartupTickStatus status = WorldMapPlayerStartupTickStatus::InvalidInput;

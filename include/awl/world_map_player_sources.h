@@ -36,6 +36,7 @@ private:
     WorldMapPlayerTerrainProbeAsset probe_;
     std::optional<WorldMapCollisionRecordPools> pools_;
     friend class WorldMapPlayerSources;
+    friend class WorldMapSceneAssembly;
 };
 struct WorldMapPlayerSourceFields {
     std::optional<WorldMapPlayerUpdateGuards> guards;
@@ -110,6 +111,7 @@ public:
     [[nodiscard]] WorldMapPlayerSourcesResult consume_queued(WorldMapPlayerStartup&,
         const WorldMapPlayerStartupQueuedActorInput&,WorldMapPlayerActorQueue*);
 private:
+    friend class WorldMapSceneAssembly;
     WorldMapPlayerSourcesStatus check(const WorldMapPlayerStartup&) const noexcept;
     WorldMapPlayerSourcesStatus prepare_movement(const WorldMapPlayerStartup&,
         WorldMapCollisionSnapshot&,WorldMapMovementQuery&,WorldMapPlayerMovementInput&) const;
