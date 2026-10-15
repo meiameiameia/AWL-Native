@@ -6,6 +6,7 @@ namespace awl {
 struct WorldMapPlayerVertex {
     std::array<float,3> position{},normal{};
     std::array<float,2> uv{};
+    std::array<uint8_t,4> color{255,255,255,255};
 };
 enum class WorldMapPlayerGeometryStatus {
     PreparedGeometry, DecodedVertices, RequiresTopology, UnsupportedLayout,
@@ -18,7 +19,7 @@ struct WorldMapPlayerGeometryResult {
 };
 // Persistent CPU geometry layout and last decoded vertices. Each batch has one
 // vertex per ordered topology reference; triangle indices remain batch-local.
-// Only signed16 XYZ/normal/ST is supported. Position/UV use their VAT fractions;
+// Signed16 XYZ/normal/ST plus optional indexed RGB565/RGBA4 COLOR0. Position/UV use their VAT fractions;
 // normals use GX's fixed 14-bit fraction, without length normalization.
 // The selected interleaved XYZ/normal arrays read retained skin output; other
 // arrays read immutable GPL bytes. No root/world transform is applied here.
@@ -38,12 +39,12 @@ private:
     [[nodiscard]] WorldMapPlayerGeometryResult stage_decode(const WorldMapPlayerSkinWork&,
         const std::vector<uint8_t>&, std::vector<std::vector<WorldMapPlayerVertex>>*) const;
     WorldMapPlayerGeometry()=default;
-    struct Binding {uint32_t offset=0;uint8_t stride=0,fraction=0;uint16_t count=0;bool skinned=false;};
+    struct Binding {uint32_t offset=0;uint8_t stride=0,fraction=0;uint16_t count=0;bool skinned=false;uint8_t type=0;};
     friend WorldMapPlayerGeometryResult prepare_world_map_player_geometry(
         const WorldMapPlayerSkinWork&,std::unique_ptr<WorldMapPlayerGeometry>*);
     WorldMapPlayerTopology topology_;
     WorldMapPlayerModelAssetView gpl_;
-    std::vector<std::array<Binding,3>> bindings_;
+    std::vector<std::array<Binding,4>> bindings_;
     std::vector<std::vector<WorldMapPlayerVertex>> vertices_;
     uint32_t output_size_=0;
 };

@@ -49,7 +49,9 @@ struct WorldMapModelPreparationStep {
 // Already-relocated marker 0xFFFFFFFF is unsupported. No bytes mutate.
 class WorldMapModelBank {
 public:
-    [[nodiscard]] bool parse(uint64_t identity, std::vector<uint8_t> bytes);
+    // Optional dog archives contain an empty non-model file. Preserve its full
+    // node index when explicitly requested; resolve still rejects empty ACTs.
+    [[nodiscard]] bool parse(uint64_t identity, std::vector<uint8_t> bytes,bool allow_empty_files=false);
     void clear();
     [[nodiscard]] bool loaded() const { return identity_ != 0; }
     [[nodiscard]] uint64_t identity() const { return identity_; }

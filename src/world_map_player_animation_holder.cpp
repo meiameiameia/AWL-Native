@@ -671,7 +671,7 @@ WorldMapPlayerInitialHolderResult construct_world_map_player_initial_animation_h
     }
     if (!model_assets) { result.status = Status::RequiresModelAssets; return result; }
     constexpr uint32_t variants[]{0,0,0,1,1,2};
-    if (model_assets->variant() != variants[query.phase]) { result.status = Status::PhaseMismatch; return result; }
+    if (model_assets->actor_id()!=0 || model_assets->variant() != variants[query.phase]) { result.status = Status::PhaseMismatch; return result; }
     std::unique_ptr<WorldMapPlayerAnimationHolder> staging;
     result.holder = construct_world_map_player_animation_holder(model_assets, animation_assets,
         result.initial.selection->descriptor, result.initial.feature, observations, &staging);

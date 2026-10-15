@@ -185,7 +185,7 @@ S WorldMapSceneConstructorTables::prepare_optional(bool b,const WorldMapCollisio
         }
         const int32_t code=b?(id==0x27?0x38:0x39):0x3a+(id-0x29);
         const bool held=*state.held_constructor_11cc8==(b?0x38:code);
-        WorldMapOptionalActionQuery action;action.actor_id=id;action.phase_raw=raw;action.held_scene_type=state.held_scene_type_2a290;
+        WorldMapOptionalActionQuery action;action.actor_id=id;action.phase_raw=raw;action.held_scene_type=state.held_scene_type_2a290;action.held_position=state.held_position_29c78;
         action.kind=b?WorldMapOptionalActionKind::BExplicit:WorldMapOptionalActionKind::AExplicit;
         action.before={b?0x2b:0x23,saved->previous_action,saved->deadline,saved->restart_latch};
         action.requested=saved->action;action.minimum=action.maximum=b?2u:10u;
@@ -202,7 +202,8 @@ S WorldMapSceneConstructorTables::prepare_optional(bool b,const WorldMapCollisio
         const bool reads_rng=action.requested!=(b?0x2b:0x23);
         if(reads_rng){if(!state.rng)return S::RequiresHeadingRng;if(!state.rng->loop_started())return S::RequiresRngLoop;action.rng_before=state.rng->seed();}
         const auto prepared=prepare_world_map_optional_actor_action(actions_,action,&next.action);
-        if(prepared!=WorldMapOptionalActionStatus::Prepared)return prepared==WorldMapOptionalActionStatus::RequiresHeldType?S::RequiresOptionalFields:S::RequiresOptionalAction;
+        if(prepared!=WorldMapOptionalActionStatus::Prepared)return
+            prepared==WorldMapOptionalActionStatus::RequiresHeldType || prepared==WorldMapOptionalActionStatus::RequiresHeldPosition?S::RequiresOptionalFields:S::RequiresOptionalAction;
         next.action.actor_identity=key;
         next.action.bind_secondary_model=next.action.bind_secondary_model || held;
         if(held){auto& commands=next.action.model_commands;

@@ -227,10 +227,27 @@ WorldMapSceneAssemblyResult WorldMapSceneAssembly::assemble(const WorldMapPlayer
         if(borrowed){next->constructor_state_->secondary_3f4=constructed.secondary_3f4;
             if(constructed.rng_after)constructor_stage.rng->seed_=*constructed.rng_after;
             if(constructor_stage.rng)next->constructor_state_->rng->seed_=constructor_stage.rng->seed_;}
-        const bool pending=(next->optional_actions_[0] && next->optional_actions_[0]->model_work_pending()) ||
-            (next->optional_actions_[1] && next->optional_actions_[1]->model_work_pending());
+        const bool pending=next->optional_action_models_pending();
         *out=std::move(next);return stop(pending?S::AssembledCpuScenePendingActorModels:S::AssembledCpuScene);
     }catch(const std::bad_alloc&){return stop(S::AllocationFailure);}
+}
+WorldMapOptionalActorModelResult WorldMapSceneAssembly::complete_optional_models(
+    const std::shared_ptr<const WorldMapOptionalActorModelTables>& tables) {
+    using S=WorldMapOptionalActorModelStatus;
+    if(!optional_action_models_pending())return {S::Constructed};
+    if(!constructor_tables_ || !constructor_tables_->target_verified())return {S::RequiresTables};
+    std::array<std::unique_ptr<WorldMapOptionalActorModel>,2> staged;
+    for(size_t i=0;i<2;++i)if(optional_actions_[i] && !optional_models_[i]){
+        const auto& action=*optional_actions_[i];if(action.actor_id<0x27 || action.actor_id>0x2b)return {};
+        const auto result=WorldMapOptionalActorModel::create(tables,action,
+            constructor_tables_->actions().model_scales[action.actor_id-0x27],inputs_.game_clock(),&staged[i]);
+        if(result.status!=S::Constructed)return result;
+    }
+    for(size_t i=0;i<2;++i)if(staged[i]){
+        if(staged[i]->secondary_binding())optional_secondary_binding_=staged[i]->secondary_binding();
+        optional_models_[i]=std::move(staged[i]);
+    }
+    return {S::Constructed};
 }
 WorldMapCollisionSnapshot WorldMapSceneAssembly::collision_snapshot() const {
     auto snapshot=sources_.objects_->snapshot();

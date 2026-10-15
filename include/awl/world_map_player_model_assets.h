@@ -29,6 +29,7 @@ public:
     WorldMapPlayerModelAssets(WorldMapPlayerModelAssets&&) = delete;
     WorldMapPlayerModelAssets& operator=(WorldMapPlayerModelAssets&&) = delete;
     uint32_t variant() const { return variant_; }
+    int32_t actor_id() const { return actor_id_; }
     const WorldMapModelBank& models() const { return models_; }
     size_t file_count() const { return entries_.size(); }
     // FULL archive file node index; node zero is the directory, not an ACT.
@@ -40,7 +41,10 @@ private:
     WorldMapPlayerModelAssets() = default;
     friend WorldMapPlayerModelAssetsStatus load_world_map_player_model_assets(
         uint32_t, std::shared_ptr<const WorldMapPlayerModelAssets>*);
+    friend WorldMapPlayerModelAssetsStatus load_world_map_optional_model_assets(
+        int32_t, std::shared_ptr<const WorldMapPlayerModelAssets>*);
     uint32_t variant_ = 0;
+    int32_t actor_id_ = 0;
     WorldMapModelBank models_;
     std::vector<uint8_t> bytes_;
     struct Entry { uint32_t offset = 0, size = 0; };
@@ -56,6 +60,10 @@ private:
 // a matching complete variant reuses ownership without I/O.
 [[nodiscard]] WorldMapPlayerModelAssetsStatus load_world_map_player_model_assets(
     uint32_t phase, std::shared_ptr<const WorldMapPlayerModelAssets>* out);
+// D41C's 27/28 and 29..2B routes share the ACT/GPL/SKN construction engine.
+// Separate texture sources/routes; this does not activate an optional actor.
+[[nodiscard]] WorldMapPlayerModelAssetsStatus load_world_map_optional_model_assets(
+    int32_t actor_id, std::shared_ptr<const WorldMapPlayerModelAssets>* out);
 
 struct WorldMapPlayerModelTextureBinding {
     uint8_t channel = 0;
@@ -70,7 +78,7 @@ struct WorldMapPlayerModelSelection {
     WorldMapPreparedModelResource model;
     WorldMapPlayerModelAssetView gpl, skin;
     std::optional<WorldMapPlayerModelAssetView> texture_animation;
-    std::array<WorldMapPlayerModelTextureBinding,4> textures;
+    std::vector<WorldMapPlayerModelTextureBinding> textures;
 };
 
 // FUN_8002D41C slot-zero path: ACT +28 and nonnull GPL/SKN auxiliary +2C

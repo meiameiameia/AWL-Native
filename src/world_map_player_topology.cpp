@@ -12,11 +12,13 @@ uint16_t be16(const uint8_t* p) {return uint16_t((uint16_t(p[0])<<8)|p[1]);}
 bool overlaps(uint64_t a,uint64_t n,uint64_t b,uint64_t m) {return n && m && a<b+m && b<a+n;}
 Status decode(const uint8_t* data,uint32_t size,const WorldMapPlayerDrawSection& section,
     const std::vector<WorldMapPlayerVertexDescriptor>& descriptors,WorldMapPlayerTopologyBatch& batch) {
-    constexpr uint8_t attributes[]{9,10,13};
-    if (descriptors.size()!=3) return Status::UnsupportedLayout;
-    std::array<uint8_t,3> widths{};std::array<uint16_t,3> counts{};
+    const bool color=descriptors.size()==4;
+    constexpr uint8_t plain[]{9,10,13},colored[]{9,10,11,13};
+    const auto* attributes=color?colored:plain;
+    if (descriptors.size()!=3 && !color) return Status::UnsupportedLayout;
+    std::array<uint8_t,4> widths{};std::array<uint16_t,4> counts{};
     uint32_t width=0;
-    for (size_t i=0;i<3;++i) {
+    for (size_t i=0;i<descriptors.size();++i) {
         if (descriptors[i].attribute!=attributes[i] || (descriptors[i].mode!=2 && descriptors[i].mode!=3)) return Status::UnsupportedLayout;
         widths[i]=descriptors[i].mode==2?1u:2u;width+=widths[i];
         bool found=false;
@@ -38,12 +40,12 @@ Status decode(const uint8_t* data,uint32_t size,const WorldMapPlayerDrawSection&
         const auto first=static_cast<uint32_t>(batch.references.size());
         batch.primitives.push_back({op,first,count});
         for (uint32_t vertex=0;vertex<count;++vertex) {
-            std::array<uint16_t,3> indices{};
-            for (size_t i=0;i<3;++i) {
+            std::array<uint16_t,4> indices{};
+            for (size_t i=0;i<descriptors.size();++i) {
                 indices[i]=widths[i]==1?data[cursor]:be16(data+cursor);cursor+=widths[i];
                 if (indices[i]>=counts[i]) return Status::InvalidInput;
             }
-            batch.references.push_back({indices[0],indices[1],indices[2]});
+            batch.references.push_back({indices[0],indices[1],indices[color?3:2],color?indices[2]:uint16_t{0}});
         }
         const auto triangle=[&](uint32_t a,uint32_t b,uint32_t c) {
             batch.triangle_indices.push_back(first+a);batch.triangle_indices.push_back(first+b);batch.triangle_indices.push_back(first+c);

@@ -53,6 +53,13 @@ WorldMapPlayerGeometryResult WorldMapPlayerGeometry::stage_decode(
                         else vertex.uv[lane]=value;
                     }
                 }
+                const auto& color=bindings[3];
+                if(color.count){const uint64_t offset=uint64_t(color.offset)+uint64_t(reference.color)*color.stride;
+                    if(reference.color>=color.count || !detail::archive_range(gpl_.size,offset,2))return result;
+                    const auto* data=gpl_.data+offset;const uint16_t v=uint16_t((uint16_t(data[0])<<8)|data[1]);
+                    if(color.type==0)vertex.color={uint8_t(((v>>11)<<3)|(v>>13)),uint8_t((((v>>5)&63)<<2)|((v>>9)&3)),uint8_t(((v&31)<<3)|((v>>2)&7)),255};
+                    else vertex.color={uint8_t(((v>>12)&15)*17),uint8_t(((v>>8)&15)*17),uint8_t(((v>>4)&15)*17),uint8_t((v&15)*17)};
+                }
                 vertices.push_back(vertex);
             }
             staged.push_back(std::move(vertices));
@@ -82,23 +89,25 @@ WorldMapPlayerGeometryResult prepare_world_map_player_geometry(
         for (size_t s=0;s<drawing.sections().size();++s) {
             result.section=static_cast<uint32_t>(s);result.status=Status::UnsupportedLayout;
             const auto& section=drawing.sections()[s];
-            if (section.arrays.size()!=3 || section.formats.size()!=3) return result;
-            std::array<WorldMapPlayerGeometry::Binding,3> bindings{};
-            constexpr uint8_t attributes[]{9,10,13};
-            for (size_t a=0;a<3;++a) {
+            const bool color=section.arrays.size()==4;
+            if ((!color && section.arrays.size()!=3) || section.formats.size()!=section.arrays.size()) return result;
+            std::array<WorldMapPlayerGeometry::Binding,4> bindings{};
+            constexpr uint8_t attributes[]{9,10,13,11};
+            for (size_t a=0;a<(color?4u:3u);++a) {
                 const WorldMapPlayerArrayBinding* array=nullptr;const WorldMapPlayerVertexFormat* format=nullptr;
                 for (const auto& item:section.arrays) if (item.attribute==attributes[a]) {if (array) return result;array=&item;}
                 for (const auto& item:section.formats) if (item.attribute==attributes[a]) {if (format) return result;format=&item;}
                 const uint32_t lanes=a==2?2u:3u;
-                if (!array || !format || format->type!=3 || format->components!=(a==1?0:1) ||
-                    format->fraction>15 || array->stride<lanes*2 || array->data.bank_identity!=geometry->gpl_.reference.bank_identity ||
+                const bool format_ok=format && (a==3?((format->type==0 && format->components==0) || (format->type==3 && format->components==1)):
+                    (format->type==3 && format->components==(a==1?0:1) && format->fraction<=15));
+                if (!array || !format_ok || array->stride<(a==3?2u:lanes*2) || array->data.bank_identity!=geometry->gpl_.reference.bank_identity ||
                     array->data.offset<geometry->gpl_.reference.offset) return result;
                 const uint32_t offset=array->data.offset-geometry->gpl_.reference.offset;
                 if (!detail::archive_range(geometry->gpl_.size,offset,array->bounded_size)) return result;
                 const uint64_t array_end=uint64_t(offset)+array->bounded_size;
                 const bool overlaps=offset<end && start<array_end;
-                if (overlaps && (s!=target->section_index || a==2 || offset<start || array_end>end)) return result;
-                bindings[a]={overlaps?offset-start:offset,array->stride,static_cast<uint8_t>(a==1?14:format->fraction),array->count,overlaps};
+                if (overlaps && (s!=target->section_index || a>=2 || offset<start || array_end>end)) return result;
+                bindings[a]={overlaps?offset-start:offset,array->stride,static_cast<uint8_t>(a==1?14:format->fraction),array->count,overlaps,format->type};
             }
             if (s==target->section_index && (!bindings[0].skinned || !bindings[1].skinned || bindings[0].offset!=0 ||
                 bindings[1].offset!=6 || bindings[0].stride!=12 || bindings[1].stride!=12 || bindings[0].count!=bindings[1].count)) return result;

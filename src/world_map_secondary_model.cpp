@@ -78,11 +78,11 @@ WorldMapModelPreparationStatus prepare_world_map_model_pose(
     return Status::Prepared;
 }
 void WorldMapModelBank::clear() { identity_ = 0; entries_.clear(); bytes_.clear(); }
-bool WorldMapModelBank::parse(uint64_t identity, std::vector<uint8_t> bytes) {
+bool WorldMapModelBank::parse(uint64_t identity, std::vector<uint8_t> bytes,bool allow_empty_files) {
     clear();
     if (identity == 0) return false;
     std::vector<detail::FlatArchiveEntry> files;
-    if (!detail::parse_flat_archive(bytes, &files)) return false;
+    if (!detail::parse_flat_archive(bytes, &files,allow_empty_files)) return false;
     for (const auto& file : files) entries_.push_back({file.offset, file.size});
     bytes_ = std::move(bytes); identity_ = identity; return true;
 }

@@ -2,7 +2,7 @@
 #include "awl/world_map_player_draw_commands.h"
 
 namespace awl {
-struct WorldMapPlayerVertexReference { uint16_t position=0,normal=0,uv=0; };
+struct WorldMapPlayerVertexReference { uint16_t position=0,normal=0,uv=0,color=0; };
 struct WorldMapPlayerPrimitive { uint8_t opcode=0; uint32_t first_reference=0,count=0; };
 struct WorldMapPlayerTopologyBatch {
     uint32_t section=0,command=0;

@@ -66,7 +66,13 @@ void test_bank() {
         case 6:for(size_t i=70;i<80;++i)bytes[i]='z';break;case 7:put(bytes,8,12);break;
         }
         expect(!b.parse(300,bytes) && !b.loaded(),"shared flat-U8 bounds/type/name/overlap failure clears owner");
+        expect(!b.parse(300,bytes,true) && !b.loaded(),"empty-file policy preserves every bounds/type/name/overlap rejection");
     }
+    bytes=archive();put(bytes,64,0);
+    expect(!b.parse(300,bytes) && b.parse(300,bytes,true) && b.file_count()==2 && b.resolve(1,&r) && !b.resolve(2,&r),
+        "explicit empty-file policy preserves full node indices without accepting an empty ACT");
+    put(bytes,60,static_cast<uint32_t>(bytes.size()+1));
+    expect(!b.parse(300,bytes,true),"even an empty node must point within its archive");
     expect(!b.parse(0,archive()) && !b.parse(300,std::vector<uint8_t>(31)),"null identity and truncated archive reject");
     b=bank(0,0);
     expect(b.resolve(1,&r) && r.core_storage_size==408 && r.allocation_size==440,"zero count retains fixed storage size");

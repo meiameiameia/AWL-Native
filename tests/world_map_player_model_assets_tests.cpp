@@ -6052,6 +6052,36 @@ std::vector<uint8_t> scene_constructor_dol(){
     word(b,at(0x803469d0),4);word(b,at(0x803469d8),4);
     word(b,at(0x8034887c),359);f(0x8034b774,0.0174532924f);return b;
 }
+void additional_optional_actions(const awl::WorldMapOptionalActionTables& original,bool target) {
+    uint64_t weighted=14695981039346656037ull;
+    for(uint32_t i=0;i<1024;++i){awl::WorldMapOptionalBWeightedRow row;row.count=1+i%12;
+        const uint32_t seed=i*15485863u+0x12345678u,upper=std::array<uint32_t,5>{0,1,99,0x7fffffffu,0xfffffffeu}[i%5];
+        for(uint32_t j=0;j<row.count;++j){row.weights[j]=i%4?uint8_t((i*7+j*13)%256):uint8_t{0};row.actions[j]={j*17+i,i*7919+j,i*104729+j*7};}
+        awl::WorldMapOptionalBWeightedSelection result;
+        expect(awl::prepare_world_map_optional_b_weighted_selection(row,upper,seed,&result),"complete bounded B weighted selection prepares");
+        for(uint32_t v:{i,seed,upper,row.count,result.action,result.minimum,result.maximum,result.rng_after})hash(weighted,v);
+        auto before=result;expect(!awl::prepare_world_map_optional_b_weighted_selection(row,UINT32_MAX,seed,&result) && result.rng_after==before.rng_after,"zero divisor rejection preserves weighted proposal");
+        row.count=0;expect(!awl::prepare_world_map_optional_b_weighted_selection(row,0,seed,&result),"zero count cannot index a preceding row");
+    }
+    expect(weighted==0x3be3da9fbbaa2a7dull,"1024 weighted/fallback/signed-boundary cases match complete original16D08C and RNG without hooks");
+    auto tables=original;if(!target){tables.a_initializers[0x14]=0x80162b10;tables.a_initializers[0x1d]=0x8016312c;}
+    if(target){uint64_t digest=14695981039346656037ull;
+        for(uint32_t i=0;i<128;++i)for(int32_t action:{0x14,0x1d}){awl::WorldMapOptionalActionQuery q;q.actor_id=0x29+int32_t(i%3);q.requested=action;q.before.current=0x23;
+            q.phase_raw=i*15485863u;q.rng_before=i*104729u+0x12345678u;q.minimum=1+i%4;q.maximum=q.minimum+i%3;
+            q.held_position=std::array<float,3>{120.0f+float(i),123.0f,168.0f-float(i)};awl::WorldMapOptionalActionPlan result;
+            expect(awl::prepare_world_map_optional_actor_action(tables,q,&result)==awl::WorldMapOptionalActionStatus::Prepared,"additional A initializer executes after the common action wrapper");
+            const auto position=result.record_position.value_or(std::array<float,3>{});
+            for(uint32_t v:{i,uint32_t(action),uint32_t(result.after.current),uint32_t(result.after.previous),result.after.deadline,*result.rng_after,uint32_t(result.record_enabled),uint32_t(result.collision_enabled),
+                actor_bits(position[0]),actor_bits(position[1]),actor_bits(position[2]),result.model_command_count})hash(digest,v);
+            if(result.model_command_count){const auto& c=result.model_commands[0];for(uint32_t v:{c.index,c.variant,actor_bits(c.rate)})hash(digest,v);}
+            expect(!result.position,"A14 changes the internal record without inventing a scene registration");
+        }
+        expect(digest==0xe679068b4e62990eull,"256 additional A cases match complete original wrapper/initializer with stated model sink and scale substitutions");
+        std::cout<<"LOCAL_OPTIONAL_ADDITIONAL A256 "<<std::hex<<digest<<" B1024 "<<weighted<<std::dec<<'\n';
+    }
+    awl::WorldMapOptionalActionQuery q;q.actor_id=0x29;q.requested=0x14;q.phase_raw=0;q.rng_before=0;q.before.current=0x23;
+    awl::WorldMapOptionalActionPlan plan;expect(awl::prepare_world_map_optional_actor_action(tables,q,&plan)==awl::WorldMapOptionalActionStatus::RequiresHeldPosition,"A14 requires the reached actual saved position");
+}
 void optional_action_checks(const awl::WorldMapSceneConstructorTables& provider,bool target){
     using S=awl::WorldMapOptionalActionStatus;using K=awl::WorldMapOptionalActionKind;using O=awl::WorldMapOptionalModelOperation;
     const auto& tables=provider.actions();
@@ -6080,6 +6110,7 @@ void optional_action_checks(const awl::WorldMapSceneConstructorTables& provider,
     {auto missing=q;missing.kind=K::BTable;missing.phase_raw.reset();missing.rng_before.reset();
         expect(awl::prepare_world_map_optional_actor_action(tables,missing,&plan)==S::RequiresRng,"B table action reaches RNG before the phase snapshot");missing.rng_before=0;
         expect(awl::prepare_world_map_optional_actor_action(tables,missing,&plan)==S::RequiresPhase,"B table missing phase still preserves the unaccepted proposal");}
+    additional_optional_actions(tables,target);
     if(!target)return;
     uint64_t digest=14695981039346656037ull;
     constexpr std::array<std::array<int32_t,2>,12> cases{{{0,0x12},{0,0x13},{0,0x23},{0,0},{1,2},{1,0x11},{1,0x25},{1,0x2b},{2,2},{2,0x11},{2,0x25},{2,0x2b}}};
@@ -6230,7 +6261,7 @@ void native_scene_source_checks(const awl::WorldMapPlayerStartupProviders& origi
                 held_projection.scene.position==b.position && held_projection.scene.scene_type==1 && held_projection.action.internal_scene_type==3 && held_projection.action.after.current==0x11 &&
                 held_projection.action.model_commands[2].operation==awl::WorldMapOptionalModelOperation::BindSecondary && state->rng->seed()==rng,
                 "held B retains bound scene type/pose while replacing internal record type and binding secondary after model requests; isolated proposals preserve shared RNG");}
-        expect(create().status==A::AssembledCpuScene && scene,"native optional constructors assemble from current saved sources");
+        expect(create().status==A::AssembledCpuScenePendingActorModels && scene && scene->optional_action_models_pending(),"even sentinel actions require their actual constructor models");
         if(scene){const auto lists=scene->collision_snapshot();
             expect(lists.first_directional.size()==3 && lists.first_directional[1].world_position==b.position && lists.first_directional[2].world_position[0]==a.position[0],"optional constructor order remains mandatory then B then A");
             expect(scene->initial_placement().pose.position!=seed.movement.pose.position,"derived optional A participates in pre-player initial placement");
@@ -6247,6 +6278,27 @@ void native_scene_source_checks(const awl::WorldMapPlayerStartupProviders& origi
                     scene->advance_state0_transition({},{}).status==awl::WorldMapPlayerState0TransitionStatus::RequiresSceneActorModels &&
                     startup_snapshot(scene->player())==player_before && update_owners_snapshot(scene->sources().updates())==owners_before && state->rng->seed()==expected,
                     "pending optional model effects block startup, control release and state-zero transition without changing player/queue/RNG");
+                if(context){std::shared_ptr<const awl::WorldMapOptionalActorModelTables> model_tables;
+                    expect(awl::WorldMapOptionalActorModelTables::load(&model_tables)==awl::WorldMapOptionalActorModelStatus::Loaded,"source scene acquires verified optional model commands");
+                    expect(scene->complete_optional_models({}).status==awl::WorldMapOptionalActorModelStatus::RequiresTables && scene->optional_action_models_pending() && !scene->optional_model(0) && !scene->optional_model(1),"missing tables preserve both pending native actors");
+#if !defined(_DEBUG)
+                    if(startup.initial.phase==0){uint32_t rejected=0;bool completed=false;
+                        for(size_t n=0;n<4096;++n){const auto live=allocation_probe::live;bool failed=false;
+                            {allocation_probe::remaining=n;allocation_probe::enabled=true;const auto attempt=scene->complete_optional_models(model_tables);allocation_probe::enabled=false;
+                                if(attempt.status==awl::WorldMapOptionalActorModelStatus::Constructed)completed=true;else{failed=true;
+                                    expect(scene->optional_action_models_pending() && !scene->optional_model(0) && !scene->optional_model(1) && !scene->optional_secondary_model_binding() && state->rng->seed()==expected,
+                                        "every optional pair allocation stop preserves both pending models, shared binding and RNG");}}
+                            if(completed)break;if(failed){++rejected;expect(allocation_probe::live==live,"late B allocation failure releases the staged A model as well");}}
+                        expect(completed && rejected>100,"optional pair allocation sweep reaches ordered A/B publication");std::cout<<"OPTIONAL_MODEL_PAIR_ALLOCATION_STOPS "<<rejected<<'\n';}
+#endif
+                    const auto complete=scene->complete_optional_models(model_tables);
+                    expect(complete.status==awl::WorldMapOptionalActorModelStatus::Constructed && !scene->optional_action_models_pending() && scene->optional_model(0) && scene->optional_model(1) &&
+                        scene->optional_model(0)->flag_15c()==uint8_t{1} && scene->optional_secondary_model_binding()==scene->optional_model(0)->secondary_binding() && scene->optional_model(1)->appearance_choice()==4 && state->rng->seed()==expected &&
+                        startup_snapshot(scene->player())==player_before && update_owners_snapshot(scene->sources().updates())==owners_before,
+                        "source scene publishes both actual optional models after every command, preserving player/queue/shared RNG");
+                    const auto* a_model=scene->optional_model(0);const auto* b_model=scene->optional_model(1);
+                    expect(scene->complete_optional_models({}).status==awl::WorldMapOptionalActorModelStatus::Constructed && scene->optional_model(0)==a_model && scene->optional_model(1)==b_model,"accepted optional model completion retries skip all resource and command work");}
+
                 std::cout<<(context?"LOCAL_":"")<<"OPTIONAL_ACTION_SCENE A/B/mandatory RNG ordering / disabled circle / night pose / pending models\n";}}
         state->actor_a_29a64=-1;state->actor_b_29a60=-1;
         expect(create().status==A::AssembledCpuScene && scene,"optional teardown/reconstruction retains actual manager and shared RNG owner");if(!scene)return;
@@ -6761,9 +6813,63 @@ void state1_local_selector_checks(const awl::WorldMapPlayerStartAnimationTables&
     expect(cases==6156 && digest==0xce4eaafa42173ae8ull,"all actual selectors zero through three agree with original288E8/29138 executions and row/descriptor reads");
     std::cout<<"LOCAL_STATE1_SELECTOR_ROWS "<<cases<<' '<<std::hex<<digest<<std::dec<<" observed nonempty item categories\n";
 }
+void local_optional_models() {
+    using S=awl::WorldMapOptionalActorModelStatus;using K=awl::WorldMapOptionalActionKind;
+    std::shared_ptr<const awl::WorldMapOptionalActorModelTables> tables;
+    std::shared_ptr<const awl::WorldMapSceneConstructorTables> constructors;
+    expect(awl::WorldMapOptionalActorModelTables::load(&tables)==S::Loaded &&
+        awl::WorldMapSceneConstructorTables::load(&constructors)==awl::WorldMapSceneConstructorStatus::Loaded,
+        "optional command sources load from the verified DOL");if(!tables || !constructors)return;
+    auto clock=std::make_shared<awl::GameClock>();
+    uint32_t cases=0;
+    for(int32_t id=0x27;id<=0x2b;++id)for(int32_t action:id<0x29?std::vector<int32_t>{2,0x11,0x25,0x2b}:std::vector<int32_t>{0x12,0x13,0x14,0x1d,0x23}){
+        const bool a=id>=0x29;awl::WorldMapOptionalActionQuery q;q.actor_id=id;q.kind=a?K::AExplicit:K::BExplicit;q.requested=action;
+        q.phase_raw=432000;q.rng_before=0x12345678;q.held_scene_type=1;q.held_position=std::array<float,3>{130,123,180};q.before.current=a?0x23:0x2b;
+        awl::WorldMapOptionalActionPlan plan;
+        expect(awl::prepare_world_map_optional_actor_action(constructors->actions(),q,&plan)==awl::WorldMapOptionalActionStatus::Prepared,"optional command proposal prepares");plan.actor_identity=123;
+        std::shared_ptr<const awl::WorldMapPlayerModelAssets> diagnostic_assets;
+        const auto asset_status=awl::load_world_map_optional_model_assets(id,&diagnostic_assets);
+        if(asset_status!=awl::WorldMapPlayerModelAssetsStatus::Loaded)std::cerr<<"optional asset stop "<<id<<" status="<<int(asset_status)<<'\n';
+        std::unique_ptr<awl::WorldMapOptionalActorModel> owner;
+        const auto result=awl::WorldMapOptionalActorModel::create(tables,plan,constructors->actions().model_scales[id-0x27],clock,&owner);
+        if(result.status!=S::Constructed){std::cerr<<"optional model stop id="<<id<<" action="<<action<<" status="<<int(result.status);
+            if(result.holder){std::cerr<<" holder="<<int(result.holder->status);if(result.holder->primary_failure){const auto& primary=*result.holder->primary_failure;std::cerr<<" primary="<<int(primary.status);
+                if(primary.frame_failure)std::cerr<<" frame="<<int(primary.frame_failure->status);if(primary.geometry_failure)std::cerr<<" geometry="<<int(primary.geometry_failure->status)<<" section="<<primary.geometry_failure->section<<" command="<<primary.geometry_failure->command<<" topology="<<(primary.geometry_failure->topology_failure?int(*primary.geometry_failure->topology_failure):-1);}}
+            std::cerr<<'\n';}
+        expect(result.status==S::Constructed && owner,"actual optional resources construct native model and consume the ordered commands");if(!owner)continue;
+        expect(owner->actor_id()==id && owner->actor_identity()==123 && !owner->holder().primary().model().core().nodes.empty() &&
+            owner->holder().primary().model().partial_playback().clip_10.has_value(),"native optional core and playback retain their own actual resources");
+        expect(owner->holder().animations()->group_index()==(a?66u:65u),"both dogs use the actual selector's group 65; cats use 66");
+        if(a && action==0x13)expect(owner->flag_15c()==uint8_t{1} && owner->secondary_binding()==owner->holder().primary().model().binding().model_identity,"A13 binds the actual native model before its wrapper flag");
+        else expect(!owner->flag_15c(),"unwritten wrapper byte is not invented as zero");
+        if(!a && action!=0x2b)expect(owner->holder().state().speed_8==plan.model_commands[1].rate,"D74C applies the requested rate after native animation selection");
+        if(id==0x28 && action==2){const auto& geometry=owner->holder().primary().geometry();uint64_t digest=14695981039346656037ull;uint32_t colored=0;
+            for(size_t j=0;j<geometry.topology().batches.size();++j){const auto& batch=geometry.topology().batches[j];
+                for(size_t k=0;k<batch.references.size();++k){const auto& ref=batch.references[k];const auto& v=geometry.vertices()[j][k];
+                    for(uint32_t word:{batch.section,batch.command,uint32_t(ref.position),uint32_t(ref.normal),uint32_t(ref.uv),uint32_t(ref.color),
+                        uint32_t(v.color[0]),uint32_t(v.color[1]),uint32_t(v.color[2]),uint32_t(v.color[3])})hash(digest,word);++colored;}}
+            expect(colored==1592 && digest==0x832706293cf2f78eull,"all dog1 indexed references and RGB565 colors agree with independent raw GPL parsing");
+            std::cout<<"LOCAL_OPTIONAL_DOG1_COLOR "<<colored<<' '<<std::hex<<digest<<std::dec<<'\n';}
+#if !defined(_DEBUG)
+        if(id==0x29 && action==0x13){const auto* old=owner.get();uint32_t rejected=0;bool completed=false;
+            for(size_t n=0;n<2048;++n){const auto live=allocation_probe::live;bool failed=false;
+                {allocation_probe::remaining=n;allocation_probe::enabled=true;const auto attempt=awl::WorldMapOptionalActorModel::create(tables,plan,1,clock,&owner);allocation_probe::enabled=false;
+                    if(attempt.status==S::Constructed)completed=true;else{failed=true;expect(owner.get()==old,"every optional native construction allocation stop preserves the prior owner");}}
+                if(completed)break;if(failed){++rejected;expect(allocation_probe::live==live,"optional model allocation stop releases all resources and model/channel staging");}}
+            expect(completed && rejected>50,"optional model allocation sweep reaches late model/channel/command publication");std::cout<<"OPTIONAL_MODEL_ALLOCATION_STOPS "<<rejected<<'\n';}
+#endif
+        const auto* old=owner.get();auto bad=plan;bad.model_commands[0]={awl::WorldMapOptionalModelOperation::Appearance,0,0,0};
+        bad.model_commands[1]={awl::WorldMapOptionalModelOperation::Animation,999,0,1};bad.model_command_count=2;
+        expect(awl::WorldMapOptionalActorModel::create(tables,bad,1,clock,&owner).status==S::UnsupportedCommand && owner.get()==old && clock->state().raw_time==0,
+            "late unsupported command releases staging and preserves prior model and clock");++cases;
+    }
+    expect(cases==23,"all five optional IDs construct both default and supported action models");
+    std::cout<<"LOCAL_OPTIONAL_NATIVE_MODELS "<<cases<<" actual ACT/GPL/SKN/TPL + appearance timers + animation channels\n";
+}
 void local_animation_loops(const char* disc) {
     using S=awl::WorldMapPlayerStartupStatus;
     expect(awl::filesystem_mount("/",disc),"local coordinated animation disc mounts");
+    local_optional_models();
     std::shared_ptr<const awl::WorldMapPlayerContextTables> context_tables;
     expect(awl::load_world_map_player_context_tables(&context_tables)==awl::WorldMapPlayerContextTablesStatus::Loaded && context_tables && context_tables->target_verified(),
         "local context lookup metadata loads only from the verified target DOL");
@@ -7827,12 +7933,13 @@ int main(int argc,char** argv){
     else if(argc==3 && std::string(argv[1])=="--player-holder-local")local_holder(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-holder-pair-local")local_holder_pair(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-holder-lifecycle-local")local_holder_lifecycle(argv[2]);
+    else if(argc==3 && std::string(argv[1])=="--optional-models-local"){expect(awl::filesystem_mount("/",argv[2]),"optional local disc mounts");local_optional_models();}
     else if(argc==3 && std::string(argv[1])=="--player-animation-loop-local")local_animation_loops(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-initial-holder-local")local_initial_holder(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-timer-holder-local")local_timer_holder(argv[2]);
     else if(argc==3 && std::string(argv[1])=="--player-clock-holder-local")local_timer_holder(argv[2],true);
     else if(argc==3 && std::string(argv[1])=="--player-initial-model-local")local_timer_holder(argv[2],true,true);
     else if(argc==3 && std::string(argv[1])=="--player-startup-local")local_startup(argv[2]);
-    else if(argc!=1)expect(false,"usage: --player-model-local <disc>, --player-frame-local <disc>, --player-primary-local <disc>, --player-holder-local <disc>, --player-holder-pair-local <disc>, --player-holder-lifecycle-local <disc>, --player-animation-loop-local <disc>, --player-initial-holder-local <disc>, --player-timer-holder-local <disc>, --player-clock-holder-local <disc>, --player-initial-model-local <disc> or --player-startup-local <disc>");
+    else if(argc!=1)expect(false,"usage: --optional-models-local <disc>, --player-model-local <disc>, --player-frame-local <disc>, --player-primary-local <disc>, --player-holder-local <disc>, --player-holder-pair-local <disc>, --player-holder-lifecycle-local <disc>, --player-animation-loop-local <disc>, --player-initial-holder-local <disc>, --player-timer-holder-local <disc>, --player-clock-holder-local <disc>, --player-initial-model-local <disc> or --player-startup-local <disc>");
     awl::filesystem_shutdown();return failures?1:0;
 }

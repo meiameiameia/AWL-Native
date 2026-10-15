@@ -56,6 +56,7 @@ public:
         const WorldMapPlayerPrimaryFrameInput& input, const WorldMapNativeAnimationChannel* channel,
         const WorldMapPlayerTextureFeatureInput* post_frame = nullptr);
 private:
+    friend class WorldMapOptionalActorModel;
     friend class WorldMapPlayerStartup;
     struct PreparedFrame {
         WorldMapPlayerFrame frame;

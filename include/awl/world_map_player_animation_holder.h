@@ -190,6 +190,7 @@ public:
         return primary_->advance(input,primary_channel_.get(),&features);
     }
 private:
+    friend class WorldMapOptionalActorModel;
     struct Initialization {
         WorldMapAnimationPartialChannelStep primary,secondary;
         std::vector<std::shared_ptr<const WorldMapAnimationBank>> primary_banks,secondary_banks;

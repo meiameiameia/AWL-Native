@@ -37,6 +37,7 @@ struct WorldMapOptionalActionQuery {
     uint32_t minimum=0,maximum=0;
     std::optional<uint32_t> phase_raw,rng_before;
     std::optional<int32_t> held_scene_type;
+    std::optional<std::array<float,3>> held_position;
 };
 struct WorldMapOptionalActionPlan {
     WorldMapOptionalActionKind kind=WorldMapOptionalActionKind::AExplicit;
@@ -49,6 +50,7 @@ struct WorldMapOptionalActionPlan {
     bool record_enabled=false,special_flag_one=false,clear_accumulator=false;
     std::optional<int32_t> internal_scene_type;
     std::optional<std::array<float,3>> position,heading;
+    std::optional<std::array<float,3>> record_position; // Internal record only; no 107A4/10830 scene write.
     std::optional<float> facing_threshold;
     std::optional<float> requested_speed;
     std::optional<int32_t> heading_degrees;
@@ -60,12 +62,27 @@ struct WorldMapOptionalActionPlan {
 };
 enum class WorldMapOptionalActionStatus {
     Prepared,InvalidInput,RequiresPhase,RequiresRng,RequiresHeldType,
-    UnsupportedAction,UnsupportedInitializer,UnsupportedNumerics
+    UnsupportedAction,UnsupportedInitializer,UnsupportedNumerics,RequiresHeldPosition
 };
 // 15F5B8 /1680C0 /16816C plus the supported 162918/162AD0 and
-// 168BB0/169E7C/16B834 initialization effects. Atomic, allocation-free;
+// 162B10/16312C and 168BB0/169E7C/16B834 initialization effects. Atomic, allocation-free;
 // model commands remain pending. Requires nearest rounding for reached math.
 [[nodiscard]] WorldMapOptionalActionStatus prepare_world_map_optional_actor_action(
     const WorldMapOptionalActionTables&,const WorldMapOptionalActionQuery&,
     WorldMapOptionalActionPlan*) noexcept;
+struct WorldMapOptionalBWeightedRow {
+    uint32_t count=0;
+    std::array<uint8_t,12> weights{};
+    std::array<std::array<uint32_t,3>,12> actions{}; // action/min/max, not durations read here
+};
+struct WorldMapOptionalBWeightedSelection {
+    uint32_t action=0,minimum=0,maximum=0,rng_after=0,index=0;
+};
+// Complete 16D08C, used by CDBC/CF2C/CFDC (11/10/12 entries).
+// Current weights, action triples and r13-60A4 remain explicit inputs. Draws
+// even for a constant choice; strict signed cumulative comparison and final
+// fallback are preserved. This does not execute the chosen initializer.
+[[nodiscard]] bool prepare_world_map_optional_b_weighted_selection(
+    const WorldMapOptionalBWeightedRow&,uint32_t upper,uint32_t rng_before,
+    WorldMapOptionalBWeightedSelection*) noexcept;
 } // namespace awl

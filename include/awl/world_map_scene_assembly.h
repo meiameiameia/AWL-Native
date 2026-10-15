@@ -1,6 +1,7 @@
 #pragma once
 #include "awl/world_map_player_sources.h"
 #include "awl/world_map_scene_constructors.h"
+#include "awl/world_map_optional_actor_model.h"
 
 namespace awl {
 // Prepared observations after untranslated actor/model constructors. Presence
@@ -85,8 +86,17 @@ public:
     // unscheduled. Executable activation must complete these dependencies.
     const std::array<std::optional<WorldMapOptionalActionPlan>,2>& optional_actor_actions() const noexcept {return optional_actions_;}
     bool optional_action_models_pending() const noexcept {
-        for(const auto& action:optional_actions_)if(action && action->model_work_pending())return true;return false;
+        for(size_t i=0;i<2;++i)if(optional_actions_[i] && !optional_models_[i])return true;return false;
     }
+    // Stage every reached fresh wrapper and command before publishing either
+    // actor. Failure preserves scene/models/control/player/RNG. No actor AI,
+    // frame evaluation, GPU registration or executable activation occurs.
+    [[nodiscard]] WorldMapOptionalActorModelResult complete_optional_models(
+        const std::shared_ptr<const WorldMapOptionalActorModelTables>&);
+    const WorldMapOptionalActorModel* optional_model(size_t index) const noexcept {
+        return index<2?optional_models_[index].get():nullptr;
+    }
+    uint64_t optional_secondary_model_binding() const noexcept {return optional_secondary_binding_;}
     [[nodiscard]] WorldMapCollisionSnapshot collision_snapshot() const;
     // Supplied secondary observations are sampled afresh. Owned guards,
     // selection, scene mode, pose and camera always supersede replacements.
@@ -125,5 +135,7 @@ private:
     std::shared_ptr<const WorldMapSceneConstructorTables> constructor_tables_;
     std::shared_ptr<WorldMapSceneConstructorState> constructor_state_;
     std::array<std::optional<WorldMapOptionalActionPlan>,2> optional_actions_;
+    std::array<std::unique_ptr<WorldMapOptionalActorModel>,2> optional_models_;
+    uint64_t optional_secondary_binding_=0;
 };
 } // namespace awl
