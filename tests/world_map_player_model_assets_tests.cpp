@@ -6041,6 +6041,7 @@ std::vector<uint8_t> scene_constructor_dol(){
     for(size_t i=0;i<4;++i){word(b,at(descriptors[i])+4,UINT32_MAX);word(b,at(descriptors[i])+8,callbacks[i]);}
     f(0x80349e88,1);f(0x80349e8c,4);d(0x8034a700,4);d(0x8034a718,9);d(0x8034a728,16);f(0x8034a710,49);f(0x80349f24,3);f(0x80349f28,25);
     f(0x802ab950,1.5f);f(0x802ab958,-0.1f);f(0x802ab968,1);f(0x802ab970,12);
+    d(0x8034b7c0,36);d(0x8034b880,49);
     word(b,at(0x8034887c),359);f(0x8034b774,0.0174532924f);return b;
 }
 void native_scene_source_checks(const awl::WorldMapPlayerStartupProviders& original,const awl::WorldMapPlayerStartupQuery& startup,
@@ -6058,8 +6059,22 @@ void native_scene_source_checks(const awl::WorldMapPlayerStartupProviders& origi
         expect(awl::WorldMapSceneConstructorTables::decode(bad.data(),bad.size(),&tables)==C::UnsupportedLayout && tables.get()==old,"missing initialized mode-zero callback cannot be replaced by a stub");
         expect(awl::WorldMapSceneConstructorTables::load(&tables)==C::ReadFailure && tables.get()==old,"absent mounted DOL preserves the earlier unverified constructor provider");}
     if(allocations || (context && startup.initial.phase==0)){
+        auto rng_clock=std::make_shared<awl::GameClock>();awl::GameRng shared_rng(rng_clock);uint64_t shared_hash=14695981039346656037ull;
+        expect(shared_rng.seed()==0 && !shared_rng.loop_started(),"global RNG begins at verified CRT-zero state before the first outer loop");
+        awl::GameRng missing_clock({});expect(!missing_clock.begin_loop() && missing_clock.seed()==0,"missing loop owner cannot consume RNG");
+        for(uint32_t i=0;i<128;++i){if(i)expect(rng_clock->advance() && !shared_rng.loop_started(),"next original-equivalent loop invalidates only the RNG receipt");
+            expect(shared_rng.begin_loop(),"outer loop consumes its original discarded random word");hash(shared_hash,i);hash(shared_hash,shared_rng.seed());
+            const auto receipt_seed=shared_rng.seed();expect(shared_rng.begin_loop() && shared_rng.seed()==receipt_seed,"loop retry preserves RNG sequence");
+            for(uint32_t j=0;j<i%4;++j){hash(shared_hash,shared_rng.draw());hash(shared_hash,shared_rng.seed());}}
+        expect(shared_hash==0x91947a95ed3ff5f3ull,"128 shared RNG loops with interleaved consumers match complete original instructions");
+        uint64_t awake_hash=14695981039346656037ull;
+        for(uint32_t i=0;i<1024;++i){const uint32_t raw=i*15485863u,wake=std::array<uint32_t,6>{0,1,59,60,125,UINT32_MAX}[i%6],sleep=std::array<uint32_t,6>{0,1,59,60,125,UINT32_MAX}[i/6%6];
+            for(uint32_t v:{i,raw,wake,sleep,uint32_t(awl::world_map_optional_actor_b_awake(raw,wake,sleep))})hash(awake_hash,v);}
+        expect(awake_hash==0x7fd25e9237ffd7b7ull,"all 1024 optional B time predicates agree with complete original getters and unsigned comparisons");
+        expect(awl::world_map_optional_actor_b_awake(6*36000,0,0) && awl::world_map_optional_actor_b_awake(21*36000,0,0) &&
+            !awl::world_map_optional_actor_b_awake(6*36000-1,0,0) && !awl::world_map_optional_actor_b_awake(21*36000+600,0,0),"optional B wake and sleep boundaries are inclusive to the minute");
         uint64_t rng_hash=14695981039346656037ull;
-        for(uint32_t i=0;i<1024;++i){const uint32_t before=i*15485863u+0x12345678u;auto seed=before;const auto value=awl::advance_world_map_scene_rng(&seed);
+        for(uint32_t i=0;i<1024;++i){const uint32_t before=i*15485863u+0x12345678u;auto seed=before;const auto value=awl::advance_game_rng(&seed);
             for(uint32_t word:{i,before,value,seed})hash(rng_hash,word);}
         expect(rng_hash==0x4cb1feb470048fa9ull,"all 1024 source RNG transitions match complete original instructions");
         uint64_t route_hash=14695981039346656037ull;
@@ -6079,6 +6094,19 @@ void native_scene_source_checks(const awl::WorldMapPlayerStartupProviders& origi
     expect(tables->prepare_mandatory(defaults,&projection)==C::Prepared && !projection.rng_after && !projection.mandatory_context.payload,
         "reused constructor proposal cannot retain stale RNG or an unimplemented actor payload");
     if(context && startup.initial.phase==0){uint64_t digest=14695981039346656037ull;
+        for(uint32_t i=0;i<128;++i)for(int32_t id:{0x29,0x2a,0x2b,0x27,0x28}){const bool b=id<0x29;awl::WorldMapSceneConstructorState raw;
+            raw.held_constructor_11cc8=INT32_MAX;awl::WorldMapOptionalActorSaved saved;saved.position={120,999,168};saved.action=b?0x2b:0x23;
+            saved.heading=std::array<std::array<float,3>,4>{{{0,0,1},{1,0,0},{0,0,-1},{-1,0,0}}}[i%4];
+            if(b){raw.actor_b_29a60=id;raw.optional_b=saved;}else{raw.actor_a_29a64=id;raw.optional_a=saved;}
+            awl::WorldMapOptionalActorProjection actor;expect(tables->prepare_optional(b,collision->movement(),raw,12*36000,1,&actor)==C::Prepared,"target tables derive optional saved-record collision/context projection");
+            const auto& m=actor.scene.context;const auto& c=actor.collision.collision;
+            for(uint32_t v:{i,uint32_t(id),*m.owner_code_4,uint32_t(actor.scene.scene_type),actor_bits(actor.scene.position[0]),actor_bits(actor.scene.position[2]),
+                actor_bits((*m.facing_28)[0]),actor_bits((*m.facing_28)[1]),actor_bits((*m.facing_28)[2]),actor_bits(*m.facing_threshold_38),actor_bits(*m.max_squared_distance_3c),
+                uint32_t(c.enabled),c.collision_flags,actor_bits(c.radius),0x12345678u})hash(digest,v);
+            expect(!m.payload && (b?actor.scene.position[1]==999:actor.scene.position[1]!=999),"A samples terrain while B retains saved Y; unknown selected payload stays unknown");}
+        expect(digest==0x0382431b5f7b4025ull,"640 consumed optional constructor projections agree with original saved-copy/setup tails under documented substitutions");
+        std::cout<<"LOCAL_OPTIONAL_CONSTRUCTORS 640 "<<std::hex<<digest<<std::dec<<'\n';}
+    if(context && startup.initial.phase==0){uint64_t digest=14695981039346656037ull;
         for(uint32_t seed=0;seed<256;++seed){defaults.actor_3f8=0x30;defaults.byte_299aa=std::array<uint8_t,3>{0,1,255}[seed%3];defaults.byte_299b0=std::array<uint8_t,3>{0,1,255}[seed/3%3];
             expect(tables->prepare(collision->movement(),defaults,{1,2,3,4,5},&projection)==C::Prepared,"all current saved payload bytes prepare reached constructor sources");
             for(uint32_t i=0;i<5;++i){const auto& o=projection.spatial[i];const auto& m=o.context;
@@ -6087,10 +6115,10 @@ void native_scene_source_checks(const awl::WorldMapPlayerStartupProviders& origi
         expect(digest==0x87f19bfedd83c2a7ull,"1280 constructor source records match original setup tails/callbacks/payload getters under explicit sqrt and terrain/registration substitutions");
         std::cout<<"LOCAL_CONSTRUCTOR_SOURCES 1280 "<<std::hex<<digest<<std::dec<<'\n';}
     auto providers=original;providers.clock=std::make_shared<awl::GameClock>();awl::WorldMapUpdateInputs inputs(providers.clock);
-    auto state=std::make_shared<awl::WorldMapSceneConstructorState>();state->byte_299aa=7;state->heading_rng_seed=0x12345678u;
+    auto state=std::make_shared<awl::WorldMapSceneConstructorState>();state->byte_299aa=7;state->rng=std::make_shared<awl::GameRng>(providers.clock);
     auto seed=entry;seed.updates.status.emplace();
     constexpr std::array<uint32_t,6> origins{0,34560000,103680000,207360000,276480000,311040000};
-    inputs.observe_control_sources({awl::WorldMapControlPhase{uint8_t{1},origins[startup.initial.phase]+123456u,uint8_t{0}},0});
+    inputs.observe_control_sources({awl::WorldMapControlPhase{uint8_t{1},origins[startup.initial.phase]+432000u,uint8_t{0}},0});
     expect(providers.starts->prepare_fresh_status(inputs.sources().phase->raw_word_0,&*seed.updates.status)==awl::WorldMapPlayerStatusCode::Prepared,"native constructor source workflow prepares status once before scene assembly");
     seed.updates.status->word_28=0x7654;seed.updates.saved_selection=awl::WorldMapPlayerSavedSelection{0u,0u};seed.updates.item_owner=awl::WorldMapPlayerItemOwnerState{};
     std::unique_ptr<awl::WorldMapSceneAssembly> scene;
@@ -6098,28 +6126,61 @@ void native_scene_source_checks(const awl::WorldMapPlayerStartupProviders& origi
     expect(create().status==A::RequiresControl && !scene,"native entry cannot capture its own replacement control");
     inputs.request_scene_mode(4,0);expect(inputs.capture_control()==awl::WorldMapControlStatus::Captured && create().status==A::RequiresSceneCommit && !scene,"source entry waits for actual scene field commit");
     awl::WorldMapSceneModeCommit commit;expect(inputs.commit_scene_fields(0,uint8_t{0},&commit)==awl::WorldMapSceneFilterStatus::CommittedFields,"existing manager commits requested mode four");
-    state->heading_rng_seed.reset();
+    state->rng.reset();
     {const auto position=seed.movement.pose.position;seed.movement.pose.position[0]=NAN;
         expect(create().status==A::PlacementIncomplete && !scene,"initial placement failure precedes unread post-player constructor RNG");seed.movement.pose.position=position;}
-    expect(create().constructors==C::RequiresHeadingRng && !scene && inputs.sources().phase->byte_8==1,"missing constructor RNG preserves actual manager/control/phase");state->heading_rng_seed=0x12345678u;
-    state->actor_a_29a64=0x29;expect(create().constructors==C::RequiresOptionalConstructor && !scene,"real optional presence stops at untranslated constructor rather than accepting a prepared stand-in");state->actor_a_29a64=-1;
+    expect(create().constructors==C::RequiresHeadingRng && !scene && inputs.sources().phase->byte_8==1,"missing constructor RNG preserves actual manager/control/phase");state->rng=std::make_shared<awl::GameRng>(providers.clock);
+    expect(create().constructors==C::RequiresRngLoop && !scene,"source scene requires the actual pre-callback loop draw, without advancing RNG itself");
+    expect(state->rng->seed()==0 && state->rng->begin_loop(),"actual shared RNG starts from CRT zero and advances at the outer-loop boundary");
+    const auto loop_seed=state->rng->seed();expect(state->rng->begin_loop() && state->rng->seed()==loop_seed,"same-loop retry cannot consume the discarded outer-loop draw twice");
+    state->actor_a_29a64=0x29;expect(create().constructors==C::RequiresOptionalFields && !scene,"optional presence requires the current saved-record inputs");state->actor_a_29a64=-1;
     const auto captured=inputs.control()->dispatch_word;auto result=create();
     if(result.status!=A::AssembledCpuScene)std::cerr<<"native source assembly stop "<<int(result.status)<<" ctor "<<(result.constructors?int(*result.constructors):-1)<<'\n';
     expect(result.status==A::AssembledCpuScene && scene && &scene->inputs()==&inputs && state->secondary_3f4==7 && inputs.sources().phase->byte_8==0 &&
         inputs.control()->dispatch_word==captured,"source assembly borrows the actual manager, publishes constructor callback fields and preserves captured control");if(!scene)return;
+    {const auto* old=scene.get();const auto before=state->rng->seed();
+        state->held_constructor_11cc8=-1;state->actor_a_29a64=0x29;state->actor_b_29a60=0x28;
+        awl::WorldMapOptionalActorSaved a;a.position=seed.movement.pose.position;a.position[0]+=0.2f;a.position[1]=999;a.action=0x23;
+        awl::WorldMapOptionalActorSaved b;b.position={650,4,650};b.action=0x2b;state->optional_a=a;state->optional_b=b;
+        state->optional_a->action=0;
+        expect(create().constructors==C::RequiresOptionalAction && scene.get()==old && state->rng->seed()==before,"reached optional action cannot publish geometry or consume shared RNG prematurely");state->optional_a=a;
+        state->held_constructor_11cc8=0x3a;
+        expect(create().constructors==C::RequiresOptionalAction && scene.get()==old && state->rng->seed()==before,"held A pose/action override stops at untranslated constructor effects");state->held_constructor_11cc8=-1;
+        state->optional_b->special_14e6c=1;
+        expect(create().constructors==C::RequiresOptionalAction && scene.get()==old && state->rng->seed()==before,"B special action branch cannot masquerade as completed no-action setup");state->optional_b=b;
+        state->optional_a->scene_type=3;
+        expect(create().constructors==C::UnsupportedSceneType && scene.get()==old,"untranslated optional terrain category preserves previous scene");state->optional_a=a;
+#if !defined(_DEBUG)
+        if(allocations){const auto optional_rng=state->rng->seed();size_t rejected=0;bool completed=false;
+            for(size_t n=0;n<1024;++n){const auto live=allocation_probe::live;bool failed=false;
+                {allocation_probe::remaining=n;allocation_probe::enabled=true;const auto attempt=create();allocation_probe::enabled=false;
+                    if(attempt.status==A::AssembledCpuScene)completed=true;else{failed=true;
+                        expect((attempt.status==A::AllocationFailure || attempt.status==A::ConstructorIncomplete || attempt.status==A::PlayerIncomplete) && scene.get()==old &&
+                            state->rng->seed()==optional_rng && inputs.control()->dispatch_word==captured,"optional factory allocation stop preserves prior scene and the actual shared RNG/control");}}
+                if(completed)break;if(failed){++rejected;expect(allocation_probe::live==live,"optional constructor staging failure releases all owned geometry/views");}}
+            expect(completed && rejected>25,"optional allocation sweep reaches both actors and post-player publication");std::cout<<"OPTIONAL_FACTORY_ALLOCATION_STOPS "<<rejected<<'\n';}
+#endif
+        expect(create().status==A::AssembledCpuScene && scene,"native optional constructors assemble from current saved sources");
+        if(scene){const auto lists=scene->collision_snapshot();
+            expect(lists.first_directional.size()==3 && lists.first_directional[1].world_position==b.position && lists.first_directional[2].world_position[0]==a.position[0],"optional constructor order remains mandatory then B then A");
+            expect(scene->initial_placement().pose.position!=seed.movement.pose.position,"derived optional A participates in pre-player initial placement");
+            std::cout<<(context?"LOCAL_":"")<<"OPTIONAL_SCENE_CONSTRUCTORS saved A/B / terrain distinction / pre-player placement / action stops\n";}
+        state->actor_a_29a64=-1;state->actor_b_29a60=-1;
+        expect(create().status==A::AssembledCpuScene && scene,"optional teardown/reconstruction retains actual manager and shared RNG owner");if(!scene)return;
+    }
     if(allocations)for(int32_t mode:{28,29,30}){auto routed=providers;routed.clock=std::make_shared<awl::GameClock>();awl::WorldMapUpdateInputs manager(routed.clock);
         manager.observe_control_sources(inputs.sources());manager.request_scene_mode(mode,0);awl::WorldMapSceneModeCommit committed;
         expect(manager.capture_control()==awl::WorldMapControlStatus::Captured && manager.commit_scene_fields(0,uint8_t{0},&committed)==awl::WorldMapSceneFilterStatus::CommittedFields && routed.clock->advance(),"sequence fixture commits actual predecessor mode");
         manager.request_scene_mode(4,0);expect(manager.capture_control()==awl::WorldMapControlStatus::Captured && manager.commit_scene_fields(0,uint8_t{0},&committed)==awl::WorldMapSceneFilterStatus::CommittedFields,"sequence fixture commits actual world-map request");
-        const auto rng=state->heading_rng_seed;std::unique_ptr<awl::WorldMapSceneAssembly> stopped;
-        expect(awl::WorldMapSceneAssembly::create_from_sources(routed,seed,startup,manager,tables,state,collision,&stopped).status==A::SequenceRequired && !stopped && state->heading_rng_seed==rng,
+        const auto rng=state->rng->seed();std::unique_ptr<awl::WorldMapSceneAssembly> stopped;auto sequence_state=std::make_shared<awl::WorldMapSceneConstructorState>(*state);sequence_state->rng.reset();
+        expect(awl::WorldMapSceneAssembly::create_from_sources(routed,seed,startup,manager,tables,sequence_state,collision,&stopped).status==A::SequenceRequired && !stopped && state->rng->seed()==rng,
             "actual manager prior mode selects interpreter stop before constructor RNG consumption");}
 #if !defined(_DEBUG)
-    if(allocations){const auto* old=scene.get();const auto rng=state->heading_rng_seed;size_t rejected=0;bool completed=false;
+    if(allocations){const auto* old=scene.get();const auto rng=state->rng->seed();size_t rejected=0;bool completed=false;
         for(size_t n=0;n<1024;++n){const auto live=allocation_probe::live;bool failed=false;
             {allocation_probe::remaining=n;allocation_probe::enabled=true;const auto step=create();allocation_probe::enabled=false;
                 if(step.status==A::AssembledCpuScene)completed=true;else{failed=true;
-                    expect((step.status==A::AllocationFailure || step.status==A::ConstructorIncomplete || step.status==A::PlayerIncomplete) && scene.get()==old && state->heading_rng_seed==rng &&
+                    expect((step.status==A::AllocationFailure || step.status==A::ConstructorIncomplete || step.status==A::PlayerIncomplete) && scene.get()==old && state->rng->seed()==rng &&
                         inputs.control()->dispatch_word==captured && inputs.sources().phase->byte_8==0,"native scene allocation stop preserves prior scene, actual input owner and RNG");}}
             if(completed)break;if(failed){++rejected;expect(allocation_probe::live==live,"native constructor-source failure releases all staging");}}
         expect(completed && rejected>25,"native source allocation sweep crosses terrain, model and scene ownership");std::cout<<"NATIVE_SCENE_SOURCE_ALLOCATION_STOPS "<<rejected<<'\n';}
@@ -6135,7 +6196,7 @@ void native_scene_source_checks(const awl::WorldMapPlayerStartupProviders& origi
     expect(scene->observe_startup_camera({})==S::Busy,"native constructor camera source cannot be replaced by a supplied result");
     awl::WorldMapPlayerStartupTickInput tick;tick.secondary.secondary_byte_3f2=uint8_t{0};tick.secondary.item_present=false;
     tick.actor.actor.saved_byte_29a01=uint8_t{0};tick.actor.actor.script.emplace();tick.actor.actor.script->flag_width_4=1;tick.actor.actor.script->flag_bytes={1};awl::WorldMapPlayerActorQueue render;
-    for(unsigned i=0;i<64;++i){if(i){render.clear();expect(providers.clock->advance() && inputs.capture_control()==awl::WorldMapControlStatus::Captured,"native source workflow advances the same explicit clock");}
+    for(unsigned i=0;i<64;++i){if(i){render.clear();expect(providers.clock->advance() && state->rng->begin_loop() && inputs.capture_control()==awl::WorldMapControlStatus::Captured,"native source workflow advances shared clock and pre-callback RNG");}
         const auto step=scene->advance_startup(tick,&render);expect(step.status==(i==63?T::TransitionRequired:T::Completed),"constructor-sourced camera/status feed complete ordered startup ticks");
         if(step.status!=T::Completed && step.status!=T::TransitionRequired)return;}
     expect(scene->advance_entry(uint8_t{255})==awl::WorldMapSceneEntryStatus::Released && scene->advance_entry()==awl::WorldMapSceneEntryStatus::Completed &&
@@ -6144,7 +6205,7 @@ void native_scene_source_checks(const awl::WorldMapPlayerStartupProviders& origi
         for(auto& e:ui.ui.elements){e.emplace();e->flags_120=0;e->attachments_10c_110={uint64_t{0},uint64_t{0}};}expect(player.seed_state0_context(ui),"native source workflow seeds remaining explicit UI observations");}
     expect(owner.advance_third(player,{},{}).status==S::Completed && owner.consume_queued(player,tick.actor,nullptr).status==S::Completed,"same native status owner completes final paused startup queue");
     const auto fields=owner.fields();
-    for(unsigned i=0;i<8;++i){expect(providers.clock->advance() && inputs.capture_control()==awl::WorldMapControlStatus::Captured,"native source normal loop captures current control");
+    for(unsigned i=0;i<8;++i){expect(providers.clock->advance() && state->rng->begin_loop() && inputs.capture_control()==awl::WorldMapControlStatus::Captured,"native source normal loop advances shared RNG and captures current control");
         inputs.observe_pad_sample({true,0,int8_t(i<3?0:80)});expect(inputs.capture_pad()==awl::WorldMapPadCaptureStatus::Captured,"native source normal loop captures recorded PAD");
         expect(owner.advance_primary(player).status==S::Completed,"constructor-derived scene supports normal primary/model callback");const auto second=owner.advance_secondary(player);
         if(second.state0_secondary && second.state0_secondary->status==awl::WorldMapPlayerState0SecondaryStatus::TransitionRequired)expect(owner.advance_transition(player).status==S::Completed,"source scene reaches checked state-one initialization");else expect(second.status==S::Completed,"source scene completes supported normal second");

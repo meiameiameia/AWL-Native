@@ -114,7 +114,7 @@ private:
     WorldMapPlayerStart placement_;
     WorldMapCameraViewQuery camera_;
     bool entry_pending_ = true;
-    std::array<uint8_t,31> constructor_keys_{};
+    std::array<uint8_t,33> constructor_keys_{};
     std::shared_ptr<const WorldMapSceneConstructorTables> constructor_tables_;
     std::shared_ptr<WorldMapSceneConstructorState> constructor_state_;
 };

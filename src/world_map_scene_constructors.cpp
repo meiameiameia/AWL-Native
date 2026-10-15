@@ -22,11 +22,11 @@ WorldMapSceneEntryRequest world_map_scene_entry_request(const WorldMapSceneModeR
     if(mode==29)return {true,6,1,0};
     return {};
 }
-uint32_t advance_world_map_scene_rng(uint32_t* state) noexcept {
-    if(!state)return 0;
-    const uint32_t first=*state*0x41c64e6du+0x3039u;
-    *state=first*0x41c64e6du+0x3039u;
-    return (*state&0xffff0000u)|(first>>16);
+bool world_map_optional_actor_b_awake(uint32_t raw,uint32_t wake,uint32_t sleep) noexcept {
+    const uint32_t hour=raw/36000u%24u,minute=raw/600u%60u;
+    const uint32_t first=wake/60u+6u,last=sleep/60u+21u;
+    return !(hour<first || (hour==first && minute<wake%60u) ||
+        hour>last || (hour==last && minute>sleep%60u));
 }
 bool WorldMapSceneConstructorTables::decode_fields(const uint8_t* data,size_t size) noexcept {
     detail::DolView dol;if(!dol.initialize(data,size))return false;
@@ -48,7 +48,8 @@ bool WorldMapSceneConstructorTables::decode_fields(const uint8_t* data,size_t si
     for(size_t i=0;i<4;++i){const auto* p=dol.read(descriptors[i],12);
         if(!p || detail::dol_word(p)!=0 || detail::dol_word(p+4)!=UINT32_MAX || detail::dol_word(p+8)!=callbacks[i])return false;}
     float base_range=0,range50=0,threshold50=0;
-    if(!root(0x80349e88,false,thresholds_[0]) || !number(0x80349e8c,base_range) ||
+    if(!root(0x8034b7c0,true,optional_thresholds_[0]) || !root(0x8034b880,true,optional_thresholds_[1]) ||
+        !root(0x80349e88,false,thresholds_[0]) || !number(0x80349e8c,base_range) ||
         !root(0x8034a700,true,thresholds_[1]) || !root(0x8034a718,true,thresholds_[2]) ||
         !root(0x8034a728,true,thresholds_[3]) || !number(0x8034a710,ranges_[2]) ||
         !number(0x80349f24,range50) || !number(0x80349f28,threshold50) || threshold50<0)return false;
@@ -126,8 +127,9 @@ S WorldMapSceneConstructorTables::prepare_mandatory(const WorldMapSceneConstruct
     // The mandatory actor's virtual payload/model/action setup is still a
     // reached dependency when selected by context. Do not invent its payload.
     next.mandatory_heading=forward_;
-    if(state.actor_3f8!=0x30){if(!state.heading_rng_seed)return S::RequiresHeadingRng;
-        uint32_t seed=*state.heading_rng_seed;const auto word=advance_world_map_scene_rng(&seed);
+    if(state.actor_3f8!=0x30){if(!state.rng)return S::RequiresHeadingRng;
+        if(!state.rng->loop_started())return S::RequiresRngLoop;
+        uint32_t seed=state.rng->seed();const auto word=advance_game_rng(&seed);
         const uint32_t degrees=uint32_t(rng_min_)+word%uint32_t(rng_max_-rng_min_+1);
         const float angle=radians_per_degree_*static_cast<float>(degrees);
         next.mandatory_heading={static_cast<float>(std::sin(static_cast<double>(angle))),0,static_cast<float>(std::cos(static_cast<double>(angle)))};
@@ -135,5 +137,38 @@ S WorldMapSceneConstructorTables::prepare_mandatory(const WorldMapSceneConstruct
     }
     if(!finite(next.mandatory_heading))return S::UnsupportedNumerics;
     actor.facing_28=next.mandatory_heading;*out=next;return S::Prepared;
+}
+S WorldMapSceneConstructorTables::prepare_optional(bool b,const WorldMapCollisionAssets& collision,
+    const WorldMapSceneConstructorState& state,uint32_t raw,uint64_t key,WorldMapOptionalActorProjection* out) const noexcept {
+    if(!out || !key)return S::InvalidInput;
+    const int32_t id=b?state.actor_b_29a60:state.actor_a_29a64;
+    if(b?!(id==0x27 || id==0x28):!(id>=0x29 && id<=0x2b))return S::Absent;
+    const auto& saved=b?state.optional_b:state.optional_a;
+    if(!saved || !state.held_constructor_11cc8)return S::RequiresOptionalFields;
+    if(!finite(saved->position) || !finite(saved->heading))return S::InvalidInput;
+    if(saved->scene_type!=1)return S::UnsupportedSceneType;
+    if(std::fegetround()!=FE_TONEAREST)return S::UnsupportedNumerics;
+    try {
+        WorldMapOptionalActorProjection next;auto& object=next.scene;
+        object.identity=key;object.scene_type=saved->scene_type;object.position=saved->position;
+        if(!b){CollisionHeightSample height;const auto& terrain=collision.terrain_bytes();
+            if(!sample_type1_collision_height(terrain.data(),terrain.size(),object.position[0],object.position[2],&height))return S::TerrainIncomplete;
+            object.position[1]=height.height;
+        }
+        // A held actor overwrites pose and selects action 12. B selects 11,
+        // 25 or 2 on its reached branches. Do not bypass their setup callbacks.
+        const int32_t code=b?(id==0x27?0x38:0x39):0x3a+(id-0x29);
+        if(!b){if(*state.held_constructor_11cc8==code || saved->action!=0x23)return S::RequiresOptionalAction;}
+        else if(*state.held_constructor_11cc8==0x38 || !world_map_optional_actor_b_awake(raw,saved->wake_minutes,saved->sleep_minutes) ||
+            saved->special_14e6c==1 || saved->action!=0x2b)return S::RequiresOptionalAction;
+        auto& metadata=object.context;metadata.owner_code_4=uint32_t(code);metadata.owner_kind_8=1;
+        metadata.facing_28=saved->heading;metadata.facing_threshold_38=optional_thresholds_[b?1:0];metadata.max_squared_distance_3c=ranges_[0];
+        // Selected virtual payload and model/AI remain untranslated.
+        auto& c=next.collision;c.world_position=object.position;c.heading_axis=saved->heading;
+        c.collision.identity=key;c.collision.category=saved->scene_type;c.collision.enabled=true;
+        c.collision.radius=world_map_first_actor_circle_spec(id).radius;c.collision.collision_flags=1;
+        c.collision.center_world=object.position;
+        *out=next;return S::Prepared;
+    }catch(const std::bad_alloc&){return S::AllocationFailure;}
 }
 } // namespace awl
