@@ -40,7 +40,8 @@ enum class WorldMapSceneAssemblyStatus {
     AssembledCpuScene,InvalidInput,RequiresStatus,RequiresActorPresence,
     RequiresPreparedActor,RequiresRecordPools,WrongCollisionSelection,
     PlacementIncomplete,PlayerIncomplete,RequiresEntrySources,SequenceRequired,
-    UnsupportedEntryGate,AllocationFailure,RequiresConstructorSources,ConstructorIncomplete,RequiresSceneCommit,RequiresControl
+    UnsupportedEntryGate,AllocationFailure,RequiresConstructorSources,ConstructorIncomplete,RequiresSceneCommit,RequiresControl,
+    AssembledCpuScenePendingActorModels
 };
 struct WorldMapSceneAssemblyResult {
     WorldMapSceneAssemblyStatus status = WorldMapSceneAssemblyStatus::InvalidInput;
@@ -48,7 +49,7 @@ struct WorldMapSceneAssemblyResult {
     std::optional<WorldMapPlayerStartupResult> player;
     std::optional<WorldMapSceneConstructorStatus> constructors;
 };
-enum class WorldMapSceneEntryStatus { WaitingForFade,RequiresSecondaryByte,Released,Completed,RequiresFade,RequiresControl };
+enum class WorldMapSceneEntryStatus { WaitingForFade,RequiresSecondaryByte,Released,Completed,RequiresFade,RequiresControl,RequiresActorModels };
 
 // Bounded CPU assembly of 13F60, not original cold boot or scene activation.
 // Captures the supplied entry control once, before scene commit/fade clear.
@@ -80,6 +81,12 @@ public:
     const WorldMapPlayerStartup& player() const noexcept {return *player_;}
     const WorldMapFade& fade() const noexcept {return fade_;}
     const WorldMapPlayerStart& initial_placement() const noexcept {return placement_;}
+    // Initial action CPU effects; model commands remain pending, actor AI is
+    // unscheduled. Executable activation must complete these dependencies.
+    const std::array<std::optional<WorldMapOptionalActionPlan>,2>& optional_actor_actions() const noexcept {return optional_actions_;}
+    bool optional_action_models_pending() const noexcept {
+        for(const auto& action:optional_actions_)if(action && action->model_work_pending())return true;return false;
+    }
     [[nodiscard]] WorldMapCollisionSnapshot collision_snapshot() const;
     // Supplied secondary observations are sampled afresh. Owned guards,
     // selection, scene mode, pose and camera always supersede replacements.
@@ -117,5 +124,6 @@ private:
     std::array<uint8_t,33> constructor_keys_{};
     std::shared_ptr<const WorldMapSceneConstructorTables> constructor_tables_;
     std::shared_ptr<WorldMapSceneConstructorState> constructor_state_;
+    std::array<std::optional<WorldMapOptionalActionPlan>,2> optional_actions_;
 };
 } // namespace awl

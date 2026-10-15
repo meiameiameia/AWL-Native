@@ -111,6 +111,9 @@ WorldMapSceneAssemblyResult WorldMapSceneAssembly::assemble(const WorldMapPlayer
         }else if(query.status_mode!=WorldMapPlayerSourcesInitialization::Observed)return result;
         if(!seed.updates.status || !seed.updates.status->byte_14c || !seed.updates.saved_selection ||
             !seed.updates.saved_selection->item_144 || !seed.updates.saved_selection->action_148)return stop(S::RequiresStatus);
+        WorldMapSceneConstructorState constructor_stage;
+        if(borrowed){constructor_stage=*next->constructor_state_;
+            if(constructor_stage.rng)constructor_stage.rng=std::make_shared<GameRng>(*constructor_stage.rng);}
         // All identities must be distinct even across separate native lists.
         // Original addresses are opaque native keys, never reconstructed.
         std::vector<uint64_t> keys{seed.movement.scene_identity};
@@ -128,10 +131,12 @@ WorldMapSceneAssemblyResult WorldMapSceneAssembly::assemble(const WorldMapPlayer
         for(size_t i=0;i<2;++i){const auto& supplied=i?query.actor_b:query.actor_a;if(!supplied)continue;
             auto actor=*supplied;
             if(borrowed){WorldMapOptionalActorProjection projection;
-                result.constructors=next->constructor_tables_->prepare_optional(i!=0,query.collision->movement(),*next->constructor_state_,
+                result.constructors=next->constructor_tables_->prepare_optional(i!=0,query.collision->movement(),constructor_stage,
                     *query.control.phase->raw_word_0,actor.object.scene.identity,&projection);
                 if(*result.constructors!=WorldMapSceneConstructorStatus::Prepared)return stop(S::ConstructorIncomplete);
                 actor.object.scene=projection.scene;actor.object.positioned=true;actor.collision=projection.collision;
+                next->optional_actions_[i]=projection.action;
+                if(projection.action.rng_after)constructor_stage.rng->seed_=*projection.action.rng_after;
             }
             auto object=actor.object;object.scene.context.facing_28=actor.collision.heading_axis;
             if(!prepared_actor(actor) || !add_key(object.scene.identity) || !register_scene(object,scene) ||
@@ -201,7 +206,7 @@ WorldMapSceneAssemblyResult WorldMapSceneAssembly::assemble(const WorldMapPlayer
                     result.constructors=WorldMapSceneConstructorStatus::TerrainIncomplete;return stop(S::ConstructorIncomplete);}
                 mandatory.category1_actor_height_query_result=height.position[1];
             }
-            result.constructors=next->constructor_tables_->prepare_mandatory(*next->constructor_state_,&constructed);
+            result.constructors=next->constructor_tables_->prepare_mandatory(constructor_stage,&constructed);
             if(*result.constructors!=WorldMapSceneConstructorStatus::Prepared)return stop(S::ConstructorIncomplete);
             mandatory_actor.object.scene.context=constructed.mandatory_context;mandatory_actor.collision.heading_axis=constructed.mandatory_heading;
         }
@@ -220,8 +225,11 @@ WorldMapSceneAssemblyResult WorldMapSceneAssembly::assemble(const WorldMapPlayer
         if(next->fade_.start_world_map_entry()!=WorldMapFadeStatus::Started)return result;
         auto control=query.control;control.phase->byte_8=uint8_t{0};next->inputs_.observe_control_sources(control);
         if(borrowed){next->constructor_state_->secondary_3f4=constructed.secondary_3f4;
-            if(constructed.rng_after)next->constructor_state_->rng->seed_=*constructed.rng_after;}
-        *out=std::move(next);return stop(S::AssembledCpuScene);
+            if(constructed.rng_after)constructor_stage.rng->seed_=*constructed.rng_after;
+            if(constructor_stage.rng)next->constructor_state_->rng->seed_=constructor_stage.rng->seed_;}
+        const bool pending=(next->optional_actions_[0] && next->optional_actions_[0]->model_work_pending()) ||
+            (next->optional_actions_[1] && next->optional_actions_[1]->model_work_pending());
+        *out=std::move(next);return stop(pending?S::AssembledCpuScenePendingActorModels:S::AssembledCpuScene);
     }catch(const std::bad_alloc&){return stop(S::AllocationFailure);}
 }
 WorldMapCollisionSnapshot WorldMapSceneAssembly::collision_snapshot() const {
@@ -237,6 +245,7 @@ WorldMapPlayerSourcesStatus WorldMapSceneAssembly::observe_startup_camera(const 
     camera_=view;return WorldMapPlayerSourcesStatus::Completed;
 }
 WorldMapPlayerStartupTickResult WorldMapSceneAssembly::advance_startup(const WorldMapPlayerStartupTickInput& observations,WorldMapPlayerActorQueue* render){
+    if(optional_action_models_pending())return {WorldMapPlayerStartupTickStatus::RequiresSceneActorModels};
     try {
     if(!player_->camera() && !sources_.collision_)return {WorldMapPlayerStartupTickStatus::InvalidInput};
     const auto& receipt=player_->primary_loop();const auto& clock=inputs_.game_clock()->state();
@@ -255,6 +264,7 @@ WorldMapPlayerStartupTickResult WorldMapSceneAssembly::advance_startup(const Wor
     }catch(const std::bad_alloc&){return {WorldMapPlayerStartupTickStatus::AllocationFailure};}
 }
 WorldMapPlayerState0TransitionResult WorldMapSceneAssembly::advance_state0_transition(std::optional<bool> item_binding,std::optional<bool> action_binding){
+    if(optional_action_models_pending())return {WorldMapPlayerState0TransitionStatus::RequiresSceneActorModels};
     WorldMapPlayerState0TransitionInput input;input.saved_byte_14d35=sources_.fields_.saved_remap_byte_14d35;
     input.secondary_byte_3f1=sources_.fields_.secondary_byte_3f1;input.scene_type_68=sources_.movement_.pose.scene_type;
     input.audio_byte_90=sources_.fields_.audio_byte_90;
@@ -265,6 +275,7 @@ WorldMapPlayerState0TransitionResult WorldMapSceneAssembly::advance_state0_trans
     return player_->advance_pending_state0_transition(inputs_,input,&fade_,&sources_.updates_);
 }
 WorldMapSceneEntryStatus WorldMapSceneAssembly::advance_entry(std::optional<uint8_t> secondary) noexcept {
+    if(optional_action_models_pending())return WorldMapSceneEntryStatus::RequiresActorModels;
     if(constructor_state_)secondary=constructor_state_->secondary_49;
     if(!entry_pending_)return WorldMapSceneEntryStatus::Completed;
     if(inputs_.queue_control().status!=WorldMapDispatchStatus::Ready)return WorldMapSceneEntryStatus::RequiresControl;

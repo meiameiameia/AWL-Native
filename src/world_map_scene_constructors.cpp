@@ -64,7 +64,35 @@ bool WorldMapSceneConstructorTables::decode_fields(const uint8_t* data,size_t si
     const auto* lo=dol.read(0x80348878,4);const auto* hi=dol.read(0x8034887c,4);
     if(!lo || !hi || !number(0x8034b774,radians_per_degree_))return false;
     rng_min_=as_signed(detail::dol_word(lo));rng_max_=as_signed(detail::dol_word(hi));
+    const auto action_descriptors=[&](uint32_t base,auto& values){for(size_t i=0;i<values.size();++i){const auto* p=dol.read(base+uint32_t(i)*60,12);
+        if(!p || detail::dol_word(p)!=0 || detail::dol_word(p+4)!=UINT32_MAX)return false;
+        values[i]=detail::dol_word(p+8);if(values[i]<0x80000000u || values[i]>=0x80300000u || (values[i]&3))return false;}return true;};
+    if(!action_descriptors(0x802c64e8,actions_.a_initializers) || !action_descriptors(0x802c76e8,actions_.b_initializers) ||
+        actions_.a_initializers[0x12]!=0x80162918 || actions_.a_initializers[0x13]!=0x80162ad0 ||
+        actions_.b_initializers[2]!=0x80168bb0 || actions_.b_initializers[0x11]!=0x80169e7c || actions_.b_initializers[0x25]!=0x8016b834)return false;
+    // 16816C reaches these three rows in the supported constructor paths.
+    // The arithmetic base is not evidence for 42 contiguous duration rows.
+    for(uint32_t i:{2u,0x11u,0x25u}){const auto* p=dol.read(0x802c7538+i*8,8);if(!p)return false;
+        auto& row=actions_.b_durations[i];row={detail::dol_word(p),detail::dol_word(p+4)};
+        if(row[0]>row[1] || row[1]-row[0]==UINT32_MAX)return false;actions_.b_duration_known[i]=true;}
+    for(uint32_t i=0;i<5;++i)if(!number(0x802c41a8+(0x27+i)*4,actions_.speeds[i]) ||
+        !number(0x8024a7cc+i*16,actions_.model_scales[i]) || actions_.model_scales[i]<=0)return false;
+    if(!number(0x8034b7e4,actions_.rate_divisors[0]) || !number(0x8034b88c,actions_.rate_divisors[1]) ||
+        actions_.rate_divisors[0]<=0 || actions_.rate_divisors[1]<=0 || !vector(0x80256514,actions_.night_position) ||
+        !root(0x8034b8f0,true,actions_.night_threshold))return false;
+    actions_.forward=forward_;
+    for(size_t i=0;i<2;++i){const auto* p=dol.read(i?0x803469d8:0x803469d0,4);if(!p)return false;
+        refresh_upper_[i]=detail::dol_word(p);if(refresh_upper_[i]>4)return false;}
     return rng_min_>=0 && rng_max_>=rng_min_ && rng_max_<=359 && radians_per_degree_>0 && target.distance_30>0;
+}
+S WorldMapSceneConstructorTables::refresh_actor_selection(WorldMapSceneActorRefresh path,WorldMapSceneConstructorState* state) noexcept {
+    if(!state || (path!=WorldMapSceneActorRefresh::From1307C && path!=WorldMapSceneActorRefresh::From13AE0))return S::InvalidInput;
+    if(!state->rng)return S::RequiresHeadingRng;
+    if(!state->rng_refresh_upper_bounds)return S::RequiresRngParameters;
+    const auto upper=(*state->rng_refresh_upper_bounds)[path==WorldMapSceneActorRefresh::From1307C?0:1];
+    if(upper>4)return S::UnsupportedLayout;
+    uint32_t seed=state->rng->seed();const auto word=advance_game_rng(&seed);
+    state->actor_3f8=0x2c+int32_t(word%(upper+1));state->rng->seed_=seed;return S::Prepared;
 }
 S WorldMapSceneConstructorTables::decode(const uint8_t* bytes,size_t size,std::shared_ptr<const WorldMapSceneConstructorTables>* out){
     if(!out)return S::InvalidInput;
@@ -155,17 +183,40 @@ S WorldMapSceneConstructorTables::prepare_optional(bool b,const WorldMapCollisio
             if(!sample_type1_collision_height(terrain.data(),terrain.size(),object.position[0],object.position[2],&height))return S::TerrainIncomplete;
             object.position[1]=height.height;
         }
-        // A held actor overwrites pose and selects action 12. B selects 11,
-        // 25 or 2 on its reached branches. Do not bypass their setup callbacks.
         const int32_t code=b?(id==0x27?0x38:0x39):0x3a+(id-0x29);
-        if(!b){if(*state.held_constructor_11cc8==code || saved->action!=0x23)return S::RequiresOptionalAction;}
-        else if(*state.held_constructor_11cc8==0x38 || !world_map_optional_actor_b_awake(raw,saved->wake_minutes,saved->sleep_minutes) ||
-            saved->special_14e6c==1 || saved->action!=0x2b)return S::RequiresOptionalAction;
+        const bool held=*state.held_constructor_11cc8==(b?0x38:code);
+        WorldMapOptionalActionQuery action;action.actor_id=id;action.phase_raw=raw;action.held_scene_type=state.held_scene_type_2a290;
+        action.kind=b?WorldMapOptionalActionKind::BExplicit:WorldMapOptionalActionKind::AExplicit;
+        action.before={b?0x2b:0x23,saved->previous_action,saved->deadline,saved->restart_latch};
+        action.requested=saved->action;action.minimum=action.maximum=b?2u:10u;
+        auto heading=saved->heading;
+        if(held){if(!state.held_scene_type_2a290)return S::RequiresOptionalFields;
+            action.requested=b?0x11:0x12;if(b)action.kind=WorldMapOptionalActionKind::BTable;
+            else {if(!state.held_position_29c78 || !state.held_heading_29f84)return S::RequiresOptionalFields;
+                if(*state.held_scene_type_2a290!=1)return S::UnsupportedSceneType;
+                object.position=*state.held_position_29c78;heading=*state.held_heading_29f84;
+                if(!finite(object.position) || !finite(heading))return S::InvalidInput;}
+        }else if(b && !world_map_optional_actor_b_awake(raw,saved->wake_minutes,saved->sleep_minutes)){
+            action.requested=0x25;action.kind=WorldMapOptionalActionKind::BTable;
+        }else if(b && saved->special_14e6c==1)return S::RequiresOptionalContinuation; // 16C908 remains reached after action two
+        const bool reads_rng=action.requested!=(b?0x2b:0x23);
+        if(reads_rng){if(!state.rng)return S::RequiresHeadingRng;if(!state.rng->loop_started())return S::RequiresRngLoop;action.rng_before=state.rng->seed();}
+        const auto prepared=prepare_world_map_optional_actor_action(actions_,action,&next.action);
+        if(prepared!=WorldMapOptionalActionStatus::Prepared)return prepared==WorldMapOptionalActionStatus::RequiresHeldType?S::RequiresOptionalFields:S::RequiresOptionalAction;
+        next.action.actor_identity=key;
+        next.action.bind_secondary_model=next.action.bind_secondary_model || held;
+        if(held){auto& commands=next.action.model_commands;
+            if(next.action.model_command_count>=commands.size())return S::RequiresOptionalAction;
+            if(!b){for(size_t i=next.action.model_command_count;i>0;--i)commands[i]=commands[i-1];commands[0]={WorldMapOptionalModelOperation::BindSecondary,0,0,0};}
+            else commands[next.action.model_command_count]={WorldMapOptionalModelOperation::BindSecondary,0,0,0};
+            ++next.action.model_command_count;}
+        if(next.action.position)object.position=*next.action.position;
+        if(next.action.heading)heading=*next.action.heading;
         auto& metadata=object.context;metadata.owner_code_4=uint32_t(code);metadata.owner_kind_8=1;
-        metadata.facing_28=saved->heading;metadata.facing_threshold_38=optional_thresholds_[b?1:0];metadata.max_squared_distance_3c=ranges_[0];
+        metadata.facing_28=heading;metadata.facing_threshold_38=optional_thresholds_[b?1:0];metadata.max_squared_distance_3c=ranges_[0];
         // Selected virtual payload and model/AI remain untranslated.
-        auto& c=next.collision;c.world_position=object.position;c.heading_axis=saved->heading;
-        c.collision.identity=key;c.collision.category=saved->scene_type;c.collision.enabled=true;
+        auto& c=next.collision;c.world_position=object.position;c.heading_axis=heading;
+        c.collision.identity=key;c.collision.category=saved->scene_type;c.collision.enabled=next.action.collision_enabled;
         c.collision.radius=world_map_first_actor_circle_spec(id).radius;c.collision.collision_flags=1;
         c.collision.center_world=object.position;
         *out=next;return S::Prepared;

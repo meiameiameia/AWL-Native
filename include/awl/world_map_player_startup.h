@@ -228,7 +228,7 @@ struct WorldMapPlayerStartupTickInput {
 };
 enum class WorldMapPlayerStartupTickStatus {
     Completed, PrimaryIncomplete, FadeIncomplete, PassesIncomplete,
-    TransitionRequired, QueueIncomplete, RequiresNextLoop, InvalidInput, AllocationFailure
+    TransitionRequired, QueueIncomplete, RequiresNextLoop, InvalidInput, AllocationFailure, RequiresSceneActorModels
 };
 struct WorldMapPlayerStartupTickResult {
     WorldMapPlayerStartupTickStatus status = WorldMapPlayerStartupTickStatus::InvalidInput;
@@ -256,7 +256,7 @@ enum class WorldMapPlayerState0TransitionStatus {
     RequiresTimerRow, RequiresItem, RequiresItemBinding, RequiresItemAttachment,
     RequiresAction, RequiresActionBinding, RequiresActionAttachment,
     RequiresHolderCompleted, RequiresHolderFlag, InvalidInput, AllocationFailure,
-    UnsupportedNumerics
+    UnsupportedNumerics, RequiresSceneActorModels
 };
 struct WorldMapPlayerState0TransitionResult {
     WorldMapPlayerState0TransitionStatus status = WorldMapPlayerState0TransitionStatus::InvalidInput;

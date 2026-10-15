@@ -21,6 +21,7 @@ public:
     bool loop_started() const noexcept;
 private:
     friend class WorldMapSceneAssembly;
+    friend class WorldMapSceneConstructorTables;
     std::shared_ptr<GameClock> clock_;
     uint32_t seed_=0;
     std::optional<uint32_t> loop_;

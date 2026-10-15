@@ -3,6 +3,7 @@
 #include "awl/world_map_collision_assets.h"
 #include "awl/world_map_collision_registry.h"
 #include "awl/game_rng.h"
+#include "awl/world_map_optional_actor_actions.h"
 #include <memory>
 
 namespace awl {
@@ -13,10 +14,14 @@ struct WorldMapOptionalActorSaved {
     std::array<float,3> position{},heading{0,0,1};
     uint32_t wake_minutes=0,sleep_minutes=0;
     uint8_t special_14e6c=0;
+    int32_t previous_action=0;
+    uint32_t deadline=0;
+    uint8_t restart_latch=0;
 };
 struct WorldMapOptionalActorProjection {
     WorldMapSceneObject scene;
     WorldMapRegisteredCollisionObject collision;
+    WorldMapOptionalActionPlan action;
 };
 // Native projection of D250 ->885BC/88AC0 and F7A4 construction. These are
 // current saved/secondary inputs, not completed constructor observations or a
@@ -28,6 +33,9 @@ struct WorldMapSceneConstructorState {
     uint8_t byte_299aa=0,byte_299b0=0,secondary_49=0,secondary_3f4=0;
     std::optional<WorldMapOptionalActorSaved> optional_a,optional_b;
     std::optional<int32_t> held_constructor_11cc8;
+    std::optional<int32_t> held_scene_type_2a290;
+    std::optional<std::array<float,3>> held_position_29c78,held_heading_29f84;
+    std::optional<std::array<uint32_t,2>> rng_refresh_upper_bounds;
     // Retain the actual shared process owner. Never reset it at scene entry.
     std::shared_ptr<GameRng> rng;
 };
@@ -51,8 +59,10 @@ struct WorldMapSceneConstructorProjection {
 enum class WorldMapSceneConstructorStatus {
     Loaded,Decoded,Prepared,InvalidInput,ReadFailure,WrongDol,UnsupportedLayout,
     RequiresOptionalConstructor,RequiresHeadingRng,TerrainIncomplete,UnsupportedNumerics,AllocationFailure,
-    Absent,RequiresOptionalFields,RequiresOptionalAction,RequiresRngLoop,UnsupportedSceneType
+    Absent,RequiresOptionalFields,RequiresOptionalAction,RequiresRngLoop,UnsupportedSceneType,
+    RequiresOptionalContinuation,RequiresRngParameters
 };
+enum class WorldMapSceneActorRefresh { From1307C,From13AE0 };
 // Immutable consumed data from the verified DOL, including the static source
 // descriptors used to initialize the four mode-zero dispatch rows. No raw DOL
 // bytes or Ghidra output are retained. Full actor models/AI are not constructed.
@@ -66,8 +76,15 @@ public:
         const WorldMapSceneConstructorState&,const std::array<uint64_t,5>& spatial_keys,
         WorldMapSceneConstructorProjection*) const noexcept;
     const WorldMapCameraViewQuery& camera() const noexcept {return camera_;}
+    const WorldMapOptionalActionTables& actions() const noexcept {return actions_;}
+    const std::array<uint32_t,2>& initial_rng_refresh_upper_bounds() const noexcept {return refresh_upper_;}
+    // Only the reached 132AC..CC /13B68..88 producer. Caller owns reaching
+    // that branch; the surrounding phase/scripts/resources are not simulated.
+    [[nodiscard]] static WorldMapSceneConstructorStatus refresh_actor_selection(
+        WorldMapSceneActorRefresh,WorldMapSceneConstructorState*) noexcept;
     // Consumed collision/context projection of 15DFF8 / 166988. Supported
-    // no-action tails only; selected action callbacks stop. No models/AI run.
+    // selected initialization effects and retained pending model commands.
+    // No model commands or actor AI run in this CPU spatial adapter.
     [[nodiscard]] WorldMapSceneConstructorStatus prepare_optional(bool actor_b,
         const WorldMapCollisionAssets&,const WorldMapSceneConstructorState&,
         uint32_t phase_raw,uint64_t key,WorldMapOptionalActorProjection*) const noexcept;
@@ -84,6 +101,8 @@ private:
     std::array<std::array<float,3>,4> positions_{},headings_{};
     std::array<float,5> thresholds_{},ranges_{};
     std::array<float,2> optional_thresholds_{};
+    WorldMapOptionalActionTables actions_;
+    std::array<uint32_t,2> refresh_upper_{};
     std::array<float,3> zero_{},forward_{};
     WorldMapCameraViewQuery camera_;
     float radians_per_degree_=0;
