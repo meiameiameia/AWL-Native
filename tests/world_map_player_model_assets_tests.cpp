@@ -11,6 +11,7 @@
 #include "awl/world_map_player_start_animation.h"
 #include "awl/world_map_player_animation_holder.h"
 #include "awl/world_map_player_startup.h"
+#include "awl/world_map_player_sources.h"
 #include "awl/world_map_fade.h"
 #include "awl/world_map_phase.h"
 #include "awl/world_map_player_context.h"
@@ -173,7 +174,8 @@ struct Fixture {
     }
     ~Fixture(){
         std::error_code e;
-        for(const char* name:{"boy_0.arc","boy_1.arc","boy_2.arc","boy_0.anm.arc","boy_0_subanm.arc","boy_0_subact.arc","char_com_eye.tam","char_com_mouth.tam","jimen-camera.col"})std::filesystem::remove(root/"files"/name,e);
+        for(const char* name:{"boy_0.arc","boy_1.arc","boy_2.arc","boy_0.anm.arc","boy_0_subanm.arc","boy_0_subact.arc","char_com_eye.tam","char_com_mouth.tam","jimen-camera.col",
+            "jimen-move.col","jimen1-move.col","mapobj.col","mapobj2.col","mapobj3.col","mapobj4.col","mapobj5.col","trigger.spl","mapjump.col"})std::filesystem::remove(root/"files"/name,e);
         std::filesystem::remove(root/"sys"/"main.dol",e);std::filesystem::remove(root/"sys",e);
         std::filesystem::remove(root/"files",e);std::filesystem::remove(root,e);
     }
@@ -2915,6 +2917,7 @@ uint64_t update_owners_snapshot(const awl::WorldMapPlayerUpdateOwners& owners) {
             uint32_t(s.byte_2e),uint32_t(s.byte_32),s.word_12c,s.word_150,s.word_154,s.word_160})hash(h,v);}
     if(owners.status){const auto& s=*owners.status;for(const auto& v:{s.word_134,s.word_13c}){hash(h,v.has_value());hash(h,v.value_or(0));}
         for(const auto& v:{s.byte_14c,s.byte_158,s.byte_159,s.byte_15a,s.byte_15b,s.byte_15c}){hash(h,v.has_value());hash(h,v.value_or(0));}}
+    if(owners.saved_selection){hash(h,1);for(const auto& v:{owners.saved_selection->item_144,owners.saved_selection->action_148}){hash(h,v.has_value());hash(h,v.value_or(0));}}
     hash(h,owners.item_owner.has_value());if(owners.item_owner)hash(h,owners.item_owner->mask_88);
     hash(h,uint32_t(owners.queue.size()));for(const auto& e:owners.queue){hash(h,uint32_t(e.node_identity>>32));hash(h,uint32_t(e.node_identity));hash(h,e.priority);}return h;
 }
@@ -4873,7 +4876,8 @@ void primary_slice_owner_checks(const awl::WorldMapPlayerStartupProviders&,const
     const std::shared_ptr<awl::WorldMapCameraCollisionAsset>&,const awl::WorldMapCameraViewQuery&,bool);
 void startup_tick_owner_checks(const awl::WorldMapPlayerStartupProviders&,const awl::WorldMapPlayerStartupQuery&,
     const std::shared_ptr<awl::WorldMapCameraCollisionAsset>&,const awl::WorldMapCameraViewQuery&,bool,
-    const awl::WorldMapPlayerContextUpdateSources* =nullptr);
+    const awl::WorldMapPlayerContextUpdateSources* =nullptr,bool owned_sources=false);
+void player_sources_fixture(Fixture&);
 void startup_owner_checks() {
     using S=awl::WorldMapPlayerStartupStatus;using A=awl::WorldMapPlayerStartAnimationStatus;using I=awl::WorldMapAnimationInitializerStatus;
     Fixture fixture;auto payloads=files();payloads[0]=setup_model();payloads[1]=geometry_gpl();payloads[2]=execution_skin(1);
@@ -4894,7 +4898,7 @@ void startup_owner_checks() {
     awl::WorldMapPlayerTimerResourceView eye,mouth;
     expect(p.timers->resource(awl::WorldMapPlayerTimerBank::Eyes,1,0,&eye) && p.timers->resource(awl::WorldMapPlayerTimerBank::Mouth,1,0,&mouth),"selected synthetic dispatch resources resolve");
     const auto& state=owner->state();const auto& feature=*owner->model().state().feature_38;
-    expect(state.state_1364==0x29 && state.counter_1368==0 && state.secondary_byte_3f0==1 && feature.type_0==0x3B && feature.type_4==0x25 &&
+    expect(state.state_1364==0x29 && state.counter_1368==0 && state.secondary_byte_3f0==1 && state.target_14ac==0u && state.direction_14b4==7u && feature.type_0==0x3B && feature.type_4==0x25 &&
         feature.first_14.resource_0==eye.identity && feature.second_24.resource_0==mouth.identity && feature.first_14.clock_4==66 && feature.second_24.clock_4==66 &&
         owner->model().initial_model_state()->initialized_c==1 && owner->starts()==p.starts && !owner->model().primary().cpu().frame() && p.clock->state().loop_count==2,
         "model timer writes, retained startup tables and parent fields publish together without frame/time advancement");
@@ -4990,6 +4994,8 @@ void startup_owner_checks() {
         auto moving=p;auto bytes=start_bytes;word(bytes,0x160,(2u<<10)|(1023u<<14));
         expect(awl::decode_world_map_player_start_animation_tables(bytes.data(),bytes.size(),&moving.starts)==A::Decoded,"state-zero movement selector decodes a bounded long duration");
         startup_tick_owner_checks(moving,q,camera,camera_query,true);
+        player_sources_fixture(fixture);
+        startup_tick_owner_checks(moving,q,camera,camera_query,true,nullptr,true);
     }
     {
         // This fixture now advances its shared clock. Isolate it from the
@@ -5837,9 +5843,172 @@ void state0_normal_owner_checks(awl::WorldMapPlayerStartup& player,awl::WorldMap
     state1_transition_owner_checks(player,inputs,owners,render,actor,context_sources,allocations);
     std::cout<<"PLAYER_STATE0_NORMAL owned startup-transition CPU frame / next-loop parent-model / second route "<<int(expected)<<" / explicit blocked-guard completion / script-blocked queued node\n";
 }
+void player_sources_fixture(Fixture& fixture){
+    const auto terrain=state1_movement_terrain(),statics=state1_probe_terrain();
+    fixture.write("jimen-move.col",terrain);fixture.write("jimen1-move.col",terrain);
+    for(const char* name:{"mapobj.col","mapobj2.col","mapobj3.col","mapobj4.col","mapobj5.col"})fixture.write(name,statics);
+    fixture.write("mapjump.col",statics);fixture.write("trigger.spl",state1_no_contact());
+}
+void player_sources_owner_checks(awl::WorldMapPlayerStartup& player,awl::WorldMapUpdateInputs& inputs,
+    const awl::WorldMapPlayerUpdateOwners& prior,awl::WorldMapPlayerActorQueue& render,
+    const awl::WorldMapPlayerContextUpdateSources* context_sources,bool allocations){
+    using S=awl::WorldMapPlayerSourcesStatus;using Init=awl::WorldMapPlayerSourcesInitialization;
+    using Second=awl::WorldMapPlayerState0SecondaryStatus;using B=awl::WorldMapPlayerState1SecondaryStatus;
+    const bool local=context_sources!=nullptr;
+    awl::WorldMapPlayerSources owner(inputs);awl::WorldMapPlayerSourcesSeed seed;seed.updates=prior;
+    seed.updates.status.reset();seed.updates.saved_selection.reset();seed.updates.queue={{900,0x1011}};
+    seed.updates.item_owner=awl::WorldMapPlayerItemOwnerState{0}; // explicit observed mask owner
+    seed.movement.scene_identity=0x701;seed.movement.pose={1,{20,4,20},{0,0,1}};seed.movement.steering.facing_z=1;
+    seed.fields.scene_child_word_4=0;seed.fields.terrain_variant_299a4=uint8_t{0};seed.fields.secondary_byte_3f1=uint8_t{0};
+    seed.fields.static_flags.emplace();seed.fields.saved_remap_byte_14d35=uint8_t{0};seed.fields.audio_byte_90=uint8_t{0};
+    std::shared_ptr<const awl::WorldMapPlayerCollisionSources> resources;
+    const awl::WorldMapCollisionSourceState selection{*inputs.sources().phase->raw_word_0,0};
+    const auto loaded=awl::WorldMapPlayerCollisionSources::load(selection,player.camera()->collision,local,&resources);
+    expect(loaded==S::Completed && resources,"shared collision providers load through the current disc mount");if(!resources)return;
+    if(local){awl::CollisionSurfaceSample surface;const auto& bytes=resources->movement().terrain_bytes();
+        expect(awl::sample_type1_collision_surface(bytes.data(),bytes.size(),120,168,&surface),"owned-source local pose is explicitly contained in verified terrain");
+        seed.movement.pose.position={120,surface.height,168};}
+    expect(owner.advance_primary(player).status==S::RequiresInitialization,"source owner cannot run before explicit initialization");
+    {awl::WorldMapUpdateInputs foreign(std::make_shared<awl::GameClock>());awl::WorldMapPlayerSources wrong(foreign);
+        expect(wrong.initialize(player,seed,Init::Fresh)==S::ForeignPlayer,"source initialization rejects a different clock");}
+    const auto observed=inputs.sources();auto missing=observed;missing.phase->raw_word_0.reset();inputs.observe_control_sources(missing);
+    const auto before_init=startup_snapshot(player);
+    expect(owner.initialize(player,seed,Init::Fresh)==S::RequiresPhase && !owner.updates().status && startup_snapshot(player)==before_init,"missing phase preserves uninitialized sources and player");
+    inputs.observe_control_sources(observed);
+#if !defined(_DEBUG)
+    if(allocations){size_t rejected=0;bool done=false;for(size_t n=0;n<64;++n){const auto live=allocation_probe::live;allocation_probe::remaining=n;allocation_probe::enabled=true;
+        const auto result=owner.initialize(player,seed,Init::Fresh);allocation_probe::enabled=false;
+        if(result==S::Initialized){done=true;break;}++rejected;
+        expect(result==S::AllocationFailure && !owner.updates().status && startup_snapshot(player)==before_init && allocation_probe::live==live,"source construction allocation failures preserve every unpublished owner");}
+        expect(done && rejected>0,"source initialization sweep reaches scene and queue allocation stages");std::cout<<"PLAYER_SOURCES_INIT_ALLOCATION_STOPS "<<rejected<<'\n';}
+#else
+    (void)allocations;
+#endif
+    if(!owner.updates().status)expect(owner.initialize(player,seed,Init::Fresh)==S::Initialized,"fresh shared sources initialize once");
+    expect(owner.initialize(player,seed,Init::Fresh)==S::AlreadyInitialized && owner.fields().guards->word_680==-1 &&
+        owner.fields().guards->word_58c==0 && owner.updates().saved_selection->item_144==0u && owner.updates().saved_selection->action_148==0u,"fresh source projection retains traced status, guard and selection defaults");
+    {awl::WorldMapPlayerSources restored(inputs);auto projection=seed;projection.updates=owner.updates();projection.fields.guards.reset();
+        expect(restored.initialize(player,projection,Init::Observed)==S::Initialized && !restored.fields().guards,"observed initialization preserves unknown fields rather than applying fresh defaults");}
+    auto retained=resources;
+    expect(awl::WorldMapPlayerCollisionSources::load({selection.phase_counter_word,2},player.camera()->collision,false,&resources)==S::InvalidInput && resources==retained &&
+        awl::WorldMapPlayerCollisionSources::load(selection,{},false,&resources)==S::RequiresCamera && resources==retained,"failed resource selection and camera binding preserve the prior provider");
+    if(!local)expect(awl::WorldMapPlayerCollisionSources::load(selection,player.camera()->collision,true,&resources)==S::AssetFailure && resources==retained,"missing object archive preserves the installed-candidate resource bundle");
+#if !defined(_DEBUG)
+    if(allocations)for(size_t n=0;n<2;++n){const auto live=allocation_probe::live;allocation_probe::remaining=n;allocation_probe::enabled=true;
+        const auto result=awl::WorldMapPlayerCollisionSources::load(selection,player.camera()->collision,false,&resources);allocation_probe::enabled=false;
+        expect(result==S::AllocationFailure && resources==retained && allocation_probe::live==live,"resource owner/control-block allocation failures preserve the prior provider and release staging");}
+#endif
+    expect(owner.install_collision(resources)==S::Completed && owner.probe_present()==true,"source owner retains the immutable resource bundle and binds slot five");
+    std::weak_ptr<const awl::WorldMapPlayerCollisionSources> weak=resources;resources.reset();retained.reset();
+    auto fields=owner.fields();
+    const auto fresh_loop=[&](int8_t stick,uint16_t buttons=0){expect(inputs.game_clock()->advance(),"source workflow advances the existing shared clock explicitly");
+        expect(owner.advance_primary(player).status==S::RequiresControl,"stale control cannot start either normal state");
+        expect(inputs.capture_control()==awl::WorldMapControlStatus::Captured,"source workflow captures current control");
+        inputs.observe_pad_sample({true,buttons,stick});expect(inputs.capture_pad()==awl::WorldMapPadCaptureStatus::Captured,"source workflow captures current PAD");};
+    const auto snapshot=[&](){return std::array<uint64_t,3>{startup_snapshot(player),update_owners_snapshot(owner.updates()),state1_motion_snapshot(owner.movement(),owner.scene())};};
+    awl::WorldMapPlayerStartupQueuedActorInput actor;actor.actor.saved_byte_29a01=uint8_t{0};actor.actor.script.emplace();actor.actor.script->flag_width_4=1;
+    actor.actor.script->flag_bytes={uint8_t(local?0:1)};actor.actor.script->records.emplace();actor.actor.derive_normal_visibility=true;
+    actor.actor.frame.actor_placement=awl::WorldMapPlayerActorPlacement{{9999,9999,9999},{1,0,0}};
+    actor.actor.frame.node_post_transforms.resize(player.model().primary().model().core().nodes.size());
+    actor.actor.visibility.emplace();actor.actor.visibility->view=awl::WorldMapModelMatrix{1,0,0,0,0,1,0,0,0,0,1,0};
+    for(size_t i=0;i<6;++i){awl::WorldMapPlayerActorPlane plane;plane.point[i/2]=i%2?-1000.0f:1000.0f;plane.normal[i/2]=i%2?-1.0f:1.0f;actor.actor.visibility->planes[i]=plane;}
+    actor.actor.screen.emplace();actor.actor.screen->view=*actor.actor.visibility->view;actor.actor.screen->half_extents={1000.0f,1000.0f};actor.effect_gate=uint8_t{0};
+    bool queue_allocation_checked=false;
+    const auto finish=[&](){
+        awl::WorldMapPlayerState0ThirdInput third;
+        if(local){third.context.emplace();third.context->current_key=17;third.context->scene_type=99;third.context->position={9999,9999,9999};third.context->action=999;
+            third.context->held_row=awl::WorldMapPlayerContextItemRow{0,uint8_t{0},uint8_t{0},0u};third.context->scene_predicate_1728e4=uint8_t{0};
+            third.context->label_observations.terrain_clear={true,true};third.context->label_observations.secondary_ground_available=true;
+        }else{auto skipped=owner.fields();skipped.guards=awl::WorldMapPlayerUpdateGuards{0,{}};owner.observe_fields(skipped);}
+        auto step=owner.advance_third(player,local?*context_sources:awl::WorldMapPlayerContextUpdateSources{},third);
+        if(step.status!=S::Completed)std::cerr<<"sources third stop "<<int(step.status)<<" third "<<(step.third?int(step.third->status):-1)<<" context "<<(step.third && step.third->context?int(step.third->context->status):-1)<<'\n';
+        expect(step.status==S::Completed,"owned current pose/selection/guards feed the state-qualified third callback");if(step.status!=S::Completed)return false;
+        owner.observe_fields(fields);owner.observe_selection({{}, {}});
+        expect(owner.advance_third(player,{},third).status==S::Completed,"accepted third ignores now-unknown replacement selection");owner.observe_selection({0u,0u});
+        render.erase(std::remove_if(render.begin(),render.end(),[&](const auto& e){return e.node_identity==player.render_node_identity() || e.node_identity==player.effect_node_identity();}),render.end());
+#if !defined(_DEBUG)
+        if(allocations && !queue_allocation_checked){const auto before=snapshot();const auto draw=actor_queue_snapshot(render),live=allocation_probe::live;
+            allocation_probe::remaining=0;allocation_probe::enabled=true;const auto failed=owner.consume_queued(player,actor,local?&render:nullptr);allocation_probe::enabled=false;
+            expect(failed.status==S::AllocationFailure && snapshot()==before && actor_queue_snapshot(render)==draw && allocation_probe::live==live,"queued source placement staging failure preserves accepted third and both queues");queue_allocation_checked=true;}
+#else
+        (void)queue_allocation_checked;
+#endif
+        const auto queued=owner.consume_queued(player,actor,local?&render:nullptr);
+        expect(queued.status==S::Completed && owner.updates().queue.size()==1 && owner.updates().queue[0].node_identity==900,"owned queue completion removes only the player's node");
+        if(local)expect(player.model().primary().cpu().frame() && player.model().primary().cpu().frame()->skin_executed &&
+            player.model().primary().cpu().frame()->root_matrix[3]==owner.movement().pose.position[0],"owned current movement pose overrides stale supplied frame placement");
+        const auto before=snapshot();expect(owner.consume_queued(player,{},nullptr).status==S::Completed && snapshot()==before,"queued retry leaves foreign work and accepted pose unchanged");return queued.status==S::Completed;
+    };
+    bool connected=false;unsigned state0_ticks=0;
+    for(unsigned tick=0;tick<4 && !connected;++tick){fresh_loop(tick<2?0:80);
+        const auto primary=owner.advance_primary(player);expect(primary.status==S::Completed,"owned state-zero first and model complete");if(primary.status!=S::Completed)return;
+        if(tick==0){const auto before=snapshot();expect(owner.advance_third(player,{},{}).status==S::CallbackIncomplete && owner.consume_queued(player,{},nullptr).status==S::CallbackIncomplete && snapshot()==before,"third and queue cannot bypass a pending second");}
+        auto second=owner.advance_secondary(player);
+        if(second.status==S::RequiresCollisionLists){const auto before=snapshot();expect(owner.advance_secondary(player).status==S::RequiresCollisionLists && snapshot()==before,"unknown collision lists preserve accepted first/model");owner.reset_collision_lists();second=owner.advance_secondary(player);}
+        if(second.state0_secondary && second.state0_secondary->status==Second::TransitionRequired){
+            const auto before=snapshot();auto unknown=owner.fields();unknown.saved_remap_byte_14d35.reset();owner.observe_fields(unknown);
+            expect(owner.advance_transition(player).status==S::CallbackIncomplete && snapshot()==before,"missing transition source retains pending state-zero movement/receipt");owner.observe_fields(fields);
+            const auto transitioned=owner.advance_transition(player);
+            if(transitioned.status!=S::Completed)std::cerr<<"sources transition stop "<<int(transitioned.status)<<" detail "<<(transitioned.transition?int(transitioned.transition->status):-1)<<'\n';
+            expect(transitioned.status==S::Completed && player.state().state_1364==1,"shared sources connect state zero to the checked state-one initializer");if(transitioned.status!=S::Completed)return;connected=true;
+        }else expect(second.status==S::Completed && second.state0_secondary && second.state0_secondary->status==Second::RetainedState,"owned state-zero neutral movement and no-event second complete");
+        ++state0_ticks;if(!finish())return;
+    }
+    expect(connected,"held input or completed holder reaches the connected state-one path");if(!connected)return;
+    expect(inputs.game_clock()->advance(),"pool lifetime scenario starts after the accepted movement loop");
+    owner.reset_collision_lists();
+    awl::WorldMapRegisteredCollisionObject object;object.collision.identity=0x900;object.collision.enabled=false;object.collision.category=1;
+    object.collision.collision_flags=2;
+    expect(owner.register_collision_object(awl::WorldMapCollisionList::First,object,{{1,0}})==(local?S::Completed:S::RequiresRecordPool),"type-one registrations bind only retained pool records");
+    if(local)expect(owner.clear_collision()==S::Busy && owner.unregister_collision_object(0x900),"registered pool views prevent premature resource release");
+    object.collision.data=reinterpret_cast<const uint8_t*>(uintptr_t{1});
+    expect(owner.register_collision_object(awl::WorldMapCollisionList::First,object)==S::InvalidInput,"unowned raw geometry is rejected");
+    object.collision.data=nullptr;object.collision.collision_flags=0;object.collision.enabled=false;
+    expect(owner.register_collision_object(awl::WorldMapCollisionList::Later,object)==S::Completed,"native list owner accepts a geometry-free supplied circle");
+    for(unsigned tick=0;tick<6;++tick){fresh_loop(tick<3?80:0);const auto before=snapshot();
+        if(tick==0){auto variant=fields;variant.terrain_variant_299a4=uint8_t{1};owner.observe_fields(variant);
+            expect(owner.advance_primary(player).status==S::WrongCollisionSelection && snapshot()==before,"changed terrain selector cannot silently reuse the old slot-ten bytes");owner.observe_fields(fields);}
+        awl::WorldMapPlayerSourcesResult primary;bool swept=false;
+#if !defined(_DEBUG)
+        if(allocations && tick==0){size_t rejected=0;for(size_t n=0;n<256;++n){const auto previous=snapshot();const auto live=allocation_probe::live;
+            allocation_probe::remaining=n;allocation_probe::enabled=true;primary=owner.advance_primary(player);allocation_probe::enabled=false;
+            if(primary.status==S::Completed){swept=true;break;}++rejected;
+            const bool late=primary.state1_primary && primary.state1_primary->status==awl::WorldMapPlayerPrimarySliceStatus::AnimationIncomplete;
+            if(late){expect(player.primary_loop()->state1_parent_completed && owner.clear_collision()==S::Busy,"late model allocation stop retains the accepted source-owned movement exactly once");}
+            else expect((primary.status==S::AllocationFailure || (primary.state1_primary && primary.state1_primary->parent && primary.state1_primary->parent->status==awl::WorldMapPlayerUpdateStatus::AllocationFailure)) &&
+                snapshot()==previous && allocation_probe::live==live,"source snapshot and first-pass allocation failures preserve every unaccepted owner and release staging");}
+            expect(swept && rejected>8,"source-owned first sweep crosses snapshot, movement and model staging");std::cout<<"PLAYER_SOURCES_FIRST_ALLOCATION_STOPS "<<rejected<<'\n';}
+#endif
+        if(!swept)primary=owner.advance_primary(player);
+        expect(primary.status==S::Completed && primary.state1_primary && player.primary_loop()->movement_owner!=0 && owner.updates().saved_pose.position==owner.movement().pose.position,"same owner drives state-one first movement and model progression");if(primary.status!=S::Completed)return;
+        const auto accepted=snapshot();expect(owner.clear_collision()==S::Busy && !weak.expired() && owner.advance_primary(player).status==S::Completed && snapshot()==accepted,"accepted movement retains resource lifetime and retries exactly once");
+        owner.observe_selection({0u,{}});const auto unknown=snapshot();auto second=owner.advance_secondary(player);
+        expect(second.state1_secondary && second.state1_secondary->status==B::RequiresAction && snapshot()==unknown,"second reads current unknown action instead of its first-pass observation");
+        owner.observe_selection({0u,0u});owner.clear_probe();
+        if(tick==5){auto changed=fields;changed.guards=awl::WorldMapPlayerUpdateGuards{0,{}};owner.observe_fields(changed);owner.observe_selection({{}, {}});}
+        second=owner.advance_secondary(player);expect(second.status==S::Completed,"known cleared slot-five skips only the terrain probe");
+        if(tick==5){expect(second.state1_secondary && second.state1_secondary->status==B::Completed,"guard mutation between passes skips unread current selection and terrain");owner.observe_fields(fields);owner.observe_selection({0u,0u});}
+        expect(owner.bind_probe(),"retained slot-five bytes can be rebound without reloading assets");if(!finish())return;
+    }
+    // Item/action can change between callbacks. A newly held item changes B's
+    // request; failed second leaves accepted first/model and current sources.
+    fresh_loop(0,0x200);expect(owner.advance_primary(player).status==S::Completed,"item-change scenario accepts its first pass");owner.observe_selection({1u,0u});
+    const auto before_request=snapshot();auto requested=owner.advance_secondary(player);
+    expect(requested.state1_secondary && requested.state1_secondary->status==B::TransitionRequired && requested.state1_secondary->requested_state==7u &&
+        snapshot()==before_request,"second uses the current held item and preserves the untranslated action request");
+    expect(owner.advance_third(player,{},{}).status==S::CallbackIncomplete && owner.consume_queued(player,{},nullptr).status==S::CallbackIncomplete,"pending action request cannot bypass second completion");
+    expect(inputs.game_clock()->advance(),"resource teardown moves past accepted movement's loop");owner.reset_collision_lists();
+    expect(owner.clear_collision()==S::Completed && !owner.collision() && weak.expired() && owner.probe_present()==false,"explicit teardown releases installed slots after borrowed object views and loop use end");
+    auto paused=observed;paused.phase->byte_a=uint8_t{1};inputs.observe_control_sources(paused);owner.observe_status({});owner.observe_selection({{}, {}});
+    expect(inputs.capture_control()==awl::WorldMapControlStatus::Captured && owner.advance_primary(player).status==S::Completed && owner.advance_secondary(player).status==S::Completed &&
+        owner.advance_third(player,{},{}).status==S::Completed,"paused state-one callbacks skip unloaded collision and unknown status/selection without inventing sources");
+    auto hidden=actor;hidden.actor.script->flag_bytes[0]=1;
+    expect(owner.consume_queued(player,hidden,nullptr).status==S::Completed && owner.updates().queue.size()==1,"paused source-owned completion preserves the foreign node");
+    std::cout<<(local?"LOCAL_":"")<<"PLAYER_OWNED_SOURCES "<<state0_ticks<<" state-zero ticks / checked state-one connection / 6 active state-one ticks / current selection, slot lifetime, ordered CPU completion\n";
+}
 void startup_tick_owner_checks(const awl::WorldMapPlayerStartupProviders& source,const awl::WorldMapPlayerStartupQuery& query,
     const std::shared_ptr<awl::WorldMapCameraCollisionAsset>& camera,const awl::WorldMapCameraViewQuery& view,bool allocations,
-    const awl::WorldMapPlayerContextUpdateSources* context_sources) {
+    const awl::WorldMapPlayerContextUpdateSources* context_sources,bool owned_sources) {
     using S=awl::WorldMapPlayerStartupTickStatus;using F=awl::WorldMapFadeStatus;using P=awl::WorldMapPlayerPrimaryPassesStatus;
     using Q=awl::WorldMapPlayerStartupQueueStatus;
     auto providers=source;providers.clock=std::make_shared<awl::GameClock>();
@@ -6094,7 +6263,8 @@ void startup_tick_owner_checks(const awl::WorldMapPlayerStartupProviders& source
     before=startup_snapshot(*player);
     expect(player->advance_state0_third(inputs,{},{}).status==Third::AlreadyCompleted && preserved() && !player->seed_state0_context({}),
         "accepted third receipt ignores replacement observations and prohibits reseeding");
-    state0_normal_owner_checks(*player,inputs,owners,render,context_sources,allocations);
+    if(owned_sources)player_sources_owner_checks(*player,inputs,owners,render,context_sources,allocations);
+    else state0_normal_owner_checks(*player,inputs,owners,render,context_sources,allocations);
     std::cout<<"PLAYER_STARTUP_TICK 64 ordered active-control samples / owned no-attachment state-zero transition / "
         <<(context_sources?"owned idle third callback":"guard-skipped third callback")<<" / owned queued CPU frame / normal first pass / active second movement/state-one stop\n";
 }
@@ -6157,6 +6327,7 @@ void local_animation_loops(const char* disc) {
             coordinated_animation_owner_checks(*player,false);++checked;
             primary_slice_owner_checks(providers,query,camera,profile.view_query,false);
             startup_tick_owner_checks(providers,query,camera,profile.view_query,false,&context_sources);
+            if(choice==0)startup_tick_owner_checks(providers,query,camera,profile.view_query,false,&context_sources,true);
         }
     }
     expect(checked==18 && paired==12 && blocked==6,"all supported actual phase/selection startup pairs complete coordinated checks and action-only constructors stop explicitly");

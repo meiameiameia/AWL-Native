@@ -716,7 +716,8 @@ WorldMapPlayerState1SecondaryResult WorldMapPlayerStartup::advance_state1_second
     if(primary_loop_->updates_owner!=key(owners) || (movement && primary_loop_->movement_owner!=key(movement)))return {S::InvalidInput};
     if(movement && (movement->pose.scene_type!=owners->saved_pose.scene_type || movement->pose.position!=owners->saved_pose.position || movement->pose.heading!=owners->saved_pose.heading))return {S::InvalidInput};
     WorldMapPlayerState1SecondaryQuery query;query.control=inputs.queue_control().control_word;
-    query.action=primary_loop_->action_148;query.item=primary_loop_->item_144;
+    query.action=owners->saved_selection?owners->saved_selection->action_148:primary_loop_->action_148;
+    query.item=owners->saved_selection?owners->saved_selection->item_144:primary_loop_->item_144;
     query.status=owners->status?&*owners->status:nullptr;
     query.factors=input.condition_factors_override?*input.condition_factors_override:starts_->condition_factors();
     if(inputs.sources().phase)query.phase_raw=inputs.sources().phase->raw_word_0;
@@ -1032,7 +1033,7 @@ WorldMapPlayerStartupResult construct_world_map_player_startup(
         }
         next->starts_ = providers.starts;
         // Only complete callback results establish these parent/secondary words.
-        next->state_ = {0x29,0,1,{}};
+        next->state_ = {0x29,0,1,{},0u,7u};
         *out = std::move(next); result.status = Status::ConstructedCpuStartup; return result;
     } catch (const std::bad_alloc&) { result.status = Status::AllocationFailure; return result; }
 }

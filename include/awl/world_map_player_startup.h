@@ -35,7 +35,8 @@ struct WorldMapPlayerStartupState {
     uint8_t secondary_byte_3f0 = 1;
     // Established by a supported parent update or actor callback, not startup.
     std::optional<uint32_t> control_word_1384;
-    std::optional<uint32_t> target_14ac,direction_14b4; // established only by owned 3083C
+    // 800300E0/E4 constructor writes, later replaced by owned 3083C outputs.
+    std::optional<uint32_t> target_14ac,direction_14b4;
 };
 enum class WorldMapPlayerStartupStatus {
     ConstructedCpuStartup, InitialModelIncomplete, ConstructorTailIncomplete,

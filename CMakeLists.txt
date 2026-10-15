@@ -63,6 +63,7 @@ set(SOURCES
     src/world_map_player_texture_features.cpp
     src/world_map_player_animation_holder.cpp
     src/world_map_player_startup.cpp
+    src/world_map_player_sources.cpp
     src/world_map_player_state1_secondary.cpp
     src/world_map_player_actor_prepare.cpp
     src/world_map_player_actor_schedule.cpp
@@ -692,6 +693,7 @@ add_test(NAME world_map_player_animation_assets_tests COMMAND world_map_player_a
 add_executable(world_map_player_model_assets_tests
     tests/world_map_player_model_assets_tests.cpp
     src/world_map_player_movement.cpp src/world_map_movement.cpp src/player_input.cpp
+    src/world_map_collision_assets.cpp src/world_map_collision_records.cpp src/world_map_collision_registry.cpp
     src/world_map_contact.cpp src/world_map_trigger_asset.cpp
     src/world_map_player_model_assets.cpp
     src/world_map_player_model_auxiliary.cpp
@@ -703,6 +705,7 @@ add_executable(world_map_player_model_assets_tests
     src/world_map_player_texture_features.cpp
     src/world_map_player_animation_holder.cpp
     src/world_map_player_startup.cpp
+    src/world_map_player_sources.cpp
     src/world_map_player_state1_secondary.cpp
     src/world_map_player_actor_prepare.cpp
     src/world_map_player_actor_schedule.cpp

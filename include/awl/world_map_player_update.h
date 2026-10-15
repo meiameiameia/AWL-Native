@@ -22,6 +22,9 @@ struct WorldMapPlayerUpdateQueueEntry {
 };
 // Explicit projection, not a translated item-owner constructor.
 struct WorldMapPlayerItemOwnerState {uint32_t mask_88=0;};
+struct WorldMapPlayerSavedSelection {
+    std::optional<uint32_t> item_144,action_148;
+};
 // Supplied CPU counterparts of the reached global owners. No save-file
 // format, live globals, renderer or queue processing is implied. The caller
 // may consume nodes between updates. A node already in this queue at 1010
@@ -38,6 +41,10 @@ struct WorldMapPlayerUpdateOwners {
     std::optional<WorldMapPlayerStatusState> status;
     // r13-5854's separate item owner; only its 7AFFC mask store is owned.
     std::optional<WorldMapPlayerItemOwnerState> item_owner;
+    // When present, these current saved fields supersede first-pass
+    // observations, including unknown reached fields. Legacy isolated callers
+    // may leave the projection absent and retain their observed receipt path.
+    std::optional<WorldMapPlayerSavedSelection> saved_selection;
 };
 enum class WorldMapPlayerUpdateStatus {
     Prepared, Advanced, RequiresControlWord, RequiresGuardOwner,
