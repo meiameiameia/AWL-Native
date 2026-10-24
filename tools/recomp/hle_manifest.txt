@@ -8,5 +8,42 @@
 #   evidence how the identification was justified: call-graph position, hardware block touched,
 #            strings, and/or an hmawl name (names and addresses only; never its code)
 #
-# Example (not an active entry):
-#   dol 0x80000000 OSExampleFunction  # writes PI 0xCC003000, called once from the boot path
+# Rationale, replacement levels and the register inventory behind these entries are in
+# docs/research/hle-platform.md. Names marked (inferred) are not in hmawl; they come from the SDK's
+# function order and from constants in the function itself. Anything not listed stays recompiled
+# and reaches the hardware through the models installed with rt::mmioInstall.
+
+# ---- CPU and OS primitives -------------------------------------------------------------------------
+dol 0x801B0A48 PPCMtdec            # leaf `mtspr DEC,r3; blr`; callers InsertAlarm, OSCancelAlarm, DecrementerExceptionCallback; hmawl name; arms the native decrementer
+dol 0x801B0A50 PPCSync             # leaf `sc; blr`; sc enters the SDK system-call vector (cache sync only); hmawl name; no-op on flat memory
+dol 0x801B23C8 DCFlushRange        # dcbf loop ending in sc; hmawl name; no-op
+dol 0x801B23F8 DCStoreRange        # dcbst loop ending in sc; hmawl name; no-op
+dol 0x801B2D8C OSSaveContext       # stmw r13, GQR1-7, CR, LR, CTR, XER, MSR into the OSContext, returns 0 and stores 1 in the r3 slot (setjmp style); only caller SelectThread; hmawl name
+dol 0x801B2E0C OSLoadContext       # reloads the same fields and ends in rfi; callers SelectThread, __OSDispatchInterrupt, DecrementerExceptionCallback; hmawl name; fiber switch or interrupt return
+dol 0x801B5054 RealMode            # SRR0=r3, MSR[IR,DR]=0, rfi; only caller __OSInitMemoryProtection passing the BAT setup routines; hmawl name; BAT setup has no native analogue, no-op
+dol 0x801B20F4 __OSInitAudioSystem # DSP boot hack: copies a 128-byte program, drives DSP_CONTROL (0xCC00500A), DMA registers 0xCC005020-28 and polls mailbox/status bits; called once from OSInit; hmawl name
+
+# ---- DVD command layer (the queue, state machine and DI interrupt handler below it stay unused) ------
+# Each public command function sets block->command (+8), length (+0x14), address (+0x18), callback (+0x28),
+# state (+0xC) = 2 (waiting) and pushes the block on the waiting queue. The command id is the constant stored at +8.
+dol 0x801BC9D8 DVDReadAbsAsyncPrio            # command id 1 (read); callers DVDReadAsyncPrio (hmawl) and DVDReadPrio (inferred)
+dol 0x801BCAB4 DVDSeekAbsAsyncPrio            # command id 2 (seek) (inferred)
+dol 0x801BCD24 DVDPrepareStreamAbsAsync       # command id 6 (init stream); caller 0x801BACD0, itself called from game code 0x80129928 (inferred)
+dol 0x801BCDE8 DVDCancelStreamAsync           # command id 7 (cancel stream) (inferred)
+dol 0x801BCEA4 DVDGetStreamErrorStatusAsync   # command id 9 (request audio error); same game callers as the stream commands (inferred)
+dol 0x801BCF60 DVDInquiryAsync                # command id 14 (inquiry); called from OSInit with InquiryCallback 0x801B0DA4 (hmawl name), which stores the device code at 0x800030E6 (inferred)
+dol 0x801BD0C0 DVDGetDriveStatus              # returns -1 (fatal flag), 8 (paused), 0 (idle), 1 (cover closed) or block->state of the executing block (inferred)
+dol 0x801BD1CC DVDCancelAsync                 # switch over block->state (12-entry table) invoking the cancel callback; callers DVDCancel 0x801BD448 and the game's file reader 0x8017B07C/0x8017B30C (inferred)
+
+# ---- PAD (HSD wrappers call these directly; the SI library below them is not used) -------------------
+dol 0x801C06D4 PADInit             # calls OSRegisterVersion and OSRegisterResetFunction; only caller HSD_PadInit 0x80213DA4 (hmawl name)
+dol 0x801C04B0 PADReset            # caller 0x80212720 (HSD pad read) beside PADRead and OSGetResetSwitchState; SI transfers (inferred)
+dol 0x801C05C0 PADRecalibrate      # same shape as PADReset; only caller 0x80213D0C (inferred)
+dol 0x801C0824 PADRead             # 192 instructions; calls PADReset 0x801C04B0 and the SI helpers; only caller 0x80212720, the HSD pad reader (inferred)
+dol 0x801C0B24 PADControlMotor     # only caller 0x802143A0; SI output packet (inferred)
+
+# ---- GBA link (SI channels) ------------------------------------------------------------------------
+dol 0x801FB9E4 GBAInit             # hmawl name; called from game code 0x801AA4D8
+dol 0x801FBA88 GBAGetStatus        # hmawl name; called from game code 0x801AAB8C
+dol 0x801FBC18 GBARead             # hmawl name; called from game code 0x801AAB8C
+dol 0x801FBCDC GBAWrite            # hmawl name; called from game code 0x801AAB8C
