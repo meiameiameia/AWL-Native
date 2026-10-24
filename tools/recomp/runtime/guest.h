@@ -1,6 +1,10 @@
-// Guest runtime for statically recompiled Gekko code (feasibility spike).
+// Guest runtime for statically recompiled Gekko code.
 // Generated functions take a Ctx&, keep guest registers in it, and reach guest memory through the
 // big-endian helpers below. Anything the runtime cannot run throws rt::Stop with the guest pc.
+// State is split in two: Machine is the shared guest machine (memory, function table, retired-instruction
+// counter, limits, diagnostics) and Ctx is the CPU state of one guest thread, which points at its Machine.
+// The contract with the platform runtime (HLE handlers, MMIO models, thread contexts, callGuest, time
+// base) is declared in hle_abi.h and implemented in guest.cpp.
 //
 // Build generated code and anything including this header with /fp:strict: the helpers rely on the host
 // FP environment (rounding mode, FTZ/DAZ) following the guest FPSCR, so the compiler must not fold or
@@ -34,7 +38,9 @@ enum class StopKind : uint32_t {
     Fault,            // access outside every modelled memory region
     Unimplemented,    // instruction form the generator refuses to translate
     DepthExceeded,
-    InstructionLimit
+    InstructionLimit,
+    HleUnregistered,  // hleCall on an address with no registered handler
+    Contract          // misuse of the runtime contract in hle_abi.h (duplicate registration, null handler, ...)
 };
 
 struct Stop {
@@ -42,6 +48,7 @@ struct Stop {
     uint32_t pc;       // guest address of the instruction (or function) that stopped
     uint32_t addr;     // effective address / target involved
     const char* what;  // static description
+    const char* name = nullptr;   // function name when one is known (HLE); static storage
 };
 
 struct CallFrame {
@@ -64,34 +71,7 @@ struct TraceHit {
     uint64_t icount;
 };
 
-struct Ctx {
-    uint32_t r[32] = {};
-    Fpr f[32];
-    uint32_t cr = 0;
-    uint32_t so = 0, ov = 0, ca = 0, xerbc = 0;
-    uint32_t lr = 0, ctr = 0;
-    uint32_t fpscr = 0;
-    uint32_t gqr[8] = {};
-    uint32_t spr[1024] = {};     // storage-only SPRs (HID0/1/2, WPAR, DMA, L2CR, BATs, SRR0/1, SPRG*, ...)
-    uint32_t msr = 0;
-    uint32_t sr[16] = {};
-    uint8_t* mem = nullptr;      // kMem1Size bytes, guest 0x80000000 / 0xC0000000 view
-    uint8_t* lc = nullptr;       // kLockedCacheSize bytes at 0xE0000000
-    uint64_t icount = 0;
-    uint32_t pc = 0;
-    uint32_t reservation = 0;
-    bool reservationValid = false;
-    uint64_t limit = ~0ull;        // stop after this many retired instructions (checked at call/memory points)
-    bool skipPlatform = false;     // census mode: record platform boundaries and return instead of stopping
-    std::vector<BoundaryHit> boundaries;
-    std::vector<TraceHit> trace;       // --trace: calls in execution order
-    uint32_t traceMaxDepth = 0;        // 0 = tracing off; otherwise record calls up to this depth
-    std::vector<BoundaryHit> faults;   // census mode: unmapped/MMIO accesses that were absorbed
-    uint8_t scratch[16] = {};
-    uint32_t sp = 0;
-    CallFrame cs[kMaxCallDepth];
-};
-
+struct Ctx;
 using GuestFn = void (*)(Ctx&);
 
 struct FnEntry {
@@ -103,25 +83,79 @@ struct FnEntry {
 extern const FnEntry kFunctions[];
 extern const uint32_t kFunctionCount;
 
+// Shared guest machine: one per process, reached by every thread context. Guest threads are cooperative
+// fibers (the platform track schedules them), so none of this needs locking.
+struct Machine {
+    uint8_t* mem = nullptr;        // kMem1Size bytes, guest 0x80000000 / 0xC0000000 view
+    uint8_t* lc = nullptr;         // kLockedCacheSize bytes at 0xE0000000
+    const FnEntry* functions = kFunctions;       // recompiled function entries, sorted by address
+    uint32_t functionCount = kFunctionCount;
+    uint64_t icount = 0;           // instructions retired by all threads (default time base)
+    uint64_t limit = ~0ull;        // stop after this many retired instructions (checked at call/memory points)
+    bool skipPlatform = false;     // census mode: record platform boundaries and return instead of stopping
+    std::vector<BoundaryHit> boundaries;
+    std::vector<TraceHit> trace;       // --trace: calls in execution order
+    uint32_t traceMaxDepth = 0;        // 0 = tracing off; otherwise record calls up to this depth
+    std::vector<BoundaryHit> faults;   // census mode: unmapped/MMIO accesses that were absorbed
+};
+
+// CPU state of one guest thread. Create the first one from a Machine and further ones with
+// createThreadContext; every context keeps its own registers and shadow call stack.
+struct Ctx {
+    explicit Ctx(Machine& machine) : m(&machine) {}
+    Machine* m;
+    uint32_t r[32] = {};
+    Fpr f[32];
+    uint32_t cr = 0;
+    uint32_t so = 0, ov = 0, ca = 0, xerbc = 0;
+    uint32_t lr = 0, ctr = 0;
+    uint32_t fpscr = 0;
+    uint32_t gqr[8] = {};
+    uint32_t spr[1024] = {};     // storage-only SPRs (HID0/1/2, WPAR, DMA, L2CR, BATs, SRR0/1, SPRG*, ...)
+    uint32_t msr = 0;
+    uint32_t sr[16] = {};
+    uint32_t pc = 0;
+    uint32_t reservation = 0;
+    bool reservationValid = false;
+    uint8_t scratch[16] = {};
+    uint32_t sp = 0;
+    CallFrame cs[kMaxCallDepth];
+};
+
 // ---- Stops ---------------------------------------------------------------------------------------
 [[noreturn]] void stop(Ctx& c, StopKind k, uint32_t pc, uint32_t addr, const char* what);
 void platformBoundary(Ctx& c, uint32_t fnAddr, const char* evidence);   // throws unless c.skipPlatform
 [[noreturn]] void limitReached(Ctx& c);
-uint8_t* memFault(Ctx& c, uint32_t ea);   // throws unless c.skipPlatform, then returns a zeroed scratch cell
+uint8_t* memFault(Ctx& c, uint32_t ea);   // throws unless skipPlatform, then returns a zeroed scratch cell
+// Stops that have no thread context to blame (registration-time contract violations).
+[[noreturn]] void stopNoCtx(StopKind k, uint32_t pc, uint32_t addr, const char* what, const char* name);
 
 // ---- Call plumbing ---------------------------------------------------------------------------------
-GuestFn lookupFunction(uint32_t addr);   // nullptr when addr is not a recompiled function entry
+GuestFn lookupFunction(const Machine& m, uint32_t addr);   // nullptr when addr is not a recompiled function entry
+
+// Names for the functions the generator replaced with hleCall, so an unregistered handler is reported
+// by name. Called once from the generated dispatch table's static initialiser; table must outlive the run.
+struct HleName {
+    uint32_t addr;
+    const char* name;
+};
+void declareHleNames(const HleName* table, uint32_t count);
+
+// Retire n instructions on the shared counter (straight-line code between trap points).
+inline void tick(Ctx& c, uint32_t n) { c.m->icount += n; }
 
 inline void at(Ctx& c, uint32_t pc, uint32_t n) {
     c.pc = pc;
-    c.icount += n;
-    if (c.icount > c.limit) limitReached(c);
+    Machine& m = *c.m;
+    m.icount += n;
+    if (m.icount > m.limit) limitReached(c);
 }
 
 inline void pushFrame(Ctx& c, uint32_t site, uint32_t callee) {
     if (c.sp >= kMaxCallDepth) stop(c, StopKind::DepthExceeded, site, callee, "guest call depth exceeded");
     c.lr = site + 4;
-    if (c.traceMaxDepth && c.sp < c.traceMaxDepth) c.trace.push_back(TraceHit{callee, site, c.sp, c.icount});
+    Machine& m = *c.m;
+    if (m.traceMaxDepth && c.sp < m.traceMaxDepth) m.trace.push_back(TraceHit{callee, site, c.sp, m.icount});
     c.cs[c.sp++] = CallFrame{site, callee, site + 4};
 }
 inline void popFrame(Ctx& c) { --c.sp; }
@@ -144,22 +178,60 @@ inline void ret(Ctx& c, uint32_t site) {
 }
 
 // ---- Memory ----------------------------------------------------------------------------------------
-inline uint8_t* host(Ctx& c, uint32_t ea, uint32_t n) {
+// Host pointer for plain memory (MEM1 and the locked cache), nullptr elsewhere.
+inline uint8_t* hostMem(Ctx& c, uint32_t ea, uint32_t n) {
     const uint32_t seg = ea >> 28;
     const uint32_t off = ea & 0x0FFFFFFFu;
-    if ((seg == 0x8 || seg == 0xC) && off <= kMem1Size - n) return c.mem + off;
-    if (seg == 0xE && off <= kLockedCacheSize - n) return c.lc + off;
-    return memFault(c, ea);
+    if ((seg == 0x8 || seg == 0xC) && off <= kMem1Size - n) return c.m->mem + off;
+    if (seg == 0xE && off <= kLockedCacheSize - n) return c.m->lc + off;
+    return nullptr;
+}
+// For accesses that cannot be routed to a hardware model (dcbz): stops or absorbs outside plain memory.
+inline uint8_t* host(Ctx& c, uint32_t ea, uint32_t n) {
+    uint8_t* p = hostMem(c, ea, n);
+    return p ? p : memFault(c, ea);
 }
 
-inline uint8_t ld8(Ctx& c, uint32_t ea) { return *host(c, ea, 1); }
-inline uint16_t ld16(Ctx& c, uint32_t ea) { uint16_t v; std::memcpy(&v, host(c, ea, 2), 2); return _byteswap_ushort(v); }
-inline uint32_t ld32(Ctx& c, uint32_t ea) { uint32_t v; std::memcpy(&v, host(c, ea, 4), 4); return _byteswap_ulong(v); }
-inline uint64_t ld64(Ctx& c, uint32_t ea) { uint64_t v; std::memcpy(&v, host(c, ea, 8), 8); return _byteswap_uint64(v); }
-inline void st8(Ctx& c, uint32_t ea, uint32_t v) { *host(c, ea, 1) = static_cast<uint8_t>(v); }
-inline void st16(Ctx& c, uint32_t ea, uint32_t v) { const uint16_t b = _byteswap_ushort(static_cast<uint16_t>(v)); std::memcpy(host(c, ea, 2), &b, 2); }
-inline void st32(Ctx& c, uint32_t ea, uint32_t v) { const uint32_t b = _byteswap_ulong(v); std::memcpy(host(c, ea, 4), &b, 4); }
-inline void st64(Ctx& c, uint32_t ea, uint64_t v) { const uint64_t b = _byteswap_uint64(v); std::memcpy(host(c, ea, 8), &b, 8); }
+// Loads and stores outside plain memory: the hardware window 0xCC000000-0xCC00FFFF goes to the installed
+// MMIO model (value in guest numeric order); anything else stops (or is absorbed in census mode).
+uint64_t loadSlow(Ctx& c, uint32_t ea, uint32_t size);
+void storeSlow(Ctx& c, uint32_t ea, uint32_t size, uint64_t value);
+
+inline uint8_t ld8(Ctx& c, uint32_t ea) { const uint8_t* p = hostMem(c, ea, 1); return p ? *p : static_cast<uint8_t>(loadSlow(c, ea, 1)); }
+inline uint16_t ld16(Ctx& c, uint32_t ea) {
+    const uint8_t* p = hostMem(c, ea, 2);
+    if (!p) return static_cast<uint16_t>(loadSlow(c, ea, 2));
+    uint16_t v; std::memcpy(&v, p, 2); return _byteswap_ushort(v);
+}
+inline uint32_t ld32(Ctx& c, uint32_t ea) {
+    const uint8_t* p = hostMem(c, ea, 4);
+    if (!p) return static_cast<uint32_t>(loadSlow(c, ea, 4));
+    uint32_t v; std::memcpy(&v, p, 4); return _byteswap_ulong(v);
+}
+inline uint64_t ld64(Ctx& c, uint32_t ea) {
+    const uint8_t* p = hostMem(c, ea, 8);
+    if (!p) return loadSlow(c, ea, 8);
+    uint64_t v; std::memcpy(&v, p, 8); return _byteswap_uint64(v);
+}
+inline void st8(Ctx& c, uint32_t ea, uint32_t v) {
+    uint8_t* p = hostMem(c, ea, 1);
+    if (p) *p = static_cast<uint8_t>(v); else storeSlow(c, ea, 1, v & 0xFFu);
+}
+inline void st16(Ctx& c, uint32_t ea, uint32_t v) {
+    uint8_t* p = hostMem(c, ea, 2);
+    if (!p) { storeSlow(c, ea, 2, v & 0xFFFFu); return; }
+    const uint16_t b = _byteswap_ushort(static_cast<uint16_t>(v)); std::memcpy(p, &b, 2);
+}
+inline void st32(Ctx& c, uint32_t ea, uint32_t v) {
+    uint8_t* p = hostMem(c, ea, 4);
+    if (!p) { storeSlow(c, ea, 4, v); return; }
+    const uint32_t b = _byteswap_ulong(v); std::memcpy(p, &b, 4);
+}
+inline void st64(Ctx& c, uint32_t ea, uint64_t v) {
+    uint8_t* p = hostMem(c, ea, 8);
+    if (!p) { storeSlow(c, ea, 8, v); return; }
+    const uint64_t b = _byteswap_uint64(v); std::memcpy(p, &b, 8);
+}
 
 inline uint32_t ld16s(Ctx& c, uint32_t ea) { return static_cast<uint32_t>(static_cast<int32_t>(static_cast<int16_t>(ld16(c, ea)))); }
 inline uint32_t ld16r(Ctx& c, uint32_t ea) { return _byteswap_ushort(ld16(c, ea)); }
@@ -303,12 +375,13 @@ inline void mtcrf(Ctx& c, uint32_t crm, uint32_t v) {
 }
 
 // ---- SPR / time base -------------------------------------------------------------------------------
-// The time base advances deterministically with retired instructions (assumption: ~3 cycles per
-// instruction, 12 CPU cycles per TB tick -> 4 instructions per tick).
-inline uint64_t timeBase(const Ctx& c) { return c.icount / 4; }
+// Until the platform installs a source (timeBaseInstall), the time base advances deterministically with
+// the machine's retired instructions (assumption: ~3 cycles per instruction, 12 CPU cycles per TB tick ->
+// 4 instructions per tick).
+uint64_t timeBase(Ctx& c);
 uint32_t mfspr(Ctx& c, uint32_t pc, uint32_t n);
 void mtspr(Ctx& c, uint32_t pc, uint32_t n, uint32_t v);
-inline uint32_t mftb(const Ctx& c, uint32_t n) { return n == 269 ? static_cast<uint32_t>(timeBase(c) >> 32) : static_cast<uint32_t>(timeBase(c)); }
+inline uint32_t mftb(Ctx& c, uint32_t n) { return n == 269 ? static_cast<uint32_t>(timeBase(c) >> 32) : static_cast<uint32_t>(timeBase(c)); }
 
 // ---- Floating point --------------------------------------------------------------------------------
 // FPSCR bits (little-endian numbering of the 32-bit value): RN = bits 0-1, NI = bit 2.

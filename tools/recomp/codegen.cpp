@@ -26,7 +26,7 @@ std::string S(const char* fmt, ...) {
 std::string fname(uint32_t a) { return S("f_%08X", a); }
 
 struct GenStats {
-    size_t functions = 0, stubs = 0, instructions = 0, bytes = 0;
+    size_t functions = 0, stubs = 0, hle = 0, instructions = 0, bytes = 0;
     size_t midFunctionTails = 0, unsupportedInsns = 0, unresolvedBctr = 0, jumpTables = 0, fellOff = 0;
     std::map<std::string, size_t> unsupportedKinds;
 };
@@ -71,7 +71,7 @@ private:
         body_text_ += '\n';
     }
     void flush() {
-        if (pend_) { line(S("c.icount += %d;", pend_)); pend_ = 0; }
+        if (pend_) { line(S("rt::tick(c, %d);", pend_)); pend_ = 0; }
     }
     // Emit the pc/icount update for an instruction that can trap or call (counted including itself).
     void trapPoint(const Insn& i) {
@@ -517,7 +517,7 @@ void FnEmitter::emitInsn(const Insn& i) {
     }
 }
 
-std::set<uint32_t> bootClosure(const Program& prog, const Discovery& d) {
+std::set<uint32_t> bootClosure(const Program& prog, const Discovery& d, const std::set<uint32_t>& hle) {
     std::set<uint32_t> seen;
     std::vector<uint32_t> work{prog.dol->entry};
     while (!work.empty()) {
@@ -527,7 +527,7 @@ std::set<uint32_t> bootClosure(const Program& prog, const Discovery& d) {
         auto it = d.funcs.find(s);
         if (it == d.funcs.end()) continue;
         const Function& f = it->second;
-        if (f.platform.any()) continue;    // platform boundary: emitted as a stub, not traversed
+        if (f.platform.any() || hle.count(s)) continue;    // platform boundary or HLE: emitted as a stub, not traversed
         for (uint32_t t : f.calls) work.push_back(t);
         for (uint32_t t : f.tailCalls) work.push_back(t);
         if (f.fallsInto) work.push_back(f.fallsInto);
@@ -547,13 +547,17 @@ std::string evidenceText(const Function& f) {
 
 }  // namespace
 
-int generateCode(const Program& prog, const Discovery& d, const std::string& outDir, bool full) {
+int generateCode(const Program& prog, const Discovery& d, const std::vector<HleEntry>& hle, const std::string& outDir,
+                 bool full) {
     namespace fs = std::filesystem;
+    std::set<uint32_t> hleAddrs;
+    std::map<uint32_t, const HleEntry*> hleByAddr;
+    for (const HleEntry& e : hle) { hleAddrs.insert(e.addr); hleByAddr[e.addr] = &e; }
     std::set<uint32_t> gen;
     if (full) {
         for (const auto& [a, f] : d.funcs) { (void)f; gen.insert(a); }
     } else {
-        gen = bootClosure(prog, d);
+        gen = bootClosure(prog, d, hleAddrs);
         for (auto it = gen.begin(); it != gen.end();) {
             if (!d.funcs.count(*it)) it = gen.erase(it); else ++it;
         }
@@ -575,7 +579,7 @@ int generateCode(const Program& prog, const Discovery& d, const std::string& out
         files.push_back(name);
         chunk.clear();
     };
-    std::string decls = "#pragma once\n#include \"guest.h\"\n";
+    std::string decls = "#pragma once\n#include \"guest.h\"\n#include \"hle_abi.h\"\n";
     for (uint32_t a : gen) decls += S("void %s(awl::rt::Ctx& c);\n", fname(a).c_str());
     {
         std::ofstream o(fs::path(outDir) / "gen_decls.h", std::ios::binary);
@@ -584,7 +588,10 @@ int generateCode(const Program& prog, const Discovery& d, const std::string& out
     for (uint32_t a : gen) {
         const Function& f = d.funcs.at(a);
         ++st.functions;
-        if (f.platform.any() && !(a == prog.dol->entry)) {
+        if (hleByAddr.count(a)) {
+            ++st.hle;
+            chunk += S("void %s(Ctx& c) { rt::hleCall(c, 0x%08X); }\n\n", fname(a).c_str(), a);
+        } else if (f.platform.any() && !(a == prog.dol->entry)) {
             ++st.stubs;
             chunk += S("void %s(Ctx& c) { rt::platformBoundary(c, 0x%08X, \"%s\"); }\n\n", fname(a).c_str(), a, evidenceText(f).c_str());
         } else {
@@ -598,7 +605,21 @@ int generateCode(const Program& prog, const Discovery& d, const std::string& out
     {
         std::string t = "#include \"gen_decls.h\"\nnamespace awl::rt {\nconst FnEntry kFunctions[] = {\n";
         for (uint32_t a : gen) t += S("    {0x%08X, %s},\n", a, fname(a).c_str());
-        t += S("};\nconst uint32_t kFunctionCount = %zu;\n}\n", gen.size());
+        t += S("};\nconst uint32_t kFunctionCount = %zu;\n", gen.size());
+        // Names of the HLE-replaced functions, so an unregistered handler is reported by name.
+        size_t named = 0;
+        std::string names;
+        for (uint32_t a : gen) {
+            const auto it = hleByAddr.find(a);
+            if (it == hleByAddr.end()) continue;
+            names += S("    {0x%08X, \"%s\"},\n", a, it->second->name.c_str());
+            ++named;
+        }
+        if (named) {
+            t += "namespace {\nconst HleName kHleNames[] = {\n" + names;
+            t += S("};\nstruct HleNamesDeclarer { HleNamesDeclarer() { declareHleNames(kHleNames, %zu); } } g_hleNamesDeclarer;\n}\n", named);
+        }
+        t += "}\n";
         std::ofstream o(fs::path(outDir) / "gen_dispatch.cpp", std::ios::binary);
         o << t;
         files.push_back("gen_dispatch.cpp");
@@ -609,8 +630,8 @@ int generateCode(const Program& prog, const Discovery& d, const std::string& out
         for (const auto& f : files) o << "    \"${AWL_RECOMP_GEN_DIR}/" << f << "\"\n";
         o << ")\n";
     }
-    std::printf("generated %zu functions (%zu platform stubs), %zu instructions into %zu files under %s\n", st.functions, st.stubs,
-                st.instructions, files.size(), outDir.c_str());
+    std::printf("generated %zu functions (%zu platform stubs, %zu HLE calls), %zu instructions into %zu files under %s\n", st.functions,
+                st.stubs, st.hle, st.instructions, files.size(), outDir.c_str());
     std::printf("  jump tables emitted: %zu; unresolved bctr: %zu; tails/branches to non-function targets: %zu; bodies that fall off: %zu\n",
                 st.jumpTables, st.unresolvedBctr, st.midFunctionTails, st.fellOff);
     std::printf("  untranslated instructions: %zu\n", st.unsupportedInsns);
