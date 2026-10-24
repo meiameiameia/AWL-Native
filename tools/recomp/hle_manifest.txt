@@ -1,0 +1,12 @@
+# Functions replaced by native handlers (HLE) instead of being recompiled. Owned by the P1 platform
+# track; read by the generator (`awl-recomp gen`), which emits rt::hleCall for each entry.
+#
+# Format, one function per line:  <module> <guest address> <name>  # <evidence>
+#   module   dol (the SDK lives in main.dol; REL entries are not supported)
+#   address  hexadecimal start of a discovered function, e.g. 0x801B3AC0
+#   name     SDK name used in logs and the stub register
+#   evidence how the identification was justified: call-graph position, hardware block touched,
+#            strings, and/or an hmawl name (names and addresses only; never its code)
+#
+# Example (not an active entry):
+#   dol 0x80000000 OSExampleFunction  # writes PI 0xCC003000, called once from the boot path
