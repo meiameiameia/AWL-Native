@@ -1,0 +1,422 @@
+// Semantics tests for the guest runtime used by recompiled code.
+// Expected values are derived by hand from the PowerPC architecture manuals (integer, XER/CR, rotate/mask,
+// FPSCR rounding), the Gekko User's Manual (paired singles, GQR layout) or exact arithmetic noted per case;
+// none of them is copied from the implementation's output.
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <memory>
+#include <vector>
+
+#include "guest.h"
+
+namespace awl::rt {
+// The runtime links against the generated dispatch table; the tests supply a tiny one.
+namespace {
+int g_calledA = 0;
+void fnA(Ctx& c) { ++g_calledA; c.r[3] = 0xA; }
+void fnB(Ctx& c) { c.r[3] = 0xB; }
+}  // namespace
+const FnEntry kFunctions[] = {{0x80001000, fnA}, {0x80002000, fnB}};
+const uint32_t kFunctionCount = 2;
+}  // namespace awl::rt
+
+using namespace awl::rt;
+
+namespace {
+
+int g_failures = 0;
+int g_checks = 0;
+
+#define CHECK(cond)                                                                   \
+    do {                                                                              \
+        ++g_checks;                                                                   \
+        if (!(cond)) {                                                                \
+            ++g_failures;                                                             \
+            std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);      \
+        }                                                                             \
+    } while (0)
+
+struct Harness {
+    std::vector<uint8_t> mem = std::vector<uint8_t>(kMem1Size, 0);
+    std::vector<uint8_t> lc = std::vector<uint8_t>(kLockedCacheSize, 0);
+    std::unique_ptr<Ctx> c = std::make_unique<Ctx>();
+    Harness() {
+        c->mem = mem.data();
+        c->lc = lc.data();
+        setFpscr(*c, 0);
+    }
+    uint8_t* at(uint32_t guest) { return mem.data() + (guest & 0x0FFFFFFF); }
+};
+
+bool throwsKind(Ctx& c, StopKind kind, void (*fn)(Ctx&)) {
+    try {
+        fn(c);
+    } catch (const Stop& s) {
+        return s.kind == kind;
+    }
+    return false;
+}
+
+void testIntegerArithmetic() {
+    Harness h;
+    Ctx& c = *h.c;
+    // 0xFFFFFFFF + 1 = 0 with carry out; no signed overflow (-1 + 1 = 0).
+    CHECK((addx<true, true>(c, 0xFFFFFFFF, 1, 0)) == 0 && c.ca == 1 && c.ov == 0 && c.so == 0);
+    // 0x7FFFFFFF + 1 overflows signed range: result 0x80000000, OV=1 and SO latches, CA=0.
+    CHECK((addx<true, true>(c, 0x7FFFFFFF, 1, 0)) == 0x80000000 && c.ca == 0 && c.ov == 1 && c.so == 1);
+    // A later non-overflowing op clears OV but SO stays sticky.
+    CHECK((addx<true, true>(c, 1, 1, 0)) == 2 && c.ov == 0 && c.so == 1);
+    c.so = 0;
+    // adde: 0xFFFFFFFF + 0 + CA(1) = 0, carry out 1.
+    CHECK((addx<true, false>(c, 0xFFFFFFFF, 0, 1)) == 0 && c.ca == 1);
+    // subfc rD = rB - rA = 5 - 3 = 2 with no borrow -> CA=1 (implemented as ~rA + rB + 1).
+    CHECK((addx<true, false>(c, ~3u, 5, 1)) == 2 && c.ca == 1);
+    // 3 - 5 = -2 with borrow -> CA=0.
+    CHECK((addx<true, false>(c, ~5u, 3, 1)) == 0xFFFFFFFE && c.ca == 0);
+    // neg(0x80000000) overflows (result 0x80000000, OV=1).
+    CHECK((addx<false, true>(c, ~0x80000000u, 0, 1)) == 0x80000000 && c.ov == 1);
+    c.so = 0; c.ov = 0;
+    // mullw: 0x10000 * 0x10000 = 2^32 does not fit in 32 bits: low word 0, OV=1.
+    CHECK(mullw<true>(c, 0x10000, 0x10000) == 0 && c.ov == 1);
+    c.so = 0; c.ov = 0;
+    CHECK(mullw<false>(c, 0xFFFFFFFF, 3) == 0xFFFFFFFD);   // -1 * 3 = -3
+    // mulhw / mulhwu high words: (-1)*(-1) = 1 -> hi 0; 0xFFFFFFFF*0xFFFFFFFF = 0xFFFFFFFE00000001 -> hi 0xFFFFFFFE.
+    CHECK(mulhw(0xFFFFFFFF, 0xFFFFFFFF) == 0);
+    CHECK(mulhwu(0xFFFFFFFF, 0xFFFFFFFF) == 0xFFFFFFFE);
+    CHECK(mulhw(0x80000000, 2) == 0xFFFFFFFF);              // -2^31 * 2 = -2^32 -> hi word -1
+    // divw / divwu in the defined range.
+    CHECK(divw<false>(c, 0xFFFFFFF9, 2) == 0xFFFFFFFD);     // -7 / 2 truncates toward zero = -3
+    CHECK(divwu<false>(c, 7, 2) == 3);
+    // Defined-overflow handling used by the runtime (architecturally undefined result, OV set).
+    CHECK(divwu<true>(c, 5, 0) == 0 && c.ov == 1);
+}
+
+void testRecordAndCompare() {
+    Harness h;
+    Ctx& c = *h.c;
+    cr0(c, 0x80000000);     // negative -> LT
+    CHECK(getCr(c, 0) == 8);
+    cr0(c, 5);              // positive -> GT
+    CHECK(getCr(c, 0) == 4);
+    cr0(c, 0);              // zero -> EQ
+    CHECK(getCr(c, 0) == 2);
+    c.so = 1;
+    cr0(c, 0);              // SO copied into bit 3 of the field
+    CHECK(getCr(c, 0) == 3);
+    c.so = 0;
+    cmps(c, 3, 0xFFFFFFFF, 1);   // signed: -1 < 1
+    CHECK(getCr(c, 3) == 8);
+    cmpu(c, 3, 0xFFFFFFFF, 1);   // unsigned: 0xFFFFFFFF > 1
+    CHECK(getCr(c, 3) == 4);
+    // Field numbering: CR0 is the most significant nibble, CR7 the least.
+    c.cr = 0;
+    setCr(c, 0, 0xA);
+    setCr(c, 7, 0x5);
+    CHECK(c.cr == 0xA0000005u);
+    CHECK(crBit(c, 0) == 1 && crBit(c, 1) == 0 && crBit(c, 2) == 1 && crBit(c, 31) == 1);
+    setCrBit(c, 1, 1);
+    CHECK(c.cr == 0xE0000005u);
+    // mtcrf with CRM 0x81 updates fields 0 and 7 only.
+    c.cr = 0;
+    mtcrf(c, 0x81, 0xFFFFFFFF);
+    CHECK(c.cr == 0xF000000Fu);
+}
+
+void testRotateMaskShift() {
+    Harness h;
+    Ctx& c = *h.c;
+    // MASK(mb,me): bits mb..me inclusive in IBM numbering; mb>me wraps around.
+    static_assert(mask(0, 31) == 0xFFFFFFFFu, "full mask");
+    static_assert(mask(24, 31) == 0x000000FFu, "low byte");
+    static_assert(mask(0, 0) == 0x80000000u, "bit 0");
+    static_assert(mask(16, 23) == 0x0000FF00u, "byte 2");
+    static_assert(mask(28, 3) == 0xF000000Fu, "wrapped mask");
+    static_assert(mask(31, 0) == 0x80000001u, "wrapped two-bit mask");
+    CHECK(rotl(0x80000001, 1) == 0x00000003);
+    CHECK(rotl(0x12345678, 0) == 0x12345678);
+    CHECK(rotl(0x12345678, 36) == rotl(0x12345678, 4));   // only the low 5 bits count
+    // rlwinm r,r,8,0,31 style rotate then mask: (0x12345678 rotl 8) = 0x34567812.
+    CHECK((rotl(0x12345678, 8) & mask(0, 31)) == 0x34567812);
+    // slw / srw use a 6-bit shift amount: >= 32 gives 0.
+    CHECK(slw(1, 31) == 0x80000000 && slw(1, 32) == 0 && slw(1, 63) == 0);
+    CHECK(srw(0x80000000, 31) == 1 && srw(0x80000000, 32) == 0);
+    // sraw: negative value shifted right fills with sign; CA set only if a 1 bit is shifted out of a negative.
+    CHECK(sraw(c, 0xFFFFFFF0, 4) == 0xFFFFFFFF && c.ca == 0);     // -16 >> 4 = -1, no bits lost
+    CHECK(sraw(c, 0xFFFFFFF1, 4) == 0xFFFFFFFF && c.ca == 1);     // -15 >> 4 = -1, bit lost
+    CHECK(sraw(c, 0x00000010, 4) == 1 && c.ca == 0);
+    CHECK(sraw(c, 0x80000000, 32) == 0xFFFFFFFF && c.ca == 1);    // shift >= 32 of a negative
+    CHECK(sraw(c, 0x7FFFFFFF, 40) == 0 && c.ca == 0);
+    CHECK(cntlzw(0) == 32 && cntlzw(1) == 31 && cntlzw(0x80000000) == 0 && cntlzw(0x00010000) == 15);
+}
+
+void testMemory() {
+    Harness h;
+    Ctx& c = *h.c;
+    st32(c, 0x80001000, 0x11223344);
+    CHECK(h.at(0x80001000)[0] == 0x11 && h.at(0x80001000)[1] == 0x22 && h.at(0x80001000)[2] == 0x33 && h.at(0x80001000)[3] == 0x44);
+    CHECK(ld32(c, 0x80001000) == 0x11223344);
+    CHECK(ld16(c, 0x80001002) == 0x3344 && ld8(c, 0x80001001) == 0x22);
+    st16(c, 0x80001010, 0x8001);
+    CHECK(ld16s(c, 0x80001010) == 0xFFFF8001);             // lha sign-extends
+    CHECK(ld16(c, 0x80001010) == 0x8001);                  // lhz zero-extends
+    CHECK(ld32r(c, 0x80001000) == 0x44332211);             // lwbrx byte-reverses
+    CHECK(ld16r(c, 0x80001000) == 0x2211);                 // lhbrx
+    st32r(c, 0x80001020, 0x11223344);                      // stwbrx: memory holds the reversed bytes
+    CHECK(h.at(0x80001020)[0] == 0x44 && h.at(0x80001020)[3] == 0x11);
+    // The uncached 0xC0000000 view reaches the same bytes as the cached 0x80000000 view.
+    CHECK(ld32(c, 0xC0001000) == 0x11223344);
+    // Unaligned access is permitted.
+    CHECK(ld32(c, 0x80001001) == 0x22334400u + h.at(0x80001004)[0]);
+    // lmw/stmw: r29..r31 stored consecutively.
+    c.r[29] = 1; c.r[30] = 2; c.r[31] = 3;
+    stmw(c, 29, 0x80001100);
+    CHECK(ld32(c, 0x80001100) == 1 && ld32(c, 0x80001104) == 2 && ld32(c, 0x80001108) == 3);
+    c.r[29] = c.r[30] = c.r[31] = 0;
+    lmw(c, 30, 0x80001104);
+    CHECK(c.r[29] == 0 && c.r[30] == 2 && c.r[31] == 3);
+    // Locked cache window.
+    st32(c, 0xE0000010, 0xCAFEBABE);
+    CHECK(h.lc[0x10] == 0xCA && ld32(c, 0xE0000010) == 0xCAFEBABE);
+    // dcbz clears the aligned 32-byte block that contains the address.
+    for (uint32_t i = 0; i < 64; ++i) h.at(0x80002000)[i] = 0xFF;
+    dcbz(c, 0x80002025);
+    CHECK(h.at(0x80002000)[0x1F] == 0xFF && h.at(0x80002000)[0x20] == 0 && h.at(0x80002000)[0x3F] == 0 );
+    // lwarx / stwcx.: success when the reservation is intact, failure afterwards; CR0[EQ] reports it.
+    st32(c, 0x80003000, 7);
+    CHECK(lwarx(c, 0x80003000) == 7);
+    stwcx(c, 0x80003000, 9);
+    CHECK(ld32(c, 0x80003000) == 9 && getCr(c, 0) == 2);
+    stwcx(c, 0x80003000, 11);                // reservation consumed by the previous stwcx.
+    CHECK(ld32(c, 0x80003000) == 9 && getCr(c, 0) == 0);
+    lwarx(c, 0x80003000);
+    dcbz(c, 0x80003000);                     // clearing the reserved line cancels the reservation
+    stwcx(c, 0x80003000, 5);
+    CHECK(getCr(c, 0) == 0);
+    // Faults: hardware register window and out-of-range addresses stop with distinct kinds.
+    c.pc = 0x80004000;
+    try { ld32(c, 0xCC006800); CHECK(false); } catch (const Stop& s) { CHECK(s.kind == StopKind::Mmio && s.addr == 0xCC006800); }
+    try { ld32(c, 0x81800000); CHECK(false); } catch (const Stop& s) { CHECK(s.kind == StopKind::Fault); }
+    try { ld32(c, 0x817FFFFD); CHECK(false); } catch (const Stop& s) { CHECK(s.kind == StopKind::Fault); }   // straddles the end
+    try { ld32(c, 0x00000058); CHECK(false); } catch (const Stop& s) { CHECK(s.kind == StopKind::Fault); }
+    CHECK(ld8(c, 0x817FFFFF) == 0);          // last byte of MEM1 is valid
+}
+
+void testSprAndTimeBase() {
+    Harness h;
+    Ctx& c = *h.c;
+    mtspr(c, 0, 1, 0xE000007F);               // XER: SO, OV, CA and byte count
+    CHECK(c.so == 1 && c.ov == 1 && c.ca == 1 && c.xerbc == 0x7F && mfspr(c, 0, 1) == 0xE000007F);
+    mtspr(c, 0, 913, 0x00040004);             // GQR1
+    CHECK(c.gqr[1] == 0x00040004 && mfspr(c, 0, 913) == 0x00040004);
+    mtspr(c, 0, 1008, 0x8000C000);            // HID0 is storage-only in the spike runtime
+    CHECK(mfspr(c, 0, 1008) == 0x8000C000);
+    CHECK(mfspr(c, 0, 287) == 0x00083214);    // PVR: the runtime's chosen constant (public emulator docs; unverified on hardware)
+    c.icount = 4000;                          // 4 instructions per time-base tick (documented assumption)
+    CHECK(mftb(c, 268) == 1000 && mftb(c, 269) == 0);
+    c.icount = (uint64_t{5} << 32) * 4;
+    CHECK(mftb(c, 269) == 5);
+}
+
+double roundingProbe(uint32_t rn) {
+    Harness h;
+    setFpscr(*h.c, rn);
+    volatile double x = 1.0 + 3.0 * std::ldexp(1.0, -25);   // 1 + 0.75 * 2^-23: between 1 and 1 + 2^-23
+    const double r = fround(x);
+    setFpscr(*h.c, 0);
+    return r;
+}
+
+void testFloatingPoint() {
+    const double up = 1.0 + std::ldexp(1.0, -23);
+    // frsp honours FPSCR[RN]: 00 nearest, 01 toward zero, 10 toward +inf, 11 toward -inf.
+    CHECK(roundingProbe(0) == up);          // 0.75 ulp above 1.0 -> nearest is 1 + 2^-23
+    CHECK(roundingProbe(1) == 1.0);
+    CHECK(roundingProbe(2) == up);
+    CHECK(roundingProbe(3) == 1.0);
+
+    Harness h;
+    Ctx& c = *h.c;
+    // fctiw uses the current rounding mode; fctiwz always truncates.  2.5 and -2.5 are exact halves.
+    CHECK(fctiw(2.5, false) == 2);                          // ties to even
+    CHECK(fctiw(3.5, false) == 4);
+    CHECK(fctiw(-2.5, false) == 0xFFFFFFFE);
+    CHECK(fctiw(-2.9, true) == 0xFFFFFFFE);                 // truncate toward zero -> -2
+    setFpscr(c, 2);
+    CHECK(fctiw(2.1, false) == 3);                          // toward +inf
+    setFpscr(c, 3);
+    CHECK(fctiw(2.9, false) == 2);                          // toward -inf
+    CHECK(fctiw(-2.1, false) == 0xFFFFFFFD);
+    setFpscr(c, 0);
+    // Saturation: positive overflow gives 0x7FFFFFFF, negative 0x80000000; NaN gives 0x80000000.
+    CHECK(fctiw(3e9, true) == 0x7FFFFFFF);
+    CHECK(fctiw(-3e9, true) == 0x80000000);
+    CHECK(fctiw(std::nan(""), true) == 0x80000000);
+
+    // Compare result bits: LT=8, GT=4, EQ=2, UN=1; unordered when either operand is NaN.
+    fcmp(c, 2, 1.0, 2.0);
+    CHECK(getCr(c, 2) == 8);
+    fcmp(c, 2, 2.0, 1.0);
+    CHECK(getCr(c, 2) == 4);
+    fcmp(c, 2, 1.0, 1.0);
+    CHECK(getCr(c, 2) == 2);
+    fcmp(c, 2, std::nan(""), 1.0);
+    CHECK(getCr(c, 2) == 1);
+
+    // mtfsf / mffs round trip; FEX and VX (bits 1,2 IBM = 0x40000000, 0x20000000) are not writable.
+    setFpscr(c, 0);                          // drop the FPCC bits left by the compares above
+    c.f[4].ps0 = bitsToDouble(0xFFFFFFFFull);
+    mtfsf(c, 0x01, 4);                       // FM bit 7 = field 7 (the low nibble: RN and NI)
+    CHECK(c.fpscr == 0xF);
+    mffs(c, 5);
+    CHECK((doubleToBits(c.f[5].ps0) & 0xFFFFFFFF) == 0xF);
+    mtfsb(c, 30, 0);                          // clear FPSCR bit 30 (IBM numbering) = RN low bit
+    CHECK(c.fpscr == 0xD);
+    setFpscr(c, 0);
+
+    // Non-IEEE mode: flush-to-zero.  A denormal times 1.0 is exact in IEEE mode and 0 in non-IEEE mode.
+    volatile double denorm = std::ldexp(1.0, -1074);
+    volatile double one = 1.0;
+    setFpscr(c, 0);
+    CHECK(denorm * one == std::ldexp(1.0, -1074));
+    setFpscr(c, 4);                           // NI
+    CHECK(denorm * one == 0.0);
+    setFpscr(c, 0);
+
+    // lfs converts a single to double and fills both halves; stfs rounds back to single.
+    st32(c, 0x80001000, 0x3FC00000);          // 1.5f
+    lfs(c, 7, 0x80001000);
+    CHECK(c.f[7].ps0 == 1.5 && c.f[7].ps1 == 1.5);
+    c.f[8].ps0 = 2.25;
+    stfs(c, 8, 0x80001010);
+    CHECK(ld32(c, 0x80001010) == 0x40100000);
+    stfd(c, 8, 0x80001020);
+    CHECK(ld64(c, 0x80001020) == 0x4002000000000000ull);   // 2.25 as a double
+    stfiwx(c, 4, 0x80001030);                 // low word of the register image
+    CHECK(ld32(c, 0x80001030) == 0xFFFFFFFF);
+}
+
+void testPairedSingles() {
+    Harness h;
+    Ctx& c = *h.c;
+    // Fused multiply-add keeps the full product: a = 1 + 2^-13, c = 1 - 2^-13, product = 1 - 2^-26 exactly.
+    // Rounding the product to single first would give 1.0 and a sum of 0; a fused op gives -2^-26.
+    c.f[1].ps0 = c.f[1].ps1 = 1.0 + std::ldexp(1.0, -13);
+    c.f[2].ps0 = c.f[2].ps1 = 1.0 - std::ldexp(1.0, -13);
+    c.f[3].ps0 = c.f[3].ps1 = -1.0;
+    ps_madd(c, 4, 1, 3, 2);                  // f4 = f1 * f2 + f3
+    CHECK(c.f[4].ps0 == -std::ldexp(1.0, -26) && c.f[4].ps1 == -std::ldexp(1.0, -26));
+    ps_nmsub(c, 5, 1, 3, 2);                 // -(f1*f2 - f3) = -(2 - 2^-26); 2^-26 is below half a single ulp at 2 -> -2.0
+    CHECK(c.f[5].ps0 == -2.0);
+
+    // ps_sum0: ps0 = a.ps0 + b.ps1, ps1 = c.ps1;  ps_sum1: ps0 = c.ps0, ps1 = a.ps0 + b.ps1.
+    c.f[10] = {1.0, 2.0}; c.f[11] = {10.0, 20.0}; c.f[12] = {100.0, 200.0};
+    ps_sum0(c, 13, 10, 11, 12);
+    CHECK(c.f[13].ps0 == 21.0 && c.f[13].ps1 == 200.0);
+    ps_sum1(c, 14, 10, 11, 12);
+    CHECK(c.f[14].ps0 == 100.0 && c.f[14].ps1 == 21.0);
+    // merges: 01 = (a.ps0, b.ps1), 10 = (a.ps1, b.ps0)
+    ps_merge01(c, 15, 10, 11, 0);
+    CHECK(c.f[15].ps0 == 1.0 && c.f[15].ps1 == 20.0);
+    ps_merge10(c, 16, 10, 11, 0);
+    CHECK(c.f[16].ps0 == 2.0 && c.f[16].ps1 == 10.0);
+    // muls0 multiplies both lanes by c.ps0; muls1 by c.ps1.
+    ps_muls0(c, 17, 10, 0, 11);
+    CHECK(c.f[17].ps0 == 10.0 && c.f[17].ps1 == 20.0);
+    ps_muls1(c, 18, 10, 0, 11);
+    CHECK(c.f[18].ps0 == 20.0 && c.f[18].ps1 == 40.0);
+    // ps_sel: lane value is c when a >= 0 (including -0.0), else b. NaN selects b.
+    c.f[20] = {-0.0, -1.0}; c.f[21] = {5.0, 5.0}; c.f[22] = {7.0, 7.0};
+    ps_sel(c, 23, 20, 21, 22);
+    CHECK(c.f[23].ps0 == 7.0 && c.f[23].ps1 == 5.0);
+    // In-place ops must read both lanes before writing (d == a).
+    c.f[24] = {1.0, 2.0};
+    ps_merge10(c, 24, 24, 24, 0);
+    CHECK(c.f[24].ps0 == 2.0 && c.f[24].ps1 == 1.0);
+
+    // GQR layout (Gekko manual): LD_TYPE bits 16-18, LD_SCALE bits 24-29, ST_TYPE bits 0-2, ST_SCALE bits 8-13.
+    // Types: 0 float, 4 u8, 5 u16, 6 s8, 7 s16.  Dequantised value = raw * 2^-LD_SCALE.
+    st8(c, 0x80001000, 0x80); st8(c, 0x80001001, 0x40);
+    c.gqr[2] = (4u << 16);                           // u8, scale 0
+    psqL(c, 1, 0x80001000, 0, 2);
+    CHECK(c.f[1].ps0 == 128.0 && c.f[1].ps1 == 64.0);
+    c.gqr[2] = (4u << 16) | (7u << 24);              // u8, scale 7 -> 128/128, 64/128
+    psqL(c, 1, 0x80001000, 0, 2);
+    CHECK(c.f[1].ps0 == 1.0 && c.f[1].ps1 == 0.5);
+    psqL(c, 1, 0x80001000, 1, 2);                    // W=1: a single value, ps1 forced to 1.0
+    CHECK(c.f[1].ps0 == 1.0 && c.f[1].ps1 == 1.0);
+    c.gqr[2] = (6u << 16) | (62u << 24);             // s8, scale field 62 = -2 (6-bit signed) -> multiply by 4
+    st8(c, 0x80001000, 0xFE);                        // -2
+    psqL(c, 1, 0x80001000, 1, 2);
+    CHECK(c.f[1].ps0 == -8.0);
+    st16(c, 0x80001000, 0xFFFF);
+    c.gqr[2] = (7u << 16);                           // s16
+    psqL(c, 1, 0x80001000, 1, 2);
+    CHECK(c.f[1].ps0 == -1.0);
+    c.gqr[2] = 0;                                    // float
+    st32(c, 0x80001000, 0x3F800000); st32(c, 0x80001004, 0xC0000000);   // 1.0f, -2.0f
+    psqL(c, 1, 0x80001000, 0, 2);
+    CHECK(c.f[1].ps0 == 1.0 && c.f[1].ps1 == -2.0);
+
+    // Quantising stores: value * 2^ST_SCALE, truncated toward zero, saturated to the type's range.
+    c.f[6] = {0.5, -3.7};
+    c.gqr[3] = 7u | (8u << 8);                       // s16, scale 8: 0.5*256 = 128 ; -3.7*256 = -947.2 -> -947
+    psqSt(c, 6, 0x80001100, 0, 3);
+    CHECK(ld16(c, 0x80001100) == 0x0080 && ld16(c, 0x80001102) == static_cast<uint16_t>(-947));
+    c.f[6] = {1000.0, -1.0};
+    c.gqr[3] = 4u;                                   // u8, scale 0: saturate high to 255, negative to 0
+    psqSt(c, 6, 0x80001110, 0, 3);
+    CHECK(ld8(c, 0x80001110) == 255 && ld8(c, 0x80001111) == 0);
+    c.f[6] = {-3.7, 0.0};
+    c.gqr[3] = 6u;                                   // s8: truncation toward zero gives -3
+    psqSt(c, 6, 0x80001120, 1, 3);                   // W=1 stores one element
+    CHECK(ld8(c, 0x80001120) == 0xFD && ld8(c, 0x80001121) == 0);
+    c.f[6] = {1.5, -2.0};
+    c.gqr[3] = 0;                                    // float
+    psqSt(c, 6, 0x80001130, 0, 3);
+    CHECK(ld32(c, 0x80001130) == 0x3FC00000 && ld32(c, 0x80001134) == 0xC0000000);
+}
+
+void fnReturnsWrongLr(Ctx& c) { c.lr = 0x1234; }
+
+void testCallPlumbing() {
+    Harness h;
+    Ctx& c = *h.c;
+    // callIndirect resolves a guest address through the dispatch table and tracks the shadow stack.
+    callIndirect(c, 0x80000100, 0x80001000);
+    CHECK(c.r[3] == 0xA && g_calledA == 1 && c.sp == 0 && c.lr == 0x80000104);
+    try { callIndirect(c, 0x80000200, 0x80001004); CHECK(false); } catch (const Stop& s) { CHECK(s.kind == StopKind::BadIndirect && s.addr == 0x80001004); }
+    // blr must find LR equal to the shadow-stack return address.
+    pushFrame(c, 0x80000300, 0x80002000);
+    ret(c, 0x80002010);                      // LR was set by pushFrame -> consistent
+    fnReturnsWrongLr(c);
+    try { ret(c, 0x80002010); CHECK(false); } catch (const Stop& s) { CHECK(s.kind == StopKind::BadReturn); }
+    popFrame(c);
+    // Platform boundaries throw by default and are recorded and skipped in census mode.
+    try { platformBoundary(c, 0x80005000, "test"); CHECK(false); } catch (const Stop& s) { CHECK(s.kind == StopKind::Platform && s.pc == 0x80005000); }
+    c.skipPlatform = true;
+    platformBoundary(c, 0x80005000, "test");
+    CHECK(c.boundaries.size() == 1 && c.boundaries[0].addr == 0x80005000);
+    c.skipPlatform = false;
+    // The instruction limit is checked at trap points.
+    c.limit = 10;
+    c.icount = 5;
+    at(c, 0x80006000, 3);
+    CHECK(c.icount == 8 && c.pc == 0x80006000);
+    try { at(c, 0x80006004, 5); CHECK(false); } catch (const Stop& s) { CHECK(s.kind == StopKind::InstructionLimit); }
+}
+
+}  // namespace
+
+int main() {
+    testIntegerArithmetic();
+    testRecordAndCompare();
+    testRotateMaskShift();
+    testMemory();
+    testSprAndTimeBase();
+    testFloatingPoint();
+    testPairedSingles();
+    testCallPlumbing();
+    std::printf("recomp semantics tests: %d checks, %d failures\n", g_checks, g_failures);
+    return g_failures == 0 ? 0 : 1;
+}
