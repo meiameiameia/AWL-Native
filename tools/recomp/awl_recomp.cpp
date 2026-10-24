@@ -5,14 +5,17 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <map>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
 #include "analysis.h"
 #include "codegen.h"
 #include "image.h"
+#include "manifest.h"
 #include "ppc.h"
 
 using namespace awl::recomp;
@@ -24,6 +27,7 @@ struct Options {
     std::string dol;
     std::string relDir;
     std::string out = "build/recomp-gen";
+    std::string manifest = "tools/recomp/hle_manifest.txt";
     std::string target;
     uint32_t addr = 0;
     uint32_t count = 16;
@@ -47,6 +51,7 @@ bool parseArgs(int argc, char** argv, Options& o) {
         if (a == "--dol") next(o.dol);
         else if (a == "--rel-dir") next(o.relDir);
         else if (a == "--out") next(o.out);
+        else if (a == "--hle-manifest") next(o.manifest);
         else if (a == "--full") o.full = true;
         else if (a == "--addr" && i + 1 < argc) o.addr = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0));
         else if (a == "--count" && i + 1 < argc) o.count = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0));
@@ -63,7 +68,8 @@ void usage() {
         "  rel        link the RELs at fixed bases, decode and discover functions in them\n"
         "  discover   function discovery, coverage and indirect-branch classification\n"
         "  disasm     --addr A [--count N]  disassemble text\n"
-        "  gen        --out DIR [--full]    emit C++ for the boot path (or the whole DOL with --full)\n");
+        "  gen        --out DIR [--full] [--hle-manifest FILE]   emit C++ for the boot path (or the whole DOL with --full);\n"
+        "             manifest defaults to tools/recomp/hle_manifest.txt\n");
 }
 
 bool loadRels(const Options& o, std::vector<RelImage>& rels) {
@@ -77,6 +83,23 @@ bool loadRels(const Options& o, std::vector<RelImage>& rels) {
         }
         r.name = n;
         rels.push_back(std::move(r));
+    }
+    return true;
+}
+
+// Reads and parses the HLE manifest; prints every problem and returns false when it cannot be used.
+bool loadManifest(const std::string& path, std::vector<HleEntry>& hle) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        std::fprintf(stderr, "cannot open HLE manifest %s (run from the repository root or pass --hle-manifest)\n", path.c_str());
+        return false;
+    }
+    std::stringstream ss;
+    ss << in.rdbuf();
+    std::vector<std::string> errors;
+    if (!parseHleManifest(ss.str(), path, hle, errors)) {
+        for (const auto& e : errors) std::fprintf(stderr, "%s\n", e.c_str());
+        return false;
     }
     return true;
 }
@@ -286,11 +309,18 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (o.command == "discover" || o.command == "gen") {
+        std::vector<HleEntry> hle;
+        if (o.command == "gen" && !loadManifest(o.manifest, hle)) return 1;
         DiscoveryInput in;
         in.relTargets = relTargetsIntoDol(dol, rels);
         Discovery d = discoverFunctions(prog, in);
         if (o.command == "discover") return reportDiscovery(prog, d, rels, in);
-        return generateCode(prog, d, o.out, o.full);
+        std::vector<std::string> errors;
+        if (!validateHleManifest(hle, d, o.manifest, errors)) {
+            for (const auto& e : errors) std::fprintf(stderr, "%s\n", e.c_str());
+            return 1;
+        }
+        return generateCode(prog, d, hle, o.out, o.full);
     }
     usage();
     return 2;

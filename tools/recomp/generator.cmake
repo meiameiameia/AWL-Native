@@ -3,7 +3,7 @@
 
 add_library(awl_recomp_core STATIC
     tools/recomp/ppc.cpp tools/recomp/image.cpp tools/recomp/analysis.cpp
-    tools/recomp/codegen.cpp tools/recomp/report.cpp)
+    tools/recomp/codegen.cpp tools/recomp/manifest.cpp tools/recomp/report.cpp)
 target_include_directories(awl_recomp_core PUBLIC ${CMAKE_SOURCE_DIR}/tools/recomp)
 add_executable(awl-recomp tools/recomp/awl_recomp.cpp)
 target_compile_definitions(awl-recomp PRIVATE _CRT_SECURE_NO_WARNINGS)
@@ -58,4 +58,19 @@ if(MSVC)
     target_compile_options(recomp_analysis_tests PRIVATE /W4)
 else()
     target_compile_options(recomp_analysis_tests PRIVATE -Wall -Wextra)
+endif()
+
+# Runtime contract tests (hle_abi.h) and HLE manifest tests.
+add_executable(recomp_contract_tests tests/recomp_contract_tests.cpp)
+target_link_libraries(recomp_contract_tests PRIVATE awl_recomp_runtime)
+add_test(NAME recomp_contract_tests COMMAND recomp_contract_tests)
+add_executable(recomp_manifest_tests tests/recomp_manifest_tests.cpp)
+target_link_libraries(recomp_manifest_tests PRIVATE awl_recomp_core)
+add_test(NAME recomp_manifest_tests COMMAND recomp_manifest_tests)
+if(MSVC)
+    target_compile_options(recomp_contract_tests PRIVATE /W4 /fp:strict)
+    target_compile_options(recomp_manifest_tests PRIVATE /W4)
+else()
+    target_compile_options(recomp_contract_tests PRIVATE -Wall -Wextra)
+    target_compile_options(recomp_manifest_tests PRIVATE -Wall -Wextra)
 endif()

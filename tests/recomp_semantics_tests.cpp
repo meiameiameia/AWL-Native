@@ -40,10 +40,12 @@ int g_checks = 0;
 struct Harness {
     std::vector<uint8_t> mem = std::vector<uint8_t>(kMem1Size, 0);
     std::vector<uint8_t> lc = std::vector<uint8_t>(kLockedCacheSize, 0);
-    std::unique_ptr<Ctx> c = std::make_unique<Ctx>();
+    Machine machine;
+    std::unique_ptr<Ctx> c;
     Harness() {
-        c->mem = mem.data();
-        c->lc = lc.data();
+        machine.mem = mem.data();
+        machine.lc = lc.data();
+        c = std::make_unique<Ctx>(machine);
         setFpscr(*c, 0);
     }
     uint8_t* at(uint32_t guest) { return mem.data() + (guest & 0x0FFFFFFF); }
@@ -212,9 +214,9 @@ void testSprAndTimeBase() {
     mtspr(c, 0, 1008, 0x8000C000);            // HID0 is storage-only in the spike runtime
     CHECK(mfspr(c, 0, 1008) == 0x8000C000);
     CHECK(mfspr(c, 0, 287) == 0x00083214);    // PVR: the runtime's chosen constant (public emulator docs; unverified on hardware)
-    c.icount = 4000;                          // 4 instructions per time-base tick (documented assumption)
+    c.m->icount = 4000;                          // 4 instructions per time-base tick (documented assumption)
     CHECK(mftb(c, 268) == 1000 && mftb(c, 269) == 0);
-    c.icount = (uint64_t{5} << 32) * 4;
+    c.m->icount = (uint64_t{5} << 32) * 4;
     CHECK(mftb(c, 269) == 5);
 }
 
@@ -394,15 +396,15 @@ void testCallPlumbing() {
     popFrame(c);
     // Platform boundaries throw by default and are recorded and skipped in census mode.
     try { platformBoundary(c, 0x80005000, "test"); CHECK(false); } catch (const Stop& s) { CHECK(s.kind == StopKind::Platform && s.pc == 0x80005000); }
-    c.skipPlatform = true;
+    c.m->skipPlatform = true;
     platformBoundary(c, 0x80005000, "test");
-    CHECK(c.boundaries.size() == 1 && c.boundaries[0].addr == 0x80005000);
-    c.skipPlatform = false;
+    CHECK(c.m->boundaries.size() == 1 && c.m->boundaries[0].addr == 0x80005000);
+    c.m->skipPlatform = false;
     // The instruction limit is checked at trap points.
-    c.limit = 10;
-    c.icount = 5;
+    c.m->limit = 10;
+    c.m->icount = 5;
     at(c, 0x80006000, 3);
-    CHECK(c.icount == 8 && c.pc == 0x80006000);
+    CHECK(c.m->icount == 8 && c.pc == 0x80006000);
     try { at(c, 0x80006004, 5); CHECK(false); } catch (const Stop& s) { CHECK(s.kind == StopKind::InstructionLimit); }
 }
 

@@ -30,6 +30,8 @@ const char* kindName(StopKind k) {
         case StopKind::Unimplemented: return "UNTRANSLATED CODE";
         case StopKind::DepthExceeded: return "CALL DEPTH";
         case StopKind::InstructionLimit: return "INSTRUCTION LIMIT";
+        case StopKind::HleUnregistered: return "HLE FUNCTION WITHOUT HANDLER";
+        case StopKind::Contract: return "RUNTIME CONTRACT VIOLATION";
     }
     return "?";
 }
@@ -88,29 +90,31 @@ int main(int argc, char** argv) {
     }
     installLowMemory(mem.data());
 
-    auto ctx = std::make_unique<Ctx>();
-    ctx->mem = mem.data();
-    ctx->lc = lc.data();
+    Machine machine;
+    machine.mem = mem.data();
+    machine.lc = lc.data();
+    machine.skipPlatform = census;
+    machine.limit = limit;
+    machine.traceMaxDepth = traceDepth;
+    auto ctx = std::make_unique<Ctx>(machine);
     ctx->msr = 0x00002032;   // FP and ME set; interrupts off (only visible through mfmsr)
     setFpscr(*ctx, 0);
-    ctx->skipPlatform = census;
-    ctx->limit = limit;
-    ctx->traceMaxDepth = traceDepth;
 
-    GuestFn entry = lookupFunction(dol.entry);
-    std::printf("awl-recomp-spike: %u recompiled functions linked, entry 0x%08X %s\n", kFunctionCount, dol.entry, entry ? "found" : "MISSING");
+    GuestFn entry = lookupFunction(machine, dol.entry);
+    std::printf("awl-recomp-spike: %u recompiled functions linked, entry 0x%08X %s\n", machine.functionCount, dol.entry, entry ? "found" : "MISSING");
     if (!entry) return 1;
 
     int rc = 0;
     try {
         entry(*ctx);
-        std::printf("entry function returned after %llu instructions\n", static_cast<unsigned long long>(ctx->icount));
+        std::printf("entry function returned after %llu instructions\n", static_cast<unsigned long long>(machine.icount));
     } catch (const Stop& s) {
         std::printf("\nSTOP: %s\n", kindName(s.kind));
         std::printf("  guest pc            0x%08X\n", s.pc);
         if (s.addr) std::printf("  address involved    0x%08X\n", s.addr);
+        if (s.name) std::printf("  function name       %s\n", s.name);
         std::printf("  detail              %s\n", s.what);
-        std::printf("  instructions retired %llu (counted through the stopping instruction)\n", static_cast<unsigned long long>(ctx->icount));
+        std::printf("  instructions retired %llu (counted through the stopping instruction)\n", static_cast<unsigned long long>(machine.icount));
         std::printf("  call depth           %u\n", ctx->sp);
         std::printf("  call trace (innermost first; function <- call site):\n");
         for (uint32_t k = ctx->sp; k-- > 0;) {
@@ -122,13 +126,13 @@ int main(int argc, char** argv) {
     }
     if (traceDepth) {
         std::printf("\ncall trace to depth %u (execution order; indentation = nesting, @ = instructions retired at the call):\n", traceDepth);
-        for (const auto& t : ctx->trace)
+        for (const auto& t : machine.trace)
             std::printf("  %*s0x%08X <- 0x%08X  @%llu\n", static_cast<int>(t.depth * 2), "", t.callee, t.site, static_cast<unsigned long long>(t.icount));
     }
     if (census) {
         std::printf("\nplatform boundaries skipped in execution order (census mode; results after the first are NOT valid emulation):\n");
         std::vector<uint32_t> seen;
-        for (const auto& b : ctx->boundaries) {
+        for (const auto& b : machine.boundaries) {
             bool dup = false;
             for (uint32_t a : seen) dup |= a == b.addr;
             if (dup) continue;
@@ -136,10 +140,10 @@ int main(int argc, char** argv) {
             std::printf("  #%-3zu 0x%08X  first hit at instruction %-10llu from site 0x%08X  [%s]\n", seen.size(), b.addr,
                         static_cast<unsigned long long>(b.icount), b.callSite, b.evidence);
         }
-        std::printf("  %zu distinct boundaries, %zu total hits\n", seen.size(), ctx->boundaries.size());
-        std::printf("absorbed memory faults (hardware registers read as 0, writes dropped): %zu accesses\n", ctx->faults.size());
+        std::printf("  %zu distinct boundaries, %zu total hits\n", seen.size(), machine.boundaries.size());
+        std::printf("absorbed memory faults (hardware registers read as 0, writes dropped): %zu accesses\n", machine.faults.size());
         std::vector<uint32_t> faultAddrs;
-        for (const auto& f : ctx->faults) {
+        for (const auto& f : machine.faults) {
             bool dup = false;
             for (uint32_t a : faultAddrs) dup |= a == f.addr;
             if (dup) continue;
