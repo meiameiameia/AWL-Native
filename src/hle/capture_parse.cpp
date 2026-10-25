@@ -272,8 +272,14 @@ OurTrace parseOurTrace(const std::string& text) {
         unsigned long long ull = 0;
         auto bad = [&](const char* what) { t.malformed.push_back("line " + std::to_string(no) + ": " + what + ": " + clip(line)); };
         if (std::strncmp(s, "call ", 5) == 0) {
-            if (std::sscanf(s, "call %x site=%x depth=%u icount=%llu", &a, &b, &d, &ull) == 4) t.calls.push_back(OurCall{a, b, d, ull});
-            else bad("unreadable call line");
+            unsigned r3 = 0, r4 = 0, r5 = 0, r6 = 0;
+            const int n = std::sscanf(s, "call %x site=%x depth=%u icount=%llu r3=%x r4=%x r5=%x r6=%x", &a, &b, &d, &ull, &r3, &r4, &r5, &r6);
+            if (n == 4 || n == 8) {
+                OurCall c;
+                c.callee = a; c.site = b; c.depth = d; c.icount = ull;
+                if (n == 8) { c.hasArgs = true; c.args[0] = r3; c.args[1] = r4; c.args[2] = r5; c.args[3] = r6; }
+                t.calls.push_back(c);
+            } else bad("unreadable call line");
         } else if (std::strncmp(s, "dsp mail ->", 11) == 0) {
             char dir[8] = {};
             if (std::sscanf(s, "dsp mail ->%7s %x t=%llu", dir, &a, &ull) == 3) t.mails.push_back(OurMail{std::strcmp(dir, "dsp") == 0, a, ull});

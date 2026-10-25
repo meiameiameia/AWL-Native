@@ -24,6 +24,9 @@ constexpr uint64_t kFieldTicks = 675675;
 constexpr uint64_t kLineTicks = 2574;
 
 constexpr uint32_t kMsrEE = 0x8000;
+// Floating-point available. The platform keeps it set on every context it resumes or starts (always-available-FPU policy, note 5.1):
+// each guest thread has its own FPRs, so the SDK's lazy FPU switching has nothing to move and its first-use trap never happens.
+constexpr uint32_t kMsrFP = 0x2000;
 
 // Guest memory seen from the platform (no CPU context needed). Addresses may use either the cached
 // (0x80000000) or the uncached (0xC0000000) view.

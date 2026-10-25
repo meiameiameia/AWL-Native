@@ -60,6 +60,8 @@ Notes parseNotes(const std::string& text);
 struct OurCall {
     uint32_t callee = 0, site = 0, depth = 0;
     uint64_t icount = 0;
+    bool hasArgs = false;
+    uint32_t args[4] = {};          // r3-r6 at the call, when the trace carries them (call lines with r3= .. r6=)
 };
 struct OurMail {
     bool toDsp = false;

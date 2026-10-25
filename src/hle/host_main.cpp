@@ -63,7 +63,8 @@ void writeCallTrace(const Machine& m) {
         if (t[i].depth <= osInitDepth) { trace().line("boot.after-osinit icount=%llu", static_cast<unsigned long long>(t[i].icount)); break; }
     for (const TraceHit& h : t)
         if (capture::watchedName(h.callee))
-            trace().line("call %08X site=%08X depth=%u icount=%llu", h.callee, h.site, h.depth, static_cast<unsigned long long>(h.icount));
+            trace().line("call %08X site=%08X depth=%u icount=%llu r3=%08X r4=%08X r5=%08X r6=%08X", h.callee, h.site, h.depth,
+                         static_cast<unsigned long long>(h.icount), h.args[0], h.args[1], h.args[2], h.args[3]);
 }
 
 }  // namespace
@@ -136,6 +137,7 @@ int main(int argc, char** argv) {
         if (s.addr) std::printf("  address involved     0x%08X\n", s.addr);
         if (s.name) std::printf("  function name        %s\n", s.name);
         std::printf("  detail               %s\n", s.what);
+        if (r.ctx) std::printf("  MSR                  0x%08X\n", r.ctx->msr);
         std::printf("  instructions retired %llu\n  thread               %u\n", static_cast<unsigned long long>(machine.icount), r.threadId);
         if (r.ctx) {
             std::printf("  call trace (innermost first; function <- call site):\n");

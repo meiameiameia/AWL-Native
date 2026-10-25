@@ -4,6 +4,10 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <functional>
+#include <map>
+#include <set>
+#include <tuple>
 #include <vector>
 
 #include "capture_parse.h"
@@ -148,15 +152,21 @@ struct DiffOp {
 };
 
 // Longest-common-subsequence alignment of two address sequences.
-std::vector<DiffOp> alignSequences(const std::vector<uint32_t>& a, const std::vector<uint32_t>& b) {
+std::vector<DiffOp> alignSequences(const std::vector<uint32_t>& a, const std::vector<uint32_t>& b, const std::function<int(size_t, size_t)>& weight) {
+    // Weighted longest common subsequence: a pair of equal addresses scores weight(i, j) (> 0), so among alignments with as many pairs
+    // the one whose pairs agree in their arguments wins (repeated calls of one function would otherwise pair arbitrarily).
     const size_t n = a.size(), m = b.size();
-    std::vector<std::vector<uint16_t>> dp(n + 1, std::vector<uint16_t>(m + 1, 0));
+    std::vector<std::vector<int>> dp(n + 1, std::vector<int>(m + 1, 0));
     for (size_t i = n; i-- > 0;)
-        for (size_t j = m; j-- > 0;) dp[i][j] = a[i] == b[j] ? static_cast<uint16_t>(dp[i + 1][j + 1] + 1) : std::max(dp[i + 1][j], dp[i][j + 1]);
+        for (size_t j = m; j-- > 0;) {
+            int best = std::max(dp[i + 1][j], dp[i][j + 1]);
+            if (a[i] == b[j]) best = std::max(best, weight(i, j) + dp[i + 1][j + 1]);
+            dp[i][j] = best;
+        }
     std::vector<DiffOp> ops;
     size_t i = 0, j = 0;
     while (i < n || j < m) {
-        if (i < n && j < m && a[i] == b[j]) { ops.push_back({'=', i, j}); ++i; ++j; }
+        if (i < n && j < m && a[i] == b[j] && dp[i][j] == weight(i, j) + dp[i + 1][j + 1]) { ops.push_back({'=', i, j}); ++i; ++j; }
         else if (i < n && (j >= m || dp[i + 1][j] >= dp[i][j + 1])) { ops.push_back({'<', i, j}); ++i; }
         else { ops.push_back({'>', i, j}); ++j; }
     }
@@ -491,14 +501,20 @@ std::string buildReport(const CompareInputs& in) {
             if ((a || b) && kWatched[i].captureC) r += sf("| %s | %zu | %zu |\n", callName(kWatched[i].addr).c_str(), a, b);
         }
         // Sequence alignment over the first K events of each side.
-        const size_t K = 150;
+        const size_t K = 400;
         std::vector<uint32_t> sa, sb;
         for (size_t i = 0; i < dh.size() && i < K; ++i) sa.push_back(dh[i]->addr);
         for (size_t i = 0; i < oh.size() && i < K; ++i) sb.push_back(oh[i]->callee);
         r += sf("\nAlignment of the first %zu Dolphin events and the first %zu platform events (longest common subsequence; both sides run for different lengths, so a tail difference alone is not a mismatch):\n\n", sa.size(), sb.size());
         if (sa.empty() || sb.empty()) r += "Nothing to align.\n\n";
         else {
-            const std::vector<DiffOp> ops = alignSequences(sa, sb);
+            auto weight = [&](size_t i, size_t j) {
+                int w = 100;
+                if (oh[j]->hasArgs)
+                    for (size_t k = 0; k < 4 && k < dh[i]->args.size(); ++k) w += dh[i]->args[k] == oh[j]->args[k];
+                return w;
+            };
+            const std::vector<DiffOp> ops = alignSequences(sa, sb, weight);
             size_t same = 0, shown = 0;
             size_t run = 0;
             auto flush = [&]() { if (run) { r += sf("- %zu calls in the same order\n", run); run = 0; } };
@@ -512,9 +528,70 @@ std::string buildReport(const CompareInputs& in) {
             flush();
             size_t totalD = 0, totalO = 0;
             for (const DiffOp& op : ops) { totalD += op.kind == '<'; totalO += op.kind == '>'; }
+            size_t exact = 0;
+            while (exact < ops.size() && ops[exact].kind == '=') ++exact;
+            r += sf("\nThe two sequences agree exactly for the first %zu events.", exact);
             r += sf("\nResult: %zu in common, %zu only in Dolphin, %zu only in the platform%s.\n\n", same, totalD, totalO, shown > 80 ? " (list truncated at 80 differences)" : "");
+
+            // Arguments r3-r6 of the aligned calls. A pointer into MEM1 on both sides may differ legitimately (heap layout), so each
+            // argument is classed: equal; both pointers into MEM1 (reported with the offset); or a real value difference.
+            bool anyArgs = false;
+            for (const OurCall* c : oh) anyArgs |= c->hasArgs;
+            if (!anyArgs) {
+                r += "The platform trace carries no call arguments (awl-host --calls records r3-r6 when the runtime's trace supports it), so arguments are not compared.\n\n";
+            } else {
+                auto isMem1 = [](uint32_t x) { return ((x >> 28) == 8 || (x >> 28) == 0xC) && (x & 0x0FFFFFFFu) < 0x01800000u; };
+                struct Group { size_t n = 0; uint32_t d = 0, o = 0; std::set<int64_t> deltas; size_t first = 0; };
+                std::map<std::tuple<uint32_t, int, int>, Group> groups;      // (function, argument, class 1 = pointer, 2 = value)
+                struct PerFn { size_t calls = 0, equal = 0, ptr = 0, val = 0; };
+                std::map<uint32_t, PerFn> perFn;
+                size_t aligned = 0;
+                for (const DiffOp& op : ops) {
+                    if (op.kind != '=') continue;
+                    const BpHit* h = dh[op.a];
+                    const OurCall* c = oh[op.b];
+                    if (!c->hasArgs) continue;
+                    ++aligned;
+                    PerFn& pf = perFn[h->addr];
+                    ++pf.calls;
+                    for (int k = 0; k < 4 && static_cast<size_t>(k) < h->args.size(); ++k) {
+                        const uint32_t dv = h->args[static_cast<size_t>(k)], ov = c->args[k];
+                        if (dv == ov) { ++pf.equal; continue; }
+                        const int cls = (isMem1(dv) && isMem1(ov)) ? 1 : 2;
+                        (cls == 1 ? pf.ptr : pf.val)++;
+                        // Pointer differences are grouped per function and argument; value differences per distinct pair of values.
+                        const int slot = cls == 1 ? k : k + 4 * (1 + static_cast<int>((dv ^ (ov * 2654435761u)) & 0x3FF));
+                        Group& g = groups[std::make_tuple(h->addr, slot, cls)];
+                        if (!g.n) { g.d = dv; g.o = ov; g.first = op.a; }
+                        ++g.n;
+                        g.deltas.insert(static_cast<int64_t>(ov) - static_cast<int64_t>(dv));
+                    }
+                }
+                r += sf("Arguments r3-r6 of the %zu aligned calls that carry them (Dolphin logs r3-r10 per hit; r3-r6 compared):\n\n", aligned);
+                r += "| Function | Calls | Equal | Pointer into MEM1 differs | Value differs |\n|---|---|---|---|---|\n";
+                size_t tEq = 0, tPtr = 0, tVal = 0;
+                for (const auto& kv : perFn) {
+                    r += sf("| %s | %zu | %zu | %zu | %zu |\n", callName(kv.first).c_str(), kv.second.calls, kv.second.equal, kv.second.ptr, kv.second.val);
+                    tEq += kv.second.equal; tPtr += kv.second.ptr; tVal += kv.second.val;
+                }
+                r += sf("\nTotal: %zu equal, %zu pointer differences, %zu value differences.\n\n", tEq, tPtr, tVal);
+                size_t listed = 0;
+                for (const auto& kv : groups) {
+                    if (listed++ >= 40) { r += "- ... (more groups not listed)\n"; break; }
+                    const uint32_t fn = std::get<0>(kv.first);
+                    const int arg = std::get<1>(kv.first) % 4;
+                    const Group& g = kv.second;
+                    if (std::get<2>(kv.first) == 1) {
+                        if (g.deltas.size() == 1) r += sf("- %s r%d: pointer into MEM1, platform minus Dolphin = %+lld in all %zu calls (first Dolphin %08X, platform %08X)\n", callName(fn).c_str(), arg + 3, static_cast<long long>(*g.deltas.begin()), g.n, g.d, g.o);
+                        else r += sf("- %s r%d: pointer into MEM1, %zu different offsets over %zu calls (first Dolphin %08X, platform %08X, offset %+lld)\n", callName(fn).c_str(), arg + 3, g.deltas.size(), g.n, g.d, g.o, static_cast<long long>(static_cast<int64_t>(g.o) - static_cast<int64_t>(g.d)));
+                    } else {
+                        r += sf("- %s r%d: VALUE difference in %zu calls: Dolphin %08X, platform %08X (first at hit %zu)\n", callName(fn).c_str(), arg + 3, g.n, g.d, g.o, g.first + 1);
+                    }
+                }
+                r += "\n";
+            }
         }
-        r += "First hit of each function (Dolphin arguments r3-r6 and caller; the platform trace records no registers, so its arguments are not compared yet):\n\n";
+        r += "First hit of each function (Dolphin arguments r3-r6 and caller; platform arguments are in the table above when its trace carries them):\n\n";
         r += "| Function | Dolphin r3 r4 r5 r6 | Dolphin LR | Dolphin t (s from the first hit) | Platform first call: instruction / call site |\n|---|---|---|---|---|\n";
         double t0 = 0;
         bool haveT0 = false;
@@ -544,28 +621,72 @@ std::string buildReport(const CompareInputs& in) {
     if (!dDsp.present) r += "Capture D not captured.\n\n";
     else {
         dParse = parseBpLog(asText(dDsp));
+        unwrapTimes(dParse.hits);
+        // Like with like: the game's mail functions are logged in Dolphin (801C3D34 send, 801C3D30 read). The boot ROM's first mail is read
+        // through another path (the polling in the DSP bring-up), so it is listed apart and left out of the read comparison.
+        struct Ev { bool send; uint32_t v; };
         std::vector<uint32_t> sends, recvs;
+        std::vector<Ev> dEvents, oEvents;
+        std::vector<double> babeTimes;
         for (const BpHit& h : dParse.hits) {
             if (h.args.empty()) continue;
-            if (h.addr == 0x801C3D34) sends.push_back(h.args[0]);
-            else if (h.addr == 0x801C3D30) recvs.push_back(h.args[0]);
+            if (h.addr == 0x801C3D34) {
+                sends.push_back(h.args[0]);
+                dEvents.push_back({true, h.args[0]});
+                if ((h.args[0] >> 16) == 0xBABE && h.hasTime) babeTimes.push_back(h.seconds);
+            } else if (h.addr == 0x801C3D30) {
+                recvs.push_back(h.args[0]);
+                dEvents.push_back({false, h.args[0]});
+            }
         }
         std::vector<uint32_t> oSends, oRecvs;
-        for (const OurMail& m : ours.mails) (m.toDsp ? oSends : oRecvs).push_back(m.value);
-        size_t babe = 0, resume = 0;
-        for (uint32_t x : sends) babe += (x >> 16) == 0xBABE;
-        for (uint32_t x : recvs) resume += x == 0xDCD10001;
-        r += sf("Dolphin: %zu messages sent to the DSP (801C3D34), %zu read from it (801C3D30). Platform: %zu sent, %zu delivered.\n\n", sends.size(), recvs.size(), oSends.size(), oRecvs.size());
+        std::vector<double> oBabeMs;
+        bool oBoot = false;
+        uint64_t oBootTick = 0;
+        for (const OurMail& m : ours.mails) {
+            if (!m.toDsp && m.value == 0x8071FEED && !oBoot) { oBoot = true; oBootTick = m.tick; continue; }
+            (m.toDsp ? oSends : oRecvs).push_back(m.value);
+            oEvents.push_back({m.toDsp, m.value});
+            if (m.toDsp && (m.value >> 16) == 0xBABE) oBabeMs.push_back(static_cast<double>(m.tick) * 1000.0 / static_cast<double>(kTickRate));
+        }
+        bool dBoot = false;
+        for (uint32_t x : recvs) dBoot |= x == 0x8071FEED;
+        r += "The reference is **Dolphin's HLE DSP**, not low-level emulation of the microcode and not hardware: it shows what the SDK code expects from a working DSP, and the platform's responder is judged by whether the recompiled SDK code runs the same exchange.\n\n";
+        r += sf("Dolphin: %zu messages sent to the DSP (801C3D34), %zu read through 801C3D30. Platform: %zu sent, %zu delivered besides the boot-ROM mail.\n\n", sends.size(), recvs.size(), oSends.size(), oRecvs.size());
+        r += "Expected exchange (docs/research/hle-platform.md, section 5.4): the boot-ROM mail 8071FEED; five command/data pairs starting 80F3A001, 80F3C002, 80F3A002, 80F3B002, 80F3D001; DCD10000 (task INIT); then per audio frame the game sends BABExxxx and the list address, the DSP yields with DCD10002, and the SDK's DSP handler (0x801C3F64, send at 0x801C4118) sends CDD10003.\n\n";
         static const uint32_t kCmds[5] = {0x80F3A001, 0x80F3C002, 0x80F3A002, 0x80F3B002, 0x80F3D001};
-        bool first = !recvs.empty() && recvs[0] == 0x8071FEED;
-        bool init = recvs.size() > 1 && recvs[1] == 0xDCD10000;
-        size_t cmdOk = 0;
-        for (size_t i = 0; i < 5; ++i) if (2 * i < sends.size() && sends[2 * i] == kCmds[i]) ++cmdOk;
-        r += "Expected exchange (docs/research/hle-platform.md, section 5.4): first message from the DSP 8071FEED; five command/data pairs starting 80F3A001, 80F3C002, 80F3A002, 80F3B002, 80F3D001; the answer DCD10000; then one BABE message plus a list address per audio frame, each answered DCD10001.\n\n";
-        r += sf("- first message from the DSP is 8071FEED: %s\n", recvs.empty() ? "no messages read" : (first ? "yes" : "NO"));
-        r += sf("- five command words at the start of the sends: %zu of 5 in place\n", cmdOk);
-        r += sf("- DCD10000 as the second read: %s\n", recvs.size() < 2 ? "not enough messages" : (init ? "yes" : "NO"));
-        r += sf("- BABE messages sent: %zu; DCD10001 messages read: %zu%s\n\n", babe, resume, babe && resume + 1 < babe ? " (fewer answers than frames: check the log)" : "");
+        size_t cmdOk = 0, oCmdOk = 0;
+        for (size_t i = 0; i < 5; ++i) {
+            if (2 * i < sends.size() && sends[2 * i] == kCmds[i]) ++cmdOk;
+            if (2 * i < oSends.size() && oSends[2 * i] == kCmds[i]) ++oCmdOk;
+        }
+        auto count = [](const std::vector<uint32_t>& v, uint32_t x) { size_t n = 0; for (uint32_t y : v) n += y == x; return n; };
+        auto babes = [](const std::vector<uint32_t>& v) { size_t n = 0; for (uint32_t y : v) n += (y >> 16) == 0xBABE; return n; };
+        // A frame in the merged event order: send BABExxxx, send address, read DCD10002, send CDD10003.
+        auto frames = [](const std::vector<Ev>& e) {
+            size_t n = 0;
+            for (size_t i = 0; i + 3 < e.size(); ++i)
+                if (e[i].send && (e[i].v >> 16) == 0xBABE && e[i + 1].send && !e[i + 2].send && e[i + 2].v == 0xDCD10002 && e[i + 3].send && e[i + 3].v == 0xCDD10003) ++n;
+            return n;
+        };
+        r += sf("- boot-ROM mail 8071FEED: platform %s; Dolphin %s\n", oBoot ? sf("delivers it (tick %llu)", static_cast<unsigned long long>(oBootTick)).c_str() : "does not deliver it",
+                dBoot ? "read through 801C3D30" : "not seen through 801C3D30 (read by the bring-up polling)");
+        r += sf("- five command words at the start of the sends: Dolphin %zu of 5, platform %zu of 5\n", cmdOk, oCmdOk);
+        r += sf("- first mail read through 801C3D30 is DCD10000: Dolphin %s, platform %s\n", recvs.empty() ? "no reads" : (recvs[0] == 0xDCD10000 ? "yes" : "NO"),
+                oRecvs.empty() ? "no reads" : (oRecvs[0] == 0xDCD10000 ? "yes" : "NO"));
+        r += sf("- BABE messages sent: Dolphin %zu, platform %zu\n", babes(sends), babes(oSends));
+        r += sf("- DCD10002 (yield) mails read: Dolphin %zu, platform %zu; DCD10001 (resume) read: Dolphin %zu, platform %zu\n", count(recvs, 0xDCD10002), count(oRecvs, 0xDCD10002), count(recvs, 0xDCD10001), count(oRecvs, 0xDCD10001));
+        r += sf("- CDD10003 sent by the handler: Dolphin %zu, platform %zu\n", count(sends, 0xCDD10003), count(oSends, 0xCDD10003));
+        r += sf("- complete frames (BABExxxx, address, DCD10002, CDD10003 in that order): Dolphin %zu of %zu, platform %zu of %zu\n", frames(dEvents), babes(sends), frames(oEvents), babes(oSends));
+        // Frame cadence from the BABE sends.
+        std::vector<double> dd, od;
+        for (size_t i = 1; i < babeTimes.size(); ++i) dd.push_back((babeTimes[i] - babeTimes[i - 1]) * 1000.0);
+        for (size_t i = 1; i < oBabeMs.size(); ++i) od.push_back(oBabeMs[i] - oBabeMs[i - 1]);
+        const Stats ds = statsOf(dd), os = statsOf(od);
+        if (ds.n) r += sf("- frame interval: Dolphin mean %.3f ms over %zu intervals (log time stamps have millisecond resolution; its median reflects bursts); ", ds.mean, ds.n);
+        else r += "- frame interval: Dolphin has no usable time stamps; ";
+        if (os.n) r += sf("platform mean %.3f ms, median %.3f ms (160 samples at 32 kHz = 5.000 ms)\n\n", os.mean, os.median);
+        else r += "platform has no frame mails\n\n";
         auto table = [&](const char* title, const std::vector<uint32_t>& d, const std::vector<uint32_t>& o) {
             r += sf("%s (first %zu):\n\n| # | Dolphin | Platform | |\n|---|---|---|---|\n", title, std::min<size_t>(std::max(d.size(), o.size()), 24));
             size_t diff = 0;
@@ -578,7 +699,14 @@ std::string buildReport(const CompareInputs& in) {
             r += sf("\n%zu of the shown rows differ.\n\n", diff);
         };
         table("Messages the game sends", sends, oSends);
-        table("Messages the game reads", recvs, oRecvs);
+        table("Messages the game reads through 801C3D30 (platform: delivered mails without the boot-ROM mail)", recvs, oRecvs);
+        // Whole-sequence comparison: first difference in each direction.
+        auto firstDiff = [](const std::vector<uint32_t>& d, const std::vector<uint32_t>& o) -> std::string {
+            const size_t n = std::min(d.size(), o.size());
+            for (size_t i = 0; i < n; ++i) if (d[i] != o[i]) return sf("index %zu (Dolphin %08X, platform %08X)", i, d[i], o[i]);
+            return sf("none in the first %zu", n);
+        };
+        r += sf("First difference over the whole common length: sends %s; reads %s.\n\n", firstDiff(sends, oSends).c_str(), firstDiff(recvs, oRecvs).c_str());
     }
 
     // ---- parse notes --------------------------------------------------------------------------------------------------------
