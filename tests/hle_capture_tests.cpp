@@ -205,8 +205,8 @@ void testReportWithCapture() {
     // Capture A at entry: everything as assumed except the bus clock; one unmodelled non-zero word; a marker that must not be quoted.
     std::vector<uint8_t> a(0x100000, 0);
     std::memcpy(&a[0], boot.data(), 4);
-    put32(a, 0x80000020, v.bootMagic); put32(a, 0x80000024, v.bootVersion); put32(a, 0x80000028, v.memSize); put32(a, 0x8000002C, v.consoleType);
-    put32(a, 0x80000038, 0x800FF000); put32(a, 0x8000003C, 0x1000);
+    put32(a, 0x80000020, v.bootMagic); put32(a, 0x80000024, v.bootVersion); put32(a, 0x80000028, v.memSize); put32(a, 0x8000002C, 0x10000006);                                           // a development-kit type, as Dolphin writes
+    put32(a, 0x80000034, 0x800FF000); put32(a, 0x80000038, 0x800FF000); put32(a, 0x8000003C, 0x1000);   // arena high equals the FST location
     put32(a, 0x800000CC, v.tvMode); put32(a, 0x800000D0, v.aramSize); put32(a, 0x800000F0, v.simMemSize);
     put32(a, 0x800000F4, 0x800FD000); put32(a, 0x800000F8, 162000001); put32(a, 0x800000FC, v.cpuClock);
     put32(a, 0x800000E8, 0x00C0FFEE);                                            // not in the table
@@ -215,6 +215,10 @@ void testReportWithCapture() {
     std::memcpy(&a[0xFD000], bi2.data(), bi2.size());
     a[0xFD000 + 100] ^= 0xFF;                                                    // one BI2 byte differs
     writeFile(cap / "A-at-entry-mem1.raw", a.data(), a.size());
+    // Platform image at entry: the same, except for three words (two ranges: the first two words are 28 bytes apart and merge).
+    std::vector<uint8_t> host = a;
+    put32(host, 0x800000E8, 0); put32(host, 0x80000100, 0xAAAAAAAA); put32(host, 0x80000400, 0x55555555);
+    writeFile(dumps / "at-entry-mem1.raw", host.data(), host.size());
     writeText(cap / "A-notes.txt", "TBU: 0\nTBL: 1F4A0\n");
 
     // Capture B: render mode object at 80050000 (NTSC interlaced 640x480, double field), drive info at 80317A40... kept inside 1 MB at 80060000.
@@ -266,7 +270,7 @@ void testReportWithCapture() {
     in.captureDir = cap.string();
     in.tracePath = (root / "boot-trace.log").string();
     in.discDir = disc.string();
-    in.hostDumpDir = dumps.string();            // does not exist
+    in.hostDumpDir = dumps.string();            // holds the entry image only
     in.values = v;
     const std::string r = buildReport(in);
 
@@ -275,7 +279,17 @@ void testReportWithCapture() {
     CHECK_HAS(r, "| 80000020 | boot magic | assumed | 0D15EA5E | 0D15EA5E |");   // captured equals assumed
     CHECK_HAS(r, "DIFFERS: set 09A7EC81");                                       // bus clock 162000001 against 162000000 (0x09A7EC80)
     CHECK_HAS(r, "bus clock: 09A7EC80 -> 09A7EC81 (boot_table.cpp: busClock)");   // names the table member to edit
-    CHECK_HAS(r, "800000E8=00C0FFEE");                                           // unmodelled word listed
+    CHECK_HAS(r, "800000E8=00C0FFEE (platform 00000000)");                       // unmodelled word listed, with the platform's value
+    // The retail console type is deliberate: Dolphin's development-kit value is not a difference to fix.
+    CHECK_HAS(r, "intentional difference: retail value");
+    CHECK_LACKS(r, "DIFFERS: set 10000006");
+    CHECK_HAS(r, "| 80000034 | arena high | assumed | 800FF000 | 800FF000 |");       // arena high follows the FST location
+    CHECK_HAS(r, "unread by the DOL and RELs");
+    // Whole-memory comparison: two ranges, 28 + 4 bytes; the after-OSInit image of the platform is absent.
+    CHECK_HAS(r, "at the program entry: 2 differing ranges (32 bytes");
+    CHECK_HAS(r, "800000E8-80000104 (28 bytes)");
+    CHECK_HAS(r, "80000400-80000404 (4 bytes)");
+    CHECK_HAS(r, "after OSInit: Dolphin image not captured");
     CHECK_HAS(r, "FST address: Dolphin 800FF000, platform rule 800FF000");
     CHECK_HAS(r, "BI2 address: Dolphin 800FD000, platform rule 800FD000");
     CHECK_HAS(r, "BI2 directly below the FST");
@@ -312,7 +326,7 @@ void testReportWithCapture() {
     CHECK_HAS(r, "line 5:");
     // Sections for files that were not captured.
     CHECK_HAS(r, "| capture A, memory after OSInit (A-after-osinit-mem1.raw) | not captured |");
-    CHECK_HAS(r, "not present (run awl-host with --dump-boot)");
+    CHECK_HAS(r, "not present (see dump_host_memory.ps1)");
     fs::remove_all(root);
 }
 
@@ -354,6 +368,31 @@ void testReportWithoutCapture() {
 }
 
 void testBootTable() {
+    // Retail console type. The DOL's readers (OSInit at 0x801B1008, EXISync at 0x801F6878, 0x801F7F1C) test only the top nibble or
+    // bit 0x10000000; YAGCD 4.2.1.1.2 gives 0x00000003 for retail.
+    CHECK(bootValues().consoleType == 0x00000003);
+    CHECK((bootValues().consoleType & 0xF0000000u) == 0 && (bootValues().consoleType & 0x10000000u) == 0);
+    // Dolphin's capture A: drive information (revision 0, device code 2, date 2006-05-26) and a system time of exactly
+    // 846221347 s x 40.5 MHz = 0x0079C22B90F75560.
+    CHECK(bootValues().driveRevision == 0 && bootValues().driveDeviceCode == 2 && bootValues().driveReleaseDate == 0x20060526);
+    CHECK(bootValues().rtcSeconds == 846221347u);
+    const unsigned long long secs = bootValues().rtcSeconds;
+    CHECK(secs * 40500000ull == 0x0079C22B90F75560ull);
+    {
+        const BootLayout lay = computeLayout(bootValues(), 0xB836);
+        bool arenaOk = false, timeOk = false, retail = false;
+        for (const BootField& f : bootFields(bootValues(), lay)) {
+            if (f.addr == 0x80000034) arenaOk = f.value == lay.fstAddr;      // the apploader leaves arena high at the FST location
+            if (f.addr == 0x800030D8) timeOk = f.size == 8 && f.value == 0x0079C22B90F75560ull;
+            if (f.addr == 0x8000002C) retail = f.intent[0] != 0;
+        }
+        CHECK(arenaOk && timeOk && retail);
+        BootValues other = bootValues();
+        other.rtcSeconds = 1000;                                              // the real-time mode changes the clock and the system time together
+        for (const BootField& f : bootFields(other, lay)) if (f.addr == 0x800030D8) CHECK(f.value == 1000ull * 40500000ull);
+    }
+    CHECK(hostRtcSeconds() > 820540800u);                                     // later than 2026-01-01 in the host's local time
+
     // The single table: every assumed field has an editable member name, addresses are unique and the layout rule holds.
     const BootValues v = bootValues();
     const BootLayout l = computeLayout(v, 0xB836);

@@ -13,6 +13,7 @@ constexpr uint32_t kPosV = 0x2C, kPosH = 0x2E;   // current beam position
 class Vi : public Device {
 public:
     explicit Vi(Platform& p) : p_(p) {
+        reg_[0x6C / 2] = bootValues().viClock;     // clock select: left by the IPL, read by SISetSamplingRate
         p.onEvent(Ev::ViDisplayInt, [this](Ctx&, const Event& e) { fire(static_cast<uint32_t>(e.a), e.b); });
     }
 
