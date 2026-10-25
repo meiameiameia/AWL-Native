@@ -226,15 +226,21 @@ void hleRegister(uint32_t guestAddr, const char* name, HleHandler handler) {
 }
 
 void hleCall(Ctx& c, uint32_t guestAddr) {
-    const auto& t = hleTable();
-    const auto it = t.find(guestAddr);
-    if (it == t.end()) {
+    // Copy the handler out of the table: a handler may switch fibers and never return here, and a container
+    // iterator (which debug builds register with the container) must not be left on an abandoned stack.
+    HleHandler handler = nullptr;
+    {
+        const auto& t = hleTable();
+        const auto it = t.find(guestAddr);
+        if (it != t.end()) handler = it->second.handler;
+    }
+    if (!handler) {
         c.pc = guestAddr;
         throw Stop{StopKind::HleUnregistered, guestAddr, guestAddr, "function replaced by a native handler (HLE) has no registered handler", hleNameFor(guestAddr)};
     }
     at(c, guestAddr, 1);
     const uint32_t lr = c.lr;
-    it->second.handler(c);
+    handler(c);
     c.lr = lr;   // the replaced function returns with LR as it entered (blr)
 }
 

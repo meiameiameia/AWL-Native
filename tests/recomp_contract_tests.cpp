@@ -10,6 +10,11 @@
 
 #include "guest.h"
 #include "hle_abi.h"
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
 
 namespace awl::rt {
 namespace {
@@ -581,6 +586,34 @@ void testPreemption() {
     g_lateDeadline = false;
 }
 
+#ifdef _WIN32
+// A handler that switches fibers and never comes back: the fiber's stack is abandoned and later freed with
+// hleCall still on it. hleCall must hold nothing from the handler table across the handler (a debug-mode
+// container iterator registers itself with the container, which touches it again at static destruction), so
+// the process still exits normally afterwards.
+void* g_mainFiber = nullptr;
+Ctx* g_fiberCtx = nullptr;
+void hAbandon(Ctx&) { SwitchToFiber(g_mainFiber); }
+void CALLBACK abandonedFiberBody(void*) {
+    hleCall(*g_fiberCtx, 0x80003600);
+    SwitchToFiber(g_mainFiber);   // not reached
+}
+
+void testHandlerSwitchesFibers() {
+    Rig r;
+    hleRegister(0x80003600, "TestAbandon", hAbandon);
+    g_mainFiber = ConvertThreadToFiber(nullptr);
+    CHECK(g_mainFiber != nullptr);
+    g_fiberCtx = r.a.get();
+    void* fiber = CreateFiber(0, abandonedFiberBody, nullptr);
+    CHECK(fiber != nullptr);
+    SwitchToFiber(fiber);       // runs until the handler switches back
+    CHECK(r.machine.icount == 1);   // hleCall retired its one instruction before the handler ran
+    DeleteFiber(fiber);         // frees the stack that still holds hleCall's frame
+    g_fiberCtx = nullptr;
+}
+#endif
+
 // ---- Time base -----------------------------------------------------------------------------------------
 uint64_t fixedSource(Ctx&) { return 0x0000000500000007ull; }
 uint64_t perCtxSource(Ctx& c) { return c.r[31]; }
@@ -618,6 +651,9 @@ int main() try {
     testThreadContexts();
     testHostDataAndFreshContext();
     testPreemption();
+#ifdef _WIN32
+    testHandlerSwitchesFibers();   // leaves a fiber abandoned; keep it late so the process exit exercises it
+#endif
     testTimeBase();
     std::printf("recomp contract tests: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
