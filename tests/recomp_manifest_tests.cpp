@@ -126,16 +126,23 @@ void put(std::vector<uint8_t>& f, uint32_t off, uint32_t v) {
 struct Tiny {
     DolImage dol;
     Tiny() {
-        const uint32_t base = 0x80003100, size = 0x208;
+        const uint32_t base = 0x80003100, size = 0x320;
         dol.file.assign(size, 0);
         auto w = [&](uint32_t addr, uint32_t v) { put(dol.file, addr - base, v); };
         w(0x80003100, B(0x80003100, 0x80003200, true));
-        w(0x80003104, kBlr);
+        w(0x80003104, B(0x80003104, 0x80003400, true));
+        w(0x80003108, kBlr);
         w(0x80003200, B(0x80003200, 0x80003300, true));
         w(0x80003204, LI(3, 1));
         w(0x80003208, kBlr);
         w(0x80003300, LI(3, 2));
         w(0x80003304, kBlr);
+        // 0x80003400: a counted loop with a backward conditional branch: li r3,5; addi r3,r3,-1; cmpwi r3,0; bne -8; blr
+        w(0x80003400, LI(3, 5));
+        w(0x80003404, (14u << 26) | (3u << 21) | (3u << 16) | 0xFFFF);
+        w(0x80003408, (11u << 26) | (3u << 16));
+        w(0x8000340C, (16u << 26) | (4u << 21) | (2u << 16) | 0xFFF8);
+        w(0x80003410, kBlr);
         DolSection t;
         t.index = 0; t.text = true; t.fileOffset = 0; t.addr = base; t.size = size;
         dol.sections = {t};
@@ -191,6 +198,12 @@ void testEmission() {
         const std::string all = readAllGenerated(out);
         CHECK(!contains(all, "hleCall") && !contains(all, "declareHleNames"));
         CHECK(contains(all, "void f_80003200(Ctx& c) {\n    uint32_t ea = 0;"));
+        // Preemption checkpoints: the backward conditional branch and the return both record the pc and compare
+        // against the deadline; the forward-only entry function has no backward branch and only its return one.
+        CHECK(contains(all, "if (!rt::crBit(c, 2)) { rt::at(c, 0x8000340C, 0); goto L_80003404; }"));
+        CHECK(contains(all, "rt::at(c, 0x80003410, 0);\n    rt::ret(c, 0x80003410);"));
+        CHECK(contains(all, "rt::at(c, 0x80003108, 0);\n    rt::ret(c, 0x80003108);"));
+        CHECK(!contains(all, "goto L_80003108"));
     }
     // Whole-DOL mode: the entry's body becomes one hleCall; the callee it used to call is still emitted.
     const Parsed p = parse("dol 0x80003200 TestCallee  # synthetic fixture\n");

@@ -77,6 +77,23 @@ void guestReadsTb(Ctx& c) {   // 0x80007000: mftb / mfspr of the time base into 
     ret(c, 0x80007010);
 }
 
+void guestLoop(Ctx& c) {   // 0x80008000: r4 += 1, r3 -= 1 until r3 == 0; no calls or memory accesses, as generated
+    at(c, 0x80008000, 1);
+  L_80008004:;
+    c.r[4] += 1;
+    c.r[3] -= 1;
+    tick(c, 3);   // addi, addic., bne
+    if (c.r[3] != 0) { at(c, 0x8000800C, 0); goto L_80008004; }   // the backward-branch checkpoint the generator emits
+    at(c, 0x80008010, 1);
+    ret(c, 0x80008010);
+}
+void guestRetF1(Ctx& c) {   // 0x80008100: results in r3, r4 and f1
+    at(c, 0x80008100, 4);
+    c.r[3] = 77;
+    c.r[4] = 88;
+    c.f[1].ps0 = 9.5;
+    ret(c, 0x8000810C);
+}
 // Handlers (the platform track's side of the contract).
 void hDouble(Ctx& c) { c.r[3] = c.r[3] * 2; }                       // 0x80003000: reads r3, returns in r3
 void hFloat(Ctx& c) { c.f[1].ps0 = c.f[1].ps0 + 0.5; }              // 0x80003100: f1 argument and result
@@ -95,7 +112,7 @@ const FnEntry kFunctions[] = {
     {0x80001000, guestAdd},    {0x80002000, guestCallsHle}, {0x80002100, guestCallsCallback}, {0x80002200, guestCallsSwitch},
     {0x80003000, stub3000},    {0x80003100, stub3100},      {0x80003200, stub3200},           {0x80003300, stub3300},
     {0x80003400, stub3400},    {0x80003500, stub3500},      {0x80005000, guestNested},        {0x80006000, guestScribble},
-    {0x80007000, guestReadsTb},
+    {0x80007000, guestReadsTb}, {0x80008000, guestLoop},     {0x80008100, guestRetF1},
 };
 const uint32_t kFunctionCount = sizeof kFunctions / sizeof kFunctions[0];
 
@@ -371,6 +388,199 @@ void testThreadContexts() {
     CHECK(a.r[14] == 111);   // destroying one context leaves the other intact
 }
 
+// ---- Host data and context creation ----------------------------------------------------------------------
+void testHostDataAndFreshContext() {
+    Rig r;
+    Ctx& a = *r.a;
+    // A context made from a fully dirty parent starts with every register zero, an empty shadow stack and no host data.
+    for (int i = 0; i < 32; ++i) { a.r[i] = 0xA0A0A0A0 + i; a.f[i].ps0 = i + 0.5; a.f[i].ps1 = -i - 0.5; }
+    a.cr = a.lr = a.ctr = a.fpscr = a.msr = a.pc = 0x55555555;
+    a.so = a.ov = a.ca = 1;
+    a.xerbc = 0x7F;
+    for (int i = 0; i < 8; ++i) a.gqr[i] = 0x1111 * (i + 1);
+    a.spr[1008] = 0xFFFF0000;
+    a.sr[3] = 7;
+    int parentData = 0;
+    setThreadHostData(a, &parentData);
+    pushFrame(a, 0x80000100, 0x80001000);
+    Ctx* b = createThreadContext(a);
+    bool zero = b->m == a.m && b->sp == 0 && b->cr == 0 && b->lr == 0 && b->ctr == 0 && b->fpscr == 0 && b->msr == 0 && b->pc == 0 &&
+                b->so == 0 && b->ov == 0 && b->ca == 0 && b->xerbc == 0 && b->spr[1008] == 0 && b->sr[3] == 0;
+    for (int i = 0; i < 32; ++i) zero = zero && b->r[i] == 0 && b->f[i].ps0 == 0.0 && b->f[i].ps1 == 0.0;
+    for (int i = 0; i < 8; ++i) zero = zero && b->gqr[i] == 0;
+    CHECK(zero);
+    CHECK(threadHostData(*b) == nullptr && threadHostData(a) == &parentData);
+    // Host data is per context.
+    int childData = 0;
+    setThreadHostData(*b, &childData);
+    CHECK(threadHostData(*b) == &childData && threadHostData(a) == &parentData);
+    setThreadHostData(*b, nullptr);
+    CHECK(threadHostData(*b) == nullptr);
+    destroyThreadContext(b);
+
+    // callGuest leaves the callee's r3/r4/f1 results in the context and restores pc and LR.
+    popFrame(a);
+    a.lr = 0x80000AAA;
+    a.pc = 0x80000BBB;
+    callGuest(a, 0x80008100);
+    CHECK(a.r[3] == 77 && a.r[4] == 88 && a.f[1].ps0 == 9.5 && a.lr == 0x80000AAA && a.pc == 0x80000BBB && a.sp == 0);
+}
+
+// ---- Preemption ----------------------------------------------------------------------------------------
+struct PreLog {
+    std::vector<uint64_t> counts, deadlines;   // retired count at each hook entry, and the deadline it satisfied
+    uint64_t next = 0;
+    Ctx* a = nullptr;
+    Ctx* b = nullptr;
+    int hooksA = 0, hooksB = 0;
+    uint32_t bRuns = 0;
+    bool nestedOk = false;
+} g_pre;
+
+void resetPreemption() {
+    preemptInstall(nullptr);
+    preemptDeadlineSet(~0ull);
+    g_pre = PreLog{};
+}
+
+void hookStride(Ctx& c) {   // a periodic timer: next deadline 100 instructions after this one
+    g_pre.counts.push_back(retiredInstructions(c));
+    g_pre.deadlines.push_back(g_pre.next);
+    g_pre.next = retiredInstructions(c) + 100;
+    preemptDeadlineSet(g_pre.next);
+}
+void hookLazy(Ctx& c) { (void)c; }   // returns without moving the deadline
+void hookRunsGuestOnSameCtx(Ctx& c) {   // delivers an "interrupt": runs guest code on the interrupted context
+    ++g_pre.hooksA;
+    const uint32_t r3 = c.r[3], r4 = c.r[4];   // a real delivery saves and restores the interrupted registers
+    c.r[3] = 10;
+    c.r[4] = 0;
+    callGuest(c, 0x80008000);   // reaches checkpoints with the deadline still due: must not re-enter the hook
+    g_pre.nestedOk = c.r[4] == 10;
+    c.r[3] = r3;
+    c.r[4] = r4;
+    preemptDeadlineSet(~0ull);
+}
+// A hook that switches to the other context (here by running its code to completion). With g_lateDeadline
+// false it sets a far deadline first; with true it leaves the stale one, so the other context's first
+// checkpoint enters the hook itself.
+bool g_lateDeadline = false;
+void hookSwitch(Ctx& c) {
+    if (&c != g_pre.a) {
+        ++g_pre.hooksB;
+        preemptDeadlineSet(~0ull);
+        return;
+    }
+    ++g_pre.hooksA;
+    const uint32_t r3 = c.r[3], r4 = c.r[4];
+    if (!g_lateDeadline) preemptDeadlineSet(~0ull);
+    g_pre.b->r[3] = 20;
+    g_pre.b->r[4] = 0;
+    callGuest(*g_pre.b, 0x80008000);
+    g_pre.bRuns += g_pre.b->r[4];
+    c.r[3] = r3;
+    c.r[4] = r4;
+    preemptDeadlineSet(retiredInstructions(c) + 100);
+}
+
+void testPreemption() {
+    resetPreemption();
+    // Without a hook no deadline applies.
+    {
+        preemptDeadlineSet(5);
+        Rig r;
+        r.a->r[3] = 1000;
+        callGuest(*r.a, 0x80008000);
+        CHECK(r.a->r[4] == 1000 && retiredInstructions(*r.a) == r.machine.icount && r.machine.icount == 3002);
+    }
+    resetPreemption();
+
+    // A register-only loop (no call, return or memory access inside) is preempted at its backward branch. The
+    // deadline and hook are set before the machine exists. The loop retires 1 + 3 per iteration + 1 instructions;
+    // each checkpoint follows a 3-instruction iteration, so a hook sees a count in [deadline, deadline + 2].
+    {
+        g_pre.next = 100;
+        preemptInstall(hookStride);
+        preemptDeadlineSet(100);
+        Rig r;
+        r.a->r[3] = 1000;
+        callGuest(*r.a, 0x80008000);
+        CHECK(r.a->r[4] == 1000 && r.machine.icount == 3002);
+        bool spacing = !g_pre.counts.empty();
+        for (size_t i = 0; i < g_pre.counts.size(); ++i)
+            spacing = spacing && g_pre.counts[i] >= g_pre.deadlines[i] && g_pre.counts[i] <= g_pre.deadlines[i] + 2;
+        CHECK(spacing);
+        CHECK(g_pre.counts.size() >= 29 && g_pre.counts.size() <= 30);   // strides of 100..102 over 3002 instructions
+    }
+    resetPreemption();
+
+    // A hook that does not move the deadline stops loudly.
+    {
+        preemptInstall(hookLazy);
+        preemptDeadlineSet(50);
+        Rig r;
+        r.a->r[3] = 1000;
+        Stop s{};
+        CHECK(stops([&] { callGuest(*r.a, 0x80008000); }, StopKind::Contract, &s) && s.what && std::string(s.what).find("deadline") != std::string::npos);
+    }
+    resetPreemption();
+
+    // The instruction limit is separate: the deadline hook runs below it, and the limit still stops the run.
+    {
+        g_pre.next = 100;
+        preemptInstall(hookStride);
+        preemptDeadlineSet(100);
+        Rig r;
+        r.machine.setLimit(500);
+        r.a->r[3] = 1000;
+        CHECK(stops([&] { callGuest(*r.a, 0x80008000); }, StopKind::InstructionLimit));
+        CHECK(g_pre.counts.size() >= 4 && g_pre.counts.size() <= 5 && r.machine.icount > 500 && r.machine.icount <= 503);
+    }
+    resetPreemption();
+    {   // a far deadline never delays the limit
+        preemptInstall(hookStride);
+        preemptDeadlineSet(100000);
+        Rig r;
+        r.machine.setLimit(500);
+        r.a->r[3] = 1000;
+        CHECK(stops([&] { callGuest(*r.a, 0x80008000); }, StopKind::InstructionLimit) && g_pre.counts.empty());
+    }
+    resetPreemption();
+
+    // Guest code run by the hook on the interrupted context does not re-enter the hook.
+    {
+        preemptInstall(hookRunsGuestOnSameCtx);
+        preemptDeadlineSet(100);
+        Rig r;
+        r.a->r[3] = 1000;
+        callGuest(*r.a, 0x80008000);
+        CHECK(g_pre.hooksA == 1 && g_pre.nestedOk && r.a->r[4] == 1000 && r.a->r[3] == 0 && !r.a->inPreempt);
+    }
+    resetPreemption();
+
+    // A hook that switches to another context and back; A's registers survive the switch.
+    for (const bool late : {false, true}) {
+        g_lateDeadline = late;
+        Rig r;
+        Ctx* b = createThreadContext(*r.a);
+        g_pre.a = r.a.get();
+        g_pre.b = b;
+        preemptInstall(hookSwitch);
+        preemptDeadlineSet(100);
+        r.a->r[3] = 1000;
+        callGuest(*r.a, 0x80008000);
+        CHECK(r.a->r[4] == 1000 && r.a->r[3] == 0);
+        CHECK(g_pre.hooksA >= 10);                    // each switch costs about 62 instructions of B plus A's 100
+        CHECK(g_pre.bRuns == 20u * g_pre.hooksA);     // each switch ran B's loop in full
+        // Stale deadline left in place (late): B's first checkpoint enters the hook on B once per switch;
+        // far deadline set first: B is never preempted.
+        CHECK(g_pre.hooksB == (late ? g_pre.hooksA : 0));
+        destroyThreadContext(b);
+        resetPreemption();
+    }
+    g_lateDeadline = false;
+}
+
 // ---- Time base -----------------------------------------------------------------------------------------
 uint64_t fixedSource(Ctx&) { return 0x0000000500000007ull; }
 uint64_t perCtxSource(Ctx& c) { return c.r[31]; }
@@ -406,6 +616,8 @@ int main() try {
     testHle();
     testCallGuest();
     testThreadContexts();
+    testHostDataAndFreshContext();
+    testPreemption();
     testTimeBase();
     std::printf("recomp contract tests: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

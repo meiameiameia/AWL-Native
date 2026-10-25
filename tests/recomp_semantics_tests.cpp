@@ -401,16 +401,92 @@ void testCallPlumbing() {
     CHECK(c.m->boundaries.size() == 1 && c.m->boundaries[0].addr == 0x80005000);
     c.m->skipPlatform = false;
     // The instruction limit is checked at trap points.
-    c.m->limit = 10;
+    c.m->setLimit(10);
     c.m->icount = 5;
     at(c, 0x80006000, 3);
     CHECK(c.m->icount == 8 && c.pc == 0x80006000);
     try { at(c, 0x80006004, 5); CHECK(false); } catch (const Stop& s) { CHECK(s.kind == StopKind::InstructionLimit); }
 }
 
+// Locked-cache DMA, Gekko User's Manual register layout (PowerPC bit numbering, bit 0 = MSB):
+//   DMA_U (SPR 922): bits 0-26 MEM_ADDR, bits 27-31 DMA_LEN[2:6]   -> value bits 31..5 and 4..0
+//   DMA_L (SPR 923): bits 0-26 LC_ADDR, bit 27 DMA_LD (0x10), bits 28-29 DMA_LEN[0:1] (value << 2), bit 30 DMA_T (0x02),
+//                    bit 31 DMA_F (0x01). Length in 32-byte blocks, 0 meaning 128. LD = 1 loads memory into the cache.
+// The SDK's LCLoadBlocks/LCStoreBlocks pass flags 0x12 (load + trigger) and 0x02 (store + trigger).
+void fillPattern(uint8_t* p, uint32_t n, uint8_t seed) { for (uint32_t i = 0; i < n; ++i) p[i] = static_cast<uint8_t>(seed + i * 7); }
+
+void testLockedCacheDma() {
+    Harness h;
+    Ctx& c = *h.c;
+    // Load 2 blocks (64 bytes): memory 0x80001000 -> cache 0xE0000040. LEN = 2 = 0b0000010: LEN[2:6] = 0, LEN[0:1] = 2.
+    fillPattern(h.at(0x80001000), 64, 0x10);
+    fillPattern(h.lc.data() + 0x80, 4, 0xEE);   // a neighbour that must stay untouched
+    mtspr(c, 0x80006000, 922, 0x80001000);
+    mtspr(c, 0x80006004, 923, 0xE0000040 | 0x10 | (2u << 2) | 0x02);
+    bool same = true;
+    for (uint32_t i = 0; i < 64; ++i) same = same && h.lc[0x40 + i] == static_cast<uint8_t>(0x10 + i * 7);
+    CHECK(same);
+    CHECK(h.lc[0x3F] == 0 && h.lc[0x80] == 0xEE);   // bytes outside [0x40, 0x80) untouched
+    CHECK(mfspr(c, 0, 923) == (0xE0000040u | 0x10 | (2u << 2)));   // DMA_T reads back clear: the transfer completed
+    CHECK(mfspr(c, 0, 922) == 0x80001000u);
+
+    // Store: cache 0xE0000100 (1 block) -> memory 0x80002020 (LD clear, T set).
+    fillPattern(h.lc.data() + 0x100, 32, 0x55);
+    mtspr(c, 0, 922, 0x80002020);
+    mtspr(c, 0, 923, 0xE0000100 | (1u << 2) | 0x02);
+    same = true;
+    for (uint32_t i = 0; i < 32; ++i) same = same && h.mem[0x2020 + i] == static_cast<uint8_t>(0x55 + i * 7);
+    CHECK(same && h.mem[0x201F] == 0 && h.mem[0x2040] == 0);
+
+    // Length 0 means 128 blocks = 4096 bytes. The 0xC0000000 mirror of memory is also valid.
+    fillPattern(h.at(0x80003000), 4096, 0x21);
+    h.mem[0x3000 + 4096] = 0x99;
+    mtspr(c, 0, 922, 0xC0003000);
+    mtspr(c, 0, 923, 0xE0000000 | 0x10 | 0x02);
+    CHECK(h.lc[0] == 0x21 && h.lc[4095] == static_cast<uint8_t>(0x21 + 4095 * 7) && h.lc[4096] == 0);
+
+    // A 6-bit-spanning length: 33 blocks = 0b00100001 -> DMA_LEN[2:6] = 0b01000 (8) in DMA_U, DMA_LEN[0:1] = 1 in DMA_L.
+    fillPattern(h.at(0x80004000), 33 * 32, 0x33);
+    mtspr(c, 0, 922, 0x80004000 | 8);
+    mtspr(c, 0, 923, 0xE0000000 | 0x10 | (1u << 2) | 0x02);
+    CHECK(h.lc[0] == 0x33 && h.lc[33 * 32 - 1] == static_cast<uint8_t>(0x33 + (33 * 32 - 1) * 7) && h.lc[33 * 32] == static_cast<uint8_t>(0x21 + 33 * 32 * 7));   // the byte after is still the earlier 4 KB load
+
+    // Without DMA_T nothing is transferred; the register just holds the value.
+    std::memset(h.lc.data(), 0, 64);
+    mtspr(c, 0, 922, 0x80001000);
+    mtspr(c, 0, 923, 0xE0000000 | 0x10 | (1u << 2));
+    CHECK(h.lc[0] == 0 && mfspr(c, 0, 923) == (0xE0000000u | 0x10 | (1u << 2)));
+
+    // Out-of-range transfers stop loudly with the mtspr pc and the offending address, and move nothing.
+    fillPattern(h.at(0x80005000), 64, 0x44);
+    std::memset(h.lc.data(), 0, 128);
+    Stop s{};
+    bool stopped = false;
+    try { mtspr(c, 0x80006100, 922, 0x80005000); mtspr(c, 0x80006104, 923, 0xE0003FE0 | 0x10 | (2u << 2) | 0x02); }   // 64 bytes at the last block
+    catch (const Stop& e) { stopped = true; s = e; }
+    CHECK(stopped && s.kind == StopKind::Fault && s.pc == 0x80006104 && s.addr == 0xE0003FE0 && h.lc[0x3FE0] == 0);
+    stopped = false;
+    try { mtspr(c, 0, 922, 0x817FFFE0); mtspr(c, 0x80006108, 923, 0xE0000000 | 0x10 | (2u << 2) | 0x02); }          // straddles the end of MEM1
+    catch (const Stop& e) { stopped = true; s = e; }
+    CHECK(stopped && s.kind == StopKind::Fault && s.addr == 0x817FFFE0);
+    stopped = false;
+    try { mtspr(c, 0, 922, 0x00001000); mtspr(c, 0x8000610C, 923, 0xE0000000 | 0x10 | (1u << 2) | 0x02); }          // not a memory address
+    catch (const Stop& e) { stopped = true; s = e; }
+    CHECK(stopped && s.kind == StopKind::Fault && s.addr == 0x00001000);
+    stopped = false;
+    try { mtspr(c, 0, 922, 0x80005000); mtspr(c, 0x80006110, 923, 0x80000000 | 0x10 | (1u << 2) | 0x02); }          // cache address not in 0xE0000000
+    catch (const Stop& e) { stopped = true; s = e; }
+    CHECK(stopped && s.kind == StopKind::Fault && s.addr == 0x80000000);
+    stopped = false;
+    try { mtspr(c, 0, 922, 0x80005000); mtspr(c, 0x80006114, 923, 0xE0000000 | 0x10 | 0x02); mtspr(c, 0, 923, 0xE0003800 | 0x10 | 0x02); }   // 128 blocks (4 KB) from 0xE0003800 run past the 16 KB cache
+    catch (const Stop& e) { stopped = true; s = e; }
+    CHECK(stopped && s.addr == 0xE0003800);
+}
+
 }  // namespace
 
 int main() {
+    testLockedCacheDma();
     testIntegerArithmetic();
     testRecordAndCompare();
     testRotateMaskShift();

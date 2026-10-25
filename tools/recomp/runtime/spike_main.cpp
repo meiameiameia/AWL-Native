@@ -94,7 +94,7 @@ int main(int argc, char** argv) {
     machine.mem = mem.data();
     machine.lc = lc.data();
     machine.skipPlatform = census;
-    machine.limit = limit;
+    machine.setLimit(limit);
     machine.traceMaxDepth = traceDepth;
     auto ctx = std::make_unique<Ctx>(machine);
     ctx->msr = 0x00002032;   // FP and ME set; interrupts off (only visible through mfmsr)

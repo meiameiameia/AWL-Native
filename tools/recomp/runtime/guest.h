@@ -83,20 +83,38 @@ struct FnEntry {
 extern const FnEntry kFunctions[];
 extern const uint32_t kFunctionCount;
 
+struct Machine;
+void registerMachine(Machine& m);     // preemption deadlines apply to every live machine
+void unregisterMachine(Machine& m);
+void refreshPreemption();             // recompute Machine::checkAt after the limit, hook or deadline changes
+
 // Shared guest machine: one per process, reached by every thread context. Guest threads are cooperative
 // fibers (the platform track schedules them), so none of this needs locking.
 struct Machine {
+    Machine() { registerMachine(*this); refreshPreemption(); }
+    ~Machine() { unregisterMachine(*this); }
+    Machine(const Machine&) = delete;
+    Machine& operator=(const Machine&) = delete;
+
     uint8_t* mem = nullptr;        // kMem1Size bytes, guest 0x80000000 / 0xC0000000 view
     uint8_t* lc = nullptr;         // kLockedCacheSize bytes at 0xE0000000
     const FnEntry* functions = kFunctions;       // recompiled function entries, sorted by address
     uint32_t functionCount = kFunctionCount;
     uint64_t icount = 0;           // instructions retired by all threads (default time base)
-    uint64_t limit = ~0ull;        // stop after this many retired instructions (checked at call/memory points)
+    // The one value checkpoints compare the retired count against: min(instruction limit, deadline - 1),
+    // so a single compare serves both. Derived; change the limit with setLimit, the deadline with
+    // preemptDeadlineSet.
+    uint64_t checkAt = ~0ull;
+    uint64_t limit() const { return limit_; }
+    void setLimit(uint64_t v) { limit_ = v; refreshPreemption(); }   // stop after this many retired instructions
     bool skipPlatform = false;     // census mode: record platform boundaries and return instead of stopping
     std::vector<BoundaryHit> boundaries;
     std::vector<TraceHit> trace;       // --trace: calls in execution order
     uint32_t traceMaxDepth = 0;        // 0 = tracing off; otherwise record calls up to this depth
     std::vector<BoundaryHit> faults;   // census mode: unmapped/MMIO accesses that were absorbed
+
+private:
+    uint64_t limit_ = ~0ull;
 };
 
 // CPU state of one guest thread. Create the first one from a Machine and further ones with
@@ -118,6 +136,8 @@ struct Ctx {
     uint32_t reservation = 0;
     bool reservationValid = false;
     uint8_t scratch[16] = {};
+    void* hostData = nullptr;    // platform per-thread data (setThreadHostData)
+    bool inPreempt = false;      // the preemption hook is running on this context
     uint32_t sp = 0;
     CallFrame cs[kMaxCallDepth];
 };
@@ -126,6 +146,7 @@ struct Ctx {
 [[noreturn]] void stop(Ctx& c, StopKind k, uint32_t pc, uint32_t addr, const char* what);
 void platformBoundary(Ctx& c, uint32_t fnAddr, const char* evidence);   // throws unless c.skipPlatform
 [[noreturn]] void limitReached(Ctx& c);
+void checkpointSlow(Ctx& c);   // limit stop, or the preemption hook when the deadline is due
 uint8_t* memFault(Ctx& c, uint32_t ea);   // throws unless skipPlatform, then returns a zeroed scratch cell
 // Stops that have no thread context to blame (registration-time contract violations).
 [[noreturn]] void stopNoCtx(StopKind k, uint32_t pc, uint32_t addr, const char* what, const char* name);
@@ -148,7 +169,7 @@ inline void at(Ctx& c, uint32_t pc, uint32_t n) {
     c.pc = pc;
     Machine& m = *c.m;
     m.icount += n;
-    if (m.icount > m.limit) limitReached(c);
+    if (m.icount > m.checkAt) checkpointSlow(c);
 }
 
 inline void pushFrame(Ctx& c, uint32_t site, uint32_t callee) {

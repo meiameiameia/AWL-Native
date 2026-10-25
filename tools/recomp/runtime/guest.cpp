@@ -1,6 +1,8 @@
 #include "guest.h"
 
+#include <algorithm>
 #include <unordered_map>
+#include <vector>
 #include <xmmintrin.h>
 
 #include "hle_abi.h"
@@ -28,6 +30,13 @@ uint32_t g_hleNameCount = 0;
 MmioRead g_mmioRead = nullptr;
 MmioWrite g_mmioWrite = nullptr;
 TimeBaseSource g_timeBase = nullptr;
+PreemptHook g_preemptHook = nullptr;
+uint64_t g_deadline = ~0ull;   // preemption deadline in retired instructions; ~0 = none
+
+std::vector<Machine*>& machines() {
+    static std::vector<Machine*> v;
+    return v;
+}
 
 const char* hleNameFor(uint32_t addr) {
     for (uint32_t i = 0; i < g_hleNameCount; ++i)
@@ -59,6 +68,35 @@ void platformBoundary(Ctx& c, uint32_t fnAddr, const char* evidence) {
 }
 
 void limitReached(Ctx& c) { stop(c, StopKind::InstructionLimit, c.pc, 0, "instruction limit reached"); }
+
+void registerMachine(Machine& m) { machines().push_back(&m); }
+
+void unregisterMachine(Machine& m) {
+    auto& v = machines();
+    v.erase(std::remove(v.begin(), v.end(), &m), v.end());
+}
+
+void refreshPreemption() {
+    // icount >= deadline  <=>  icount > deadline - 1; a deadline of 0 is due immediately.
+    const uint64_t due = !g_preemptHook || g_deadline == ~0ull ? ~0ull : (g_deadline ? g_deadline - 1 : 0);
+    for (Machine* m : machines()) m->checkAt = std::min(m->limit(), due);
+}
+
+void checkpointSlow(Ctx& c) {
+    Machine& m = *c.m;
+    if (m.icount > m.limit()) limitReached(c);
+    // The hook does not nest on the context it is already running on; other contexts that reach a due
+    // deadline (a fiber the hook switched to) enter it themselves.
+    if (!g_preemptHook || c.inPreempt || m.icount < g_deadline) return;
+    struct Guard {
+        Ctx& c;
+        explicit Guard(Ctx& x) : c(x) { c.inPreempt = true; }
+        ~Guard() { c.inPreempt = false; }
+    } guard(c);
+    g_preemptHook(c);
+    if (g_deadline <= m.icount)
+        stop(c, StopKind::Contract, c.pc, 0, "preemption hook returned without setting a deadline beyond the retired-instruction count");
+}
 
 uint8_t* memFault(Ctx& c, uint32_t ea) {
     Machine& m = *c.m;
@@ -130,11 +168,37 @@ uint32_t mfspr(Ctx& c, uint32_t, uint32_t n) {
     }
 }
 
-void mtspr(Ctx& c, uint32_t, uint32_t n, uint32_t v) {
+// Locked-cache DMA, Gekko User's Manual layout (PowerPC bit numbering, bit 0 = MSB):
+//   DMA_U (SPR 922): bits 0-26 MEM_ADDR (32-byte aligned), bits 27-31 DMA_LEN[2:6]
+//   DMA_L (SPR 923): bits 0-26 LC_ADDR, bit 27 DMA_LD, bits 28-29 DMA_LEN[0:1], bit 30 DMA_T, bit 31 DMA_F
+// Writing DMA_L with DMA_T set starts a transfer of DMA_LEN 32-byte blocks (0 means 128) between memory
+// and the locked cache: DMA_LD set loads memory into the cache, clear stores the cache to memory.
+// Completion is instantaneous, so DMA_T (and DMA_F, the queue flush) read back clear.
+static void lockedCacheDma(Ctx& c, uint32_t pc, uint32_t dmaL) {
+    constexpr uint32_t kT = 0x2, kLd = 0x10;
+    c.spr[923] = dmaL & ~(kT | 1u);
+    if (!(dmaL & kT)) return;
+    const uint32_t dmaU = c.spr[922];
+    uint32_t blocks = ((dmaU & 0x1Fu) << 2) | ((dmaL >> 2) & 3u);
+    if (blocks == 0) blocks = 128;
+    const uint32_t bytes = blocks * 32;
+    const uint32_t memAddr = dmaU & ~0x1Fu, lcAddr = dmaL & ~0x1Fu;
+    const uint32_t memSeg = memAddr >> 28, memOff = memAddr & 0x0FFFFFFFu;
+    if (!((memSeg == 0x8 || memSeg == 0xC) && memOff <= kMem1Size && bytes <= kMem1Size - memOff))
+        stop(c, StopKind::Fault, pc, memAddr, "locked-cache DMA: memory range outside MEM1");
+    if (!((lcAddr >> 28) == 0xE && (lcAddr & 0x0FFFFFFFu) <= kLockedCacheSize && bytes <= kLockedCacheSize - (lcAddr & 0x0FFFFFFFu)))
+        stop(c, StopKind::Fault, pc, lcAddr, "locked-cache DMA: cache range outside the 16 KB locked cache at 0xE0000000");
+    uint8_t* mem = c.m->mem + memOff;
+    uint8_t* lc = c.m->lc + (lcAddr & 0x0FFFFFFFu);
+    if (dmaL & kLd) std::memcpy(lc, mem, bytes); else std::memcpy(mem, lc, bytes);
+}
+
+void mtspr(Ctx& c, uint32_t pc, uint32_t n, uint32_t v) {
     switch (n) {
         case 1: setXer(c, v); return;
         case 8: c.lr = v; return;
         case 9: c.ctr = v; return;
+        case 923: lockedCacheDma(c, pc, v); return;
         case 912: case 913: case 914: case 915: case 916: case 917: case 918: case 919: c.gqr[n - 912] = v; return;
         default: if (n < 1024) c.spr[n] = v; return;
     }
@@ -182,6 +246,22 @@ void mmioInstall(MmioRead read, MmioWrite write) {
 }
 
 void timeBaseInstall(TimeBaseSource source) { g_timeBase = source; }
+
+void preemptInstall(PreemptHook hook) {
+    g_preemptHook = hook;
+    refreshPreemption();
+}
+
+void preemptDeadlineSet(uint64_t deadline) {
+    g_deadline = deadline;
+    refreshPreemption();
+}
+
+uint64_t retiredInstructions(const Ctx& c) { return c.m->icount; }
+
+void setThreadHostData(Ctx& c, void* data) { c.hostData = data; }
+
+void* threadHostData(Ctx& c) { return c.hostData; }
 
 Ctx* createThreadContext(Ctx& parent) { return new Ctx(*parent.m); }
 

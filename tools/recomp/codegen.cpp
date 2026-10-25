@@ -55,7 +55,7 @@ public:
                 const uint32_t nxt = a + 4;
                 if (k + 1 < f_.body.size() && f_.body[k + 1] == nxt) continue;
                 flush();
-                if (nxt == f_.fallsInto && gen_.count(nxt)) line(S("return %s(c);", fname(nxt).c_str()));
+                if (nxt == f_.fallsInto && gen_.count(nxt)) { checkpoint(a); line(S("return %s(c);", fname(nxt).c_str())); }
                 else { ++st_.fellOff; line(S("rt::unimplemented(c, 0x%08X, \"control flow leaves the discovered function body\");", a)); }
             }
         }
@@ -78,6 +78,11 @@ private:
         line(S("rt::at(c, 0x%08X, %d);", i.addr, pend_));
         pend_ = 0;
     }
+
+    // Preemption checkpoint (pending instructions must already be flushed): records the pc and compares the
+    // retired count against the deadline/limit. Emitted at every return, tail transfer and backward branch;
+    // calls already pass through rt::at.
+    void checkpoint(uint32_t addr) { line(S("rt::at(c, 0x%08X, 0);", addr)); }
 
     static bool fallsThrough(const Insn& i) {
         if (i.op == Op::b) return i.lk();
@@ -152,6 +157,7 @@ private:
     void tailCall(const Insn& i, uint32_t target) {
         flush();
         if (gen_.count(target)) {
+            checkpoint(i.addr);
             line(S("return %s(c);", fname(target).c_str()));
         } else {
             ++st_.midFunctionTails;
@@ -434,6 +440,7 @@ void FnEmitter::emitInsn(const Insn& i) {
                 else { ++st_.unsupportedInsns; ++st_.unsupportedKinds["bl-to-non-function"]; line(S("rt::unimplemented(c, 0x%08X, \"call to an address that is not a recompiled function\");", i.addr)); }
             } else if (body_.count(t) && !(t != f_.start && gen_.count(t))) {
                 flush();
+                if (t <= i.addr) checkpoint(i.addr);   // backward branch
                 line(S("goto L_%08X;", t));
             } else {
                 tailCall(i, t);
@@ -451,9 +458,10 @@ void FnEmitter::emitInsn(const Insn& i) {
             }
             const std::string cnd = cond.empty() ? "true" : cond;
             if (body_.count(t) && !(t != f_.start && gen_.count(t))) {
-                line(S("if (%s) goto L_%08X;", cnd.c_str(), t));
+                if (t <= i.addr) line(S("if (%s) { rt::at(c, 0x%08X, 0); goto L_%08X; }", cnd.c_str(), i.addr, t));   // backward branch
+                else line(S("if (%s) goto L_%08X;", cnd.c_str(), t));
             } else if (gen_.count(t)) {
-                line(S("if (%s) return %s(c);", cnd.c_str(), fname(t).c_str()));
+                line(S("if (%s) { rt::at(c, 0x%08X, 0); return %s(c); }", cnd.c_str(), i.addr, fname(t).c_str()));
             } else {
                 ++st_.midFunctionTails;
                 line(S("if (%s) rt::unimplemented(c, 0x%08X, \"conditional branch out of the function body\");", cnd.c_str(), i.addr));
@@ -470,8 +478,8 @@ void FnEmitter::emitInsn(const Insn& i) {
             } else {
                 flush();
                 const std::string cond = condition(i);
-                if (cond.empty()) { line(S("rt::ret(c, 0x%08X);", i.addr)); line("return;"); }
-                else line(S("if (%s) { rt::ret(c, 0x%08X); return; }", cond.c_str(), i.addr));
+                if (cond.empty()) { checkpoint(i.addr); line(S("rt::ret(c, 0x%08X);", i.addr)); line("return;"); }
+                else line(S("if (%s) { rt::at(c, 0x%08X, 0); rt::ret(c, 0x%08X); return; }", cond.c_str(), i.addr, i.addr));
             }
             break;
         }
@@ -489,6 +497,7 @@ void FnEmitter::emitInsn(const Insn& i) {
                     line(S("rt::unresolvedJump(c, 0x%08X);", i.addr));
                 } else if (j->kind == IndirectKind::JumpTableBounded || j->kind == IndirectKind::JumpTableScanned) {
                     ++st_.jumpTables;
+                    checkpoint(i.addr);   // targets may be backward
                     line("switch (c.ctr) {");
                     std::set<uint32_t> done;
                     for (uint32_t t : j->targets) {
@@ -500,6 +509,7 @@ void FnEmitter::emitInsn(const Insn& i) {
                 } else if (j->kind == IndirectKind::ConstTailJump) {
                     tailCall(i, j->constTarget);
                 } else {   // IndirectTailCall
+                    checkpoint(i.addr);
                     line(S("rt::tailIndirect(c, 0x%08X, c.ctr);", i.addr));
                     line("return;");
                 }
