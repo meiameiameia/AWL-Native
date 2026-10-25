@@ -2,8 +2,13 @@
 // runs the recompiled entry point and reports where it stops. Deterministic: time is derived from retired instructions.
 //   awl-host --dol rom/main.dol [--disc disc] [--trace build/boot-trace.log] [--retraces N] [--limit N] [--pad neutral|xinput]
 //            [--calls DEPTH] [--dump-boot FILE] [--dump-mem FILE] [--realtime]
+//            [--window] [--realtime-pace] [--capture-frames N DIR] [--gfx-warp]
 // --calls records the calls of the functions in capture_parse.h (to DEPTH) as "call" trace lines, for awl-capture-compare;
 // --dump-boot writes MEM1 as the game program starts, --dump-mem writes MEM1 when the run ends (use --limit to stop at an instruction).
+// P2 video (src/gfx): --window opens the game window and runs until it is closed (Esc, close button, Alt+F4) unless --retraces or --limit
+// is given; --realtime-pace sleeps so guest retraces happen at 59.94 Hz of wall time (implied by --window; it never changes what the guest
+// computes); --capture-frames N DIR writes BMPs of the first N presented frames (headless or windowed; DIR belongs under build/);
+// --gfx-warp forces the software Direct3D device. Without these options the host is the deterministic console host.
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -12,8 +17,12 @@
 
 #include "boot.h"
 #include "capture_parse.h"
+#include "dev_vi.h"
 #include "devices.h"
 #include "image.h"
+#ifdef AWL_HAVE_GFX
+#include "gfx/gfx_output.h"
+#endif
 
 using namespace awl;
 using namespace awl::hle;
@@ -76,20 +85,35 @@ int main(int argc, char** argv) {
     uint64_t limit = 4000000000ull;     // instruction budget; --limit 0 removes it
     uint32_t callDepth = 16;            // --calls: deepest call level recorded for the capture comparison (0 = off)
     std::string dumpBoot, dumpMem;
+    bool optWindow = false, optPace = false, optWarp = false, retracesGiven = false, limitGiven = false;
+    uint32_t captureFrames = 0;
+    std::string captureDir;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--dol" && i + 1 < argc) dolPath = argv[++i];
         else if (a == "--disc" && i + 1 < argc) cfg.discDir = argv[++i];
         else if (a == "--trace" && i + 1 < argc) tracePath = argv[++i];
         else if (a == "--pad" && i + 1 < argc) { const std::string v = argv[++i]; cfg.padXInput = v == "xinput"; if (v != "xinput" && v != "neutral") { std::fprintf(stderr, "--pad takes neutral or xinput\n"); return 2; } }
-        else if (a == "--retraces" && i + 1 < argc) cfg.mainLoopRetraces = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0));
-        else if (a == "--limit" && i + 1 < argc) limit = std::strtoull(argv[++i], nullptr, 0);
+        else if (a == "--retraces" && i + 1 < argc) { cfg.mainLoopRetraces = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0)); retracesGiven = true; }
+        else if (a == "--limit" && i + 1 < argc) { limit = std::strtoull(argv[++i], nullptr, 0); limitGiven = true; }
+        else if (a == "--window") optWindow = true;
+        else if (a == "--realtime-pace") optPace = true;
+        else if (a == "--gfx-warp") optWarp = true;
+        else if (a == "--capture-frames" && i + 2 < argc) { captureFrames = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0)); captureDir = argv[++i]; }
         else if (a == "--realtime") cfg.rtcSeconds = hostRtcSeconds();     // clock from the host: not deterministic
         else if (a == "--calls" && i + 1 < argc) callDepth = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0));
         else if (a == "--dump-boot" && i + 1 < argc) dumpBoot = argv[++i];
         else if (a == "--dump-mem" && i + 1 < argc) dumpMem = argv[++i];
     }
     if (limit == 0) limit = ~0ull;
+    const bool useVideo = optWindow || optPace || captureFrames != 0;
+#ifndef AWL_HAVE_GFX
+    if (useVideo) { std::fprintf(stderr, "this build has no video support (awl_gfx)\n"); return 2; }
+#endif
+    if (optWindow) {   // a window runs until it is closed, not until the main-loop criterion
+        if (!retracesGiven) cfg.mainLoopRetraces = ~0u;
+        if (!limitGiven) limit = ~0ull;
+    }
     if (dolPath.empty()) {
         std::fprintf(stderr, "usage: awl-host --dol <main.dol> [--disc disc] [--trace file] [--retraces N] [--limit N] [--pad neutral|xinput]\n"
                              "                [--calls DEPTH] [--dump-boot FILE] [--dump-mem FILE] [--realtime]\n");
@@ -118,6 +142,35 @@ int main(int argc, char** argv) {
     plat.installHandlers();
     if (!dumpBoot.empty() && !writeMemory(dumpBoot, mem)) return 1;
     machine.traceMaxDepth = callDepth;
+
+#ifdef AWL_HAVE_GFX
+    std::unique_ptr<gfx::VideoOutput> video;
+    if (useVideo) {
+        gfx::OutputOptions go;
+        go.window = optWindow;
+        go.pace = optPace;
+        go.captureFrames = captureFrames;
+        go.captureDir = captureDir;
+        go.forceWarp = optWarp;
+        video = std::make_unique<gfx::VideoOutput>();
+        if (!video->init(go, err)) {
+            std::fprintf(stderr, "video: %s\n", err.c_str());
+            return 1;
+        }
+        std::printf("awl-host: video %s%s%s, Direct3D device %s%s\n", optWindow ? "window" : "headless", optPace || optWindow ? " paced at 59.94 Hz" : "",
+                    captureFrames ? " with frame capture" : "", video->adapterName().empty() ? "(none needed)" : video->adapterName().c_str(),
+                    video->usingWarp() ? " (WARP)" : "");
+        gfx::VideoOutput* v = video.get();
+        setViRetraceHook([v, &plat](const ViFrameInfo* f) {
+            gfx::FrameDesc d;
+            if (f) {
+                d.xfbAddr = f->xfbAddr; d.width = f->width; d.height = f->height; d.strideBytes = f->strideBytes;
+                d.interlaced = f->interlaced; d.latchIndex = f->latchIndex;
+            }
+            if (v->onRetrace(f ? &d : nullptr) == gfx::RetraceAction::Quit) plat.requestExit(v->error().empty() ? "window closed" : "video output failed");
+        });
+    }
+#endif
 
     auto ctx = std::make_unique<Ctx>(machine);
     ctx->msr = bootValues().entryMsr;
@@ -151,10 +204,14 @@ int main(int argc, char** argv) {
     } else if (!plat.exitReason().empty()) {
         std::printf("\nEXIT: %s after %llu instructions\n", plat.exitReason().c_str(), static_cast<unsigned long long>(machine.icount));
         trace().line("EXIT %s icount=%llu", plat.exitReason().c_str(), static_cast<unsigned long long>(machine.icount));
-        rc = plat.exitReason() == "main loop reached" ? 0 : 4;
+        rc = plat.exitReason() == "main loop reached" || plat.exitReason() == "window closed" ? 0 : 4;
     } else if (ok) {
         std::printf("\nentry function returned after %llu instructions\n", static_cast<unsigned long long>(machine.icount));
     }
+#ifdef AWL_HAVE_GFX
+    if (video) std::printf("video: %llu frames presented, %llu captured, %llu pacing re-anchors\n", static_cast<unsigned long long>(video->presented()),
+                           static_cast<unsigned long long>(video->captured()), static_cast<unsigned long long>(video->reanchors()));
+#endif
     if (machine.traceMaxDepth) writeCallTrace(machine);
     if (!dumpMem.empty() && !writeMemory(dumpMem, mem)) rc = 1;
     const auto& k = plat.counters;
