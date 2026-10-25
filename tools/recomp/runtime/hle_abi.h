@@ -26,7 +26,9 @@ void hleCall(Ctx& c, uint32_t guestAddr);
 
 // ---- Hardware window ----------------------------------------------------------------------------
 // Guest loads and stores in 0xCC000000-0xCC00FFFF (including the GX write-gather pipe at
-// 0xCC008000, which game code writes directly) are routed here. size is 1, 2, 4 or 8 bytes, and
+// 0xCC008000, which game code writes directly) and in the EFB access window 0xC8000000-0xC8FFFFFF
+// (CPU peeks and pokes of the embedded framebuffer, physical 0x08000000) are routed here, to the
+// same model, which dispatches by address. size is 1, 2, 4 or 8 bytes, and
 // values are in guest (big-endian) numeric order. Without installed models every access stops
 // with StopKind::Mmio. Models must stop on registers they do not support, never ignore them.
 using MmioRead = uint64_t (*)(Ctx& c, uint32_t addr, uint32_t size);
