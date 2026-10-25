@@ -180,6 +180,82 @@ const char* mmioBlockName(uint32_t addr) {
 // Indirect branches
 // ---------------------------------------------------------------------------------------------
 
+namespace {
+
+// True when the instruction can change condition-register field `crf`.
+bool writesCrField(const Insn& i, uint32_t crf) {
+    switch (i.op) {
+        case Op::cmp: case Op::cmpi: case Op::cmpl: case Op::cmpli: case Op::fcmpo: case Op::fcmpu:
+        case Op::ps_cmpo0: case Op::ps_cmpo1: case Op::ps_cmpu0: case Op::ps_cmpu1: case Op::mcrf: case Op::mcrfs: case Op::mcrxr:
+            return i.crfD() == crf;
+        case Op::crand: case Op::crandc: case Op::creqv: case Op::crnand: case Op::crnor: case Op::cror: case Op::crorc: case Op::crxor:
+            return (i.crbD() >> 2) == crf;
+        case Op::mtcrf: return (i.crm() & (0x80u >> crf)) != 0;
+        case Op::andi_rc: case Op::andis_rc: case Op::addic_rc: case Op::stwcx_rc: return crf == 0;
+        case Op::add: case Op::addc: case Op::adde: case Op::addme: case Op::addze: case Op::and_: case Op::andc: case Op::cntlzw:
+        case Op::divw: case Op::divwu: case Op::eqv: case Op::extsb: case Op::extsh: case Op::mulhw: case Op::mulhwu: case Op::mullw:
+        case Op::nand: case Op::neg: case Op::nor: case Op::or_: case Op::orc: case Op::rlwimi: case Op::rlwinm: case Op::rlwnm:
+        case Op::slw: case Op::sraw: case Op::srawi: case Op::srw: case Op::subf: case Op::subfc: case Op::subfe: case Op::subfme:
+        case Op::subfze: case Op::xor_:
+            return i.rc() && crf == 0;
+        default: return false;
+    }
+}
+
+// A table index kept in a counted loop: `offReg` steps by 4 exactly when `cmpReg` steps by 1, both starting at 0, so
+// offReg == 4 * cmpReg at every use. Proven on the loop around the dispatch: the loop head is the compare at `cmpAddr`,
+// its end is the first branch after the dispatch that goes back to or before the head. Inside that region offReg is
+// written only by one `addi offReg,offReg,4` and cmpReg only by one `addi cmpReg,cmpReg,1`, the two increments sit in
+// one straight-line run, and the nearest writes before the head initialise both registers to zero
+// (`addi r,r0,0`, or `or offReg,cmpReg,cmpReg` right after cmpReg was zeroed).
+bool inductionPair(const Program& p, uint32_t offReg, uint32_t cmpReg, uint32_t cmpAddr, uint32_t bctrAddr) {
+    uint32_t latch = 0;
+    for (uint32_t a = bctrAddr + 4; a < bctrAddr + 0x4000; a += 4) {
+        const Insn* i = p.at(a);
+        if (!i) break;
+        if ((i->op == Op::b || i->op == Op::bc) && !i->lk() && i->branchTarget() <= cmpAddr && i->branchTarget() >= cmpAddr - 0x40) { latch = a; break; }
+    }
+    if (!latch) return false;
+    uint32_t offSteps = 0, cmpSteps = 0, offStepAt = 0, cmpStepAt = 0;
+    for (uint32_t a = cmpAddr; a <= latch; a += 4) {
+        const Insn* i = p.at(a);
+        if (!i) return false;
+        if (writesGpr(*i, offReg)) {
+            if (i->op == Op::addi && i->rA() == offReg && i->simm() == 4) { ++offSteps; offStepAt = a; } else return false;
+        }
+        if (writesGpr(*i, cmpReg)) {
+            if (i->op == Op::addi && i->rA() == cmpReg && i->simm() == 1) { ++cmpSteps; cmpStepAt = a; } else return false;
+        }
+    }
+    if (offSteps != 1 || cmpSteps != 1) return false;
+    for (uint32_t a = std::min(offStepAt, cmpStepAt) + 4; a < std::max(offStepAt, cmpStepAt); a += 4) {
+        const Insn* i = p.at(a);
+        if (!i || i->op == Op::b || i->op == Op::bc || i->op == Op::bclr || i->op == Op::bcctr) return false;
+    }
+    // Initialisation: the nearest earlier writes of each register.
+    uint32_t cmpInitAt = 0;
+    bool cmpZero = false, offZero = false;
+    for (uint32_t a = cmpAddr, n = 0; a > cmpAddr - 0x60 && n < 24; ++n) {
+        a -= 4;
+        const Insn* i = p.at(a);
+        if (!i) return false;
+        if (writesGpr(*i, cmpReg)) { cmpInitAt = a; cmpZero = i->op == Op::addi && i->rA() == 0 && i->simm() == 0; break; }
+    }
+    if (!cmpInitAt || !cmpZero) return false;
+    for (uint32_t a = cmpAddr, n = 0; a > cmpAddr - 0x60 && n < 24; ++n) {
+        a -= 4;
+        const Insn* i = p.at(a);
+        if (!i) return false;
+        if (!writesGpr(*i, offReg)) continue;
+        if (i->op == Op::addi && i->rA() == 0 && i->simm() == 0) offZero = true;
+        else if (i->op == Op::or_ && i->rS() == cmpReg && i->rB() == cmpReg && a > cmpInitAt) offZero = true;   // mr offReg,cmpReg while cmpReg is 0
+        break;
+    }
+    return offZero;
+}
+
+}  // namespace
+
 IndirectJump classifyBctr(const Program& p, uint32_t funcStart, uint32_t bctrAddr) {
     IndirectJump r;
     r.addr = bctrAddr;
@@ -226,22 +302,51 @@ IndirectJump classifyBctr(const Program& p, uint32_t funcStart, uint32_t bctrAdd
             if (cv && p.dol->findSection(*cv) && !p.dol->isText(*cv)) table = *cv;
         }
         if (table) {
-            // Bound from the nearest preceding cmplwi + conditional branch.
+            // Bound: the nearest preceding cmplwi whose compared register is proven to be (a copy of) the table index,
+            // followed by the compiler's range exit on that condition field: bgt/bge to a label, or bgtlr/bgelr. Two
+            // proofs of "the compared register is the index":
+            //  - the offset register is `rlwinm rO,rI,2,0,29` (index scaled by 4) and the compare is on rI, which is
+            //    not rewritten between the compare and the scaling; or
+            //  - a counted loop: the offset register steps by 4 exactly when the compared register steps by 1, both
+            //    from 0 (inductionPair).
             uint32_t bound = 0;
             bool bounded = false;
+            const uint32_t offReg = def->rA() == 0 ? def->rB() : (constValue(p, def->rA(), defAddr, floor) ? def->rB() : def->rA());
+            uint32_t idxReg = 32;   // register the offset is a scaled copy of; 32 = not identified
+            uint32_t scaleAddr = 0;
+            for (uint32_t a = defAddr; a > floor && defAddr - a < 12 * 4;) {
+                a -= 4;
+                const Insn* s = p.at(a);
+                if (!s || !writesGpr(*s, offReg)) continue;
+                if (s->op == Op::rlwinm && s->sh() == 2 && s->mb() == 0 && s->me() == 29) { idxReg = s->rS(); scaleAddr = a; }
+                break;
+            }
             const uint32_t lo = defAddr > floor + 48 * 4 ? defAddr - 48 * 4 : floor;
             for (uint32_t a = defAddr; a > lo && !bounded;) {
                 a -= 4;
                 const Insn* c = p.at(a);
                 if (!c || c->op != Op::cmpli) continue;
+                bool indexProven = false;
+                if (idxReg != 32 && c->rA() == idxReg) {
+                    indexProven = true;
+                    for (uint32_t x = std::min(a, scaleAddr) + 4; x < std::max(a, scaleAddr); x += 4) {
+                        const Insn* w = p.at(x);
+                        if (w && writesGpr(*w, idxReg)) indexProven = false;
+                    }
+                } else if (idxReg == 32 && inductionPair(p, offReg, c->rA(), a, bctrAddr)) {
+                    indexProven = true;
+                }
+                if (!indexProven) continue;
                 for (uint32_t n = a + 4; n < defAddr; n += 4) {
                     const Insn* br = p.at(n);
-                    if (br && br->op == Op::bc && !br->lk() && (br->bi() >> 2) == c->crfD()) {
+                    if (!br) break;
+                    if ((br->op == Op::bc || br->op == Op::bclr) && !br->lk() && (br->bi() >> 2) == c->crfD()) {
                         const bool taken = (br->bo() & 8) != 0;
-                        if (taken && (br->bi() & 3) == 1) { bound = c->uimm() + 1; bounded = true; }      // bgt default
-                        else if (!taken && (br->bi() & 3) == 0) { bound = c->uimm(); bounded = true; }   // bge default
+                        if (taken && (br->bi() & 3) == 1) { bound = c->uimm() + 1; bounded = true; }      // bgt exit
+                        else if (!taken && (br->bi() & 3) == 0) { bound = c->uimm(); bounded = true; }   // bge exit
                         break;
                     }
+                    if (writesCrField(*br, c->crfD())) break;   // the condition was overwritten before the exit
                 }
             }
             auto entryValid = [&](uint32_t idx, uint32_t& target) {

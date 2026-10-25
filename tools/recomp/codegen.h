@@ -1,6 +1,7 @@
 // C++ emission for the static-recompilation spike. Output goes under an ignored build directory only.
 #pragma once
 
+#include <set>
 #include <string>
 #include <vector>
 
@@ -18,6 +19,12 @@ int reportDiscovery(const Program& prog, const Discovery& d, const std::vector<R
 // function (`full`). Every manifest entry (already validated against `d`) is emitted as a call to
 // rt::hleCall instead of its recompiled body, and is not traversed when computing the boot closure.
 // Returns a process exit code.
+// Classification of functions that share words with another function (diagnostics for the overlap resolution).
+int reportOverlaps(const Program& prog, const Discovery& d);
+// Functions that never return (no return instruction; tail calls and fall-through only into such functions).
+std::set<uint32_t> findNoReturn(const Program& prog, const Discovery& d);
+int reportNoReturn(const Program& prog, const Discovery& d);
+
 int generateCode(const Program& prog, const Discovery& d, const std::vector<HleEntry>& hle, const std::string& outDir,
                  bool full);
 // As above, plus the REL modules (generated only with `full`): `rels` holds each module linked at its synthetic
