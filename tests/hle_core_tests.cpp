@@ -212,6 +212,19 @@ void testMainLoopCriterion() {
 }
 
 // ---- EXI / RTC / SRAM -------------------------------------------------------------------------------------------
+void testSi() {
+    // The SI model serves what SIInit does: the polling register, an idle transfer status, and the transfer-complete acknowledge.
+    Rig r;
+    CHECK(r.rd(0xCC006430, 4) == 0);
+    r.wr(0xCC006430, 4, 0x12345678);
+    CHECK(r.rd(0xCC006430, 4) == 0x12345678);
+    CHECK(r.rd(0xCC006434, 4) == 0);                                          // SI_COMCSR: TSTART clear, TCINT clear
+    r.wr(0xCC006434, 4, 0x80000000u);                                         // SIInit acknowledges TCINT with exactly this value
+    CHECK(r.rd(0xCC006434, 4) == 0);
+    CHECK(stops([&] { r.wr(0xCC006434, 4, 1); }, rt::StopKind::Mmio));       // starting a transfer is not modelled
+    CHECK(stops([&] { r.rd(0xCC006400, 4); }, rt::StopKind::Mmio));          // channel registers are not modelled
+}
+
 void testExi() {
     Rig r;
     const uint32_t csr0 = 0xCC006800, mar0 = 0xCC006804, len0 = 0xCC006808, cr0 = 0xCC00680C, data0 = 0xCC006810;
@@ -474,7 +487,7 @@ void testDvdCorruptExtraction() {
 int main() try {
     const struct { const char* name; void (*fn)(); } tests[] = {
         {"time constants", testTimeConstants}, {"events and clock", testEventQueueAndClock}, {"PI", testPi}, {"VI", testVi},
-        {"main-loop criterion", testMainLoopCriterion}, {"EXI", testExi}, {"GX", testGx}, {"DVD", testDvd}, {"DVD FST validation", testDvdFstValidation},
+        {"main-loop criterion", testMainLoopCriterion}, {"SI", testSi}, {"EXI", testExi}, {"GX", testGx}, {"DVD", testDvd}, {"DVD FST validation", testDvdFstValidation},
         {"DVD corrupt extraction", testDvdCorruptExtraction},
     };
     for (const auto& t : tests) {

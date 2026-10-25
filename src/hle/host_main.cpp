@@ -1,7 +1,7 @@
 // awl-host: console game host. Loads the DOL, builds the boot environment, registers the platform handlers and models,
 // runs the recompiled entry point and reports where it stops. Deterministic: time is derived from retired instructions.
 //   awl-host --dol rom/main.dol [--disc disc] [--trace build/boot-trace.log] [--retraces N] [--limit N] [--pad neutral|xinput]
-//            [--calls DEPTH] [--dump-boot FILE] [--dump-mem FILE]
+//            [--calls DEPTH] [--dump-boot FILE] [--dump-mem FILE] [--realtime]
 // --calls records the calls of the functions in capture_parse.h (to DEPTH) as "call" trace lines, for awl-capture-compare;
 // --dump-boot writes MEM1 as the game program starts, --dump-mem writes MEM1 when the run ends (use --limit to stop at an instruction).
 #include <cstdio>
@@ -83,6 +83,7 @@ int main(int argc, char** argv) {
         else if (a == "--pad" && i + 1 < argc) { const std::string v = argv[++i]; cfg.padXInput = v == "xinput"; if (v != "xinput" && v != "neutral") { std::fprintf(stderr, "--pad takes neutral or xinput\n"); return 2; } }
         else if (a == "--retraces" && i + 1 < argc) cfg.mainLoopRetraces = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0));
         else if (a == "--limit" && i + 1 < argc) limit = std::strtoull(argv[++i], nullptr, 0);
+        else if (a == "--realtime") cfg.rtcSeconds = hostRtcSeconds();     // clock from the host: not deterministic
         else if (a == "--calls" && i + 1 < argc) callDepth = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0));
         else if (a == "--dump-boot" && i + 1 < argc) dumpBoot = argv[++i];
         else if (a == "--dump-mem" && i + 1 < argc) dumpMem = argv[++i];
@@ -90,7 +91,7 @@ int main(int argc, char** argv) {
     if (limit == 0) limit = ~0ull;
     if (dolPath.empty()) {
         std::fprintf(stderr, "usage: awl-host --dol <main.dol> [--disc disc] [--trace file] [--retraces N] [--limit N] [--pad neutral|xinput]\n"
-                             "                [--calls DEPTH] [--dump-boot FILE] [--dump-mem FILE]\n");
+                             "                [--calls DEPTH] [--dump-boot FILE] [--dump-mem FILE] [--realtime]\n");
         return 2;
     }
     recomp::DolImage dol;

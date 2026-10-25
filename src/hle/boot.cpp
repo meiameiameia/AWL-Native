@@ -37,7 +37,8 @@ bool buildBootEnvironment(Machine& m, const recomp::DolImage& dol, const std::st
     }
 
     GuestMem mem(m.mem);
-    const BootValues& v = bootValues();
+    BootValues v = bootValues();
+    v.rtcSeconds = Platform::get().config().rtcSeconds;      // fixed by default; the host's real-time option replaces it
     const uint32_t fstSize = be32(boot, 0x428);
     layout = computeLayout(v, be32(boot, 0x42C));
     if (fst.size() < fstSize || fstSize == 0) { err = "fst.bin is smaller than the size recorded in boot.bin"; return false; }
@@ -53,7 +54,8 @@ bool buildBootEnvironment(Machine& m, const recomp::DolImage& dol, const std::st
     for (const BootField& f : bootFields(v, layout)) {
         if (f.kind == FieldKind::FromDisc) { std::memcpy(m.mem + (f.addr & 0x0FFFFFFFu), boot.data(), f.size); continue; }
         if (f.kind != FieldKind::Assumed || f.value == 0) continue;
-        if (f.size == 4) mem.w32(f.addr, static_cast<uint32_t>(f.value));
+        if (f.size == 8) { mem.w32(f.addr, static_cast<uint32_t>(f.value >> 32)); mem.w32(f.addr + 4, static_cast<uint32_t>(f.value)); }
+        else if (f.size == 4) mem.w32(f.addr, static_cast<uint32_t>(f.value));
         else if (f.size == 2) mem.w16(f.addr, static_cast<uint16_t>(f.value));
         else if (f.size == 1) mem.w8(f.addr, static_cast<uint8_t>(f.value));
     }

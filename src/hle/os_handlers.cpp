@@ -32,7 +32,31 @@ uint64_t timeBase(Ctx& c) {
 void hPPCMtdec(Ctx& c) { Platform::get().setDecrementer(c.r[3]); }
 void hNop(Ctx& c) {
     // PPCSync / cache range functions are exact no-ops on flat memory; the others below are logged stubs.
-    if (c.pc == 0x801B20F4 || c.pc == 0x801F52F4) trace().line("stub no-op pc=%08X", c.pc);
+    if (c.pc == 0x801B20F4) trace().line("stub no-op pc=%08X", c.pc);
+}
+// SIInit (0x801F52F4), instruction for instruction up to the controller-type probes: register the library version, mark the four
+// packets free, clear the polling state, SISetSamplingRate(0), wait for an idle transfer and clear its completion flag, install the
+// SI interrupt handler (interrupt 20 -> 0x801F4D58) and unmask SI (0x800). The four SIGetType calls that follow in the original start
+// asynchronous probes for the PAD and GBA types; PAD and GBA are replaced natively, so the probes are skipped (stub register: SIInit).
+void hSIInit(Ctx& c) {
+    Platform& p = Platform::get();
+    GuestMem& m = p.mem();
+    constexpr uint32_t kOSRegisterVersion = 0x801B15EC, kSISetSamplingRate = 0x801F60F0, kSetInterruptHandler = 0x801B3A90, kUnmaskInterrupts = 0x801B3E94;
+    constexpr uint32_t kSiInterruptHandler = 0x801F4D58, kPackets = 0x80340A60, kPoll = 0x802E5FE8, kComCsr = 0xCC006434;
+    c.r[3] = m.r32(c.r[13] - 23784);                                // __SIVersion pointer, in the small-data area
+    rt::callGuest(c, kOSRegisterVersion);
+    for (uint32_t off : {0x60u, 0x40u, 0x20u, 0x00u}) m.w32(kPackets + off, 0xFFFFFFFFu);   // Packet[i].chan = -1
+    m.w32(kPoll, 0);                                                // Si.poll
+    c.r[3] = 0;
+    rt::callGuest(c, kSISetSamplingRate);
+    while (mmioRead(c, kComCsr, 4) & 1) {}                          // wait for TSTART to clear (the model is always idle)
+    mmioWrite(c, kComCsr, 4, 0x80000000u);                          // acknowledge the transfer-complete flag
+    c.r[3] = 20;
+    c.r[4] = kSiInterruptHandler;
+    rt::callGuest(c, kSetInterruptHandler);
+    c.r[3] = 0x800;
+    rt::callGuest(c, kUnmaskInterrupts);
+    trace().line("SIInit: SI handler registered for interrupt 20 and SI unmasked; controller-type probes skipped (stub: SIInit)");
 }
 void hOSSaveContext(Ctx& c) { Platform::get().osSaveContext(c); }
 void hOSLoadContext(Ctx& c) { Platform::get().osLoadContext(c); }
@@ -126,7 +150,7 @@ const Entry kEntries[] = {
     {0x801B2E0C, "OSLoadContext", hOSLoadContext},
     {0x801B5054, "RealMode", hNop},
     {0x801B20F4, "__OSInitAudioSystem", hNop},
-    {0x801F52F4, "SIInit", hNop},
+    {0x801F52F4, "SIInit", hSIInit},
     {0x801C06D4, "PADInit", hPadTrue},
     {0x801C04B0, "PADReset", hPadTrue},
     {0x801C05C0, "PADRecalibrate", hPadTrue},

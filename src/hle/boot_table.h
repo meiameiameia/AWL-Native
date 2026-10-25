@@ -16,7 +16,6 @@ struct BootValues {
     uint32_t memSize = 0;          // 0x80000028 physical memory
     uint32_t consoleType = 0;      // 0x8000002C
     uint32_t arenaLo = 0;          // 0x80000030 (0: OSInit uses its own default)
-    uint32_t arenaHi = 0;          // 0x80000034 (0: __start derives it from the BI2 argument vector)
     uint32_t tvMode = 0;           // 0x800000CC
     uint32_t aramSize = 0;         // 0x800000D0
     uint32_t simMemSize = 0;       // 0x800000F0
@@ -30,14 +29,20 @@ struct BootValues {
     // Devices the SDK reads during boot
     uint32_t diConfig = 0;         // DI_CONFIG (0xCC006024), read by EXISync through __OSGetDIConfig
     uint32_t driveRevision = 0, driveDeviceCode = 0, driveReleaseDate = 0;   // DVDDriveInfo returned by the inquiry command
-    uint32_t rtcSeconds = 0;       // RTC counter, seconds since 2000-01-01
+    uint16_t viClock = 0;          // VI clock-select register 0xCC00206C; SISetSamplingRate multiplies its result by 2 when bit 0 is set
+    uint32_t rtcSeconds = 0;       // RTC counter, seconds since 2000-01-01; also gives the system time at 0x800030D8 (rtcSeconds * 40.5 MHz)
 };
 
 // The values currently used.
 const BootValues& bootValues();
 
+// Real-time mode: the host's local time as RTC seconds since 2000-01-01 (the console's clock is the user's local time; Dolphin does the same).
+// awl-host --realtime puts it in Config::rtcSeconds, which feeds the EXI RTC and the system time at 0x800030D8 together.
+uint32_t hostRtcSeconds();
+
 enum class FieldKind {
     Assumed,       // chosen by the platform; a capture should confirm or replace it
+    Unread,        // provided by the IPL, but no code in the DOL or the RELs reads it (constant-address scan): listed, not written
     FromDisc,      // copied from the disc extraction (sys/boot.bin, sys/bi2.bin, sys/fst.bin): compare by equality only
     OsWritten      // written by the recompiled OS code itself; compared with the platform's own run, not assumed
 };
@@ -50,6 +55,7 @@ struct BootField {
     FieldKind kind = FieldKind::Assumed;
     const char* note = "";
     const char* member = "";       // BootValues member (or layout rule) that holds the value, for the capture report
+    const char* intent = "";       // non-empty: the value deliberately differs from what a capture shows; the text says why
 };
 
 struct BootLayout {

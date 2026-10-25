@@ -111,11 +111,14 @@ public:
     explicit Si(Platform&) {}
     uint64_t read(Ctx& c, uint32_t addr, uint32_t size) override {
         if ((addr & 0x3FF) == 0x30 && size == 4) return poll_;
-        stopHw(c, addr, "SI register: the SI library is not used (PAD and GBA are replaced natively)");
+        if ((addr & 0x3FF) == 0x34 && size == 4) return 0;      // SI_COMCSR: no transfer in progress, no completion flag
+        stopHw(c, addr, "SI register: the SI library's transfers are not modelled (PAD and GBA are replaced natively)");
     }
     void write(Ctx& c, uint32_t addr, uint32_t size, uint64_t v) override {
         if ((addr & 0x3FF) == 0x30 && size == 4) { poll_ = static_cast<uint32_t>(v); return; }
-        stopHw(c, addr, "SI register: the SI library is not used (PAD and GBA are replaced natively)");
+        // SIInit acknowledges the completion flag with 0x80000000 (TCINT, bit 31); anything else would start or configure a transfer.
+        if ((addr & 0x3FF) == 0x34 && size == 4 && v == 0x80000000u) return;
+        stopHw(c, addr, "SI register: the SI library's transfers are not modelled (PAD and GBA are replaced natively)");
     }
 private:
     uint32_t poll_ = 0;

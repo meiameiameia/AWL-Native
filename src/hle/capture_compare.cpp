@@ -80,6 +80,19 @@ bool compareRange(const Blob& dump, uint32_t addr, const std::vector<uint8_t>& r
     return true;
 }
 
+// Ranges (merged when closer than `gap` bytes) where two memory images differ, as guest addresses. Compares at most the shorter image.
+std::vector<std::pair<uint32_t, uint32_t>> diffRanges(const Blob& a, const Blob& b, size_t gap) {
+    std::vector<std::pair<uint32_t, uint32_t>> out;
+    const size_t n = std::min(a.data.size(), b.data.size()) & ~size_t(3);
+    for (size_t i = 0; i < n; i += 4) {
+        if (std::memcmp(&a.data[i], &b.data[i], 4) == 0) continue;
+        const uint32_t lo = 0x80000000u + static_cast<uint32_t>(i), hi = lo + 4;
+        if (!out.empty() && lo - out.back().second <= gap) out.back().second = hi;
+        else out.push_back({lo, hi});
+    }
+    return out;
+}
+
 // Low-memory ranges of the report.
 bool inReportRange(uint32_t a) { return (a >= 0x80000000u && a <= 0x800000FFu) || (a >= 0x800030C0u && a <= 0x800030FFu); }
 
@@ -220,7 +233,7 @@ std::string buildReport(const CompareInputs& in) {
     r += "| Address | Field | Kind | Assumed | Dolphin at entry | Dolphin after OSInit | Platform after OSInit | Verdict |\n|---|---|---|---|---|---|---|---|\n";
     struct Change { std::string member; std::string from, to; std::string field; };
     std::vector<Change> changes;
-    size_t nMatch = 0, nDiffer = 0, nUnknown = 0;
+    size_t nMatch = 0, nDiffer = 0, nUnknown = 0, nIntent = 0, nUnread = 0;
     std::vector<BootField> fields = bootFields(v, layout);
     std::sort(fields.begin(), fields.end(), [](const BootField& a, const BootField& b) { return a.addr < b.addr; });
     for (const BootField& f : fields) {
@@ -257,12 +270,17 @@ std::string buildReport(const CompareInputs& in) {
             if (derivedFromLayout && !layoutOk) { verdict = "not compared (no disc)"; ++nUnknown; }
             else if (haveEntry) {
                 if (x == f.value) { verdict = "match"; ++nMatch; }
+                else if (f.intent[0]) { verdict = std::string("intentional difference: ") + f.intent; ++nIntent; }
                 else {
                     verdict = "DIFFERS: set " + hx(x, f.size);
                     ++nDiffer;
                     changes.push_back({f.member, hx(f.value, f.size), hx(x, f.size), f.name});
                 }
             } else { verdict = "not compared"; ++nUnknown; }
+        } else if (f.kind == FieldKind::Unread) {
+            assumed = "(not written)";
+            verdict = "unread by the DOL and RELs (constant-address scan)";
+            ++nUnread;
         } else {   // OsWritten
             assumed = "(OS writes it)";
             if (haveOs && havePlat) {
@@ -270,10 +288,10 @@ std::string buildReport(const CompareInputs& in) {
                 else { verdict = "DIFFERS: platform " + hx(z, f.size) + ", Dolphin " + hx(y, f.size); ++nDiffer; }
             } else { verdict = haveOs ? "no platform dump" : "not compared"; ++nUnknown; }
         }
-        r += sf("| %08X | %s | %s | %s | %s | %s | %s | %s |\n", f.addr, f.name, f.kind == FieldKind::Assumed ? "assumed" : "OS-written", assumed.c_str(), cap.c_str(),
+        r += sf("| %08X | %s | %s | %s | %s | %s | %s | %s |\n", f.addr, f.name, f.kind == FieldKind::Assumed ? "assumed" : (f.kind == FieldKind::Unread ? "unread" : "OS-written"), assumed.c_str(), cap.c_str(),
                 capOs.c_str(), plat.c_str(), verdict.c_str());
     }
-    r += sf("\nSummary: %zu match, %zu differ, %zu not compared.\n\n", nMatch, nDiffer, nUnknown);
+    r += sf("\nSummary: %zu match, %zu intentional differences, %zu differ, %zu unread, %zu not compared.\n\n", nMatch, nIntent, nDiffer, nUnread, nUnknown);
     if (!changes.empty()) {
         r += "Table changes this capture asks for (edit `src/hle/boot_table.cpp`, nothing else):\n\n";
         for (const Change& c : changes) r += sf("- %s: %s -> %s (%s)\n", c.field.c_str(), c.from.c_str(), c.to.c_str(), c.member.c_str());
@@ -285,20 +303,41 @@ std::string buildReport(const CompareInputs& in) {
         const Blob& b = which == 0 ? aEntry : aOs;
         if (!b.present) continue;
         std::vector<std::string> extra;
+        const Blob& plat = which == 0 ? hostEntry : hostOs;
+        size_t samePlat = 0;
         for (uint32_t a = 0x80000020; a < 0x80003100; a += 4) {
             if (!inReportRange(a)) { if (a == 0x80000100) a = 0x800030BC; continue; }
             bool covered = false;
             for (const BootField& f : fields) if (f.kind != FieldKind::FromDisc && a + 4 > f.addr && a < f.addr + f.size) covered = true;
             if (covered) continue;
             uint64_t w = 0;
-            if (memRead(b, a, 4, w) && w != 0) extra.push_back(sf("%08X=%08llX", a, static_cast<unsigned long long>(w)));
+            if (!memRead(b, a, 4, w) || w == 0) continue;
+            uint64_t pw = 0;
+            if (!memRead(plat, a, 4, pw)) extra.push_back(sf("%08X=%08llX", a, static_cast<unsigned long long>(w)));
+            else if (pw == w) ++samePlat;
+            else extra.push_back(sf("%08X=%08llX (platform %08llX)", a, static_cast<unsigned long long>(w), static_cast<unsigned long long>(pw)));
         }
-        r += sf("Non-zero words %s that the table does not model (%zu): ", which == 0 ? "at entry" : "after OSInit", extra.size());
+        if (plat.present && samePlat) r += sf("%zu further non-zero words %s hold the same value in the platform's memory.\n\n", samePlat, which == 0 ? "at entry" : "after OSInit");
+        r += sf("Non-zero words %s that the table does not model%s (%zu): ", which == 0 ? "at entry" : "after OSInit", plat.present ? " and the platform does not reproduce" : "", extra.size());
         if (extra.empty()) r += "none";
         for (size_t i = 0; i < extra.size() && i < 48; ++i) r += (i ? ", " : "") + extra[i];
         if (extra.size() > 48) r += ", ...";
         r += "\n\n";
     }
+
+    // Whole-memory comparison of Dolphin's and the platform's images (addresses and sizes only).
+    r += "### Whole-memory difference\n\n";
+    const struct { const char* what; const Blob* d; const Blob* p; } pairs[] = {{"at the program entry", &aEntry, &hostEntry}, {"after OSInit", &aOs, &hostOs}};
+    for (const auto& pr : pairs) {
+        if (!pr.d->present || !pr.p->present) { r += sf("- %s: %s\n", pr.what, !pr.d->present ? "Dolphin image not captured" : "platform image not present"); continue; }
+        const auto ranges = diffRanges(*pr.d, *pr.p, 64);
+        size_t bytes = 0;
+        for (const auto& rg : ranges) bytes += rg.second - rg.first;
+        r += sf("- %s: %zu differing ranges (%zu bytes, ranges closer than 64 bytes merged)%s\n", pr.what, ranges.size(), bytes, ranges.empty() ? "" : ":");
+        for (size_t i = 0; i < ranges.size() && i < 60; ++i) r += sf("  - %08X-%08X (%u bytes)\n", ranges[i].first, ranges[i].second, ranges[i].second - ranges[i].first);
+        if (ranges.size() > 60) r += "  - ...\n";
+    }
+    r += "\nAfter OSInit, expected benign classes are asynchronous work that Dolphin's real-time drive has finished and the platform's has not yet (the drive-information buffer), and Dolphin-specific data (its stub and device-name strings).\n\n";
 
     // BI2 and FST placement.
     r += "### BI2 and FST placement\n\n";
@@ -336,7 +375,7 @@ std::string buildReport(const CompareInputs& in) {
         uint64_t lo = 0, hi = 0;
         if (memRead(aOs, 0x80000030, 4, lo) && memRead(aOs, 0x80000034, 4, hi))
             r += sf("- arena low word 80000030: %08llX; arena high word 80000034: %08llX (platform assumes %s and %s before OSInit; the SDK keeps its own arena globals, whose addresses are not modelled here)\n\n",
-                    static_cast<unsigned long long>(lo), static_cast<unsigned long long>(hi), hx(v.arenaLo, 4).c_str(), hx(v.arenaHi, 4).c_str());
+                    static_cast<unsigned long long>(lo), static_cast<unsigned long long>(hi), hx(v.arenaLo, 4).c_str(), layoutOk ? hx(layout.fstAddr, 4).c_str() : "?");
         else r += "unreadable\n\n";
     }
     r += "### Drive-information buffer\n\n";
