@@ -9,7 +9,7 @@ Strategy (adopted 2026-10-24): statically recompile the original PowerPC code in
 | Phase | Outcome | Acceptance | Status |
 | --- | --- | --- | --- |
 | P0 Feasibility | Recompiler prototype: load the DOL/RELs, decode all code, discover functions, resolve indirect control flow, emit and natively run the boot path up to the first platform call | Measured coverage report and an owner go/no-go | Complete; owner go on 2026-10-24 (`docs/research/recomp-feasibility.md`): all code decodes, 99.72% assigned to functions, 248/248 `bctr` resolved, boot path runs natively to the first hardware access after 133,730 instructions |
-| P1 Boot | Full DOL + REL recompilation; the runtime reaches the game's main loop and logs every unsupported platform call | The main loop runs repeatably; a deterministic boot trace matches the original's call sequence and key globals; the stub register lists every gap | Main loop reached (2026-10-25): `awl-host` runs the recompiled DOL and all three RELs (15,635 functions) and passes the 120-retrace main-loop criterion at 142 retraces / 389.2 M instructions, deterministically (about 0.5 s of host time for 2.4 s of guest time). Remaining for exit: owner's Dolphin captures compared with the boot trace, assumed boot values replaced, generator cleanup (M2/M4) |
+| P1 Boot | Full DOL + REL recompilation; the runtime reaches the game's main loop and logs every unsupported platform call | The main loop runs repeatably; a deterministic boot trace matches the original's call sequence and key globals; the stub register lists every gap | Complete (2026-10-25). `awl-host` runs the recompiled DOL and RELs (15,635 functions) and passes the 120-retrace main-loop criterion deterministically (386.5 M instructions, about 0.5 s host time for 2.4 s guest time). Against the owner's Dolphin captures (`awl-capture-compare`): 42 boot-memory fields match plus 1 intentional retail difference; render mode and one-frame-per-retrace pacing agree; the first 261 system calls agree in order with no real argument differences; the DSP/AX exchange matches frame for frame. Native differences are recorded in `docs/research/hle-platform.md` |
 | P2 Graphics | GX to DirectX 11 for the logo, title and menus | Visual comparison against Dolphin captures | Planned |
 | P3 Playable farm | Input, saves and the in-game loop | Owner plays a session | Planned |
 | P4 Audio | DSP/AX audio to a native API | Music and sound effects play correctly | Planned |
@@ -47,12 +47,12 @@ Every temporary runtime stub is listed here with its address or service, its log
 | PAD (`PADInit`/`Reset`/`Recalibrate`/`Read`/`ControlMotor`) | channel 0 neutral, channels 1-3 absent | first 8 calls | P3 (input through `PadAdapter`) |
 | GBA (`GBAInit`/`GetStatus`/`Read`/`Write`/`Reset`) | not ready | every call | P3 |
 | DVD streaming (commands 6, 7, 9) | accepted, no audio data | every call | P4 |
-| DVD inquiry | placeholder drive info | once | P1 exit (Dolphin capture) |
+| DVD inquiry | drive info set to Dolphin's reference values (Capture A), not a measured drive | once | P5 (review) |
 | DVD timing | 1 ms + 4 ticks per byte | model parameter | P3 |
 | DSP / AI | boot ROM and AX frame handshake only; silent; DMA replays its buffer | handshake events | P4 |
-| `__OSInitAudioSystem`, `SIInit` | no-op | once | P4 / P3 |
+| `__OSInitAudioSystem` | net effect only (DSP left reset); `SIInit` reproduces handler registration and unmask, no SI transfers | once | P4 / P3 |
 | EXI | no memory cards; RTC fixed at 2026-01-01; SRAM defaults | every access to absent devices | P3 (saves), P5 (real clock) |
 | GX | command stream parsed, not drawn; finish/token/copy complete after 2,000 ticks | counters | P2 |
-| Boot environment | arena, FST/BI2 placement, console type, ARAM size and `DI_CONFIG` are assumptions | printed in the boot-trace header | P1 exit (Dolphin capture) |
+| Boot environment | values confirmed by Capture A; console type kept retail (`0x00000003`) by decision; system time fixed in deterministic mode | printed in the boot-trace header | P5 (real-time mode default) |
 | Clock | 4 instructions per time-base tick | model parameter | P3 calibration |
-| `fres` / `frsqrte` | exact reciprocal placeholders, not the hardware estimate | generator note | P1 exit (Dolphin reference values) |
+| `fres` / `frsqrte` | exact reciprocal placeholders, not the hardware estimate (3 and 138 sites) | generator note | P3 (needs an FP reference capture) |
