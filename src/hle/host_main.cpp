@@ -8,7 +8,7 @@
 // P2 video (src/gfx): --window opens the game window and runs until it is closed (Esc, close button, Alt+F4) unless --retraces or --limit
 // is given; --realtime-pace sleeps so guest retraces happen at 59.94 Hz of wall time (implied by --window; it never changes what the guest
 // computes); --capture-frames N DIR writes BMPs of the first N presented frames (headless or windowed; DIR belongs under build/);
-// --gfx-warp forces the software Direct3D device. Without these options the host is the deterministic console host.
+// --gfx-warp forces the software Direct3D device. In window mode the keyboard and XInput controller 0 feed PADRead while the window has focus. Without these options the host is the deterministic console host.
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -20,6 +20,7 @@
 #include "dev_vi.h"
 #include "devices.h"
 #include "image.h"
+#include "pad_source.h"
 #ifdef AWL_HAVE_GFX
 #include "gfx/gfx_output.h"
 #endif
@@ -161,6 +162,18 @@ int main(int argc, char** argv) {
                     captureFrames ? " with frame capture" : "", video->adapterName().empty() ? "(none needed)" : video->adapterName().c_str(),
                     video->usingWarp() ? " (WARP)" : "");
         gfx::VideoOutput* v = video.get();
+        if (v->input()) {   // window mode: keyboard and the controller, only while the window has focus
+            setPadProvider(
+                [](void* user) {
+                    const PadSample& s = static_cast<gfx::VideoOutput*>(user)->input()->sample();
+                    PadReading r;
+                    r.connected = s.connected; r.buttons = s.buttons;
+                    r.stickX = s.stick_x; r.stickY = s.stick_y; r.substickX = s.substick_x; r.substickY = s.substick_y;
+                    r.triggerL = s.trigger_l; r.triggerR = s.trigger_r;
+                    return r;
+                },
+                v);
+        }
         setViRetraceHook([v, &plat](const ViFrameInfo* f) {
             gfx::FrameDesc d;
             if (f) {

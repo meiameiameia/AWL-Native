@@ -236,6 +236,11 @@ void Platform::deliverException(Ctx& c, uint32_t exception, uint32_t fn, uint32_
     t->osContext = x;
     Ctx* i = irqCtx(t, c);
     i->msr = (c.msr & ~kMsrEE) | kMsrFP;
+    // The vector tail ends with stwu r1,-8(r1) (0x801B1CC8-0x801B1CD0): the handler runs in a frame of its own below the
+    // interrupted r1. Without it the handler's prologue (stw r0,4(r1)) overwrites the LR slot of the interrupted function
+    // when the interrupt lands between that function's own stw r0,4(r1) and stwu (a non-local return at 0x801B5CFC).
+    i->r[1] = c.r[1] - 8;
+    mem_.w32(i->r[1], c.r[1]);
     i->r[3] = exception;
     i->r[4] = x;
     ++t->depth;

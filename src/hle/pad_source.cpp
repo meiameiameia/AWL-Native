@@ -7,7 +7,18 @@
 
 namespace awl::hle {
 
+namespace {
+PadProvider g_provider = nullptr;
+void* g_providerUser = nullptr;
+}  // namespace
+
+void setPadProvider(PadProvider fn, void* user) {
+    g_provider = fn;
+    g_providerUser = user;
+}
+
 PadReading readPad(PadMode mode) {
+    if (g_provider) return g_provider(g_providerUser);
     PadReading out;
     if (mode == PadMode::Neutral) {
         out.connected = true;
