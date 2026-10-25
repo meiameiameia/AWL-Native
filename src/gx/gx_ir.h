@@ -48,9 +48,9 @@
 //    points a point list. The vertices are shared through indices (Draw::indices).
 // 6. Culling. The core performs face culling (GEN_MODE cull, libogc GX_SetCullMode: hardware 1 = cull back faces, 2 = cull
 //    front faces, 3 = cull all, mapping {0,2,1,3}) with the sign of the clip-space determinant of (x, y, w), which is
-//    invariant to clipping and valid for w <= 0, and drops culled triangles. Front-facing is counter-clockwise in NDC with x
-//    right and y up (libogc documents CCW as the front face). The IR therefore contains only triangles to be drawn, and a
-//    backend must disable its own culling. State::cull is informational.
+//    invariant to clipping and valid for w <= 0, and drops culled triangles. Front faces are clockwise on the screen
+//    (a negative determinant of (x, y, w)); observed: the game's clockwise logo quads survive cull-back. The IR therefore
+//    contains only triangles to be drawn, and a backend must disable its own culling. State::cull is informational.
 // 7. Textures. Every bound texture is decoded by the core to RGBA8, 4 bytes per texel in R,G,B,A byte order, rows top to
 //    bottom, followed by the mip levels present (Texture::levels). I4/I8/IA4/IA8 expand as the hardware does (I replicates
 //    into RGBA, alpha = I for I formats), color-index formats are resolved through the TLUT at bind time. Texture::key is a
@@ -90,7 +90,7 @@
 
 namespace awl::gx {
 
-constexpr uint32_t kIrVersion = 1;
+constexpr uint32_t kIrVersion = 2;
 
 // ---- Geometry -----------------------------------------------------------------------------------------------------
 struct Vertex {
