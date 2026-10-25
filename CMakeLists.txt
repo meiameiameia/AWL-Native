@@ -823,4 +823,8 @@ add_test(NAME world_map_player_context_update_tests COMMAND world_map_player_con
 
 # Static recompilation (docs/roadmap.md): generator track, then platform-runtime track.
 include(tools/recomp/generator.cmake)
+# P2 graphics (docs/roadmap.md): GX core (src/gx) and DirectX 11 renderer (src/gfx). Each track owns its file and
+# defines awl_gx / awl_gfx; platform.cmake links them when they exist.
+include(src/gx/gx.cmake OPTIONAL)
+include(src/gfx/gfx.cmake OPTIONAL)
 include(tools/recomp/platform.cmake)

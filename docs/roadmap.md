@@ -10,15 +10,24 @@ Strategy (adopted 2026-10-24): statically recompile the original PowerPC code in
 | --- | --- | --- | --- |
 | P0 Feasibility | Recompiler prototype: load the DOL/RELs, decode all code, discover functions, resolve indirect control flow, emit and natively run the boot path up to the first platform call | Measured coverage report and an owner go/no-go | Complete; owner go on 2026-10-24 (`docs/research/recomp-feasibility.md`): all code decodes, 99.72% assigned to functions, 248/248 `bctr` resolved, boot path runs natively to the first hardware access after 133,730 instructions |
 | P1 Boot | Full DOL + REL recompilation; the runtime reaches the game's main loop and logs every unsupported platform call | The main loop runs repeatably; a deterministic boot trace matches the original's call sequence and key globals; the stub register lists every gap | Complete (2026-10-25). `awl-host` runs the recompiled DOL and RELs (15,635 functions) and passes the 120-retrace main-loop criterion deterministically (386.5 M instructions, about 0.5 s host time for 2.4 s guest time). Against the owner's Dolphin captures (`awl-capture-compare`): 42 boot-memory fields match plus 1 intentional retail difference; render mode and one-frame-per-retrace pacing agree; the first 261 system calls agree in order with no real argument differences; the DSP/AX exchange matches frame for frame. Native differences are recorded in `docs/research/hle-platform.md` |
-| P2 Graphics | GX to DirectX 11 for the logo, title and menus | Visual comparison against Dolphin captures | Planned |
+| P2 Graphics | GX to DirectX 11 for the logo, title and menus, in a game window running in real time | Deterministic headless frame captures of the first screens with no unreported GX state; the owner sees the logos and title screen, compares them with Dolphin screenshots and navigates the title menu | In progress: two parallel tracks (below) |
 | P3 Playable farm | Input, saves and the in-game loop | Owner plays a session | Planned |
 | P4 Audio | DSP/AX audio to a native API | Music and sound effects play correctly | Planned |
 | P5 Product | First-run setup from the user's disc, settings overlay, asset mod overlay, packaging | A fresh user installs and plays | Planned |
 | P6 Enhancements | Resolution, widescreen, texture packs, code mods; frame rate later | Opt-in; the default stays faithful | Planned |
 
-## P1 tracks
+## P2 tracks
 
-The tracks meet only at `tools/recomp/runtime/hle_abi.h` (owned by the architect; changes are requested, not made by a track) and `tools/recomp/hle_manifest.txt` (written by the platform track, read by the generator).
+The tracks meet only at the GX intermediate representation `src/gx/gx_ir.h`: the GX core track drafts it in its first milestone, the architect reviews and freezes it, and from then on changes are requested, not made by a track. Both tracks work headless (offscreen rendering, no window) for automated checks; the game window is opened only for owner acceptance at an agreed safe time.
+
+| Track | Owns | Delivers |
+| --- | --- | --- |
+| GX core | `src/gx/**` (incl. `gx.cmake`, target `awl_gx`); `src/hle/dev_gx.cpp`; `tests/gx_*`; `docs/research/gx-core.md` | GX usage survey of the game; command processor and vertex loading from guest memory; XF transform, lighting and texture-coordinate generation on the CPU; BP/TEV/pixel-engine state decode; texture decoding (all formats the game uses, TLUT); EFB copy commands; the draft IR; a recording backend for headless dumps |
+| DX11 renderer | `src/gfx/**` (incl. `gfx.cmake`, target `awl_gfx`); `src/hle/host_main.cpp`; `src/hle/dev_vi.cpp`; `tools/recomp/platform.cmake`; `tests/gfx_*`; `docs/research/gfx-dx11.md` | Offscreen DX11 rendering and the game window; real-time pacing; keyboard/controller input in the window; TEV-to-HLSL shader generation; textures and samplers; depth, blending, alpha test and fog; EFB copies and XFB presentation on the VI latch; frame captures |
+
+## P1 tracks (complete)
+
+The tracks met only at `tools/recomp/runtime/hle_abi.h` (owned by the architect; changes are requested, not made by a track) and `tools/recomp/hle_manifest.txt` (written by the platform track, read by the generator).
 
 | Track | Owns | Delivers |
 | --- | --- | --- |
