@@ -190,6 +190,9 @@ void testMmioWithoutModel() {
     CHECK(stops([&] { ld32(c, 0xCC006C00); }, StopKind::Mmio));
     CHECK(stops([&] { st32(c, 0xCC008000, 1); }, StopKind::Mmio));
     CHECK(stops([&] { ld8(c, 0xCC00FFFF); }, StopKind::Mmio));
+    // ... and so does the EFB access window 0xC8000000-0xC8FFFFFF (hle_abi.h).
+    CHECK(stops([&] { ld32(c, 0xC8000000); }, StopKind::Mmio));
+    CHECK(stops([&] { st32(c, 0xC8123456 & ~3u, 1); }, StopKind::Mmio));
     // mmioInstall takes both halves or neither.
     CHECK(stops([&] { mmioInstall(modelRead, nullptr); }, StopKind::Contract));
     CHECK(stops([&] { ld32(c, 0xCC006C00); }, StopKind::Mmio));
@@ -251,8 +254,22 @@ void testMmioRouting() {
     CHECK(r.mem[0x100] == 0x11 && r.mem[0x101] == 0x22 && r.mem[0x102] == 0x33 && r.mem[0x103] == 0x44);
     CHECK(ld32(c, 0x80000100) == 0x11223344);
     CHECK(g_mmio.reads + g_mmio.writes == before);
-    // Addresses outside every region still fault, and the EFB-style 0xC8000000 is not the hardware window.
-    CHECK(stops([&] { ld32(c, 0xC8000000); }, StopKind::Fault));
+    // The EFB access window (CPU peeks and pokes of the embedded framebuffer) goes to the same model, by address: the first
+    // word, an interior word (a GXPeekZ-style address) and the last word are inside; 0xC9000000 and a straddling word are not.
+    const int efbBefore = g_mmio.reads + g_mmio.writes;
+    g_mmio.readResult = 0x00FFFFFF;
+    CHECK(ld32(c, 0xC8000000) == 0x00FFFFFF && g_mmio.addr == 0xC8000000 && g_mmio.size == 4);
+    CHECK(ld32(c, 0xC848B668) == 0x00FFFFFF && g_mmio.addr == 0xC848B668);
+    st32(c, 0xC8FFFFFC, 0x01020304);
+    CHECK(g_mmio.addr == 0xC8FFFFFC && g_mmio.size == 4 && g_mmio.value == 0x01020304);
+    st16(c, 0xC8000002, 0xABCD);
+    CHECK(g_mmio.addr == 0xC8000002 && g_mmio.size == 2 && g_mmio.value == 0xABCD);
+    CHECK(g_mmio.reads + g_mmio.writes == efbBefore + 4);
+    CHECK(stops([&] { ld32(c, 0xC9000000); }, StopKind::Fault));
+    CHECK(stops([&] { ld32(c, 0xC8FFFFFE); }, StopKind::Mmio));    // straddles the end: stops, like a straddle of 0xCC00FFFF
+    CHECK(stops([&] { dcbz(c, 0xC8000000); }, StopKind::Mmio));
+    // Addresses outside every region still fault.
+    CHECK(stops([&] { ld32(c, 0xC1800000); }, StopKind::Fault));
 
     mmioInstall(nullptr, nullptr);
     CHECK(stops([&] { ld32(c, 0xCC006C00); }, StopKind::Mmio));

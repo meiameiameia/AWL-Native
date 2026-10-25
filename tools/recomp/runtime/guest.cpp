@@ -12,6 +12,8 @@ namespace awl::rt {
 namespace {
 
 constexpr uint32_t kMmioBase = 0xCC000000u;
+constexpr uint32_t kEfbBase = 0xC8000000u;   // EFB access window: CPU peeks and pokes of the embedded framebuffer
+constexpr uint32_t kEfbEnd = 0xC9000000u;    // exclusive
 constexpr uint32_t kMmioEnd = 0xCC010000u;   // exclusive: the modelled hardware window is 0xCC000000-0xCC00FFFF
 
 struct HleEntry {
@@ -102,7 +104,7 @@ void checkpointSlow(Ctx& c) {
 
 uint8_t* memFault(Ctx& c, uint32_t ea) {
     Machine& m = *c.m;
-    const bool mmio = ea >= kMmioBase && ea < 0xCE000000u;
+    const bool mmio = (ea >= kMmioBase && ea < 0xCE000000u) || (ea >= kEfbBase && ea < kEfbEnd);
     if (m.skipPlatform) {
         m.faults.push_back(BoundaryHit{ea, mmio ? "MMIO access" : "unmapped access", m.icount, c.pc});
         std::memset(c.scratch, 0, sizeof c.scratch);
@@ -115,14 +117,18 @@ uint8_t* memFault(Ctx& c, uint32_t ea) {
     stop(c, StopKind::Fault, c.pc, ea, "access outside MEM1 and the locked cache");
 }
 
+static bool inHardwareWindow(uint32_t ea, uint32_t size) {
+    return (ea >= kMmioBase && ea <= kMmioEnd - size) || (ea >= kEfbBase && ea <= kEfbEnd - size);
+}
+
 uint64_t loadSlow(Ctx& c, uint32_t ea, uint32_t size) {
-    if (g_mmioRead && ea >= kMmioBase && ea <= kMmioEnd - size) return g_mmioRead(c, ea, size) & sizeMask(size);
+    if (g_mmioRead && inHardwareWindow(ea, size)) return g_mmioRead(c, ea, size) & sizeMask(size);
     memFault(c, ea);   // stops, or (census) records the access and falls through to read zero
     return 0;
 }
 
 void storeSlow(Ctx& c, uint32_t ea, uint32_t size, uint64_t value) {
-    if (g_mmioWrite && ea >= kMmioBase && ea <= kMmioEnd - size) { g_mmioWrite(c, ea, size, value & sizeMask(size)); return; }
+    if (g_mmioWrite && inHardwareWindow(ea, size)) { g_mmioWrite(c, ea, size, value & sizeMask(size)); return; }
     memFault(c, ea);   // stops, or (census) records the access and drops the store
 }
 
