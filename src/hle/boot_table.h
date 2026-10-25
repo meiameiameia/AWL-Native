@@ -49,6 +49,7 @@ struct BootField {
     const char* name = "";
     FieldKind kind = FieldKind::Assumed;
     const char* note = "";
+    const char* member = "";       // BootValues member (or layout rule) that holds the value, for the capture report
 };
 
 struct BootLayout {

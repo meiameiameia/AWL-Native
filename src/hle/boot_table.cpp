@@ -40,26 +40,26 @@ BootLayout computeLayout(const BootValues& v, uint32_t fstMaxLength) {
 std::vector<BootField> bootFields(const BootValues& v, const BootLayout& l) {
     using K = FieldKind;
     std::vector<BootField> f;
-    auto add = [&](uint32_t addr, uint32_t size, uint64_t value, const char* name, K kind, const char* note) {
+    auto add = [&](uint32_t addr, uint32_t size, uint64_t value, const char* name, K kind, const char* note, const char* member = "") {
         BootField b;
-        b.addr = addr; b.size = size; b.value = value; b.name = name; b.kind = kind; b.note = note;
+        b.addr = addr; b.size = size; b.value = value; b.name = name; b.kind = kind; b.note = note; b.member = member;
         f.push_back(b);
     };
     add(0x80000000, 32, 0, "disc header (game id, disc number, version, streaming flags, magic)", K::FromDisc, "copy of sys/boot.bin[0..0x20)");
-    add(0x80000020, 4, v.bootMagic, "boot magic", K::Assumed, "tested by DVDInit");
-    add(0x80000024, 4, v.bootVersion, "boot version", K::Assumed, "not read");
-    add(0x80000028, 4, v.memSize, "physical memory size", K::Assumed, "OSInit, __OSInitMemoryProtection");
-    add(0x8000002C, 4, v.consoleType, "console type", K::Assumed, "OSGetConsoleType");
-    add(0x80000030, 4, v.arenaLo, "arena low", K::Assumed, "0 = OSInit default");
-    add(0x80000034, 4, v.arenaHi, "arena high", K::Assumed, "0 = set by __start from the BI2 arguments");
-    add(0x80000038, 4, l.fstAddr, "FST location", K::Assumed, "placement rule: FST at the top of memory");
-    add(0x8000003C, 4, l.fstMax, "FST maximum length", K::Assumed, "sys/boot.bin+0x42C");
-    add(0x800000CC, 4, v.tvMode, "TV mode", K::Assumed, "NTSC");
-    add(0x800000D0, 4, v.aramSize, "ARAM size", K::Assumed, "unverified");
-    add(0x800000F0, 4, v.simMemSize, "simulated memory size", K::Assumed, "__OSInitMemoryProtection");
-    add(0x800000F4, 4, l.bi2Addr, "BI2 pointer", K::Assumed, "placement rule: BI2 directly below the FST");
-    add(0x800000F8, 4, v.busClock, "bus clock", K::Assumed, "tick conversions");
-    add(0x800000FC, 4, v.cpuClock, "CPU clock", K::Assumed, "");
+    add(0x80000020, 4, v.bootMagic, "boot magic", K::Assumed, "tested by DVDInit", "boot_table.cpp: bootMagic");
+    add(0x80000024, 4, v.bootVersion, "boot version", K::Assumed, "not read", "boot_table.cpp: bootVersion");
+    add(0x80000028, 4, v.memSize, "physical memory size", K::Assumed, "OSInit, __OSInitMemoryProtection", "boot_table.cpp: memSize");
+    add(0x8000002C, 4, v.consoleType, "console type", K::Assumed, "OSGetConsoleType", "boot_table.cpp: consoleType");
+    add(0x80000030, 4, v.arenaLo, "arena low", K::Assumed, "0 = OSInit default", "boot_table.cpp: arenaLo");
+    add(0x80000034, 4, v.arenaHi, "arena high", K::Assumed, "0 = set by __start from the BI2 arguments", "boot_table.cpp: arenaHi");
+    add(0x80000038, 4, l.fstAddr, "FST location", K::Assumed, "placement rule: FST at the top of memory", "boot_table.cpp: ramTop / FST rule (computeLayout)");
+    add(0x8000003C, 4, l.fstMax, "FST maximum length", K::Assumed, "sys/boot.bin+0x42C", "boot_table.cpp: sys/boot.bin+0x42C");
+    add(0x800000CC, 4, v.tvMode, "TV mode", K::Assumed, "NTSC", "boot_table.cpp: tvMode");
+    add(0x800000D0, 4, v.aramSize, "ARAM size", K::Assumed, "unverified", "boot_table.cpp: aramSize");
+    add(0x800000F0, 4, v.simMemSize, "simulated memory size", K::Assumed, "__OSInitMemoryProtection", "boot_table.cpp: simMemSize");
+    add(0x800000F4, 4, l.bi2Addr, "BI2 pointer", K::Assumed, "placement rule: BI2 directly below the FST", "boot_table.cpp: ramTop, bi2Size (computeLayout)");
+    add(0x800000F8, 4, v.busClock, "bus clock", K::Assumed, "tick conversions", "boot_table.cpp: busClock");
+    add(0x800000FC, 4, v.cpuClock, "CPU clock", K::Assumed, "", "boot_table.cpp: cpuClock");
     // Written by the recompiled OS during OSInit; compared against the platform's own run.
     add(0x800000C4, 4, 0, "interrupt mask word 1", K::OsWritten, "__OSMaskInterrupts");
     add(0x800000C8, 4, 0, "interrupt mask word 2", K::OsWritten, "__OSMaskInterrupts");

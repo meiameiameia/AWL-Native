@@ -149,6 +149,8 @@ The GX library (`GXInit` `0x801CB378` through `0x801D2BA8`, hmawl names for 60+ 
 
 The host plays the part of the IPL and apploader: it produces the state the DOL entry expects, without running their code. The disc extraction provides the inputs: `disc/sys/boot.bin` (disc header), `disc/sys/bi2.bin` (8 KB boot info 2), `disc/sys/fst.bin` (file-system table), and `disc/files/`.
 
+**Single table.** Every value the platform assumes at boot lives in `src/hle/boot_table.cpp` (`bootValues()`: boot magic, memory size, console type, TV mode, ARAM size, clocks, RAM top and BI2 size for the placement rule, the MSR at entry, DI_CONFIG, the drive information, the RTC start). `bootFields()` lists the low-memory words built from it, each tagged *assumed* (chosen by the platform), *from disc* (copied from `sys/boot.bin`) or *OS-written* (produced by the recompiled OS itself). The boot builder, the DI/DVD/EXI models, the host and `awl-capture-compare` all read the same table, so adopting a Dolphin capture means editing numbers in that one file (the capture report names the member to change). The values are printed at the top of `build/boot-trace.log` (`boot.low`, `boot.layout`, `boot.cpu`, `boot.devices`, `boot.time`).
+
 ### 3.1 Low memory and boot data
 
 Each value below is either read by the recompiled code before it is written (evidence = the reader), or is a hardware fact; unread fields are zero.
@@ -298,9 +300,9 @@ Reached when, after the boot sequence, **N consecutive VI retraces (N = 120 by d
 
 ## 7. Source layout and tests
 
-`src/hle/`: `platform.{h,cpp}` (clock, event queue, interrupt delivery, fibers, `OSSaveContext`/`OSLoadContext`), `os_handlers.cpp` (MMIO routing, the native SDK replacements, main-loop bookkeeping), `devices.h` with `dev_core.cpp` (PI, MI, DI stub, SI polling register), `dev_vi.cpp`, `dev_exi.cpp` (EXI with the RTC/SRAM device), `dev_audio.cpp` (DSP responder, ARAM, AI), `dev_gx.cpp` (write-gather port, CP, PE, command-stream parser), `dvd.{h,cpp}`, `boot.{h,cpp}` (boot environment), `hle_common.{h,cpp}` (guest memory access, boot trace), `host_main.cpp` (`awl-host`), `hle_scan.cpp` (`awl-hle-scan`). `tools/recomp/platform.cmake` builds the library `awl_hle`, the host (only when `build/recomp-gen` exists), the scanner and the tests.
+`src/hle/`: `platform.{h,cpp}` (clock, event queue, interrupt delivery, fibers, `OSSaveContext`/`OSLoadContext`), `os_handlers.cpp` (MMIO routing, the native SDK replacements, main-loop bookkeeping), `devices.h` with `dev_core.cpp` (PI, MI, DI stub, SI polling register), `dev_vi.cpp`, `dev_exi.cpp` (EXI with the RTC/SRAM device), `dev_audio.cpp` (DSP responder, ARAM, AI), `dev_gx.cpp` (write-gather port, CP, PE, command-stream parser), `dvd.{h,cpp}`, `boot.{h,cpp}` (boot environment), `boot_table.{h,cpp}` (the single table of assumed boot values), `hle_common.{h,cpp}` (guest memory access, boot trace), `host_main.cpp` (`awl-host`), `hle_scan.cpp` (`awl-hle-scan`), `capture_parse.{h,cpp}` and `capture_compare.{h,cpp}` with `capture_compare_main.cpp` (`awl-capture-compare`, section 10.8), `dump_host_memory.ps1`. `tools/recomp/platform.cmake` builds the library `awl_hle`, the host (only when `build/recomp-gen` exists), the scanner, the capture comparison and the tests.
 
-Tests (`hle_core_tests`, 111 checks; `hle_sched_tests`, 59 checks) need no game files. Expectations come from the SDK code read above (OSContext offsets, register bit tests, the call order of the callback envelope), public register maps, the tick arithmetic in section 4 and the GX command formats. They cover the event queue and clock, PI, the VI display interrupts and beam position, EXI with RTC/SRAM (checksum loop of `UnlockSram`), the GX parser (vertex sizes, finish, token, EFB copy, ring mirror), the DVD queue/cancel/file reads, the main-loop criterion, thread start and switch through `OSSaveContext`/`OSLoadContext`, thread exit and reuse of the same `OSThread` memory, interrupt and decrementer delivery, the callback envelope and the PAD status layout.
+Tests (`hle_core_tests`, 111 checks; `hle_sched_tests`, 59 checks; `hle_capture_tests`, 588 checks) need no game files. Expectations come from the SDK code read above (OSContext offsets, register bit tests, the call order of the callback envelope), public register maps, the tick arithmetic in section 4 and the GX command formats. They cover the event queue and clock, PI, the VI display interrupts and beam position, EXI with RTC/SRAM (checksum loop of `UnlockSram`), the GX parser (vertex sizes, finish, token, EFB copy, ring mirror), the DVD queue/cancel/file reads, the main-loop criterion, thread start and switch through `OSSaveContext`/`OSLoadContext`, thread exit and reuse of the same `OSThread` memory, interrupt and decrementer delivery, the callback envelope and the PAD status layout.
 
 Run (from the repository root, with the disc extracted under `disc/`; the generated output comes from `awl-recomp gen --full --dol rom/main.dol --rel-dir disc/files --out build/recomp-gen`):
 
@@ -322,6 +324,7 @@ build/Release/awl-host.exe --dol rom/main.dol --disc disc --trace build/boot-tra
 4. **REL dispatch**: after the recompiled `OSLink` (`0x801B4860`) returns, the REL's functions must be registered at `base + offset`, and removed after `OSUnlink` (`0x801B4ABC`). Please decide whether the generator does this inside the generated `OSLink`/`OSUnlink` bodies (the platform leaves both recompiled) or exposes a hook for the platform to call.
 5. `hleCall` should set `c.pc = guestAddr` before the handler runs so one handler function can serve several manifest entries and report the address.
 6. Optional: a `void* host` field in `Ctx` for the platform's per-thread data.
+7. **Call arguments in the trace (for the question 6 comparison)**: `TraceHit` (`guest.h`) records callee, site, depth and instruction count but no registers, so `awl-capture-compare` can compare the order of calls with Dolphin's log but not their arguments. Please add `r3`-`r6` (or a `uint32_t args[4]`) to `TraceHit`, filled in `pushFrame` from the context, only while `traceMaxDepth` is non-zero. The comparison and `awl-host` then need only a one-line change each (the report already has an argument column for the Dolphin side).
 
 ### 8.2 Dolphin black-box questions
 
@@ -436,6 +439,28 @@ Breakpoints (clear the old ones first), both *log*: `801C3D34` (the game sends a
 
 What I look for: the first message from the audio processor is `8071FEED`; the game then sends five pairs of messages starting with `80F3A001`, `80F3C002`, `80F3A002`, `80F3B002` and `80F3D001`; the processor answers `DCD10000`; and for every audio frame the game sends a message starting with `BABE` plus an address and the processor answers `DCD10001`. If that matches, the audio part of the platform is right; if not, the log shows what to change.
 
-### 10.7 When you are done
+### 10.7 When you are done (owner steps end here)
 
 Tell me the files are in `build\dolphin-capture\`. The expected set is `A-at-entry-mem1.raw`, `A-after-osinit-mem1.raw`, `A-notes.txt`, `B-viconfigure-mem1.raw`, `B-notes.txt`, `B-frames.log`, `C-calls.log` and `D-dsp.log`. The memory files are about 24 MB each and are game data: they stay in `build\`, are never committed, and are only read by local analysis tools.
+
+### 10.8 Reading the captures: `awl-capture-compare`
+
+Console tool (no window, no game process). Inputs: the files of section 10.7 in `build\dolphin-capture\`, the platform's `build\boot-trace.log`, the disc's `disc\sys\boot.bin`, `bi2.bin` and `fst.bin`, and optionally the platform's own memory images. Output: `build\dolphin-capture\compare-report.md`. Everything stays under `build\`; the report prints only the compared fields (low-memory words, pointers, drive information, the render-mode fields, call addresses and arguments, DSP mail values) and `identical`/`differs in N bytes` for the file-table and BI2 blocks, never other memory contents.
+
+```powershell
+cmake --build build --config Release --target awl-host awl-capture-compare
+# once per change of the platform: its own memory at the entry and after OSInit, and the trace with the call lines
+src\hle\dump_host_memory.ps1
+build\Release\awl-capture-compare.exe
+```
+
+Missing files give a "not captured" section and the rest still runs; lines the parser cannot read are listed under *Parse notes* (first ten per file) instead of stopping it. Options: `--capture`, `--trace`, `--disc`, `--host-dumps`, `--out`. `awl-host` gained `--calls DEPTH` (default 16: record the calls of the functions in `capture_parse.cpp` as `call` lines in the trace, plus `boot.after-osinit icount=N`), `--dump-boot FILE` and `--dump-mem FILE`; `dump_host_memory.ps1` runs it twice, the second time stopped at instruction N, which is where OSInit has returned (its callee `DVDInit` runs inside OSInit, so the drive-information buffer is filled by then in both).
+
+What each section answers, and what to do with it:
+
+- **Q1/Q5**: every table field in `0x80000000-0xFF` and `0x800030C0-0xFF` with the assumed value, the value Dolphin has at the entry and after OSInit, and the platform's own value after OSInit (for OS-written fields). Fields that differ come with the table member to change (`boot_table.cpp`). Non-zero words the table does not model are listed so a missing field is visible. BI2 and FST placement (pointers against the layout rule, contents against `sys/`), the arena words and the drive-information buffer follow.
+- **Q2/Q3**: the interval between the game's end-of-frame calls from the time stamps of `B-frames.log` (median, mean, min, max, in field periods) beside the platform's, the time base at the entry, and the render-mode object at `r3` decoded from the B dump with the TV format compared to the table's `tvMode`.
+- **Q6**: the logged calls of capture C in order against the platform's calls (longest-common-subsequence alignment of the first 150 events per side; differences listed), then the first hit of each function with Dolphin's `r3`-`r6` and caller. The platform side has no arguments yet (request 7 in section 8.1).
+- **DSP/AX**: the checks of section 10.6 on the Dolphin log (first message, five command words, `DCD10000`, `BABE` frames answered by `DCD10001`) and the first 24 messages of each direction beside the platform's.
+
+**Parser.** The layout of Dolphin's breakpoint-log line is not verified. The parser takes the marker `BP` (or the word *breakpoint*), a hexadecimal address, an optional symbol, an argument list in parentheses (or loose `rN=value` tokens) separated by spaces or commas with or without `0x`, `LR=` (or `LR:`) with the caller, and a leading time stamp in any of `MM:SS:mmm` (Dolphin's own layout), `HH:MM:SS:mmm`, `HH:MM:SS.fff`, `MM:SS.fff` or `[seconds.fff]`; wrapped minutes are undone. Tests (`hle_capture_tests`) cover each variant with invented lines. A line that mentions a breakpoint but cannot be read is reported, never dropped silently; if the first real log differs, the lines in *Parse notes* are all that is needed to extend it.
