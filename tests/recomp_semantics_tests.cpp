@@ -483,10 +483,23 @@ void testLockedCacheDma() {
     CHECK(stopped && s.addr == 0xE0003800);
 }
 
+// tw/twi trap conditions (PowerPC architecture book, TO field: 16 signed <, 8 signed >, 4 equal, 2 unsigned <, 1 unsigned >).
+void testTrapCondition() {
+    CHECK(trapCond(31, 5, 5) && trapCond(31, 1, 2) && trapCond(31, 0xFFFFFFFF, 0));   // 31: every outcome traps (twi 31,r0,0)
+    CHECK(!trapCond(0, 5, 5) && !trapCond(0, 1, 2));                                  // 0: never traps
+    CHECK(trapCond(16, 0xFFFFFFFF, 0) && !trapCond(16, 0, 0xFFFFFFFF));               // signed <: -1 < 0
+    CHECK(!trapCond(2, 0xFFFFFFFF, 0) && trapCond(2, 0, 0xFFFFFFFF));                 // unsigned <: 0xFFFFFFFF is not < 0
+    CHECK(!trapCond(8, 0xFFFFFFFF, 0) && trapCond(8, 3, 0xFFFFFFFF));                 // signed >
+    CHECK(trapCond(1, 0xFFFFFFFF, 0) && !trapCond(1, 0, 0xFFFFFFFF));                 // unsigned >
+    CHECK(trapCond(4, 7, 7) && !trapCond(4, 7, 8));                                   // equal
+    CHECK(trapCond(24, 7, 3) && !trapCond(24, 3, 3));                                 // signed < or >: i.e. not equal
+}
+
 }  // namespace
 
 int main() {
     testLockedCacheDma();
+    testTrapCondition();
     testIntegerArithmetic();
     testRecordAndCompare();
     testRotateMaskShift();

@@ -10,6 +10,8 @@
 #include <set>
 
 #include "modules.h"
+#include "resolve.h"
+#include "sha256.h"
 #include "runtime/guest.h"
 
 namespace awl::recomp {
@@ -29,9 +31,10 @@ std::string fname(uint32_t a) { return S("f_%08X", a); }
 
 struct GenStats {
     size_t functions = 0, stubs = 0, hle = 0, mmioRecompiled = 0, instructions = 0, bytes = 0;
-    size_t midFunctionTails = 0, unsupportedInsns = 0, unresolvedBctr = 0, jumpTables = 0, fellOff = 0;
+    size_t midFunctionTails = 0, unsupportedInsns = 0, unresolvedBctr = 0, jumpTables = 0, fellOff = 0, noReturnSites = 0;
     std::map<std::string, size_t> unsupportedKinds;
     std::vector<std::string> errors;   // generation errors; any of them fails the run
+    std::vector<std::string> notes;    // places that became loud stops (untranslated, falls off, unresolved)
 };
 
 // Where the function being emitted lives. DOL functions use their real addresses; REL functions are analysed at
@@ -40,6 +43,7 @@ struct GenStats {
 struct ModuleView {
     const RelSet* rels = nullptr;
     const RelModule* mod = nullptr;   // null for a DOL function
+    const std::set<uint32_t>* noReturn = nullptr;   // functions that never return (a bl to one is followed by a stop)
 };
 
 std::string relSymbol(const RelModule& m, uint32_t synthAddr) {
@@ -52,7 +56,7 @@ class FnEmitter {
 public:
     FnEmitter(const Program& p, const Discovery& d, const std::set<uint32_t>& gen, const Function& f, GenStats& st,
               ModuleView mv = {}, std::string nameOverride = {})
-        : p_(p), d_(d), gen_(gen), f_(f), st_(st), rels_(mv.rels), mod_(mv.mod), nameOverride_(std::move(nameOverride)),
+        : p_(p), d_(d), gen_(gen), f_(f), st_(st), rels_(mv.rels), mod_(mv.mod), noRet_(mv.noReturn), nameOverride_(std::move(nameOverride)),
           body_(f.body.begin(), f.body.end()) {
         if (mod_) {
             uint32_t off = 0;
@@ -81,7 +85,7 @@ public:
                 if (k + 1 < f_.body.size() && f_.body[k + 1] == nxt) continue;
                 flush();
                 if (nxt == f_.fallsInto && gen_.count(nxt)) { checkpoint(a); line(S("return %s(c);", sym(nxt).c_str())); }
-                else { ++st_.fellOff; line(S("rt::unimplemented(c, %s, \"control flow leaves the discovered function body\");", ADDR(a).c_str())); }
+                else { ++st_.fellOff; note("falls off", a); line(S("rt::unimplemented(c, %s, \"control flow leaves the discovered function body\");", ADDR(a).c_str())); }
             }
         }
         out += body_text_;
@@ -134,9 +138,10 @@ private:
         }
     }
 
+    // A bctr word is classified by address: functions that share a tail all dispatch it the same way.
     const IndirectJump* jumpAt(uint32_t a) const {
-        for (const auto& j : d_.indirect) if (j.addr == a && j.funcStart == f_.start) return &j;
-        return nullptr;
+        const auto it = std::lower_bound(d_.bctrUnique.begin(), d_.bctrUnique.end(), a, [](const IndirectJump& j, uint32_t addr) { return j.addr < addr; });
+        return it != d_.bctrUnique.end() && it->addr == a ? &*it : nullptr;
     }
 
     std::string R(uint32_t n) const { return S("c.r[%u]", n); }
@@ -173,7 +178,13 @@ private:
         if (i.rc()) line("rt::cr1(c);");
     }
 
+    // Records a place where generation could not produce plain code, for the generator report.
+    void note(const char* what, uint32_t addr) {
+        st_.notes.push_back(S("%s at 0x%08X in %s (seeds 0x%03X)", what, addr, (nameOverride_.empty() ? sym(f_.start) : nameOverride_).c_str(), f_.seeds));
+    }
+
     void unsupported(const Insn& i, const char* why) {
+        note(opName(i.op), i.addr);
         ++st_.unsupportedInsns;
         ++st_.unsupportedKinds[opName(i.op)];
         flush();
@@ -186,7 +197,7 @@ private:
             checkpoint(i.addr);
             line(S("return %s(c);", sym(target).c_str()));
         } else {
-            ++st_.midFunctionTails;
+            ++st_.midFunctionTails; note("tail branch to non-function", i.addr);
             line(S("rt::unimplemented(c, %s, \"tail branch to an address that is not a recompiled function entry\");", ADDR(i.addr).c_str()));
         }
     }
@@ -242,6 +253,7 @@ private:
     GenStats& st_;
     const RelSet* rels_;
     const RelModule* mod_;
+    const std::set<uint32_t>* noRet_;
     std::string nameOverride_;
     uint32_t fnSec_ = 0;
     const DynReloc* dyn_ = nullptr;   // relocation on the instruction being emitted, if any
@@ -440,7 +452,14 @@ void FnEmitter::emitInsn(const Insn& i) {
         case Op::tlbie: case Op::tlbsync: case Op::dcbi: break;   // no TLB or cache model in the spike runtime
         case Op::rfi: case Op::sc: case Op::eciwx: case Op::ecowx:
             flush(); line(S("rt::privileged(c, %s, \"%s\");", ADDR(i.addr).c_str(), opName(i.op))); break;
-        case Op::tw: case Op::twi: unsupported(i, "trap instruction"); break;
+        // tw/twi: trap when any selected comparison of rA with rB (or the sign-extended immediate) holds. TO bits:
+        // 16 signed <, 8 signed >, 4 equal, 2 unsigned <, 1 unsigned >. A taken trap raises a program exception, which
+        // the runtime does not model: it stops loudly. A trap that is not taken is a no-op.
+        case Op::tw: case Op::twi:
+            trapPoint(i);
+            line(S("if (rt::trapCond(%u, %s, %s)) rt::privileged(c, %s, \"trap instruction (tw/twi) taken: the program exception is not modelled\");",
+                   D, R(A).c_str(), i.op == Op::tw ? R(B).c_str() : U(i.simm()).c_str(), ADDR(i.addr).c_str()));
+            break;
         // ---- floating point ----
         case Op::lfs: trapPoint(i); line(S("rt::lfs(c, %u, %s);", D, eaD(i).c_str())); break;
         case Op::lfd: trapPoint(i); line(S("rt::lfd(c, %u, %s);", D, eaD(i).c_str())); break;
@@ -529,8 +548,13 @@ void FnEmitter::emitInsn(const Insn& i) {
             const uint32_t t = i.branchTarget();
             if (i.lk()) {
                 trapPoint(i);
-                if (gen_.count(t)) line(S("AWL_CALL(c, %s, %s, %s);", ADDR(i.addr).c_str(), ADDR(t).c_str(), sym(t).c_str()));
-                else { ++st_.unsupportedInsns; ++st_.unsupportedKinds["bl-to-non-function"]; line(S("rt::unimplemented(c, %s, \"call to an address that is not a recompiled function\");", ADDR(i.addr).c_str())); }
+                if (gen_.count(t)) {
+                    line(S("AWL_CALL(c, %s, %s, %s);", ADDR(i.addr).c_str(), ADDR(t).c_str(), sym(t).c_str()));
+                    // The callee never returns; if it does (a replaced or mis-analysed function), stop instead of running
+                    // whatever follows the call.
+                    if (noRet_ && noRet_->count(t)) { ++st_.noReturnSites; line(S("rt::returnedFromNoReturn(c, %s, %s);", ADDR(i.addr).c_str(), ADDR(t).c_str())); }
+                }
+                else { ++st_.unsupportedInsns; ++st_.unsupportedKinds["bl-to-non-function"]; note("bl to non-function", i.addr); line(S("rt::unimplemented(c, %s, \"call to an address that is not a recompiled function\");", ADDR(i.addr).c_str())); }
             } else if (body_.count(t) && !(t != f_.start && gen_.count(t))) {
                 flush();
                 if (t <= i.addr) checkpoint(i.addr);   // backward branch
@@ -556,7 +580,7 @@ void FnEmitter::emitInsn(const Insn& i) {
             } else if (gen_.count(t)) {
                 line(S("if (%s) { rt::at(c, %s, 0); return %s(c); }", cnd.c_str(), ADDR(i.addr).c_str(), sym(t).c_str()));
             } else {
-                ++st_.midFunctionTails;
+                ++st_.midFunctionTails; note("branch out of body", i.addr);
                 line(S("if (%s) rt::unimplemented(c, %s, \"conditional branch out of the function body\");", cnd.c_str(), i.addr));
             }
             break;
@@ -586,7 +610,7 @@ void FnEmitter::emitInsn(const Insn& i) {
                 flush();
                 const IndirectJump* j = jumpAt(i.addr);
                 if (!j || j->kind == IndirectKind::Unresolved || j->kind == IndirectKind::Conditional) {
-                    ++st_.unresolvedBctr;
+                    ++st_.unresolvedBctr; note("unresolved bctr", i.addr);
                     line(S("rt::unresolvedJump(c, %s);", ADDR(i.addr).c_str()));
                 } else if (j->kind == IndirectKind::JumpTableBounded || j->kind == IndirectKind::JumpTableScanned) {
                     ++st_.jumpTables;
@@ -632,6 +656,7 @@ void FnEmitter::emitInsn(const Insn& i) {
 struct OutputWriter {
     explicit OutputWriter(std::string d) : dir(std::move(d)) {}
     void write(const std::string& name, const std::string& content) {
+        digests[name] = Sha256::of(content);
         const auto path = std::filesystem::path(dir) / name;
         {
             std::ifstream in(path, std::ios::binary);
@@ -659,6 +684,14 @@ struct OutputWriter {
     }
     std::string dir;
     size_t written = 0, unchanged = 0;
+    std::map<std::string, std::string> digests;   // SHA-256 of every generated file, by name
+    // The regression digest: one line per file ("<sha256>  <name>", sorted by name) and a final "output <sha256>" line
+    // that hashes the lines above, so one value covers the whole generated output.
+    std::string digestFile() const {
+        std::string t = "# SHA-256 of each generated file; the last line hashes the lines above\n";
+        for (const auto& [n, h] : digests) t += h + "  " + n + "\n";
+        return t + "output " + Sha256::of(t) + "\n";
+    }
 };
 
 std::set<uint32_t> bootClosure(const Program& prog, const Discovery& d, const std::set<uint32_t>& hle) {
@@ -701,13 +734,23 @@ int generateCode(const Program& prog, const Discovery& d, const std::vector<HleE
     std::set<uint32_t> hleAddrs;
     std::map<uint32_t, const HleEntry*> hleByAddr;
     for (const HleEntry& e : hle) { hleAddrs.insert(e.addr); hleByAddr[e.addr] = &e; }
+    // Discovery ambiguities are resolved first: functions that are not functions (data, case labels, unreferenced
+    // duplicates of code other functions reach) are neither emitted nor dispatchable (see resolve.h).
+    const Resolution res = resolveFunctions(prog, d);
+    for (const HleEntry& e : hle) {
+        if (res.isDropped(e.addr)) {
+            std::fprintf(stderr, "HLE manifest entry 0x%08X (%s) is not a function: discovery dropped it (%s)\n", e.addr, e.name.c_str(),
+                         dropReasonName(res.dropped.at(e.addr)));
+            return 1;
+        }
+    }
     std::set<uint32_t> gen;
     if (full) {
-        for (const auto& [a, f] : d.funcs) { (void)f; gen.insert(a); }
+        for (const auto& [a, f] : d.funcs) { (void)f; if (!res.isDropped(a)) gen.insert(a); }
     } else {
         gen = bootClosure(prog, d, hleAddrs);
         for (auto it = gen.begin(); it != gen.end();) {
-            if (!d.funcs.count(*it)) it = gen.erase(it); else ++it;
+            if (!d.funcs.count(*it) || res.isDropped(*it)) it = gen.erase(it); else ++it;
         }
     }
     // REL modules are generated with the whole DOL only (the boot closure never reaches them).
@@ -717,9 +760,28 @@ int generateCode(const Program& prog, const Discovery& d, const std::vector<HleE
         return 1;
     }
     std::set<uint32_t> genAll = gen;   // every function start the emitter may call: the DOL's and the modules' (synthetic)
+    std::vector<std::vector<uint32_t>> relFns;   // per module: the functions to emit, by synthetic address
+    std::vector<Resolution> relRes;
+    if (withRels) {
+        for (const auto& m : rels->modules) {
+            relRes.push_back(resolveFunctions(*m->prog, m->disc));
+            relFns.emplace_back();
+            for (const auto& [a, f] : m->disc.funcs) {
+                (void)f;
+                if (relRes.back().isDropped(a)) continue;
+                relFns.back().push_back(a);
+                genAll.insert(a);
+            }
+        }
+    }
+    // Functions that never return (not the replaced ones, whose native handlers decide how they end).
+    std::set<uint32_t> noRet;
+    for (uint32_t a : findNoReturn(prog, d))
+        if (gen.count(a) && !hleAddrs.count(a)) noRet.insert(a);
     if (withRels)
-        for (const auto& m : rels->modules)
-            for (const auto& [a, f] : m->disc.funcs) { (void)f; genAll.insert(a); }
+        for (size_t mi = 0; mi < rels->modules.size(); ++mi)
+            for (uint32_t a : findNoReturn(*rels->modules[mi]->prog, rels->modules[mi]->disc))
+                if (genAll.count(a)) noRet.insert(a);
     fs::create_directories(outDir);
     GenStats st;
     std::vector<std::string> files;
@@ -741,8 +803,8 @@ int generateCode(const Program& prog, const Discovery& d, const std::vector<HleE
     std::string decls = "#pragma once\n#include \"guest.h\"\n#include \"hle_abi.h\"\n";
     for (uint32_t a : gen) decls += S("void %s(awl::rt::Ctx& c);\n", fname(a).c_str());
     if (withRels)
-        for (const auto& m : rels->modules)
-            for (const auto& [a, f] : m->disc.funcs) { (void)f; decls += S("void %s(awl::rt::Ctx& c);\n", relSymbol(*m, a).c_str()); }
+        for (size_t mi = 0; mi < rels->modules.size(); ++mi)
+            for (uint32_t a : relFns[mi]) decls += S("void %s(awl::rt::Ctx& c);\n", relSymbol(*rels->modules[mi], a).c_str());
     out.write("gen_decls.h", decls);
     for (uint32_t a : gen) {
         const Function& f = d.funcs.at(a);
@@ -765,13 +827,13 @@ int generateCode(const Program& prog, const Discovery& d, const std::vector<HleE
             // runtime about the module (see rt::moduleLinked), which registers its functions for dispatch.
             const bool wrapLink = withRels && a == os->osLink, wrapUnlink = withRels && a == os->osUnlink;
             if (wrapLink || wrapUnlink) {
-                FnEmitter e(prog, d, gen, f, st, {}, fname(a) + "_impl");
+                FnEmitter e(prog, d, gen, f, st, ModuleView{nullptr, nullptr, &noRet}, fname(a) + "_impl");
                 chunk += e.emit();
                 chunk += S("// %s: module functions are registered once the recompiled SDK function reports success.\n", wrapLink ? "OSLink" : "OSUnlink");
                 chunk += S("void %s(Ctx& c) {\n    const uint32_t info = c.r[3];\n    %s_impl(c);\n    if (c.r[3] != 0) rt::%s(c, info);\n}\n\n",
                            fname(a).c_str(), fname(a).c_str(), wrapLink ? "moduleLinked" : "moduleUnlinked");
             } else {
-                FnEmitter e(prog, d, gen, f, st);
+                FnEmitter e(prog, d, gen, f, st, ModuleView{nullptr, nullptr, &noRet});
                 chunk += e.emit();
             }
         }
@@ -780,8 +842,10 @@ int generateCode(const Program& prog, const Discovery& d, const std::vector<HleE
     // REL module functions, chunked by section-relative address window within each module.
     size_t relFunctions = 0;
     if (withRels) {
-        for (const auto& m : rels->modules) {
-            for (const auto& [a, f] : m->disc.funcs) {
+        for (size_t mi = 0; mi < rels->modules.size(); ++mi) {
+            const auto& m = rels->modules[mi];
+            for (uint32_t a : relFns[mi]) {
+                const Function& f = m->disc.funcs.at(a);
                 ++relFunctions;
                 uint32_t sec = 0, off = 0;
                 m->locate(a, sec, off);
@@ -796,7 +860,7 @@ int generateCode(const Program& prog, const Discovery& d, const std::vector<HleE
                     ++st.mmioRecompiled;
                     chunk += S("// platform evidence: %s\n", evidenceText(f).c_str());
                 }
-                FnEmitter e(*m->prog, m->disc, genAll, f, st, ModuleView{rels, m.get()});
+                FnEmitter e(*m->prog, m->disc, genAll, f, st, ModuleView{rels, m.get(), &noRet});
                 chunk += e.emit();
             }
             flushChunk();
@@ -832,13 +896,13 @@ int generateCode(const Program& prog, const Discovery& d, const std::vector<HleE
     // REL module tables: section lengths and the (section, offset) of every function, declared at start-up.
     if (withRels) {
         std::string t = "#include \"gen_decls.h\"\nnamespace awl::rt {\nnamespace {\n";
-        for (const auto& m : rels->modules) {
+        for (size_t mi = 0; mi < rels->modules.size(); ++mi) {
+            const auto& m = rels->modules[mi];
             t += S("const uint32_t kRel%uLengths[] = {", m->rel->id);
             for (const RelSection& s : m->rel->sections) t += S("%u, ", s.length);
             t += "};\n";
             t += S("const RelFnDecl kRel%uFns[] = {\n", m->rel->id);
-            for (const auto& [a, f] : m->disc.funcs) {
-                (void)f;
+            for (uint32_t a : relFns[mi]) {
                 uint32_t sec = 0, off = 0;
                 m->locate(a, sec, off);
                 t += S("    {%u, 0x%X, %s},\n", sec, off, relSymbol(*m, a).c_str());
@@ -846,8 +910,10 @@ int generateCode(const Program& prog, const Discovery& d, const std::vector<HleE
             t += "};\n";
         }
         t += "const RelModuleDecl kRelModules[] = {\n";
-        for (const auto& m : rels->modules)
-            t += S("    {%u, %zu, kRel%uLengths, kRel%uFns, %zu},\n", m->rel->id, m->rel->sections.size(), m->rel->id, m->rel->id, m->disc.funcs.size());
+        for (size_t mi = 0; mi < rels->modules.size(); ++mi) {
+            const auto& m = rels->modules[mi];
+            t += S("    {%u, %zu, kRel%uLengths, kRel%uFns, %zu},\n", m->rel->id, m->rel->sections.size(), m->rel->id, m->rel->id, relFns[mi].size());
+        }
         t += S("};\n}\nvoid declareGeneratedRelModules() { declareRelModules(kRelModules, %zu); }\n}\n", rels->modules.size());
         out.write("gen_rel_dispatch.cpp", t);
         files.push_back("gen_rel_dispatch.cpp");
@@ -858,6 +924,9 @@ int generateCode(const Program& prog, const Discovery& d, const std::vector<HleE
         cm += ")\n";
         out.write("sources.cmake", cm);
     }
+    const std::string digestText = out.digestFile();
+    out.write("gen_digest.txt", digestText);
+    out.digests.erase("gen_digest.txt");
     const size_t removed = out.removeStale(files);
     std::printf("generated %zu functions (%zu platform stubs, %zu HLE calls, %zu MMIO-only recompiled), %zu instructions into %zu files under %s\n",
                 st.functions + relFunctions, st.stubs, st.hle, st.mmioRecompiled, st.instructions, files.size(), outDir.c_str());
@@ -866,10 +935,23 @@ int generateCode(const Program& prog, const Discovery& d, const std::vector<HleE
                     relFunctions, hex8(os->osLink).c_str(), hex8(os->osUnlink).c_str());
     }
     std::printf("  files written %zu, unchanged %zu, stale removed %zu\n", out.written, out.unchanged, removed);
+    std::printf("  output digest: sha256 %s (%zu files)\n", digestText.substr(digestText.rfind("output ") + 7, 64).c_str(), out.digests.size());
     std::printf("  jump tables emitted: %zu; unresolved bctr: %zu; tails/branches to non-function targets: %zu; bodies that fall off: %zu\n",
                 st.jumpTables, st.unresolvedBctr, st.midFunctionTails, st.fellOff);
+    std::printf("  functions that never return: %zu; calls to them followed by a stop: %zu\n", noRet.size(), st.noReturnSites);
     std::printf("  untranslated instructions: %zu\n", st.unsupportedInsns);
     for (const auto& [k, v] : st.unsupportedKinds) std::printf("    %-24s %zu\n", k.c_str(), v);
+    auto describe = [](const char* what, const Resolution& r) {
+        size_t byReason[3] = {0, 0, 0};
+        for (const auto& [s, why] : r.dropped) { (void)s; ++byReason[static_cast<int>(why)]; }
+        std::printf("  resolution (%s): dropped %zu (%zu data in text, %zu jump-table labels, %zu unreferenced fragments); functions sharing words "
+                    "%zu (%zu words) before, %zu (%zu words) after, each emitting its own copy\n",
+                    what, r.dropped.size(), byReason[0], byReason[1], byReason[2], r.overlapFunctionsBefore, r.overlapWordsBefore,
+                    r.overlapFunctionsAfter, r.overlapWordsAfter);
+    };
+    describe("DOL", res);
+    for (size_t mi = 0; mi < relRes.size(); ++mi) describe(rels->modules[mi]->rel->name.c_str(), relRes[mi]);
+    for (const auto& n : st.notes) std::printf("  note: %s\n", n.c_str());
     for (const auto& e : st.errors) std::fprintf(stderr, "error: %s\n", e.c_str());
     return st.errors.empty() ? 0 : 1;
 }

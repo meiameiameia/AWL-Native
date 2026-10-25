@@ -228,6 +228,7 @@ void tailIndirect(Ctx& c, uint32_t site, uint32_t target);                 // bc
 [[noreturn]] void unimplemented(Ctx& c, uint32_t site, const char* what);
 [[noreturn]] void privileged(Ctx& c, uint32_t site, const char* what);
 [[noreturn]] void badReturn(Ctx& c, uint32_t site);
+[[noreturn]] void returnedFromNoReturn(Ctx& c, uint32_t site, uint32_t callee);   // a function the analysis found never returns did
 
 // blr: validates LR against the shadow stack. Top-level entries (sp == 0) are unchecked.
 inline void ret(Ctx& c, uint32_t site) {
@@ -341,6 +342,12 @@ constexpr uint32_t mask(uint32_t mb, uint32_t me) {
 }
 inline uint32_t sext16(uint32_t v) { return static_cast<uint32_t>(static_cast<int32_t>(static_cast<int16_t>(v))); }
 inline uint32_t rotl(uint32_t x, uint32_t n) { n &= 31; return n ? (x << n) | (x >> (32 - n)) : x; }
+
+// tw/twi trap condition: TO bit 16 signed less-than, 8 signed greater-than, 4 equal, 2 unsigned less-than, 1 unsigned greater-than.
+inline bool trapCond(uint32_t to, uint32_t a, uint32_t b) {
+    const int32_t sa = static_cast<int32_t>(a), sb = static_cast<int32_t>(b);
+    return ((to & 16) && sa < sb) || ((to & 8) && sa > sb) || ((to & 4) && a == b) || ((to & 2) && a < b) || ((to & 1) && a > b);
+}
 
 inline void setCr(Ctx& c, uint32_t field, uint32_t v) {
     const uint32_t sh = (7 - field) * 4;

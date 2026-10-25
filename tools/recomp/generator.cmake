@@ -3,7 +3,7 @@
 
 add_library(awl_recomp_core STATIC
     tools/recomp/ppc.cpp tools/recomp/image.cpp tools/recomp/analysis.cpp
-    tools/recomp/codegen.cpp tools/recomp/manifest.cpp tools/recomp/modules.cpp tools/recomp/report.cpp)
+    tools/recomp/codegen.cpp tools/recomp/manifest.cpp tools/recomp/modules.cpp tools/recomp/report.cpp tools/recomp/resolve.cpp)
 target_include_directories(awl_recomp_core PUBLIC ${CMAKE_SOURCE_DIR}/tools/recomp)
 add_executable(awl-recomp tools/recomp/awl_recomp.cpp)
 target_compile_definitions(awl-recomp PRIVATE _CRT_SECURE_NO_WARNINGS)
@@ -111,3 +111,20 @@ else()
     target_compile_options(recomp_synth_dol PRIVATE -Wall -Wextra)
     target_compile_options(recomp_generated_tests PRIVATE -Wall -Wextra)
 endif()
+
+# Resolution, jump-table bounds, never-returns analysis and the digest hash.
+add_executable(recomp_resolve_tests tests/recomp_resolve_tests.cpp)
+target_link_libraries(recomp_resolve_tests PRIVATE awl_recomp_core)
+add_test(NAME recomp_resolve_tests COMMAND recomp_resolve_tests)
+if(MSVC)
+    target_compile_options(recomp_resolve_tests PRIVATE /W4)
+else()
+    target_compile_options(recomp_resolve_tests PRIVATE -Wall -Wextra)
+endif()
+
+# Regression digest of the generated output for the synthetic fixture: any change to code generation that alters the
+# emitted text for these programs must update the expected value deliberately (`awl-recomp gen ... --full` prints it).
+add_test(NAME recomp_synth_digest
+    COMMAND awl-recomp gen --dol "${AWL_SYNTH_DIR}/synth.dol" --rel-dir "${AWL_SYNTH_DIR}" --out "${AWL_SYNTH_DIR}-digest" --full
+            --hle-manifest "${CMAKE_SOURCE_DIR}/tests/recomp_synth_manifest.txt"
+            --expect-digest 06995379e6b6aa7bc072de86d69a2ba13b2682c6fac5fbff609d61c16a240bac)
