@@ -70,7 +70,8 @@ const char* texFmt(uint32_t f) {
 const char* tlutFmt(uint32_t f) { static const char* n[] = {"IA8", "RGB565", "RGB5A3", "?3"}; return n[f & 3]; }
 const char* pixFmt(uint32_t f) { static const char* n[] = {"RGB8_Z24", "RGBA6_Z24", "RGB565_Z16", "Z24", "Y8", "U8", "V8", "YUV420"}; return n[f & 7]; }
 const char* wrapName(uint32_t w) { static const char* n[] = {"clamp", "repeat", "mirror", "?3"}; return n[w & 3]; }
-const char* filtName(uint32_t f) { static const char* n[] = {"near", "linear", "near_mip_near", "lin_mip_near", "near_mip_lin", "lin_mip_lin", "?6", "?7"}; return n[f & 7]; }
+// Hardware minification-filter field (libogc _gx2HWFiltConv: NEAR 0, NEAR_MIP_NEAR 1, NEAR_MIP_LIN 2, LINEAR 4, LIN_MIP_NEAR 5, LIN_MIP_LIN 6).
+const char* filtName(uint32_t f) { static const char* n[] = {"near", "near_mip_near", "near_mip_lin", "?3", "linear", "lin_mip_near", "lin_mip_lin", "?7"}; return n[f & 7]; }
 const char* blendFactor(uint32_t f) { static const char* n[] = {"0", "1", "srcclr", "1-srcclr", "srcalpha", "1-srcalpha", "dstalpha", "1-dstalpha"}; return n[f & 7]; }
 const char* logicOp(uint32_t o) {
     static const char* n[] = {"clear", "and", "revand", "copy", "invand", "noop", "xor", "or", "nor", "equiv", "inv", "revor", "invcopy", "invor", "nand", "set"};
@@ -376,7 +377,7 @@ struct Survey {
         if (f >= 8 && f <= 10) s += fmt(" tlutfmt=%s", tlutFmt(bits(t.tlut, 10, 2)));
         const uint32_t minf = bits(t.mode0, 5, 3);
         s += fmt(" wrap=%s/%s min=%s mag=%s", wrapName(bits(t.mode0, 0, 2)), wrapName(bits(t.mode0, 2, 2)), filtName(minf), bits(t.mode0, 4, 1) ? "linear" : "near");
-        if (minf >= 2) s += fmt(" maxlod=%u", bits(t.mode1, 8, 8) / 16);
+        if (minf != 0 && minf != 4) s += fmt(" maxlod=%u", bits(t.mode1, 8, 8) / 16);
         if (bits(t.mode0, 9, 10)) s += " lodbias";
         if (bits(t.mode0, 19, 2)) s += " aniso";
         return s;

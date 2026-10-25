@@ -4,6 +4,11 @@
 
 add_library(awl_gx STATIC
     src/gx/gx_dump.cpp
+    src/gx/gx_core.cpp
+    src/gx/gx_draw.cpp
+    src/gx/gx_pipeline.cpp
+    src/gx/gx_texture.cpp
+    src/gx/gx_record.cpp
 )
 target_include_directories(awl_gx PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_compile_definitions(awl_gx PRIVATE _CRT_SECURE_NO_WARNINGS)
@@ -31,4 +36,14 @@ if(MSVC)
     target_compile_options(gx_ir_tests PRIVATE /W4 /fp:strict)
 else()
     target_compile_options(gx_ir_tests PRIVATE -Wall -Wextra)
+endif()
+
+# Command processor, XF, TEV decode, texture decoding and EFB copies on hand-assembled streams.
+add_executable(gx_core_tests tests/gx_core_tests.cpp)
+target_link_libraries(gx_core_tests PRIVATE awl_gx)
+add_test(NAME gx_core_tests COMMAND gx_core_tests)
+if(MSVC)
+    target_compile_options(gx_core_tests PRIVATE /W4 /fp:strict)
+else()
+    target_compile_options(gx_core_tests PRIVATE -Wall -Wextra)
 endif()
