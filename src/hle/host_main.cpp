@@ -63,7 +63,8 @@ void writeCallTrace(const Machine& m) {
         if (t[i].depth <= osInitDepth) { trace().line("boot.after-osinit icount=%llu", static_cast<unsigned long long>(t[i].icount)); break; }
     for (const TraceHit& h : t)
         if (capture::watchedName(h.callee))
-            trace().line("call %08X site=%08X depth=%u icount=%llu", h.callee, h.site, h.depth, static_cast<unsigned long long>(h.icount));
+            trace().line("call %08X site=%08X depth=%u icount=%llu r3=%08X r4=%08X r5=%08X r6=%08X", h.callee, h.site, h.depth,
+                         static_cast<unsigned long long>(h.icount), h.args[0], h.args[1], h.args[2], h.args[3]);
 }
 
 }  // namespace

@@ -4,6 +4,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <set>
 #include <tuple>
@@ -151,15 +152,21 @@ struct DiffOp {
 };
 
 // Longest-common-subsequence alignment of two address sequences.
-std::vector<DiffOp> alignSequences(const std::vector<uint32_t>& a, const std::vector<uint32_t>& b) {
+std::vector<DiffOp> alignSequences(const std::vector<uint32_t>& a, const std::vector<uint32_t>& b, const std::function<int(size_t, size_t)>& weight) {
+    // Weighted longest common subsequence: a pair of equal addresses scores weight(i, j) (> 0), so among alignments with as many pairs
+    // the one whose pairs agree in their arguments wins (repeated calls of one function would otherwise pair arbitrarily).
     const size_t n = a.size(), m = b.size();
-    std::vector<std::vector<uint16_t>> dp(n + 1, std::vector<uint16_t>(m + 1, 0));
+    std::vector<std::vector<int>> dp(n + 1, std::vector<int>(m + 1, 0));
     for (size_t i = n; i-- > 0;)
-        for (size_t j = m; j-- > 0;) dp[i][j] = a[i] == b[j] ? static_cast<uint16_t>(dp[i + 1][j + 1] + 1) : std::max(dp[i + 1][j], dp[i][j + 1]);
+        for (size_t j = m; j-- > 0;) {
+            int best = std::max(dp[i + 1][j], dp[i][j + 1]);
+            if (a[i] == b[j]) best = std::max(best, weight(i, j) + dp[i + 1][j + 1]);
+            dp[i][j] = best;
+        }
     std::vector<DiffOp> ops;
     size_t i = 0, j = 0;
     while (i < n || j < m) {
-        if (i < n && j < m && a[i] == b[j]) { ops.push_back({'=', i, j}); ++i; ++j; }
+        if (i < n && j < m && a[i] == b[j] && dp[i][j] == weight(i, j) + dp[i + 1][j + 1]) { ops.push_back({'=', i, j}); ++i; ++j; }
         else if (i < n && (j >= m || dp[i + 1][j] >= dp[i][j + 1])) { ops.push_back({'<', i, j}); ++i; }
         else { ops.push_back({'>', i, j}); ++j; }
     }
@@ -501,7 +508,13 @@ std::string buildReport(const CompareInputs& in) {
         r += sf("\nAlignment of the first %zu Dolphin events and the first %zu platform events (longest common subsequence; both sides run for different lengths, so a tail difference alone is not a mismatch):\n\n", sa.size(), sb.size());
         if (sa.empty() || sb.empty()) r += "Nothing to align.\n\n";
         else {
-            const std::vector<DiffOp> ops = alignSequences(sa, sb);
+            auto weight = [&](size_t i, size_t j) {
+                int w = 100;
+                if (oh[j]->hasArgs)
+                    for (size_t k = 0; k < 4 && k < dh[i]->args.size(); ++k) w += dh[i]->args[k] == oh[j]->args[k];
+                return w;
+            };
+            const std::vector<DiffOp> ops = alignSequences(sa, sb, weight);
             size_t same = 0, shown = 0;
             size_t run = 0;
             auto flush = [&]() { if (run) { r += sf("- %zu calls in the same order\n", run); run = 0; } };

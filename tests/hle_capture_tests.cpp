@@ -363,6 +363,32 @@ void testReportWithCapture() {
     fs::remove_all(root);
 }
 
+void testArgumentAlignment() {
+    // Repeated calls of one function can pair in several ways with the same number of pairs; the alignment prefers the pairing whose
+    // arguments agree. Dolphin made three DVDOpen calls, the platform the last two: pairing the first Dolphin call with the first
+    // platform call would show two false value differences.
+    const fs::path root = fs::temp_directory_path() / "awl_hle_capture_align";
+    fs::remove_all(root);
+    writeText(root / "cap" / "C-calls.log",
+              "00:01:000 BP 801ba66c DVDOpen(80000010 00000001) LR=80003000\n"
+              "00:01:001 BP 801ba66c DVDOpen(80000020 00000002) LR=80003000\n"
+              "00:01:002 BP 801ba66c DVDOpen(80000030 00000003) LR=80003000\n");
+    writeText(root / "boot-trace.log",
+              "call 801BA66C site=80003000 depth=1 icount=10 r3=80000020 r4=00000002 r5=00000000 r6=00000000\n"
+              "call 801BA66C site=80003000 depth=1 icount=20 r3=80000030 r4=00000003 r5=00000000 r6=00000000\n");
+    CompareInputs in;
+    in.captureDir = (root / "cap").string();
+    in.tracePath = (root / "boot-trace.log").string();
+    in.discDir = (root / "nodisc").string();
+    in.hostDumpDir = (root / "nodumps").string();
+    const std::string r = buildReport(in);
+    CHECK_HAS(r, "Result: 2 in common, 1 only in Dolphin, 0 only in the platform");
+    CHECK_HAS(r, "only in Dolphin: DVDOpen (801BA66C) (hit 1, line 1)");
+    CHECK_HAS(r, "| DVDOpen (801BA66C) | 2 | 4 | 0 | 0 |");
+    CHECK_HAS(r, "Total: 4 equal, 0 pointer differences, 0 value differences.");
+    fs::remove_all(root);
+}
+
 void testReportWithoutCapture() {
     const fs::path root = fs::temp_directory_path() / "awl_hle_capture_empty";
     fs::remove_all(root);
@@ -445,7 +471,7 @@ void testBootTable() {
 int main() {
     const struct { const char* name; void (*fn)(); } tests[] = {
         {"BP line variants", testBpLineVariants}, {"BP log", testBpLog}, {"notes and platform trace", testNotesAndOurTrace},
-        {"report with capture", testReportWithCapture}, {"report without capture", testReportWithoutCapture}, {"boot table", testBootTable},
+        {"report with capture", testReportWithCapture}, {"argument alignment", testArgumentAlignment}, {"report without capture", testReportWithoutCapture}, {"boot table", testBootTable},
     };
     for (const auto& t : tests) {
         std::printf("[%s]\n", t.name);
