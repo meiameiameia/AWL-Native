@@ -9,7 +9,7 @@ Strategy (adopted 2026-10-24): statically recompile the original PowerPC code in
 | Phase | Outcome | Acceptance | Status |
 | --- | --- | --- | --- |
 | P0 Feasibility | Recompiler prototype: load the DOL/RELs, decode all code, discover functions, resolve indirect control flow, emit and natively run the boot path up to the first platform call | Measured coverage report and an owner go/no-go | Complete; owner go on 2026-10-24 (`docs/research/recomp-feasibility.md`): all code decodes, 99.72% assigned to functions, 248/248 `bctr` resolved, boot path runs natively to the first hardware access after 133,730 instructions |
-| P1 Boot | Full DOL + REL recompilation; the runtime reaches the game's main loop and logs every unsupported platform call | The main loop runs repeatably; a deterministic boot trace matches the original's call sequence and key globals; the stub register lists every gap | In progress: two parallel tracks (below) |
+| P1 Boot | Full DOL + REL recompilation; the runtime reaches the game's main loop and logs every unsupported platform call | The main loop runs repeatably; a deterministic boot trace matches the original's call sequence and key globals; the stub register lists every gap | In progress. `awl-host` (whole DOL recompiled, 12,366 functions) boots through OS, VI, GX and audio init into the main loop deterministically and stops at the first REL prolog (`0x803A2A8C`) after 16.7 M instructions: REL recompilation is the next blocker |
 | P2 Graphics | GX to DirectX 11 for the logo, title and menus | Visual comparison against Dolphin captures | Planned |
 | P3 Playable farm | Input, saves and the in-game loop | Owner plays a session | Planned |
 | P4 Audio | DSP/AX audio to a native API | Music and sound effects play correctly | Planned |
@@ -40,4 +40,19 @@ The tracks meet only at `tools/recomp/runtime/hle_abi.h` (owned by the architect
 
 ## Stub register
 
-Every temporary runtime stub is listed here with its address or service, its logging, and the phase that removes it. None exist yet.
+Every temporary runtime stub is listed here with its address or service, its logging, and the phase that removes it. Details: `docs/research/hle-platform.md` section 9.
+
+| Stub | Behaviour | Logging | Removed in |
+| --- | --- | --- | --- |
+| PAD (`PADInit`/`Reset`/`Recalibrate`/`Read`/`ControlMotor`) | channel 0 neutral, channels 1-3 absent | first 8 calls | P3 (input through `PadAdapter`) |
+| GBA (`GBAInit`/`GetStatus`/`Read`/`Write`/`Reset`) | not ready | every call | P3 |
+| DVD streaming (commands 6, 7, 9) | accepted, no audio data | every call | P4 |
+| DVD inquiry | placeholder drive info | once | P1 exit (Dolphin capture) |
+| DVD timing | 1 ms + 4 ticks per byte | model parameter | P3 |
+| DSP / AI | boot ROM and AX frame handshake only; silent; DMA replays its buffer | handshake events | P4 |
+| `__OSInitAudioSystem`, `SIInit` | no-op | once | P4 / P3 |
+| EXI | no memory cards; RTC fixed at 2026-01-01; SRAM defaults | every access to absent devices | P3 (saves), P5 (real clock) |
+| GX | command stream parsed, not drawn; finish/token/copy complete after 2,000 ticks | counters | P2 |
+| Boot environment | arena, FST/BI2 placement, console type, ARAM size and `DI_CONFIG` are assumptions | printed in the boot-trace header | P1 exit (Dolphin capture) |
+| Clock | 4 instructions per time-base tick | model parameter | P3 calibration |
+| `fres` / `frsqrte` | exact reciprocal placeholders, not the hardware estimate | generator note | P1 exit (Dolphin reference values) |
