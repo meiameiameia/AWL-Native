@@ -1,6 +1,6 @@
 // awl-host: console game host. Loads the DOL, builds the boot environment, registers the platform handlers and models,
 // runs the recompiled entry point and reports where it stops. Deterministic: time is derived from retired instructions.
-//   awl-host --dol rom/main.dol [--disc disc] [--trace build/boot-trace.log] [--retraces N] [--limit N]
+//   awl-host --dol rom/main.dol [--disc disc] [--trace build/boot-trace.log] [--retraces N] [--limit N] [--pad neutral|xinput]
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -47,12 +47,13 @@ int main(int argc, char** argv) {
         if (a == "--dol" && i + 1 < argc) dolPath = argv[++i];
         else if (a == "--disc" && i + 1 < argc) cfg.discDir = argv[++i];
         else if (a == "--trace" && i + 1 < argc) tracePath = argv[++i];
+        else if (a == "--pad" && i + 1 < argc) { const std::string v = argv[++i]; cfg.padXInput = v == "xinput"; if (v != "xinput" && v != "neutral") { std::fprintf(stderr, "--pad takes neutral or xinput\n"); return 2; } }
         else if (a == "--retraces" && i + 1 < argc) cfg.mainLoopRetraces = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0));
         else if (a == "--limit" && i + 1 < argc) limit = std::strtoull(argv[++i], nullptr, 0);
     }
     if (limit == 0) limit = ~0ull;
     if (dolPath.empty()) {
-        std::fprintf(stderr, "usage: awl-host --dol <main.dol> [--disc disc] [--trace file] [--retraces N] [--limit N]\n");
+        std::fprintf(stderr, "usage: awl-host --dol <main.dol> [--disc disc] [--trace file] [--retraces N] [--limit N] [--pad neutral|xinput]\n");
         return 2;
     }
     recomp::DolImage dol;

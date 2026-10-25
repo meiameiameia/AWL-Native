@@ -363,12 +363,80 @@ void testDvd() {
     fs::remove_all(root);
 }
 
+struct FstEntry { uint8_t flag; std::string name; uint32_t a, b; };
+// Builds an FST table from entries (entry 0 is the root: its b is the entry count).
+std::vector<uint8_t> fstOf(const std::vector<FstEntry>& es) {
+    std::vector<uint8_t> f, names;
+    for (const auto& e : es) {
+        const uint32_t off = static_cast<uint32_t>(names.size());
+        names.insert(names.end(), e.name.begin(), e.name.end());
+        names.push_back(0);
+        f.push_back(e.flag); f.push_back(uint8_t(off >> 16)); f.push_back(uint8_t(off >> 8)); f.push_back(uint8_t(off));
+        put32(f, e.a); put32(f, e.b);
+    }
+    f.insert(f.end(), names.begin(), names.end());
+    return f;
+}
+
+void testDvdFstValidation() {
+    Rig r;
+    Dvd& dvd = r.p().dvd();
+    std::string err;
+    const FstEntry root{1, "", 0, 3};
+    // A well-formed table passes; each defect below must be rejected.
+    CHECK(dvd.loadFst(fstOf({root, {1, "d", 0, 3}, {0, "f.bin", 0x1000, 4}}), err));
+    CHECK(!dvd.loadFst(fstOf({root, {0, "..", 0x1000, 4}, {0, "g", 0x2000, 4}}), err));              // parent reference
+    CHECK(!dvd.loadFst(fstOf({root, {0, ".", 0x1000, 4}, {0, "g", 0x2000, 4}}), err));
+    CHECK(!dvd.loadFst(fstOf({root, {0, "", 0x1000, 4}, {0, "g", 0x2000, 4}}), err));                // empty name
+    CHECK(!dvd.loadFst(fstOf({root, {0, "a/b", 0x1000, 4}, {0, "g", 0x2000, 4}}), err));              // separator
+    CHECK(!dvd.loadFst(fstOf({root, {0, std::string("a") + char(92) + "b", 0x1000, 4}, {0, "g", 0x2000, 4}}), err));
+    CHECK(!dvd.loadFst(fstOf({root, {0, "C:x", 0x1000, 4}, {0, "g", 0x2000, 4}}), err));              // drive / stream syntax
+    CHECK(!dvd.loadFst(fstOf({root, {0, std::string("a") + char(7), 0x1000, 4}, {0, "g", 0x2000, 4}}), err));   // control character
+    CHECK(!dvd.loadFst(fstOf({root, {1, "d", 0, 1}, {0, "g", 0x2000, 4}}), err));                    // directory end must exceed its own index
+    CHECK(dvd.loadFst(fstOf({root, {1, "d", 0, 2}, {0, "g", 0x2000, 4}}), err));          // end == next entry is a valid empty directory
+    CHECK(!dvd.loadFst(fstOf({root, {1, "d", 0, 9}, {0, "g", 0x2000, 4}}), err));                    // end beyond the entry count
+    CHECK(!dvd.loadFst(fstOf({{1, "", 0, 4}, {1, "d", 0, 3}, {1, "e", 0, 4}, {0, "g", 0x2000, 4}}), err));   // child directory outlives its parent
+    CHECK(!dvd.loadFst(fstOf({root, {0, "f", 0xFFFFFFF0u, 0x20}, {0, "g", 0x2000, 4}}), err));       // file past 4 GB
+    std::vector<uint8_t> unterminated = fstOf({root, {0, "abc", 0x1000, 4}, {0, "g", 0x2000, 4}});
+    unterminated.pop_back();                                                                             // drops the last name's NUL
+    CHECK(!dvd.loadFst(unterminated, err));
+    CHECK(!err.empty());
+}
+
+void testDvdCorruptExtraction() {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / "awl-hle-test-disc2";
+    fs::remove_all(root);
+    fs::create_directories(root / "files");
+    std::ofstream(root / "files" / "short.bin", std::ios::binary) << "AB";      // the FST says 8 bytes
+    std::ofstream(root / "files" / "ok.bin", std::ios::binary) << "WXYZ";
+    Config cfg;
+    cfg.discDir = root.string();
+    Rig r(cfg);
+    Dvd& dvd = r.p().dvd();
+    std::string err;
+    CHECK(dvd.loadFst(fstOf({{1, "", 0, 4}, {0, "short.bin", 0x1000, 8}, {0, "missing.bin", 0x2000, 4}, {0, "ok.bin", 0x3000, 4}}), err));
+    uint8_t buf[16] = {};
+    CHECK(dvd.readDisc(0x3000, 4, buf) == 4 && std::memcmp(buf, "WXYZ", 4) == 0);
+    CHECK(dvd.readDisc(0x1000, 8, buf) == -1 && dvd.lastError().find("short read") != std::string::npos);   // never zero-padded
+    CHECK(dvd.readDisc(0x2000, 4, buf) == -1 && dvd.lastError().find("cannot open") != std::string::npos);
+    // A queued read of the short file stops the run loudly when it completes.
+    GuestMem& m = r.p().mem();
+    const uint32_t b = 0x80100000;
+    m.w32(b + dvdblock::Addr, 0x80200000); m.w32(b + dvdblock::Length, 8); m.w32(b + dvdblock::Offset, 0x1000); m.w32(b + dvdblock::Callback, 0);
+    dvd.submit(*r.ctx, b, dvdcmd::Read, 2);
+    CHECK(stops([&] { r.runTo(r.p().now() + 100000); }, rt::StopKind::Platform));
+    dvd.closeFile();
+    fs::remove_all(root);
+}
+
 }  // namespace
 
 int main() try {
     const struct { const char* name; void (*fn)(); } tests[] = {
         {"time constants", testTimeConstants}, {"events and clock", testEventQueueAndClock}, {"PI", testPi}, {"VI", testVi},
-        {"EXI", testExi}, {"GX", testGx}, {"DVD", testDvd},
+        {"EXI", testExi}, {"GX", testGx}, {"DVD", testDvd}, {"DVD FST validation", testDvdFstValidation},
+        {"DVD corrupt extraction", testDvdCorruptExtraction},
     };
     for (const auto& t : tests) {
         std::printf("[%s]\n", t.name);

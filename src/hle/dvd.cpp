@@ -16,6 +16,13 @@ void Dvd::closeFile() {
     openPath_.clear();
 }
 
+// Names become host paths, so anything that could leave the disc directory or name a device is rejected.
+static bool validName(const std::string& n) {
+    if (n.empty() || n == "." || n == "..") return false;
+    for (unsigned char ch : n) if (ch < 0x20 || ch == 0x7F || ch == '/' || ch == '\\' || ch == ':') return false;
+    return true;
+}
+
 bool Dvd::loadFst(const std::vector<uint8_t>& fst, std::string& err) {
     auto u32 = [&](size_t off) { return uint32_t(fst[off]) << 24 | uint32_t(fst[off + 1]) << 16 | uint32_t(fst[off + 2]) << 8 | fst[off + 3]; };
     if (fst.size() < 12) { err = "FST too small"; return false; }
@@ -32,10 +39,20 @@ bool Dvd::loadFst(const std::vector<uint8_t>& fst, std::string& err) {
         const uint32_t nameOff = u32(e) & 0x00FFFFFFu;
         if (names + nameOff >= fst.size()) { err = "FST name offset outside the table"; return false; }
         std::string name;
-        for (size_t k = names + nameOff; k < fst.size() && fst[k]; ++k) name.push_back(static_cast<char>(fst[k]));
+        size_t k = names + nameOff;
+        for (; k < fst.size() && fst[k]; ++k) name.push_back(static_cast<char>(fst[k]));
+        if (k >= fst.size()) { err = "FST name is not terminated inside the table"; return false; }
+        if (!validName(name)) { err = "FST entry " + std::to_string(i) + " has an unsafe name (empty, '.', '..', or containing a slash, backslash, colon or control character)"; return false; }
         const std::string full = stack.back().path.empty() ? name : stack.back().path + "/" + name;
-        if (isDir) stack.push_back({full, u32(e + 8)});
-        else files_.push_back(DiscFile{u32(e + 4), u32(e + 8), full});
+        if (isDir) {
+            const uint32_t end = u32(e + 8);
+            if (end <= i || end > count || end > stack.back().end) { err = "FST directory " + std::to_string(i) + " has an invalid end index"; return false; }
+            stack.push_back({full, end});
+        } else {
+            const uint32_t off = u32(e + 4), size = u32(e + 8);
+            if (uint64_t(off) + size > 0xFFFFFFFFull) { err = "FST file " + std::to_string(i) + " extends past 4 GB"; return false; }
+            files_.push_back(DiscFile{off, size, full});
+        }
     }
     std::sort(files_.begin(), files_.end(), [](const DiscFile& a, const DiscFile& b) { return a.offset < b.offset; });
     return true;
@@ -60,10 +77,15 @@ int64_t Dvd::readDisc(uint32_t offset, uint32_t len, uint8_t* dst) {
             openPath_ = full;
             trace().line("dvd open %s", f.path.c_str());
         }
-        if (!openFile_) { trace().line("dvd read failed: cannot open %s", f.path.c_str()); return -1; }
+        if (!openFile_) { lastError_ = "cannot open " + f.path; trace().line("dvd read failed: %s", lastError_.c_str()); return -1; }
         std::fseek(openFile_, static_cast<long>(pos - f.offset), SEEK_SET);
         const size_t got = std::fread(dst + done, 1, chunk, openFile_);
-        if (got != chunk) trace().line("dvd read short: %s wanted %u got %zu (rest zero-filled)", f.path.c_str(), chunk, got);
+        if (got != chunk) {
+            // A file shorter than its FST entry means the extraction is corrupt or incomplete: never pad it with zeros.
+            lastError_ = "short read of " + f.path;
+            trace().line("dvd read failed: short read of %s (wanted %u at +%u, got %zu)", f.path.c_str(), chunk, pos - f.offset, got);
+            return -1;
+        }
         done += chunk;
     }
     return len;
@@ -110,7 +132,8 @@ void Dvd::complete(Ctx& c, uint64_t id) {
             if (!dst) stopPlatform(c, addr, "DVD read into memory outside MEM1");
             const int64_t got = readDisc(off, len, dst);
             if (got < 0) {
-                result = -1;
+                // The SDK would report a drive error; here it means the extracted disc does not match its FST.
+                stopPlatform(c, off, "DVD read failed: a file is missing or shorter than the FST says (corrupt or incomplete disc extraction; see the boot trace)");
             } else {
                 result = static_cast<int32_t>(len);
                 m.w32(r.block + dvdblock::Transferred, len);
