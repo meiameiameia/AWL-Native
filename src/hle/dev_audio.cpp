@@ -18,7 +18,7 @@ constexpr uint16_t Reset = 1u << 0, Halt = 1u << 2, AiInt = 1u << 3, AiMask = 1u
 constexpr uint16_t W1C = AiInt | ArInt | DspInt;
 }
 namespace aictl {
-constexpr uint32_t Play = 1u << 0, Rate48 = 1u << 1, IntMask = 1u << 2, IntStatus = 1u << 3, IntValid = 1u << 4, ScReset = 1u << 5, DspRate48 = 1u << 6;
+constexpr uint32_t Play = 1u << 0, Rate48 = 1u << 1, IntMask = 1u << 2, IntStatus = 1u << 3, IntValid = 1u << 4, ScReset = 1u << 5, DspRate32 = 1u << 6;   // bit 6 set = DSP/DMA sample rate 32 kHz (clear = 48 kHz): the opposite sense of bit 1
 }
 
 constexpr uint32_t kAramSize = 16u * 1024 * 1024;
@@ -51,16 +51,19 @@ public:
             }
             return nullptr;
         }
-        // Running AX microcode: a frame is announced by a 0xBABExxxx mail followed by the command-list address; the
-        // microcode processes it (nothing is mixed here) and answers with the RESUME mail (0xDCD10001), which the SDK's
-        // DSP handler routes to the task's resume callback to signal "ready for the next frame".
+        // Running AX microcode. A frame is announced by a 0xBABExxxx mail followed by the command-list address. The microcode
+        // mixes (nothing is mixed here) and ends the frame by yielding: it sends the YIELD mail 0xDCD10002. The SDK's DSP handler
+        // (__DSPHandler, 0x801C3F64) answers YIELD, when no other task is queued, with the CPU mail 0xCDD10003 (continue the same
+        // task, sent at 0x801C4118) and then calls the task's resume callback, which announces the next frame. Capture D of
+        // Dolphin's HLE DSP shows exactly this order (BABE0030, list address, DCD10002, CDD10003, repeat). CDD10003 needs no answer.
         if (haveBabe_) {
             haveBabe_ = false;
             ++frames;
-            toCpu.push_back(0xDCD10001);
+            toCpu.push_back(0xDCD10002);
             return nullptr;
         }
         if ((mail >> 16) == 0xBABE) { haveBabe_ = true; return nullptr; }
+        if (mail == 0xCDD10003) return nullptr;
         return "DSP microcode protocol: CPU mail with no modelled response";
     }
 private:
@@ -111,7 +114,9 @@ struct Audio {
     }
 
     uint32_t aiRate() const { return (aiControl & aictl::Rate48) ? 48000 : 32000; }
-    uint32_t dmaRate() const { return (aiControl & aictl::DspRate48) ? 48000 : 32000; }
+    // Bit 6 set selects 32 kHz (AIGetDSPSampleRate returns 48 kHz when it is clear). Evidence: capture D, where the AX frame mails of Dolphin's
+    // run arrive every 5.0 ms on average (160 samples at 32 kHz); the first model read the bit the other way round and gave 3.33 ms.
+    uint32_t dmaRate() const { return (aiControl & aictl::DspRate32) ? 32000 : 48000; }
 
     void scheduleAiDma() {
         ++aiDmaGen;

@@ -239,31 +239,47 @@ void testReportWithCapture() {
     }
     writeText(cap / "B-frames.log", frames);
 
-    // Capture C: Dolphin has VIInit before GXInit, the platform the other way round; the other three calls agree.
+    // Capture C: Dolphin has an extra DVDOpen, the platform an extra AIInit; the four other calls agree. Arguments: OSInit and
+    // DVDInit equal, VIInit's r3 differs by value, GXInit's r3 is a MEM1 pointer 0x40 higher on the platform and its r4 differs by value.
     writeText(cap / "C-calls.log",
               "00:02:000 N[MEMMAP]: BP 801b0de0 OSInit(80000000 00000001) LR=80003178\n"
               "00:02:010 N[MEMMAP]: BP 801badf0 DVDInit(00000000) LR=80003180\n"
+              "00:02:015 N[MEMMAP]: BP 801ba66c DVDOpen(80317a00 00000000) LR=80003184\n"
               "00:02:020 N[MEMMAP]: BP 801be3bc VIInit(00000000) LR=80003188\n"
               "00:02:030 N[MEMMAP]: BP 801cb378 GXInit(80100000 00040000) LR=80003190\n"
               "BP broken line\n");
-    // Capture D: the handshake from the procedure, then one audio frame.
+    // Capture D (Dolphin's HLE DSP): the boot-ROM mail is not read through 801C3D30; the five pairs; DCD10000; then two frames,
+    // each BABE0030 + list address, DCD10002 from the DSP, CDD10003 from the SDK's DSP handler. Frames 5 ms apart.
     writeText(cap / "D-dsp.log",
-              "00:03:000 BP 801c3d30 (8071feed) LR=801c3d00\n"
               "00:03:001 BP 801c3d34 (80f3a001) LR=801c3d00\n00:03:002 BP 801c3d34 (00000001) LR=801c3d00\n"
               "00:03:003 BP 801c3d34 (80f3c002) LR=801c3d00\n00:03:004 BP 801c3d34 (00000002) LR=801c3d00\n"
               "00:03:005 BP 801c3d34 (80f3a002) LR=801c3d00\n00:03:006 BP 801c3d34 (00000003) LR=801c3d00\n"
               "00:03:007 BP 801c3d34 (80f3b002) LR=801c3d00\n00:03:008 BP 801c3d34 (00000004) LR=801c3d00\n"
               "00:03:009 BP 801c3d34 (80f3d001) LR=801c3d00\n00:03:010 BP 801c3d34 (00000005) LR=801c3d00\n"
               "00:03:011 BP 801c3d30 (dcd10000) LR=801c3d00\n"
-              "00:03:012 BP 801c3d34 (babe1234) LR=801c3d00\n00:03:013 BP 801c3d34 (80200000) LR=801c3d00\n"
-              "00:03:014 BP 801c3d30 (dcd10001) LR=801c3d00\n");
+              "00:03:012 BP 801c3d34 (babe0030) LR=801c3d00\n00:03:012 BP 801c3d34 (80200000) LR=801c3d00\n"
+              "00:03:013 BP 801c3d30 (dcd10002) LR=801c3d00\n00:03:013 BP 801c3d34 (cdd10003) LR=801c3d00\n"
+              "00:03:017 BP 801c3d34 (babe0030) LR=801c3d00\n00:03:017 BP 801c3d34 (80200000) LR=801c3d00\n"
+              "00:03:018 BP 801c3d30 (dcd10002) LR=801c3d00\n00:03:018 BP 801c3d34 (cdd10003) LR=801c3d00\n");
 
-    // Platform trace: two end-of-frame calls 2 fields apart (2 * 675675 ticks * 4 instructions), matching call order except GX/VI swapped.
+    // Platform trace: calls with r3-r6; two end-of-frame calls 2 fields apart (2 * 675675 ticks * 4 instructions); the same mail
+    // exchange in the platform's order, frames 202,500 ticks (5.000 ms) apart.
     std::string tr = "dvd inquiry done addr=80060000 t=1767988\n";
-    tr += "call 801B0DE0 site=80003178 depth=1 icount=1000\ncall 801BADF0 site=80003180 depth=1 icount=2000\n";
-    tr += "call 801CB378 site=80003190 depth=1 icount=3000\ncall 801BE3BC site=80003188 depth=1 icount=4000\n";
+    tr += "call 801B0DE0 site=80003178 depth=1 icount=1000 r3=80000000 r4=00000001 r5=00000000 r6=00000000\n";
+    tr += "call 801BADF0 site=80003180 depth=1 icount=2000 r3=00000000 r4=00000000 r5=00000000 r6=00000000\n";
+    tr += "call 801BE3BC site=80003188 depth=1 icount=3000 r3=00000007 r4=00000000 r5=00000000 r6=00000000\n";
+    tr += "call 801C19D8 site=8000318C depth=1 icount=3500 r3=00000000 r4=00000000 r5=00000000 r6=00000000\n";
+    tr += "call 801CB378 site=80003190 depth=1 icount=4000 r3=80100040 r4=00040001 r5=00000000 r6=00000000\n";
     tr += "call 8017A7F8 site=80003200 depth=2 icount=100000000\ncall 8017A7F8 site=80003200 depth=2 icount=105405400\n";
-    tr += "dsp mail ->cpu 8071FEED t=1\ndsp mail ->dsp 80F3A001 t=2\ndsp mail ->dsp 00000001 t=3\ndsp mail ->cpu DCD10000 t=4\n";
+    tr += "dsp mail ->cpu 8071FEED t=1\n";
+    const char* pairs[10] = {"80F3A001", "00000001", "80F3C002", "00000002", "80F3A002", "00000003", "80F3B002", "00000004", "80F3D001", "00000005"};
+    for (int i = 0; i < 10; ++i) tr += std::string("dsp mail ->dsp ") + pairs[i] + " t=" + std::to_string(2 + i) + "\n";
+    tr += "dsp mail ->cpu DCD10000 t=20\n";
+    for (int f = 0; f < 2; ++f) {
+        const std::string t0 = std::to_string(1000000 + 202500 * f);
+        tr += "dsp mail ->dsp BABE0030 t=" + t0 + "\ndsp mail ->dsp 80200000 t=" + t0 + "\n";
+        tr += "dsp mail ->cpu DCD10002 t=" + std::to_string(1000100 + 202500 * f) + "\ndsp mail ->dsp CDD10003 t=" + std::to_string(1000200 + 202500 * f) + "\n";
+    }
     writeText(root / "boot-trace.log", tr);
 
     CompareInputs in;
@@ -312,18 +328,35 @@ void testReportWithCapture() {
     CHECK_HAS(r, "TV format NTSC (0), scan interlaced (0); EFB 640x480, XFB height 480");
     CHECK_HAS(r, "XFB mode double field");
     CHECK_HAS(r, "TV mode word at 800000CC = 0 (NTSC) -> match");
-    // Q6: four Dolphin events and four platform events; VIInit/GXInit swapped, so three are common.
-    CHECK_HAS(r, "Result: 3 in common, 1 only in Dolphin, 1 only in the platform");
+    // Q6: Dolphin has an extra DVDOpen and the platform an extra AIInit; four calls agree in order.
+    CHECK_HAS(r, "agree exactly for the first 2 events.");
+    CHECK_HAS(r, "Result: 4 in common, 1 only in Dolphin, 1 only in the platform");
     CHECK_HAS(r, "| OSInit (801B0DE0) | 80000000 00000001 |");
-    CHECK_HAS(r, "only in Dolphin: ");
-    // DSP
-    CHECK_HAS(r, "first message from the DSP is 8071FEED: yes");
-    CHECK_HAS(r, "five command words at the start of the sends: 5 of 5 in place");
-    CHECK_HAS(r, "DCD10000 as the second read: yes");
-    CHECK_HAS(r, "BABE messages sent: 1; DCD10001 messages read: 1");
+    CHECK_HAS(r, "only in Dolphin: DVDOpen");
+    CHECK_HAS(r, "only in the platform: AIInit");
+    // Arguments of the four aligned calls: OSInit and DVDInit equal, VIInit r3 and GXInit r4 value differences, GXInit r3 a pointer.
+    CHECK_HAS(r, "| OSInit (801B0DE0) | 1 | 2 | 0 | 0 |");
+    CHECK_HAS(r, "| GXInit (801CB378) | 1 | 0 | 1 | 1 |");
+    CHECK_HAS(r, "| VIInit (801BE3BC) | 1 | 0 | 0 | 1 |");
+    CHECK_HAS(r, "GXInit (801CB378) r3: pointer into MEM1, platform minus Dolphin = +64 in all 1 calls (first Dolphin 80100000, platform 80100040)");
+    CHECK_HAS(r, "GXInit (801CB378) r4: VALUE difference in 1 calls: Dolphin 00040000, platform 00040001");
+    CHECK_HAS(r, "VIInit (801BE3BC) r3: VALUE difference in 1 calls: Dolphin 00000000, platform 00000007");
+    CHECK_HAS(r, "Total: 3 equal, 1 pointer differences, 2 value differences.");
+    // DSP: the reference is named, the boot-ROM mail is listed apart, and the yield/continue exchange matches frame by frame.
+    CHECK_HAS(r, "Dolphin's HLE DSP");
+    CHECK_HAS(r, "boot-ROM mail 8071FEED: platform delivers it (tick 1); Dolphin not seen through 801C3D30");
+    CHECK_HAS(r, "five command words at the start of the sends: Dolphin 5 of 5, platform 5 of 5");
+    CHECK_HAS(r, "first mail read through 801C3D30 is DCD10000: Dolphin yes, platform yes");
+    CHECK_HAS(r, "BABE messages sent: Dolphin 2, platform 2");
+    CHECK_HAS(r, "DCD10002 (yield) mails read: Dolphin 2, platform 2; DCD10001 (resume) read: Dolphin 0, platform 0");
+    CHECK_HAS(r, "CDD10003 sent by the handler: Dolphin 2, platform 2");
+    CHECK_HAS(r, "complete frames (BABExxxx, address, DCD10002, CDD10003 in that order): Dolphin 2 of 2, platform 2 of 2");
+    CHECK_HAS(r, "frame interval: Dolphin mean 5.000 ms over 1 intervals");
+    CHECK_HAS(r, "platform mean 5.000 ms, median 5.000 ms");
+    CHECK_HAS(r, "First difference over the whole common length: sends none in the first 16; reads none in the first 3");
     // Parse notes
-    CHECK_HAS(r, "C-calls.log: 5 lines, 4 breakpoint hits, 0 other lines ignored, 1 breakpoint lines unreadable");
-    CHECK_HAS(r, "line 5:");
+    CHECK_HAS(r, "C-calls.log: 6 lines, 5 breakpoint hits, 0 other lines ignored, 1 breakpoint lines unreadable");
+    CHECK_HAS(r, "line 6:");
     // Sections for files that were not captured.
     CHECK_HAS(r, "| capture A, memory after OSInit (A-after-osinit-mem1.raw) | not captured |");
     CHECK_HAS(r, "not present (see dump_host_memory.ps1)");

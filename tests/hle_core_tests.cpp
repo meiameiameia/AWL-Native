@@ -225,6 +225,68 @@ void testSi() {
     CHECK(stops([&] { r.rd(0xCC006400, 4); }, rt::StopKind::Mmio));          // channel registers are not modelled
 }
 
+// DSP mailbox as the SDK uses it: bit 15 of the high half flags a pending mail, reading the low half consumes it (DSPReadMailFromDSP).
+void dspSend(Rig& r, uint32_t mail) {
+    r.wr(0xCC005000, 2, mail >> 16);
+    r.wr(0xCC005002, 2, mail & 0xFFFF);
+}
+bool dspRecv(Rig& r, uint32_t& mail) {
+    const uint32_t hi = static_cast<uint32_t>(r.rd(0xCC005004, 2));
+    if (!(hi & 0x8000)) return false;
+    mail = (hi << 16) | static_cast<uint32_t>(r.rd(0xCC005006, 2));
+    return true;
+}
+// Advances time in small steps until a mail arrives (the model delivers after a fixed delay) and returns it, or 0 after `limit` ticks.
+uint32_t dspWait(Rig& r, uint64_t& tick, uint64_t limit = 40000) {
+    uint32_t mail = 0;
+    for (uint64_t t = 0; t < limit; t += 100) {
+        tick += 100;
+        r.runTo(tick);
+        if (dspRecv(r, mail)) return mail;
+    }
+    return 0;
+}
+
+void testDspMailbox() {
+    // The exchange the recompiled SDK expects (capture D of Dolphin's HLE DSP; __DSPHandler at 0x801C3F64): boot-ROM mail, five
+    // command/data pairs, DCD10000; then per frame BABE0030 + list address -> DCD10002 (yield); the handler's CDD10003 needs no answer.
+    Rig r;
+    uint64_t tick = 0;
+    r.wr(0xCC00500A, 2, 0);                                                   // release the DSP from halt
+    CHECK(dspWait(r, tick) == 0x8071FEED);
+    static const uint32_t cmds[5] = {0x80F3A001, 0x80F3C002, 0x80F3A002, 0x80F3B002, 0x80F3D001};
+    for (int i = 0; i < 5; ++i) { dspSend(r, cmds[i]); dspSend(r, 0x1000u + static_cast<uint32_t>(i)); }
+    CHECK(dspWait(r, tick) == 0xDCD10000);
+    for (int frame = 0; frame < 3; ++frame) {
+        dspSend(r, 0xBABE0030);
+        uint32_t early = 0;
+        CHECK(!dspRecv(r, early));                                            // the first mail alone gets no answer
+        dspSend(r, 0x8162FD60);                                               // the list address completes the frame
+        CHECK(dspWait(r, tick) == 0xDCD10002);                                // yield, not resume
+        dspSend(r, 0xCDD10003);                                               // the SDK's answer to the yield
+        uint32_t none = 0;
+        for (int i = 0; i < 200; ++i) { tick += 100; r.runTo(tick); CHECK(!dspRecv(r, none)); }
+    }
+    CHECK(stops([&] { dspSend(r, 0xCDD10009); }, rt::StopKind::Mmio));      // a mail with no modelled response stops loudly
+}
+
+void testAiDmaRate() {
+    // AICR bit 6 selects the DSP DMA rate: set = 32 kHz, clear = 48 kHz (the opposite sense of bit 1). A 20-block DMA (160 stereo
+    // samples, one AX frame) therefore lasts 5.000 ms = 202,500 ticks at 32 kHz and 3.333 ms = 135,000 ticks at 48 kHz. Dolphin's
+    // capture D shows AX frames 5.0 ms apart.
+    for (int k = 0; k < 2; ++k) {
+        Rig r;
+        const bool khz32 = k == 0;
+        r.wr(0xCC006C00, 4, khz32 ? 0x40 : 0x00);
+        r.wr(0xCC005036, 2, 0x8000 | 20);
+        const uint64_t due = khz32 ? 202500 : 135000;
+        r.runTo(due - 1);
+        CHECK((r.rd(0xCC00500A, 2) & 0x8) == 0);                              // AI DMA interrupt status not yet set
+        r.runTo(due);
+        CHECK((r.rd(0xCC00500A, 2) & 0x8) != 0);
+    }
+}
+
 void testExi() {
     Rig r;
     const uint32_t csr0 = 0xCC006800, mar0 = 0xCC006804, len0 = 0xCC006808, cr0 = 0xCC00680C, data0 = 0xCC006810;
@@ -487,7 +549,7 @@ void testDvdCorruptExtraction() {
 int main() try {
     const struct { const char* name; void (*fn)(); } tests[] = {
         {"time constants", testTimeConstants}, {"events and clock", testEventQueueAndClock}, {"PI", testPi}, {"VI", testVi},
-        {"main-loop criterion", testMainLoopCriterion}, {"SI", testSi}, {"EXI", testExi}, {"GX", testGx}, {"DVD", testDvd}, {"DVD FST validation", testDvdFstValidation},
+        {"main-loop criterion", testMainLoopCriterion}, {"SI", testSi}, {"DSP mailbox", testDspMailbox}, {"AI DMA rate", testAiDmaRate}, {"EXI", testExi}, {"GX", testGx}, {"DVD", testDvd}, {"DVD FST validation", testDvdFstValidation},
         {"DVD corrupt extraction", testDvdCorruptExtraction},
     };
     for (const auto& t : tests) {
