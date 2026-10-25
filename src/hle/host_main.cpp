@@ -79,7 +79,7 @@ int main(int argc, char** argv) {
     plat.installHandlers();
 
     auto ctx = std::make_unique<Ctx>(machine);
-    ctx->msr = 0x00002032;
+    ctx->msr = bootValues().entryMsr;
     setFpscr(*ctx, 0);
     if (!lookupFunction(machine, dol.entry)) {
         std::fprintf(stderr, "entry 0x%08X is not a recompiled function\n", dol.entry);

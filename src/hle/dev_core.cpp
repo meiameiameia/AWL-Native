@@ -93,7 +93,7 @@ public:
     uint64_t read(Ctx& c, uint32_t addr, uint32_t size) override {
         // DI_CONFIG: read by EXISync through __OSGetDIConfig to detect a development-kit quirk (value 0xFF); any other value
         // selects the normal path. The retail value is unknown (Dolphin question 1 area), so report 0.
-        if ((addr & 0xFFF) == 0x24 && size == 4) return 0;
+        if ((addr & 0xFFF) == 0x24 && size == 4) return bootValues().diConfig;
         stopHw(c, addr, "DI register read: the DVD command layer is replaced natively");
     }
     void write(Ctx& c, uint32_t addr, uint32_t size, uint64_t v) override {

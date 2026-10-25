@@ -5,13 +5,10 @@
 #include <string>
 
 #include "image.h"
+#include "boot_table.h"
 #include "platform.h"
 
 namespace awl::hle {
-
-struct BootLayout {
-    uint32_t fstAddr = 0, fstMax = 0, bi2Addr = 0;
-};
 
 // Zeroes MEM1, loads the DOL sections, builds the low-memory area, BI2 and the FST. Returns false with a message.
 bool buildBootEnvironment(Machine& m, const recomp::DolImage& dol, const std::string& discDir, BootLayout& layout, std::string& err);

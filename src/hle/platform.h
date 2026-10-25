@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "boot_table.h"
 #include "hle_common.h"
 #include "hle_abi.h"
 
@@ -108,7 +109,7 @@ struct Config {
     uint32_t mainLoopRetraces = 120;              // N consecutive qualifying retraces = main loop reached
     bool dvdLatencyModel = true;
     bool padXInput = false;                       // PAD channel 0 reads the first XInput controller (not deterministic); default neutral
-    uint32_t rtcSeconds = 820540800;              // RTC counter (seconds since 2000-01-01): fixed for deterministic runs
+    uint32_t rtcSeconds = bootValues().rtcSeconds;   // RTC counter (seconds since 2000-01-01): fixed for deterministic runs
 };
 
 struct StopReport {

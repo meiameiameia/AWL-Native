@@ -153,7 +153,10 @@ void Dvd::complete(Ctx& c, uint64_t id) {
             uint8_t* dst = m.ptr(addr, 32);
             if (!dst) stopPlatform(c, addr, "DVD inquiry buffer outside MEM1");
             std::memset(dst, 0, 32);
-            dst[3] = 0x01;
+            const BootValues& bv = bootValues();
+            dst[0] = uint8_t(bv.driveRevision >> 8); dst[1] = uint8_t(bv.driveRevision);
+            dst[2] = uint8_t(bv.driveDeviceCode >> 8); dst[3] = uint8_t(bv.driveDeviceCode);
+            for (int k = 0; k < 4; ++k) dst[4 + k] = uint8_t(bv.driveReleaseDate >> (24 - 8 * k));
             ++completedOther;
             trace().line("dvd inquiry done addr=%08X t=%llu", addr, static_cast<unsigned long long>(p_.now()));
             break;
