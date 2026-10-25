@@ -28,7 +28,7 @@ struct Recorder : Backend {
 }  // namespace
 
 int main() {
-    check(kIrVersion == 1, "IR version constant");
+    check(kIrVersion == 2, "IR version constant");
     // Vertex: clip position (4 floats), two RGBA8 colors, eight (s,t,q) triples.
     check(sizeof(Vertex) == 16 + 8 + 96, "Vertex is 120 bytes");
     // Enumerations carry the hardware encodings (libogc gx.h): GX_TEV_KCSEL, TEV inputs, compare ops.
