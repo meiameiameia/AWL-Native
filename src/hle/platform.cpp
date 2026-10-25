@@ -235,7 +235,7 @@ void Platform::deliverException(Ctx& c, uint32_t exception, uint32_t fn, uint32_
     byOsCtx_[x] = t;
     t->osContext = x;
     Ctx* i = irqCtx(t, c);
-    i->msr = c.msr & ~kMsrEE;
+    i->msr = (c.msr & ~kMsrEE) | kMsrFP;
     i->r[3] = exception;
     i->r[4] = x;
     ++t->depth;
@@ -332,8 +332,9 @@ void Platform::osLoadContext(Ctx& c) {
     }
     if (target) {
         if (target->dead) stopPlatform(c, x, "OSLoadContext of the context of an exited thread");
-        if (target == me) return;          // returning into the activation that owns this context
+        if (target == me) { c.msr |= kMsrFP; return; }          // returning into the activation that owns this context
         trace().line("switch thread %u -> %u ctx=%08X t=%llu", me->id, target->id, x, static_cast<unsigned long long>(now()));
+        (target->depth > 0 ? target->irq[static_cast<size_t>(target->depth - 1)] : target->base)->msr |= kMsrFP;
         switchTo(target);
         return;
     }
@@ -353,7 +354,7 @@ void Platform::startThreadFromImage(Ctx& from, uint32_t x) {
     n->ctr = m.r32(x + 0x88);
     rt::setXer(*n, m.r32(x + 0x8C));
     for (uint32_t i = 0; i < 8; ++i) n->gqr[i] = m.r32(x + 0x1A4 + 4 * i);
-    n->msr = m.r32(x + kOffSrr1);
+    n->msr = m.r32(x + kOffSrr1) | kMsrFP;      // whatever the image says: FP stays available
     n->fpscr = from.fpscr;
     std::memcpy(n->spr, from.spr, sizeof n->spr);
     std::memcpy(n->sr, from.sr, sizeof n->sr);

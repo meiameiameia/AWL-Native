@@ -137,6 +137,7 @@ int main(int argc, char** argv) {
         if (s.addr) std::printf("  address involved     0x%08X\n", s.addr);
         if (s.name) std::printf("  function name        %s\n", s.name);
         std::printf("  detail               %s\n", s.what);
+        if (r.ctx) std::printf("  MSR                  0x%08X\n", r.ctx->msr);
         std::printf("  instructions retired %llu\n  thread               %u\n", static_cast<unsigned long long>(machine.icount), r.threadId);
         if (r.ctx) {
             std::printf("  call trace (innermost first; function <- call site):\n");

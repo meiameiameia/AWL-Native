@@ -17,7 +17,7 @@ constexpr uint32_t kCtxMain = 0x80100000, kCtxThread = 0x80101000, kMarkBase = 0
 constexpr uint32_t kThreadMem = 0x80120000;   // an OSThread: context at +0, state halfword at +0x2C8
 constexpr uint32_t kMarkA = kMarkBase + 0, kMarkB = kMarkBase + 4, kMarkC = kMarkBase + 8, kMarkD = kMarkBase + 12, kMarkE = kMarkBase + 16,
                    kMarkF = kMarkBase + 20, kIrqCount = kMarkBase + 24, kIrqR3 = kMarkBase + 28, kIrqR4 = kMarkBase + 32,
-                   kIrqMsr = kMarkBase + 36, kSeq = kMarkBase + 64, kSeqLen = kMarkBase + 60;
+                   kIrqMsr = kMarkBase + 36, kMarkMsr = kMarkBase + 40, kSeq = kMarkBase + 64, kSeqLen = kMarkBase + 60;
 namespace awl::rt {
 namespace {
 
@@ -37,6 +37,7 @@ void stubPadInit(Ctx& c) { hleCall(c, 0x801C06D4); }
 void fMain(Ctx& c) {   // 0x80002000
     at(c, 0x80002000, 2);
     const uint32_t savedLr = c.lr;
+    c.msr &= ~awl::hle::kMsrFP;                                        // the OS cleared floating-point-available (OSSetCurrentContext does)
     c.r[3] = kCtxMain;
     AWL_CALL(c, 0x80002004, 0x801B2D8C, stubSave);
     if (c.r[3] == 0) {
@@ -44,6 +45,7 @@ void fMain(Ctx& c) {   // 0x80002000
         c.r[3] = kCtxThread;
         AWL_CALL(c, 0x80002010, 0x801B2E0C, stubLoad);       // starts the thread; returns when the thread loads this context
         mark(c, kMarkC, 3);
+        mark(c, kMarkMsr, c.msr);
     }
     c.lr = savedLr;
     ret(c, 0x80002020);
@@ -249,7 +251,8 @@ void testThreadSwitch(Rig& r) {
     CHECK(m.r32(kMarkA) == 1);               // OSSaveContext returned 0 the first time
     CHECK(m.r32(kMarkB) == 77);              // the thread started with its parameter in r3
     CHECK(m.r32(kMarkE) == 0x80180000);      // ... on the stack from the image
-    CHECK(m.r32(kMarkF) == 0x9032);          // ... with the MSR from SRR1
+    CHECK(m.r32(kMarkF) == (0x9032u | kMsrFP));   // ... with the MSR from SRR1 plus floating-point available (always-available-FPU policy)
+    CHECK((m.r32(kMarkMsr) & kMsrFP) != 0);  // the resumed main context has floating point available although it saved a clear bit
     CHECK(m.r32(kMarkC) == 3);               // the main context resumed after its own OSLoadContext call
     CHECK(m.r32(kMarkD) == 0);               // the thread never continued past its OSLoadContext(main)
     // The image OSSaveContext wrote: r1, r2, r13, r14 (via stmw r13), CR, LR and SRR0 = return address, SRR1 = MSR, r3 slot = 1.
@@ -257,7 +260,7 @@ void testThreadSwitch(Rig& r) {
     CHECK(m.r32(kCtxMain + 0x34) == 0x80300000 && m.r32(kCtxMain + 0x38) == 0x14141414);
     CHECK(m.r32(kCtxMain + 0x80) == 0x24000000);
     CHECK(m.r32(kCtxMain + 0x84) == 0x80002008 && m.r32(kCtxMain + 0x198) == 0x80002008);   // call site 0x80002004 + 4
-    CHECK(m.r32(kCtxMain + 0x19C) == 0x00002032);
+    CHECK(m.r32(kCtxMain + 0x19C) == 0x00000032);   // the MSR at the save: the test cleared floating-point-available first
     CHECK(m.r32(kCtxMain + 0xC) == 1);
 }
 
@@ -272,15 +275,16 @@ void testInterrupt(Rig& r) {
     r.boot->r[1] = 0x80190000;
     r.boot->r[5] = 0x55555555;
     r.boot->cr = 0x11000000;
-    r.boot->msr = 0x00002032;
+    r.boot->msr = 0x00000032;                  // floating point not available in the interrupted context
     m.w32(kIrqCount, 0);
     const bool ok = Platform::get().run(*r.boot, 0x80002300);
     CHECK(ok && !Platform::get().report().stopped);
     CHECK(m.r32(kIrqCount) == 1);              // delivered once: the handler cleared the line
     CHECK(m.r32(kIrqR3) == 4 && m.r32(kIrqR4) == kCtxMain);
     CHECK((m.r32(kIrqMsr) & kMsrEE) == 0);     // handlers run with external interrupts disabled
+    CHECK((m.r32(kIrqMsr) & kMsrFP) != 0);     // ... and with floating point available
     CHECK((m.r16(kCtxMain + 0x1A2) & 2) == 2); // the context is flagged as holding exception state
-    CHECK(m.r32(kCtxMain + 0x19C) == (0x00002032u | kMsrEE));   // SRR1 holds the interrupted MSR (the trigger had enabled EE)
+    CHECK(m.r32(kCtxMain + 0x19C) == (0x00000032u | kMsrEE));   // SRR1 holds the interrupted MSR (the trigger had enabled EE)
     CHECK(m.r32(kCtxMain + 4) == 0x80190000 && m.r32(kCtxMain + 0x14) == 0x55555555 && m.r32(kCtxMain + 0x80) == 0x11000000);
     CHECK((r.boot->msr & kMsrEE) != 0);        // the interrupted context keeps its own MSR
 }
