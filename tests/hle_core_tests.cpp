@@ -212,6 +212,30 @@ void testMainLoopCriterion() {
 }
 
 // ---- EXI / RTC / SRAM -------------------------------------------------------------------------------------------
+void testCallTraceArguments() {
+    // A traced call records r3-r6 as they are when the call is made; calls deeper than traceMaxDepth and calls with tracing off
+    // record nothing.
+    Rig r;
+    Ctx& c = *r.ctx;
+    c.r[3] = 0x80100000; c.r[4] = 0x00040000; c.r[5] = 5; c.r[6] = 0xFFFFFFFFu; c.r[7] = 0x77777777;
+    rt::pushFrame(c, 0x80001000, 0x801B0DE0);
+    CHECK(r.machine.trace.empty());                                           // tracing is off by default
+    rt::popFrame(c);
+    r.machine.traceMaxDepth = 2;
+    rt::pushFrame(c, 0x80001000, 0x801B0DE0);                                 // depth 0, recorded with the values set above
+    c.r[3] = 1; c.r[4] = 2; c.r[5] = 3; c.r[6] = 4;
+    rt::pushFrame(c, 0x80001004, 0x801BADF0);                                 // depth 1
+    c.r[3] = 9;
+    rt::pushFrame(c, 0x80001008, 0x801BE3BC);                                 // depth 2: beyond traceMaxDepth
+    CHECK(r.machine.trace.size() == 2);
+    const rt::TraceHit a = r.machine.trace[0], b = r.machine.trace[1];
+    CHECK(a.callee == 0x801B0DE0 && a.site == 0x80001000 && a.depth == 0);
+    CHECK(a.args[0] == 0x80100000 && a.args[1] == 0x00040000 && a.args[2] == 5 && a.args[3] == 0xFFFFFFFFu);
+    CHECK(b.callee == 0x801BADF0 && b.depth == 1);
+    CHECK(b.args[0] == 1 && b.args[1] == 2 && b.args[2] == 3 && b.args[3] == 4);   // r7 is not recorded
+    rt::popFrame(c); rt::popFrame(c); rt::popFrame(c);
+}
+
 void testSi() {
     // The SI model serves what SIInit does: the polling register, an idle transfer status, and the transfer-complete acknowledge.
     Rig r;
@@ -549,7 +573,7 @@ void testDvdCorruptExtraction() {
 int main() try {
     const struct { const char* name; void (*fn)(); } tests[] = {
         {"time constants", testTimeConstants}, {"events and clock", testEventQueueAndClock}, {"PI", testPi}, {"VI", testVi},
-        {"main-loop criterion", testMainLoopCriterion}, {"SI", testSi}, {"DSP mailbox", testDspMailbox}, {"AI DMA rate", testAiDmaRate}, {"EXI", testExi}, {"GX", testGx}, {"DVD", testDvd}, {"DVD FST validation", testDvdFstValidation},
+        {"main-loop criterion", testMainLoopCriterion}, {"call trace arguments", testCallTraceArguments}, {"SI", testSi}, {"DSP mailbox", testDspMailbox}, {"AI DMA rate", testAiDmaRate}, {"EXI", testExi}, {"GX", testGx}, {"DVD", testDvd}, {"DVD FST validation", testDvdFstValidation},
         {"DVD corrupt extraction", testDvdCorruptExtraction},
     };
     for (const auto& t : tests) {

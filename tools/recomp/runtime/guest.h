@@ -71,6 +71,7 @@ struct TraceHit {
     uint32_t site;
     uint32_t depth;
     uint64_t icount;
+    uint32_t args[4];       // r3-r6 at the call
 };
 
 struct Ctx;
@@ -212,7 +213,7 @@ inline void pushFrame(Ctx& c, uint32_t site, uint32_t callee) {
     if (c.sp >= kMaxCallDepth) stop(c, StopKind::DepthExceeded, site, callee, "guest call depth exceeded");
     c.lr = site + 4;
     Machine& m = *c.m;
-    if (m.traceMaxDepth && c.sp < m.traceMaxDepth) m.trace.push_back(TraceHit{callee, site, c.sp, m.icount});
+    if (m.traceMaxDepth && c.sp < m.traceMaxDepth) m.trace.push_back(TraceHit{callee, site, c.sp, m.icount, {c.r[3], c.r[4], c.r[5], c.r[6]}});
     c.cs[c.sp++] = CallFrame{site, callee, site + 4};
 }
 inline void popFrame(Ctx& c) { --c.sp; }
