@@ -172,6 +172,45 @@ void testVi() {
     CHECK(p.counters.fbLatches == 1);
 }
 
+// ---- main-loop criterion ---------------------------------------------------------------------------------------
+void testMainLoopCriterion() {
+    Config cfg;
+    cfg.mainLoopRetraces = 3;
+    Rig r(cfg);
+    Platform& p = r.p();
+    auto latch = [&](uint16_t value) {          // a VIFlush: four framebuffer words written together
+        r.runTo(p.now() + 100000);
+        for (uint32_t off : {0x201Cu, 0x201Eu, 0x2024u, 0x2026u}) r.wr(0xCC000000u + off, 2, value + off);
+    };
+    // Retraces with no framebuffer activity never qualify.
+    p.onRetrace(); p.onRetrace();
+    CHECK(p.counters.consecutive == 0 && p.exitReason().empty());
+    // A latch without a preceding EFB copy does not qualify either.
+    latch(1);
+    CHECK(p.counters.fbLatches == 1);              // four register writes, one latch event
+    p.onRetrace(); p.onRetrace();
+    CHECK(p.counters.consecutive == 0);
+    // A copy, then a latch: the next retraces qualify; the third consecutive one satisfies the criterion.
+    ++p.counters.efbCopies; p.counters.copySinceLatch = true;
+    latch(2);
+    CHECK(p.counters.fbLatches == 2);
+    p.onRetrace(); CHECK(p.counters.consecutive == 1);
+    p.onRetrace(); CHECK(p.counters.consecutive == 2 && p.exitReason().empty());
+    p.onRetrace();
+    CHECK(p.exitReason() == "main loop reached");
+    // More than three retraces without a new latch break the run (a frozen picture is not a running loop).
+    Config longRun;
+    longRun.mainLoopRetraces = 10;
+    Rig r2(longRun);
+    ++r2.p().counters.efbCopies; r2.p().counters.copySinceLatch = true;
+    r2.runTo(r2.p().now() + 100000);
+    r2.wr(0xCC00201C, 2, 7);
+    for (int i = 0; i < 3; ++i) r2.p().onRetrace();
+    CHECK(r2.p().counters.consecutive == 3);
+    r2.p().onRetrace();
+    CHECK(r2.p().counters.consecutive == 0 && r2.p().exitReason().empty());
+}
+
 // ---- EXI / RTC / SRAM -------------------------------------------------------------------------------------------
 void testExi() {
     Rig r;
@@ -435,7 +474,7 @@ void testDvdCorruptExtraction() {
 int main() try {
     const struct { const char* name; void (*fn)(); } tests[] = {
         {"time constants", testTimeConstants}, {"events and clock", testEventQueueAndClock}, {"PI", testPi}, {"VI", testVi},
-        {"EXI", testExi}, {"GX", testGx}, {"DVD", testDvd}, {"DVD FST validation", testDvdFstValidation},
+        {"main-loop criterion", testMainLoopCriterion}, {"EXI", testExi}, {"GX", testGx}, {"DVD", testDvd}, {"DVD FST validation", testDvdFstValidation},
         {"DVD corrupt extraction", testDvdCorruptExtraction},
     };
     for (const auto& t : tests) {

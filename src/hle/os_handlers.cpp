@@ -169,7 +169,7 @@ void Platform::installHandlers() {
 void Platform::onRetrace() {
     ++counters.retraces;
     ++counters.sinceLatch;
-    const bool qualifies = counters.sinceLatch <= 3 && counters.efbCopies > 0 && counters.fbLatches > 0;
+    const bool qualifies = counters.haveLatch && counters.sinceLatch <= 3 && counters.lastLatchHadCopy;
     counters.consecutive = qualifies ? counters.consecutive + 1 : 0;
     trace().line("retrace %llu t=%llu latches=%llu copies=%llu consecutive=%u", static_cast<unsigned long long>(counters.retraces),
                  static_cast<unsigned long long>(now()), static_cast<unsigned long long>(counters.fbLatches),

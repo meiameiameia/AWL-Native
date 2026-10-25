@@ -69,6 +69,9 @@ void Platform::attach(Machine& m, const Config& cfg) {
     decPending_ = false;
     counters = Counters();
     resetThreads();
+    exitReason_.clear();
+    exiting_ = false;
+    report_ = StopReport();
     callbacks_.clear();
     hookInstalled_ = false;
     deadline_ = ~0ull;
@@ -200,6 +203,10 @@ Ctx* Platform::irqCtx(Thread* t, Ctx& from) {
 namespace {
 constexpr uint32_t kOffState = 0x1A2, kOffSrr0 = 0x198, kOffSrr1 = 0x19C;
 constexpr uint32_t kOsCurrentContext = 0x800000D4;
+constexpr uint32_t kCurrentThread = 0x800000E4;                    // read by SelectThread
+// OSThread.state: OSExitThread stores 8 (moribund, joinable) or 0 (exited, detached); a running, ready or waiting thread has 2, 1 or 4.
+constexpr uint32_t kOffThreadState = 0x2C8;
+bool isExitedState(uint16_t state) { return state == 0 || state == 8; }
 constexpr uint32_t kFnOSDisableScheduler = 0x801B6B98, kFnOSEnableScheduler = 0x801B6BD8, kFnOSReschedule = 0x801B70A4;
 }
 
@@ -257,6 +264,7 @@ void Platform::switchTo(Thread* t) {
     cur_ = t;
     SwitchToFiber(t->fiber);
     // resumed: whoever switched back set cur_ to this thread
+    reapDead();
     Ctx* top = me->depth > 0 ? me->irq[static_cast<size_t>(me->depth - 1)] : me->base;
     rt::syncHostFp(top->fpscr);
 }
@@ -276,9 +284,34 @@ void Platform::osSaveContext(Ctx& c) {
     m.w32(x + 0x8C, rt::xerValue(c));
     m.w32(x + 0xC, 1);
     Thread* t = threadOf(c);
+    if (x == mem_.r32(kCurrentThread) && isExitedState(mem_.r16(x + kOffThreadState))) {
+        // SelectThread saves the context of a thread that has just exited (OSExitThread marked it exited or moribund and the scheduler
+        // is leaving it for good). The original never loads this image again as a continuation: a later OSCreateThread
+        // rewrites it with OSInitContext. Binding it to this fiber would let that new thread resume the dead one.
+        t->exiting = true;                 // its fiber is abandoned once it loads the next context (it still runs the idle loop first)
+        byOsCtx_.erase(x);
+        t->osContext = 0;
+        trace().line("thread %u exited ctx=%08X t=%llu", t->id, x, static_cast<unsigned long long>(now()));
+        c.r[3] = 0;
+        return;
+    }
     byOsCtx_[x] = t;
     t->osContext = x;
     c.r[3] = 0;
+}
+
+// Frees the fibers and contexts of exited threads. Only called from a fiber other than the dead one.
+void Platform::reapDead() {
+    for (size_t i = 0; i < threads_.size();) {
+        Thread* t = threads_[i].get();
+        if (!t->dead || t == cur_) { ++i; continue; }
+        for (Ctx* k : t->irq) { byCtx_.erase(k); rt::destroyThreadContext(k); }
+        byCtx_.erase(t->base);
+        if (t->fiber && t->fiber != GetCurrentFiber()) DeleteFiber(t->fiber);
+        if (t->id != 1) rt::destroyThreadContext(t->base);
+        threads_.erase(threads_.begin() + static_cast<std::ptrdiff_t>(i));
+        ++reaped;
+    }
 }
 
 void Platform::osLoadContext(Ctx& c) {
@@ -291,7 +324,14 @@ void Platform::osLoadContext(Ctx& c) {
         const auto it = byOsCtx_.find(x);
         if (it != byOsCtx_.end()) target = it->second;
     }
+    if (me->exiting && target != me) {
+        // The exiting thread leaves for good: nothing may resume this fiber, so drop every context bound to it (the idle context
+        // may have been bound to it by an interrupt taken in the idle loop).
+        me->dead = true;
+        for (auto it = byOsCtx_.begin(); it != byOsCtx_.end();) { if (it->second == me) it = byOsCtx_.erase(it); else ++it; }
+    }
     if (target) {
+        if (target->dead) stopPlatform(c, x, "OSLoadContext of the context of an exited thread");
         if (target == me) return;          // returning into the activation that owns this context
         trace().line("switch thread %u -> %u ctx=%08X t=%llu", me->id, target->id, x, static_cast<unsigned long long>(now()));
         switchTo(target);
@@ -336,6 +376,7 @@ void __stdcall Platform::fiberMain(void* param) {
     Thread* t = static_cast<Thread*>(param);
     Platform& p = get();
     try {
+        p.reapDead();
         rt::setXer(*t->base, 0);
         rt::callGuest(*t->base, t->entry);
         if (t->exitFn) {
@@ -380,6 +421,7 @@ bool Platform::run(Ctx& boot, uint32_t entry) {
 void Platform::requestExit(const char* why) {
     exiting_ = true;
     exitReason_ = why;
+    if (!cur_) return;                     // not running guest code (unit tests): only record the request
     SwitchToFiber(supervisor_);
 }
 

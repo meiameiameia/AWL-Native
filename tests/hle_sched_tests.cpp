@@ -14,6 +14,7 @@
 #include "platform.h"
 
 constexpr uint32_t kCtxMain = 0x80100000, kCtxThread = 0x80101000, kMarkBase = 0x80150000;
+constexpr uint32_t kThreadMem = 0x80120000;   // an OSThread: context at +0, state halfword at +0x2C8
 constexpr uint32_t kMarkA = kMarkBase + 0, kMarkB = kMarkBase + 4, kMarkC = kMarkBase + 8, kMarkD = kMarkBase + 12, kMarkE = kMarkBase + 16,
                    kMarkF = kMarkBase + 20, kIrqCount = kMarkBase + 24, kIrqR3 = kMarkBase + 28, kIrqR4 = kMarkBase + 32,
                    kIrqMsr = kMarkBase + 36, kSeq = kMarkBase + 64, kSeqLen = kMarkBase + 60;
@@ -102,6 +103,51 @@ void fPadMain(Ctx& c) {   // 0x80002700: PADInit(), then PADRead(status) as the 
     c.lr = savedLr;
     ret(c, 0x80002720);
 }
+void fExitMain(Ctx& c) {   // 0x80002800: starts a thread that exits, then reuses its OSThread memory for a new thread
+    at(c, 0x80002800, 2);
+    const uint32_t savedLr = c.lr;
+    c.r[3] = kCtxMain;
+    AWL_CALL(c, 0x80002804, 0x801B2D8C, stubSave);
+    if (c.r[3] == 0) {
+        c.r[3] = kThreadMem;
+        AWL_CALL(c, 0x80002810, 0x801B2E0C, stubLoad);        // thread 1 runs, "exits" and switches back here
+        mark(c, kMarkBase + 60 + 4, 1);                      // main resumed after the first thread exited
+        // OSCreateThread / OSInitContext again in the same memory: new entry, parameter and state.
+        st32(c, kThreadMem + 0x198, 0x80002A00);
+        st32(c, kThreadMem + 0xC, 88);
+        st32(c, kThreadMem + 4, 0x80181000);
+        st32(c, kThreadMem + 0x19C, 0x9032);
+        st16(c, kThreadMem + 0x2C8, 1);
+        c.r[3] = kThreadMem;
+        AWL_CALL(c, 0x80002820, 0x801B2E0C, stubLoad);        // must start a fresh thread, not resume the dead one
+        mark(c, kMarkBase + 60 + 8, 1);
+    }
+    c.lr = savedLr;
+    ret(c, 0x80002830);
+}
+void fExitThread1(Ctx& c) {   // 0x80002900
+    at(c, 0x80002900, 2);
+    const uint32_t savedLr = c.lr;
+    mark(c, kMarkBase + 52, c.r[3]);
+    st32(c, 0x800000E4, kThreadMem);                         // the scheduler's current thread is this one ...
+    st16(c, kThreadMem + 0x2C8, 0);                          // ... and OSExitThread has marked it exited (a detached thread; 8 for a joinable one)
+    c.r[3] = kThreadMem;
+    AWL_CALL(c, 0x80002910, 0x801B2D8C, stubSave);           // SelectThread still saves the dying context
+    c.r[3] = kCtxMain;
+    AWL_CALL(c, 0x80002920, 0x801B2E0C, stubLoad);           // switches away for good
+    mark(c, kMarkBase + 60 + 12, 1);                         // must never run
+    c.lr = savedLr;
+    ret(c, 0x80002930);
+}
+void fExitThread2(Ctx& c) {   // 0x80002A00
+    at(c, 0x80002A00, 2);
+    const uint32_t savedLr = c.lr;
+    mark(c, kMarkBase + 56, c.r[3]);
+    c.r[3] = kCtxMain;
+    AWL_CALL(c, 0x80002A10, 0x801B2E0C, stubLoad);
+    c.lr = savedLr;
+    ret(c, 0x80002A20);
+}
 void fCallback(Ctx& c) { at(c, 0x80002500, 1); seq(c, 100 + c.r[3] * 10 + c.r[4]); ret(c, 0x80002504); }
 void fDisableSched(Ctx& c) { at(c, 0x801B6B98, 1); seq(c, 1); ret(c, 0x801B6B9C); }
 void fEnableSched(Ctx& c) { at(c, 0x801B6BD8, 1); seq(c, 2); ret(c, 0x801B6BDC); }
@@ -113,6 +159,7 @@ void fReschedule(Ctx& c) { at(c, 0x801B70A4, 1); seq(c, 3); ret(c, 0x801B70A8); 
 const FnEntry kFunctions[] = {
     {0x80002000, fMain},         {0x80002100, fThread},      {0x80002200, fIrq},          {0x80002300, fIntrMain},
     {0x80002400, fCbMain},       {0x80002500, fCallback},    {0x80002600, fDecMain},      {0x80002700, fPadMain},
+    {0x80002800, fExitMain},     {0x80002900, fExitThread1}, {0x80002A00, fExitThread2},
     {0x80003900, stubTrigger},   {0x80003A00, stubClear},    {0x80003B00, stubCallbackTrigger}, {0x80003C00, stubDecTrigger},
     {0x801B2D8C, stubSave},      {0x801B2E0C, stubLoad},     {0x801B6B98, fDisableSched}, {0x801B6BD8, fEnableSched},
     {0x801B70A4, fReschedule},   {0x801C06D4, stubPadInit},  {0x801C0824, stubPadRead},
@@ -252,6 +299,23 @@ void testDecrementer(Rig& r) {
     CHECK(m.r32(kIrqCount) == 1 && m.r32(kIrqR3) == 8);   // delivered after 11 ticks with exception number 8
 }
 
+void testThreadExitAndReuse(Rig& r) {
+    GuestMem m = r.g();
+    m.w32(kThreadMem + 4, 0x80180000);
+    m.w32(kThreadMem + 0xC, 77);
+    m.w32(kThreadMem + 0x198, 0x80002900);
+    m.w32(kThreadMem + 0x19C, 0x9032);
+    r.boot->r[1] = 0x80190000;
+    const bool ok = Platform::get().run(*r.boot, 0x80002800);
+    CHECK(ok && !Platform::get().report().stopped);
+    CHECK(m.r32(kMarkBase + 52) == 77);          // the first thread ran with its parameter
+    CHECK(m.r32(kMarkBase + 64) == 1);           // main resumed after it exited
+    CHECK(m.r32(kMarkBase + 56) == 88);          // the new thread in the same memory started fresh with its own parameter
+    CHECK(m.r32(kMarkBase + 68) == 1);           // main resumed again afterwards
+    CHECK(m.r32(kMarkBase + 72) == 0);           // the exited thread never continued
+    CHECK(Platform::get().reaped >= 1);          // its fiber was freed
+}
+
 void testPad(Rig& r) {
     GuestMem m = r.g();
     for (uint32_t i = 0; i < 48; ++i) m.w8(kMarkBase + 128 + i, 0xEE);      // garbage the handler must overwrite
@@ -295,13 +359,11 @@ int main() try {
     { Rig r; testThreadSwitch(r); }
     { Rig r; testInterrupt(r); }
     { Rig r; testDecrementer(r); }
+    { Rig r; testThreadExitAndReuse(r); }
     { Rig r; testPad(r); }
     { Rig r; testCallbackEnvelope(r); }
     std::printf("hle scheduler tests: %d checks, %d failures\n", g_checks, g_failures);
-    std::fflush(nullptr);
-    // Threads left suspended inside OSLoadContext keep MSVC debug-iterator proxies (rt::hleCall holds a table iterator
-    // across the handler) on abandoned fiber stacks; static destruction would walk them. Leave without running it.
-    std::_Exit(g_failures == 0 ? 0 : 1);
+    return g_failures == 0 ? 0 : 1;
 }
 catch (const rt::Stop& s) {
     std::fprintf(stderr, "uncaught Stop: kind %u pc 0x%08X addr 0x%08X: %s\n", static_cast<unsigned>(s.kind), s.pc, s.addr, s.what);
