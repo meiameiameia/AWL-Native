@@ -156,6 +156,12 @@ Fixed-function blend, depth-stencil, rasteriser and sampler state objects are cr
 - Copies may overlap draws: the renderer is the only writer of the EFB and executes the IR commands in order, so no explicit synchronisation with the guest is needed beyond the finish/token events that the GX FIFO model already completes.
 - **Widescreen** (opt-in): the 3D projection is widened by the GX core's enhancement path, not here; the presenter only changes the display aspect (`WindowOptions::aspectNum/Den`).
 
+## 9a. EFB peeks and pokes (platform model done; renderer provider in milestone 2)
+
+CPU access to the EFB goes through the window `0xC8000000-0xC8FFFFFF`: the address is `base | x << 2 | y << 12 | type << 22` (x, y 10 bits; type 0 = colour as 0xAARRGGBB, 1 = 24-bit depth), as `GXPeekARGB`/`GXPeekZ` build it. The platform decodes it (`src/hle/dev_efb.*`) and forwards to an `EfbAccess` provider that the renderer implements. The default provider, used until the renderer is attached, answers depth peeks with `0x00FFFFFF` and logs the first use at each call site; colour peeks and all pokes stop loudly. The game peeks Z first at retrace 1378 (`0x801CE03C`, pixel 410, 139). The renderer's provider reads one pixel back from the GPU (colour or depth), converts it to the EFB pixel format and Z format the IR reports, and for `S > 1` takes the sample at the centre of the pixel's block (section 3).
+
+**Known native difference:** game logic that depends on a depth peek sees GPU-precision results (the depth buffer is a D24 target rasterised by the host GPU), which can differ slightly across GPUs and from the hardware's own interpolation. It is unaffected by the resolution scale. A pick that compares a peeked Z against a threshold is the sensitive case.
+
 ## 10. Tests (all headless; no window is ever opened)
 
 | Test | Covers |
