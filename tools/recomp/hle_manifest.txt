@@ -42,8 +42,12 @@ dol 0x801C05C0 PADRecalibrate      # same shape as PADReset; only caller 0x80213
 dol 0x801C0824 PADRead             # 192 instructions; calls PADReset 0x801C04B0 and the SI helpers; only caller 0x80212720, the HSD pad reader (inferred)
 dol 0x801C0B24 PADControlMotor     # only caller 0x802143A0; SI output packet (inferred)
 
+# ---- SI ------------------------------------------------------------------------------------------------
+dol 0x801F52F4 SIInit              # hmawl name; registers interrupt 20, then starts asynchronous SI type probes on 4 channels via SITransfer; only caller OSInit; PAD and GBA are replaced so the SI library has no user
+
 # ---- GBA link (SI channels) ------------------------------------------------------------------------
 dol 0x801FB9E4 GBAInit             # hmawl name; called from game code 0x801AA4D8
 dol 0x801FBA88 GBAGetStatus        # hmawl name; called from game code 0x801AAB8C
+dol 0x801FBB18 GBAReset            # between GBAGetStatus and GBARead in SDK order; same shape as GBAGetStatus (36 instructions); called first by the game's GBA state machine at 0x801AABE8 (inferred)
 dol 0x801FBC18 GBARead             # hmawl name; called from game code 0x801AAB8C
 dol 0x801FBCDC GBAWrite            # hmawl name; called from game code 0x801AAB8C
