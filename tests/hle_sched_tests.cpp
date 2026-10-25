@@ -30,6 +30,8 @@ void stubTrigger(Ctx& c) { hleCall(c, 0x80003900); }
 void stubClear(Ctx& c) { hleCall(c, 0x80003A00); }
 void stubCallbackTrigger(Ctx& c) { hleCall(c, 0x80003B00); }
 void stubDecTrigger(Ctx& c) { hleCall(c, 0x80003C00); }
+void stubPadRead(Ctx& c) { hleCall(c, 0x801C0824); }
+void stubPadInit(Ctx& c) { hleCall(c, 0x801C06D4); }
 
 void fMain(Ctx& c) {   // 0x80002000
     at(c, 0x80002000, 2);
@@ -89,6 +91,17 @@ void fDecMain(Ctx& c) {   // 0x80002600
     c.lr = savedLr;
     ret(c, 0x80002608);
 }
+void fPadMain(Ctx& c) {   // 0x80002700: PADInit(), then PADRead(status) as the HSD pad reader does
+    at(c, 0x80002700, 2);
+    const uint32_t savedLr = c.lr;
+    AWL_CALL(c, 0x80002704, 0x801C06D4, stubPadInit);
+    mark(c, kMarkBase + 44, c.r[3]);
+    c.r[3] = kMarkBase + 128;
+    AWL_CALL(c, 0x80002710, 0x801C0824, stubPadRead);
+    mark(c, kMarkBase + 48, c.r[3]);
+    c.lr = savedLr;
+    ret(c, 0x80002720);
+}
 void fCallback(Ctx& c) { at(c, 0x80002500, 1); seq(c, 100 + c.r[3] * 10 + c.r[4]); ret(c, 0x80002504); }
 void fDisableSched(Ctx& c) { at(c, 0x801B6B98, 1); seq(c, 1); ret(c, 0x801B6B9C); }
 void fEnableSched(Ctx& c) { at(c, 0x801B6BD8, 1); seq(c, 2); ret(c, 0x801B6BDC); }
@@ -96,10 +109,13 @@ void fReschedule(Ctx& c) { at(c, 0x801B70A4, 1); seq(c, 3); ret(c, 0x801B70A8); 
 
 }  // namespace
 
+// Sorted by address: the runtime looks entries up by binary search.
 const FnEntry kFunctions[] = {
-    {0x80002000, fMain},      {0x80002100, fThread},     {0x80002200, fIrq},       {0x80002300, fIntrMain}, {0x80002400, fCbMain},
-    {0x80002500, fCallback},  {0x80002600, fDecMain},  {0x80003C00, stubDecTrigger},  {0x80003900, stubTrigger}, {0x80003A00, stubClear},  {0x80003B00, stubCallbackTrigger},
-    {0x801B2D8C, stubSave},   {0x801B2E0C, stubLoad},    {0x801B6B98, fDisableSched}, {0x801B6BD8, fEnableSched}, {0x801B70A4, fReschedule},
+    {0x80002000, fMain},         {0x80002100, fThread},      {0x80002200, fIrq},          {0x80002300, fIntrMain},
+    {0x80002400, fCbMain},       {0x80002500, fCallback},    {0x80002600, fDecMain},      {0x80002700, fPadMain},
+    {0x80003900, stubTrigger},   {0x80003A00, stubClear},    {0x80003B00, stubCallbackTrigger}, {0x80003C00, stubDecTrigger},
+    {0x801B2D8C, stubSave},      {0x801B2E0C, stubLoad},     {0x801B6B98, fDisableSched}, {0x801B6BD8, fEnableSched},
+    {0x801B70A4, fReschedule},   {0x801C06D4, stubPadInit},  {0x801C0824, stubPadRead},
 };
 const uint32_t kFunctionCount = sizeof kFunctions / sizeof kFunctions[0];
 }  // namespace awl::rt
@@ -236,6 +252,21 @@ void testDecrementer(Rig& r) {
     CHECK(m.r32(kIrqCount) == 1 && m.r32(kIrqR3) == 8);   // delivered after 11 ticks with exception number 8
 }
 
+void testPad(Rig& r) {
+    GuestMem m = r.g();
+    for (uint32_t i = 0; i < 48; ++i) m.w8(kMarkBase + 128 + i, 0xEE);      // garbage the handler must overwrite
+    const bool ok = Platform::get().run(*r.boot, 0x80002700);
+    CHECK(ok && !Platform::get().report().stopped);
+    CHECK(m.r32(kMarkBase + 44) == 1);                                       // PADInit reports success
+    CHECK(m.r32(kMarkBase + 48) == 0);                                       // PADRead returns an empty reset mask
+    // PADStatus is 12 bytes per channel: button u16, stick x/y, substick x/y, triggers l/r, analog a/b, err s8, pad.
+    for (uint32_t i = 0; i < 12; ++i) CHECK(m.r8(kMarkBase + 128 + i) == 0);   // channel 0 connected, neutral, err 0
+    for (uint32_t ch = 1; ch < 4; ++ch) {
+        CHECK(m.r8(kMarkBase + 128 + 12 * ch + 10) == 0xFF);                   // PAD_ERR_NO_CONTROLLER (-1)
+        CHECK(m.r8(kMarkBase + 128 + 12 * ch + 0) == 0 && m.r8(kMarkBase + 128 + 12 * ch + 11) == 0);
+    }
+}
+
 void testCallbackEnvelope(Rig& r) {
     GuestMem m = r.g();
     m.w32(0x800000D4, kCtxMain);
@@ -264,6 +295,7 @@ int main() try {
     { Rig r; testThreadSwitch(r); }
     { Rig r; testInterrupt(r); }
     { Rig r; testDecrementer(r); }
+    { Rig r; testPad(r); }
     { Rig r; testCallbackEnvelope(r); }
     std::printf("hle scheduler tests: %d checks, %d failures\n", g_checks, g_failures);
     std::fflush(nullptr);

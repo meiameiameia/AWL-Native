@@ -105,6 +105,7 @@ struct Config {
     std::string discDir = "disc";                 // contains sys/ and files/
     uint32_t mainLoopRetraces = 120;              // N consecutive qualifying retraces = main loop reached
     bool dvdLatencyModel = true;
+    bool padXInput = false;                       // PAD channel 0 reads the first XInput controller (not deterministic); default neutral
     uint32_t rtcSeconds = 820540800;              // RTC counter (seconds since 2000-01-01): fixed for deterministic runs
 };
 

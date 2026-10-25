@@ -2,6 +2,7 @@
 // preemption hook installation and the main-loop bookkeeping.
 #include "devices.h"
 #include "dvd.h"
+#include "pad_source.h"
 
 namespace awl::hle {
 
@@ -91,12 +92,18 @@ void hPadTrue(Ctx& c) {
     c.r[3] = 1;
 }
 void hPadRead(Ctx& c) {
-    GuestMem& m = Platform::get().mem();
+    Platform& p = Platform::get();
+    GuestMem& m = p.mem();
+    const PadReading in = readPad(p.config().padXInput ? PadMode::XInput : PadMode::Neutral);
     const uint32_t status = c.r[3];
     for (uint32_t ch = 0; ch < 4; ++ch) {
         const uint32_t e = status + 12 * ch;
         for (uint32_t i = 0; i < 12; ++i) m.w8(e + i, 0);
-        m.w8(e + 10, ch == 0 ? 0 : 0xFF);
+        if (ch != 0 || !in.connected) { m.w8(e + 10, 0xFF); continue; }       // PAD_ERR_NO_CONTROLLER
+        m.w16(e + 0, in.buttons);
+        m.w8(e + 2, static_cast<uint8_t>(in.stickX)); m.w8(e + 3, static_cast<uint8_t>(in.stickY));
+        m.w8(e + 4, static_cast<uint8_t>(in.substickX)); m.w8(e + 5, static_cast<uint8_t>(in.substickY));
+        m.w8(e + 6, in.triggerL); m.w8(e + 7, in.triggerR);
     }
     c.r[3] = 0;
 }

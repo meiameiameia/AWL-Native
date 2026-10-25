@@ -325,6 +325,8 @@ build/Release/awl-host.exe --dol rom/main.dol --disc disc --trace build/boot-tra
 
 ### 8.2 Dolphin black-box questions
 
+The step-by-step procedure for the owner is section 10; it replaces the breakpoint advice in the items below (Dolphin cannot print the time base, so frame timing comes from log time stamps, and registers come from memory dumps).
+
 Values to capture from a fresh boot of the NTSC-U disc in Dolphin (breakpoints in its debugger; no code is copied from it):
 
 1. **Memory at DOL entry** (breakpoint at `0x80003154`, before the first instruction): the 64 words at `0x80000000-0x800000FF`; the 16 words at `0x800030C0-0x800030FF`; the value of `0x800000F4` and the first `0x20` and last `0x20` bytes of the 8 KB block it points to; the first `0x20` bytes at `*(0x80000038)`; the time base (`TBL`/`TBU`) at that point. Then at `0x80003268` (after `OSInit`): `0x80000030`, `0x80000034`, `0x800030E6`, `0x800030E8`, and the registers r3/r4 at the call to `0x80178558` (the game's arena setup).
@@ -367,3 +369,71 @@ Values to capture from a fresh boot of the NTSC-U disc in Dolphin (breakpoints i
 | Timing | everything | 4 instructions per tick; event latencies are model parameters | measurement |
 
 **Contract points the runtime relies on.** `awl-recomp gen` must recompile functions whose only platform evidence is constant-address MMIO (`platform.privileged == 0`) and stub only `rfi`/`sc` functions; with the committed generator every such function is a `platformBoundary` stub and the host stops at the first PI write. The host was verified with that one-line change (`codegen.cpp`, `f.platform.any()` replaced by `f.platform.privileged != 0`) applied locally; it is requested from the generator track.
+
+## 10. Owner procedure: Dolphin captures for questions 1, 2, 3, 5, 6 and the DSP/AX check
+
+Purpose: replace the platform's assumed boot values and timings with what the original game does. Dolphin is used only as a black-box reference: nothing is copied from it, and the captures are read as data. Everything below is done by hand in the Dolphin window; nobody needs to write code. **Take your time and tell me if any menu or button looks different from what is written here; send a screenshot of that screen and I will adjust this page.** The menu names come from a recent Dolphin with the Qt interface (the portable copy at `C:\tools\Dolphin-x64\Dolphin.exe`); Dolphin moves some options between versions, which is why this page says where to look rather than promising an exact place.
+
+### 10.1 One-time setup
+
+1. Start `C:\tools\Dolphin-x64\Dolphin.exe`. This copy keeps its settings and output in `%APPDATA%\Dolphin Emulator\` (type that into the Windows Explorer address bar to open it). Below, that folder is called the **Dolphin user folder**. (If a file named `portable.txt` is ever added next to `Dolphin.exe`, the user folder becomes `C:\tools\Dolphin-x64\User\` instead.)
+2. Turn on the debugging windows: **Options > Configure**, then look in the **General**, **Interface** and **Advanced** tabs for a checkbox called **Show Debugging UI** (or Enable Debugging) and tick it. After that the **View** menu lists *Show Code*, *Show Registers*, *Show Breakpoints*, *Show Memory* and *Show Log*, and a **JIT** menu appears.
+3. Open **View > Show Log Configuration**. Set **Verbosity** to **Notice**, tick **Write to File**, tick **Write to Window**, and tick every log type in the list (or at least *Memory Map*). The log file will be `Logs\dolphin.log` inside the Dolphin user folder.
+4. Open **View > Show Breakpoints**, **View > Show Code**, **View > Show Registers**, **View > Show Memory** and **View > Show Log**. The windows can be dragged next to the main window; none of them needs to be large.
+5. Make a folder for the results: `C:\Users\mperez\Projects\awl-native\build\dolphin-capture\` (create it in Explorer if it does not exist). `build` is not part of the repository, so nothing from the game is ever committed. Every file you save goes there.
+6. Only if a breakpoint does not trigger in the steps below: **Config > Advanced > CPU Emulation Engine** set to **Interpreter (slowest)**. The default (JIT) normally works.
+
+### 10.2 How to start the game and place breakpoints
+
+The game must be started once, paused, given its breakpoints, and then **reset**, so the breakpoints are in place from the very first instruction:
+
+1. **File > Open...** and choose `C:\Users\mperez\Projects\awl-native\rom\game.iso`. Let it start for a few seconds, then **Emulation > Pause**.
+2. In the **Breakpoints** window use the **+** button (or right-click > Add breakpoint) and type the address **without** `0x`, for example `80003154`. Each breakpoint has an edit dialog (double-click it or right-click > Edit) with two checkboxes: **Break** (stop the game here) and **Log** (write a line to the log and keep running). The two kinds used below are called *break* and *log*. When a *log* breakpoint is hit, Dolphin writes a line like `BP <address> ... (<r3> <r4> <r5> ...) LR=<address>` to the log: the numbers are the first argument registers (r3, r4, r5, ...) and the caller address.
+3. Set the breakpoints of the part you are doing (10.3 to 10.6), then **Emulation > Reset**. The game restarts and runs into them.
+4. When a *break* breakpoint stops the game, the Code and Registers windows update. Do what the step says, then **Emulation > Play** to continue.
+5. Between captures clear the breakpoint list (the **Clear** button in the Breakpoints window) so each capture only contains what you intend.
+
+### 10.3 Capture A: memory when the game program starts (question 1)
+
+Breakpoints: *break* at `80003154` (the first instruction of the game program).
+
+1. Reset as in 10.2. The game stops at `80003154`.
+2. In the **Memory** window click **Dump MRAM**. Dolphin writes `Dump\mem1.raw` inside the Dolphin user folder (24 MB).
+3. In Explorer move that file to `C:\Users\mperez\Projects\awl-native\build\dolphin-capture\` and rename it `A-at-entry-mem1.raw`. (Dolphin overwrites `mem1.raw` on the next dump, so move it before taking another.)
+4. Still stopped, look at the **Registers** window and write down the values of **TBU** and **TBL** (the time base) if they are listed; type them into a text file `A-notes.txt` in the same folder. If they are not shown, skip this.
+5. Add a second *break* breakpoint at `80003268` (the instruction right after the system initialisation returns) and press **Emulation > Play**. When it stops, click **Dump MRAM** again and save the file as `A-after-osinit-mem1.raw`, the same way.
+
+What I read from these files: the whole low-memory area (boot information, file table, memory-arena pointers, clock values, console type) and the drive-information buffer (question 5), and I compare them to the assumed values printed at the top of `build\boot-trace.log`.
+
+### 10.4 Capture B: the video mode and the frame rhythm (questions 2 and 3)
+
+Breakpoints (clear the old ones first):
+
+- *break* at `801BED34` (the game asks the video system to configure itself).
+- *log* at `8017A7F8` (end of each frame: one hit per frame).
+
+1. Reset. The game stops at `801BED34`. Read register **r3** in the Registers window (a number such as `803xxxxx`) and write it in `B-notes.txt`. Click **Dump MRAM** and save the file as `B-viconfigure-mem1.raw`.
+2. Press **Emulation > Play** and let the game run for about 15 seconds (it will sit on its first screens; that is fine). Then **Emulation > Stop**.
+3. Copy `Logs\dolphin.log` from the Dolphin user folder to the capture folder as `B-frames.log`. Every line for `8017A7F8` carries a time stamp, so I can work out the frame period; the render mode is read from the memory file at the address in r3.
+
+### 10.5 Capture C: the order of the first system calls (question 6)
+
+Breakpoints (clear the old ones first), all *log*: `801B0DE0`, `801BADF0`, `801BE3BC`, `801CB378`, `801C19D8`, `801C3D48`, `801C2018`, `801B70D4`, `801BA66C`, `801BC9D8`, `801BF68C`, `801CED04`.
+
+(In order they are: system initialisation, DVD init, video init, graphics init, audio-interface init, DSP init, ARAM init, create thread, open file, read from disc, set next frame buffer, copy the picture.)
+
+1. Reset and let the game run for about 15 seconds, then **Emulation > Stop**.
+2. Copy `Logs\dolphin.log` to the capture folder as `C-calls.log`. Each line shows the address, the register values at that moment and a time stamp. I compare the order and the arguments with `boot-trace.log` from `awl-host`.
+
+### 10.6 Capture D: the audio processor conversation (the two DSP/AX checks)
+
+Breakpoints (clear the old ones first), both *log*: `801C3D34` (the game sends a message to the audio processor; the message is the first number, r3) and `801C3D30` (the game has just read a message from the audio processor; again r3).
+
+1. Reset and let the game run for about 10 seconds, then **Emulation > Stop**.
+2. Copy `Logs\dolphin.log` to the capture folder as `D-dsp.log`.
+
+What I look for: the first message from the audio processor is `8071FEED`; the game then sends five pairs of messages starting with `80F3A001`, `80F3C002`, `80F3A002`, `80F3B002` and `80F3D001`; the processor answers `DCD10000`; and for every audio frame the game sends a message starting with `BABE` plus an address and the processor answers `DCD10001`. If that matches, the audio part of the platform is right; if not, the log shows what to change.
+
+### 10.7 When you are done
+
+Tell me the files are in `build\dolphin-capture\`. The expected set is `A-at-entry-mem1.raw`, `A-after-osinit-mem1.raw`, `A-notes.txt`, `B-viconfigure-mem1.raw`, `B-notes.txt`, `B-frames.log`, `C-calls.log` and `D-dsp.log`. The memory files are about 24 MB each and are game data: they stay in `build\`, are never committed, and are only read by local analysis tools.

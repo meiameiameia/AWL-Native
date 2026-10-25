@@ -16,10 +16,11 @@ endif()
 # Platform runtime library: clock, events, interrupts, fibers, hardware models, native SDK replacements.
 file(GLOB AWL_HLE_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/hle/*.cpp)
 list(FILTER AWL_HLE_SOURCES EXCLUDE REGEX "(hle_scan|host_main)\\.cpp$")
+list(APPEND AWL_HLE_SOURCES ${CMAKE_SOURCE_DIR}/src/input.cpp)   # PadAdapter for the PAD replacement
 add_library(awl_hle STATIC ${AWL_HLE_SOURCES})
-target_include_directories(awl_hle PUBLIC ${CMAKE_SOURCE_DIR}/src/hle)
+target_include_directories(awl_hle PUBLIC ${CMAKE_SOURCE_DIR}/src/hle ${CMAKE_SOURCE_DIR}/include)
 target_compile_definitions(awl_hle PRIVATE _CRT_SECURE_NO_WARNINGS)
-target_link_libraries(awl_hle PUBLIC awl_recomp_core awl_recomp_runtime)
+target_link_libraries(awl_hle PUBLIC awl_recomp_core awl_recomp_runtime xinput)
 if(MSVC)
     target_compile_options(awl_hle PRIVATE /W4 /fp:strict)
 else()

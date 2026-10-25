@@ -43,6 +43,7 @@ public:
     // Reads len bytes of disc address space at offset into dst; returns bytes produced or -1 on failure.
     int64_t readDisc(uint32_t offset, uint32_t len, uint8_t* dst);
 
+    const std::string& lastError() const { return lastError_; }
     uint64_t completedReads = 0, completedOther = 0;
 
 private:
@@ -58,6 +59,7 @@ private:
     Request activeReq_{};
     uint64_t nextId_ = 1, nextSeq_ = 0;
     std::string openPath_;
+    std::string lastError_;
     FILE* openFile_ = nullptr;
 };
 
