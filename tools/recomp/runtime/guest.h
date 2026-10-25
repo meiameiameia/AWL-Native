@@ -456,6 +456,37 @@ inline void cr1(Ctx& c) { setCr(c, 1, c.fpscr >> 28); }
 
 inline double fround(double x) { return static_cast<double>(static_cast<float>(x)); }
 
+// Host floating-point control word (MXCSR on x86), behind small wrappers so the rest of the runtime does not name the intrinsic.
+inline unsigned hostFpGet() { return _mm_getcsr(); }
+inline void hostFpSet(unsigned v) { _mm_setcsr(v); }
+
+// Fused multiply-add rounded once to single precision, for fmadds/fmsubs/fnmadds/fnmsubs and the ps_ forms.
+// fround(std::fma(a, c, b)) rounds twice (to double, then to single), which can pick the wrong float; for +, -, *, /
+// and sqrt a 53-bit intermediate is enough (Figueroa 1995: wider precision q >= 2p + 2, here 53 >= 50), but not for an
+// exact a*c + b. Here the exact result is first rounded to ODD in double (the neighbour with an odd last mantissa bit
+// when the result is inexact), which keeps the sticky information, and the conversion to single then rounds that value
+// to nearest (or in the guest's directed mode): round-to-odd at p + 2 or more bits followed by any rounding to p bits
+// equals the single correct rounding (Boldo and Melquiond, "When double rounding is odd", 2005; 53 >= 24 + 2).
+// The residual of the sum comes from error-free transformations (two-sum, and fma for the product error), so a, c
+// and b must be exactly representable as single, as the architecture requires for these instructions (the result is
+// undefined otherwise; an inexact product is handled on a best-effort basis).
+inline double fmaSingle(double a, double c, double b) {
+    const double p = a * c;
+    const double s1 = p + b;
+    if (!std::isfinite(p) || !std::isfinite(s1)) return fround(std::fma(a, c, b));   // inf, NaN, overflow: no residual to track
+    const unsigned csr = hostFpGet();
+    if (csr & 0x6000u) hostFpSet(csr & ~0x6000u);      // the error-free transformations need round-to-nearest
+    const double pe = std::fma(a, c, -p);              // exact error of the product
+    const double bb = s1 - p;
+    const double e1 = (p - (s1 - bb)) + (b - bb);      // two-sum: p + b == s1 + e1 exactly
+    double s = s1, e = e1;
+    if (pe != 0.0) { s = std::fma(a, c, b); e = ((s1 - s) + e1) + pe; }   // product not exact: operands were not singles
+    double odd = s;
+    if (e != 0.0 && std::isfinite(s) && (doubleToBits(s) & 1u) == 0) odd = std::nextafter(s, e > 0.0 ? INFINITY : -INFINITY);
+    if (csr & 0x6000u) hostFpSet(csr);
+    return fround(odd);
+}
+
 inline void lfs(Ctx& c, uint32_t d, uint32_t ea) {
     const double v = static_cast<double>(bitsToFloat(ld32(c, ea)));
     c.f[d].ps0 = v;
@@ -576,14 +607,14 @@ AWL_PS2(ps_add, fround(A.ps0 + B.ps0), fround(A.ps1 + B.ps1))
 AWL_PS2(ps_sub, fround(A.ps0 - B.ps0), fround(A.ps1 - B.ps1))
 AWL_PS2(ps_mul, fround(A.ps0 * C.ps0), fround(A.ps1 * C.ps1))
 AWL_PS2(ps_div, fround(A.ps0 / B.ps0), fround(A.ps1 / B.ps1))
-AWL_PS2(ps_madd, fround(std::fma(A.ps0, C.ps0, B.ps0)), fround(std::fma(A.ps1, C.ps1, B.ps1)))
-AWL_PS2(ps_msub, fround(std::fma(A.ps0, C.ps0, -B.ps0)), fround(std::fma(A.ps1, C.ps1, -B.ps1)))
-AWL_PS2(ps_nmadd, -fround(std::fma(A.ps0, C.ps0, B.ps0)), -fround(std::fma(A.ps1, C.ps1, B.ps1)))
-AWL_PS2(ps_nmsub, -fround(std::fma(A.ps0, C.ps0, -B.ps0)), -fround(std::fma(A.ps1, C.ps1, -B.ps1)))
+AWL_PS2(ps_madd, fmaSingle(A.ps0, C.ps0, B.ps0), fmaSingle(A.ps1, C.ps1, B.ps1))
+AWL_PS2(ps_msub, fmaSingle(A.ps0, C.ps0, -B.ps0), fmaSingle(A.ps1, C.ps1, -B.ps1))
+AWL_PS2(ps_nmadd, -fmaSingle(A.ps0, C.ps0, B.ps0), -fmaSingle(A.ps1, C.ps1, B.ps1))
+AWL_PS2(ps_nmsub, -fmaSingle(A.ps0, C.ps0, -B.ps0), -fmaSingle(A.ps1, C.ps1, -B.ps1))
 AWL_PS2(ps_muls0, fround(A.ps0 * C.ps0), fround(A.ps1 * C.ps0))
 AWL_PS2(ps_muls1, fround(A.ps0 * C.ps1), fround(A.ps1 * C.ps1))
-AWL_PS2(ps_madds0, fround(std::fma(A.ps0, C.ps0, B.ps0)), fround(std::fma(A.ps1, C.ps0, B.ps1)))
-AWL_PS2(ps_madds1, fround(std::fma(A.ps0, C.ps1, B.ps0)), fround(std::fma(A.ps1, C.ps1, B.ps1)))
+AWL_PS2(ps_madds0, fmaSingle(A.ps0, C.ps0, B.ps0), fmaSingle(A.ps1, C.ps0, B.ps1))
+AWL_PS2(ps_madds1, fmaSingle(A.ps0, C.ps1, B.ps0), fmaSingle(A.ps1, C.ps1, B.ps1))
 AWL_PS2(ps_sum0, fround(A.ps0 + B.ps1), C.ps1)
 AWL_PS2(ps_sum1, C.ps0, fround(A.ps0 + B.ps1))
 AWL_PS2(ps_sel, A.ps0 >= 0.0 ? C.ps0 : B.ps0, A.ps1 >= 0.0 ? C.ps1 : B.ps1)

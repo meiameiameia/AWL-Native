@@ -33,6 +33,7 @@ struct GenStats {
     size_t functions = 0, stubs = 0, hle = 0, mmioRecompiled = 0, instructions = 0, bytes = 0;
     size_t midFunctionTails = 0, unsupportedInsns = 0, unresolvedBctr = 0, jumpTables = 0, fellOff = 0, noReturnSites = 0;
     std::map<std::string, size_t> unsupportedKinds;
+    std::map<std::string, size_t> placeholders;   // estimate instructions emitted with placeholder arithmetic
     std::vector<std::string> errors;   // generation errors; any of them fails the run
     std::vector<std::string> notes;    // places that became loud stops (untranslated, falls off, unresolved)
 };
@@ -268,6 +269,8 @@ void FnEmitter::emitInsn(const Insn& i) {
     const uint32_t D = i.rD(), A = i.rA(), B = i.rB();
     const bool oe = i.oe();
     dyn_ = nullptr;
+    // fres/frsqrte (and the paired forms) are table-driven estimates on hardware; the runtime uses placeholder arithmetic.
+    if (i.op == Op::fres || i.op == Op::frsqrte || i.op == Op::ps_res || i.op == Op::ps_rsqrte) ++st_.placeholders[opName(i.op)];
     if (mod_) {
         const auto it = mod_->dyn.find(i.addr);
         if (it != mod_->dyn.end()) {
@@ -510,10 +513,10 @@ void FnEmitter::emitInsn(const Insn& i) {
         case Op::fmsub: line(S("rt::setD(c, %u, std::fma(%s, %s, -%s));", D, F0(A).c_str(), F0(i.frC()).c_str(), F0(B).c_str())); rc1(i); break;
         case Op::fnmadd: line(S("rt::setD(c, %u, -std::fma(%s, %s, %s));", D, F0(A).c_str(), F0(i.frC()).c_str(), F0(B).c_str())); rc1(i); break;
         case Op::fnmsub: line(S("rt::setD(c, %u, -std::fma(%s, %s, -%s));", D, F0(A).c_str(), F0(i.frC()).c_str(), F0(B).c_str())); rc1(i); break;
-        case Op::fmadds: line(S("rt::setS(c, %u, rt::fround(std::fma(%s, %s, %s)));", D, F0(A).c_str(), F0(i.frC()).c_str(), F0(B).c_str())); rc1(i); break;
-        case Op::fmsubs: line(S("rt::setS(c, %u, rt::fround(std::fma(%s, %s, -%s)));", D, F0(A).c_str(), F0(i.frC()).c_str(), F0(B).c_str())); rc1(i); break;
-        case Op::fnmadds: line(S("rt::setS(c, %u, -rt::fround(std::fma(%s, %s, %s)));", D, F0(A).c_str(), F0(i.frC()).c_str(), F0(B).c_str())); rc1(i); break;
-        case Op::fnmsubs: line(S("rt::setS(c, %u, -rt::fround(std::fma(%s, %s, -%s)));", D, F0(A).c_str(), F0(i.frC()).c_str(), F0(B).c_str())); rc1(i); break;
+        case Op::fmadds: line(S("rt::setS(c, %u, rt::fmaSingle(%s, %s, %s));", D, F0(A).c_str(), F0(i.frC()).c_str(), F0(B).c_str())); rc1(i); break;
+        case Op::fmsubs: line(S("rt::setS(c, %u, rt::fmaSingle(%s, %s, -%s));", D, F0(A).c_str(), F0(i.frC()).c_str(), F0(B).c_str())); rc1(i); break;
+        case Op::fnmadds: line(S("rt::setS(c, %u, -rt::fmaSingle(%s, %s, %s));", D, F0(A).c_str(), F0(i.frC()).c_str(), F0(B).c_str())); rc1(i); break;
+        case Op::fnmsubs: line(S("rt::setS(c, %u, -rt::fmaSingle(%s, %s, -%s));", D, F0(A).c_str(), F0(i.frC()).c_str(), F0(B).c_str())); rc1(i); break;
         case Op::fsel: line(S("rt::setD(c, %u, %s >= 0.0 ? %s : %s);", D, F0(A).c_str(), F0(i.frC()).c_str(), F0(B).c_str())); rc1(i); break;
         case Op::fmr: line(S("rt::setD(c, %u, %s);", D, F0(B).c_str())); rc1(i); break;
         case Op::fneg: line(S("rt::setD(c, %u, -%s);", D, F0(B).c_str())); rc1(i); break;
@@ -939,6 +942,10 @@ int generateCode(const Program& prog, const Discovery& d, const std::vector<HleE
     std::printf("  jump tables emitted: %zu; unresolved bctr: %zu; tails/branches to non-function targets: %zu; bodies that fall off: %zu\n",
                 st.jumpTables, st.unresolvedBctr, st.midFunctionTails, st.fellOff);
     std::printf("  functions that never return: %zu; calls to them followed by a stop: %zu\n", noRet.size(), st.noReturnSites);
+    std::printf("  placeholder arithmetic (hardware estimate tables not yet reproduced):");
+    if (st.placeholders.empty()) std::printf(" none");
+    for (const auto& [k, v] : st.placeholders) std::printf(" %s %zu", k.c_str(), v);
+    std::printf("\n");
     std::printf("  untranslated instructions: %zu\n", st.unsupportedInsns);
     for (const auto& [k, v] : st.unsupportedKinds) std::printf("    %-24s %zu\n", k.c_str(), v);
     auto describe = [](const char* what, const Resolution& r) {

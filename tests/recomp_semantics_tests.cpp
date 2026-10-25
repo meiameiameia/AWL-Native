@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <xmmintrin.h>
 #include <memory>
 #include <vector>
 
@@ -495,11 +496,117 @@ void testTrapCondition() {
     CHECK(trapCond(24, 7, 3) && !trapCond(24, 3, 3));                                 // signed < or >: i.e. not equal
 }
 
+// ---- FPSCR access sites of the DOL (SDK PPCMffpscr, PPCMtfpscr, PPCSetFpNonIEEEMode, FPU init and context load/save) ----
+// The sequences below are the ones the DOL executes (names from the SDK source for the same code shape): mtfsf 0xff
+// with the value passed through a stack double, mffs read back through the stack, mtfsb1 29 (NI), mtfsf 0xff,f0 with
+// f0 = 0.0 (reset) and the context load/save pair mtfsf/mffs.
+void testFpscrSites() {
+    Harness h;
+    Ctx& c = *h.c;
+    const uint32_t sp = 0x80002000;
+    auto hostRc = [] { return (_mm_getcsr() >> 13) & 3u; };
+    auto hostFlush = [] { return (_mm_getcsr() & 0x8040u) == 0x8040u; };
+
+    // PPCMtfpscr(value): stw r4(0) -> 16(r1); stw r3 -> 20(r1); lfd f31,16(r1); mtfsf 0xff,f31.
+    // value 0xA0000FF5: VX (0x20000000) is a derived bit and not writable, RN = 01 (toward zero), NI = 1.
+    st32(c, sp + 16, 0);
+    st32(c, sp + 20, 0xA0000FF5);
+    lfd(c, 31, sp + 16);
+    mtfsf(c, 0xFF, 31);
+    CHECK(c.fpscr == 0x80000FF5);
+    CHECK(hostRc() == 3 && hostFlush());       // RN 01 (toward zero) is MXCSR RC 11; NI selects flush-to-zero
+
+    // PPCMffpscr(): mffs f31; stfd f31,8(r1); lwz r3,12(r1): the low word of the register image is the FPSCR.
+    mffs(c, 31);
+    stfd(c, 31, sp + 8);
+    CHECK(ld32(c, sp + 12) == 0x80000FF5);
+
+    // FPU init: f0 = 0.0 then mtfsf 0xff,f0 clears the whole register and the host environment (nearest, no flush).
+    c.f[0].ps0 = 0.0;
+    mtfsf(c, 0xFF, 0);
+    CHECK(c.fpscr == 0 && hostRc() == 0 && !hostFlush());
+
+    // PPCSetFpNonIEEEMode: mtfsb1 29 sets NI (IBM bit 29 = value bit 2) and nothing else.
+    mtfsb(c, 29, 1);
+    CHECK(c.fpscr == 4 && hostFlush() && hostRc() == 0);
+
+    // OSLoadContext / OSSaveContext: the saved double round-trips through memory (lfd/mtfsf, then mffs/stfd).
+    st64(c, sp + 64, 0xFFF8000000000002ull);   // what an earlier mffs stored: RN = 10 (toward +inf)
+    lfd(c, 0, sp + 64);
+    mtfsf(c, 0xFF, 0);
+    CHECK(c.fpscr == 2 && hostRc() == 2 && !hostFlush());
+    mffs(c, 0);
+    stfd(c, 0, sp + 72);
+    CHECK((ld64(c, sp + 72) & 0xFFFFFFFFull) == 2);
+    setFpscr(c, 0);
+}
+
+// ---- Fused single-precision multiply-add -----------------------------------------------------------------------
+// fmadds, fmsubs, fnmadds, fnmsubs and the ps_ forms round a*c+b once to single precision. Computing the fused
+// result in double and then converting to single rounds twice, and for a fused operation (unlike +, -, *, /, sqrt,
+// where a 53-bit intermediate suffices: Figueroa, "When is double rounding innocuous?", 1995, needs 2p+2 = 50 bits)
+// that can pick the wrong float. fmaSingle rounds the exact result to odd in double first (Boldo and Melquiond,
+// "When double rounding is odd", 2005: round-to-odd to p+2 or more bits followed by round-to-nearest to p bits equals
+// the single correct rounding), which is exact here because the intermediate has 53 >= 24 + 2 bits.
+void testFusedSingle() {
+    Harness h;
+    Ctx& c = *h.c;
+    const double u12 = std::ldexp(1.0, -12), u23 = std::ldexp(1.0, -23), u24 = std::ldexp(1.0, -24), u36 = std::ldexp(1.0, -36);
+    // a = 2^-12 + 2^-24 and c = 2^-12 - 2^-24 + 2^-36 are exact singles (13 and 24 significant bits) and
+    //   a*c = 2^-24 * (1 + 2^-12)(1 - 2^-12 + 2^-24) = 2^-24 * (1 + 2^-36) = 2^-24 + 2^-60 exactly.
+    // With b = 1 the exact sum is 1 + 2^-24 + 2^-60: just above the midpoint 1 + 2^-24 between the singles 1 and 1 + 2^-23,
+    // so the correctly rounded single is 1 + 2^-23. Rounding to double first lands exactly on the midpoint (2^-60 is far
+    // below half a double ulp, 2^-53), and the tie then goes to the even single 1.0: wrong.
+    const double a = u12 + u24, cc = u12 - u24 + u36;
+    CHECK(static_cast<double>(static_cast<float>(a)) == a && static_cast<double>(static_cast<float>(cc)) == cc);   // inputs are singles
+    CHECK(fround(std::fma(a, cc, 1.0)) == 1.0);               // the double-rounded result, shown to be the wrong float
+    CHECK(fmaSingle(a, cc, 1.0) == 1.0 + u23);                // single rounding of the exact sum
+    // The mirror image (exact result just below the midpoint above -1): -a*c + (-1) rounds to -(1 + 2^-23).
+    CHECK(fmaSingle(-a, cc, -1.0) == -(1.0 + u23));
+    // fmsubs a*c - b with b = -1 is the same exact sum; fnmadds/fnmsubs negate the single-rounded value.
+    CHECK(fmaSingle(a, cc, -(-1.0)) == 1.0 + u23);
+    CHECK(-fmaSingle(a, cc, 1.0) == -(1.0 + u23));
+    // Exact ties still go to even: 2^-12 * 2^-12 + 1 = 1 + 2^-24 is the midpoint of 1 (even) and 1 + 2^-23 (odd);
+    // 3*2^-12 * 2^-12 + 1 = 1 + 3*2^-24 is the midpoint of 1 + 2^-23 (odd) and 1 + 2^-22 (even).
+    CHECK(fmaSingle(u12, u12, 1.0) == 1.0);
+    CHECK(fmaSingle(3 * u12, u12, 1.0) == 1.0 + 2 * u23);
+    // Exact results are untouched, and special values pass through the single conversion.
+    CHECK(fmaSingle(1.5, 2.0, 0.25) == 3.25);
+    CHECK(std::isinf(fmaSingle(std::ldexp(1.0, 100), std::ldexp(1.0, 100), 0.0)));      // 2^200 overflows single
+    CHECK(std::isinf(fmaSingle(INFINITY, 1.0, 1.0)) && std::isnan(fmaSingle(std::nan(""), 1.0, 1.0)));
+    CHECK(std::isnan(fmaSingle(INFINITY, 0.0, 1.0)));
+    // Single denormals: 2^-150 is half the smallest denormal 2^-149 (tie to even = 0); just above it rounds up to 2^-149.
+    CHECK(fmaSingle(std::ldexp(1.0, -75), std::ldexp(1.0, -75), 0.0) == 0.0);
+    CHECK(fmaSingle(std::ldexp(1.0, -75), std::ldexp(1.0 + u23, -75), 0.0) == std::ldexp(1.0, -149));
+    // The host rounding mode is left as the guest set it, and directed modes still round once to the right float.
+    setFpscr(c, 2);                                           // toward +inf: 1 + 2^-24 + 2^-60 rounds up to 1 + 2^-23
+    CHECK(fmaSingle(a, cc, 1.0) == 1.0 + u23 && fmaSingle(a, cc, -1.0 * 1.0 + 2.0) == 1.0 + u23);
+    CHECK(((_mm_getcsr() >> 13) & 3u) == 2);
+    setFpscr(c, 3);                                           // toward -inf: rounds down to 1.0
+    CHECK(fmaSingle(a, cc, 1.0) == 1.0 && ((_mm_getcsr() >> 13) & 3u) == 1);
+    setFpscr(c, 0);
+
+    // The paired-single forms use the same rounding in both lanes.
+    c.f[1].ps0 = a;   c.f[1].ps1 = -a;
+    c.f[2].ps0 = cc;  c.f[2].ps1 = cc;
+    c.f[3].ps0 = 1.0; c.f[3].ps1 = -1.0;
+    ps_madd(c, 4, 1, 3, 2);                                   // d = a*c + b per lane
+    CHECK(c.f[4].ps0 == 1.0 + u23 && c.f[4].ps1 == -(1.0 + u23));
+    ps_nmadd(c, 5, 1, 3, 2);
+    CHECK(c.f[5].ps0 == -(1.0 + u23) && c.f[5].ps1 == 1.0 + u23);
+    ps_msub(c, 6, 1, 3, 2);                                   // a*c - b
+    CHECK(c.f[6].ps0 == fmaSingle(a, cc, -1.0) && c.f[6].ps1 == fmaSingle(-a, cc, 1.0));
+    ps_madds0(c, 7, 1, 3, 2);                                 // lane 1 also uses c.ps0
+    CHECK(c.f[7].ps1 == fmaSingle(-a, cc, -1.0));
+}
+
 }  // namespace
 
 int main() {
     testLockedCacheDma();
     testTrapCondition();
+    testFpscrSites();
+    testFusedSingle();
     testIntegerArithmetic();
     testRecordAndCompare();
     testRotateMaskShift();
