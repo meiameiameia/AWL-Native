@@ -120,8 +120,5 @@ int main(int argc, char** argv) {
     trace().line("END icount=%llu tick=%llu retraces=%llu", static_cast<unsigned long long>(machine.icount), static_cast<unsigned long long>(plat.now()),
                  static_cast<unsigned long long>(k.retraces));
     trace().close();
-    std::fflush(nullptr);
-    // Guest threads suspended inside OSLoadContext keep debug-iterator proxies on abandoned fiber stacks (rt::hleCall holds a
-    // table iterator across the handler); skip static destruction.
-    std::_Exit(rc);
+    return rc;
 }

@@ -64,9 +64,16 @@ private:
         if (isFramebuffer(off)) {
             if (reg_[off / 2] != v) {
                 reg_[off / 2] = v;
-                ++p_.counters.fbLatches;
-                p_.counters.sinceLatch = 0;
-                p_.counters.copySinceLatch = false;
+                // The four framebuffer words of one VIFlush are written within a few hundred ticks: one latch event.
+                const uint64_t now = p_.now();
+                if (!p_.counters.haveLatch || now - p_.counters.lastLatchTick > 20000) {
+                    ++p_.counters.fbLatches;
+                    p_.counters.lastLatchHadCopy = p_.counters.copySinceLatch;     // an EFB copy produced the frame this latch shows
+                    p_.counters.copySinceLatch = false;
+                    p_.counters.sinceLatch = 0;
+                    p_.counters.haveLatch = true;
+                }
+                p_.counters.lastLatchTick = now;
                 trace().line("vi fb reg %04X=%04X t=%llu", 0x2000 + off, v, static_cast<unsigned long long>(p_.now()));
             }
             return;

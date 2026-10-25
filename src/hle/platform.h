@@ -97,6 +97,8 @@ struct Thread {
     bool started = false;
     uint32_t entry = 0;                // guest entry for threads started from an OSContext image
     uint32_t exitFn = 0;               // function run after the entry returns (the image's LR)
+    bool exiting = false;              // SelectThread saved its context after OSExitThread: it loads the next context and never returns
+    bool dead = false;                 // exited: never resumed, fiber and contexts reaped from another fiber
     int depth = 0;                     // current interrupt nesting level on this fiber
     uint32_t id = 0;
 };
@@ -181,8 +183,12 @@ public:
         uint64_t retraces = 0, fbLatches = 0, efbCopies = 0, tokens = 0, finishes = 0;
         uint32_t consecutive = 0;          // consecutive qualifying retraces
         uint32_t sinceLatch = 0;           // retraces since the last framebuffer latch
-        bool copySinceLatch = false;
+        bool copySinceLatch = false;       // an EFB copy happened since the last latch
+        bool lastLatchHadCopy = false;     // the last latch was preceded by an EFB copy
+        bool haveLatch = false;
+        uint64_t lastLatchTick = 0;
     } counters;
+    uint64_t reaped = 0;                   // exited threads whose fibers were freed
     void onRetrace();                      // called by the VI model at every retrace
 
 private:
@@ -193,6 +199,7 @@ private:
     void startThreadFromImage(Ctx& from, uint32_t osctx);
     void switchTo(Thread* t);
     void resetThreads();
+    void reapDead();
     Ctx* irqCtx(Thread* t, Ctx& from);
     static void __stdcall fiberMain(void* param);
 
