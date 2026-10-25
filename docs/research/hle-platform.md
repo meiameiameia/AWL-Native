@@ -1,6 +1,6 @@
 # Platform runtime for the recompiled game (P1 platform track)
 
-Status: design and SDK identification complete (milestone 1); no runtime code yet. Target: NTSC-U `GYWEE9`, `main.dol` SHA1 `1ccfd9dfb5c250c2f45c70c74cc45e5d88d22374`, verified with `certutil` before the analysis. Everything below was measured on the owner's local files with `awl-recomp disasm` and `awl-hle-scan` (`src/hle/hle_scan.cpp`); nothing derived from game bytes is committed except SDK names and addresses. Contract with the generator track: `tools/recomp/runtime/hle_abi.h`. Replaced functions: `tools/recomp/hle_manifest.txt`.
+Status: design, SDK identification and the runtime (milestones 1-3) implemented in `src/hle/`; `awl-host` boots the game to the main loop and the first REL load (section 9).  Target: NTSC-U `GYWEE9`, `main.dol` SHA1 `1ccfd9dfb5c250c2f45c70c74cc45e5d88d22374`, verified with `certutil` before the analysis. Everything below was measured on the owner's local files with `awl-recomp disasm` and `awl-hle-scan` (`src/hle/hle_scan.cpp`); nothing derived from game bytes is committed except SDK names and addresses. Contract with the generator track: `tools/recomp/runtime/hle_abi.h`. Replaced functions: `tools/recomp/hle_manifest.txt`.
 
 Evidence grades: **high** = read in the disassembly (instruction sequence, constants, call graph); **medium** = shape and call-graph position match the SDK routine of that name, name taken from the SDK's function order; **low** = inferred from register roles or from public hardware documentation without a confirming code path. Hardware register layouts come from the public GameCube register map and from what the SDK's own recompiled code does with them; an expectation that rests on neither is listed under "Open questions".
 
@@ -14,8 +14,8 @@ The SDK in `main.dol` is the 2003-era Dolphin SDK with the CARD, THP, GBA, AX an
 | Interrupt controller | register | none | `__OSInterruptInit`, `SetInterruptMask`, `__OSDispatchInterrupt` | PI interrupt block, MI block |
 | DVD | API | the command functions (read, seek, stream, inquiry, cancel, drive status) | `DVDInit`, `DVDOpen`/`Close`/`ConvertPathToEntrynum`/`ChangeDir` (read the FST in guest memory), `DVDReadPrio`/`DVDReadAsyncPrio` wrappers, `DVDGetCommandBlockStatus` | drive queue, file reads through the mount, two DI registers |
 | VI | register | none | `VIInit`, `VIConfigure`, `VIFlush`, retrace ISR, `VIWaitForRetrace` | VI registers, display interrupts, beam position, frame-latch events |
-| PAD / SI | API (PAD) + register (SI) | `PADInit`, `PADReset`, `PADRecalibrate`, `PADRead`, `PADControlMotor` | `SIInit`, SI polling code (unused once PAD is replaced) | SI idle registers; `PadAdapter` behind the PAD handlers |
-| GBA link | API | `GBAInit`, `GBAGetStatus`, `GBARead`, `GBAWrite` | none | "no GBA attached" |
+| PAD / SI | API (PAD, `SIInit`) + register (SI) | `PADInit`, `PADReset`, `PADRecalibrate`, `PADRead`, `PADControlMotor`, `SIInit` (its asynchronous type probes need the SI transfer machinery nobody uses) | SI polling code (`SIRefreshSamplingRate` still runs from the VI retrace handler) | the SI polling register only; `PadAdapter` behind the PAD handlers (neutral input in P1) |
+| GBA link | API | `GBAInit`, `GBAGetStatus`, `GBAReset`, `GBARead`, `GBAWrite` | none | "no GBA attached" |
 | EXI, RTC, SRAM | register | none | `EXIInit`, `EXILock`, `EXISelect`, `EXIImm`, `EXISync`, `__OSInitSram`, SRAM access | EXI channels with RTC/SRAM device on channel 0; "no card" elsewhere |
 | CARD | recompiled over EXI (P1), API replacement later (P3) | none in P1 | the whole CARD library | none in P1 (EXI reports no card) |
 | AI, DSP, ARAM | register + protocol responder | `__OSInitAudioSystem` | `AIInit`, `DSPInit`, `ARInit`, ARQ, the DSP task code, all of AX | AI DMA engine (silent), DSP mailbox and control, ARAM array and DMA, AX-ucode responder |
@@ -108,14 +108,14 @@ Command ids follow the SDK's `DVD_COMMAND_*` order (read 1, seek 2, boot-sector 
 
 | Address | Name | Evidence | Grade | Disposition |
 | --- | --- | --- | --- | --- |
-| `0x801F52F4` | `SIInit` | hmawl; registers handler for interrupt 20, reads SI COMCSR `0xCC006434`; called by `OSInit` | high | recompiled over the SI model |
+| `0x801F52F4` | `SIInit` | hmawl; registers handler for interrupt 20, then starts SI type probes on 4 channels through `SITransfer` (`0x801F5DF0`); called by `OSInit` | high | **replaced** (no-op) |
 | `0x801F4D58` | SI interrupt handler | installed for interrupt 20 | high | recompiled, never raised |
 | `0x801C06D4` | `PADInit` | calls `OSRegisterVersion`, `OSRegisterResetFunction`; only caller is `HSD_PadInit` (`0x80213DA4`, hmawl) | high | **replaced** |
 | `0x801C04B0` `0x801C05C0` | `PADReset`, `PADRecalibrate` | same shape; callers `0x80212720` and `0x80213D0C` (HSD pad code) | medium | **replaced** |
 | `0x801C0824` | `PADRead` | 192 instructions, calls `PADReset`; only caller `0x80212720` | medium | **replaced** |
 | `0x801C0B24` | `PADControlMotor` | only caller `0x802143A0` | medium | **replaced** |
 | `0x801C1504` | `__PADDisableRecalibration` | hmawl; read-modify-write of `0x800030E3`; called by `OSResetSystem` | high | recompiled |
-| `0x801FB9E4` `0x801FBA88` `0x801FBC18` `0x801FBCDC` | `GBAInit`, `GBAGetStatus`, `GBARead`, `GBAWrite` | hmawl; callers `0x801AA4D8`, `0x801AAB8C` (game code) | high (names) | **replaced**; semantics of "no GBA" taken from the callers' handling at M2 |
+| `0x801FB9E4` `0x801FBA88` `0x801FBB18` `0x801FBC18` `0x801FBCDC` | `GBAInit`, `GBAGetStatus`, `GBAReset` (inferred from SDK order), `GBARead`, `GBAWrite` | hmawl; callers `0x801AA4D8`, `0x801AAB8C` (game code) | high (names) | **replaced**; semantics of "no GBA" taken from the callers' handling at M2 |
 
 ### 2.5 AI, ARAM, DSP, AX
 
@@ -261,7 +261,7 @@ One `mmioInstall` pair routes by block:
 | MI | `0xCC004000` | protection and interrupt registers accept the writes seen in 2.1; never raises |
 | DSP / AI / ARAM | `0xCC005000`, `0xCC006C00` | DSP control and mailbox, AI DMA address/length/enable, AI control and sample counter, ARAM DMA; ARAM is a 16 MB array |
 | DI | `0xCC006000` | accepts the two `DVDInit` writes; any other access stops |
-| SI | `0xCC006400` | idle: no transfer in progress, no devices; accesses outside `SIInit`'s stop |
+| SI | `0xCC006400` | only the polling register (0x30) is modelled; every other access stops |
 | EXI | `0xCC006800` | three channels with the SDK's control/DMA/immediate registers; channel 0 device 1 = RTC and SRAM; every other device absent (EXT clear, ID reads 0) |
 | GX FIFO | `0xCC008000` | write-gather port: accepts 1/2/4/8-byte writes, packs them big-endian into the stream; reads stop |
 
@@ -296,13 +296,21 @@ The game's loop is `main` (`0x8000AA54`) at `0x8000AC34-0x8000AD3C`: read `VIGet
 
 Reached when, after the boot sequence, **N consecutive VI retraces (N = 120 by default, configurable) each have** a retrace callback delivered and, within every window of 3 retraces, at least one framebuffer latch (a write of a new framebuffer address into the VI) preceded by an EFB copy command in the GX stream. Bring-up counters in the host report retraces, latches, copies, tokens and finishes separately so a stall shows which condition failed. The deterministic trace is the sequence of (tick, event) pairs and the guest calls of the manifested functions; two runs must be byte-identical.
 
-## 7. Plan for milestones 2 and 3
+## 7. Source layout and tests
 
-Source layout in `src/hle/`: `platform.{h,cpp}` (object, registration), `fibers.{h,cpp}`, `events.{h,cpp}`, `time.{h,cpp}`, `boot.{h,cpp}` (low memory, DOL, BI2/FST), `os_handlers.cpp`, `dvd.{h,cpp}`, `pad.{h,cpp}`, `gba.cpp`, `mmio.cpp` with `dev_pi.cpp`, `dev_vi.cpp`, `dev_ai_dsp.cpp`, `dev_exi.cpp`, `dev_si.cpp`, `dev_cp_pe.cpp`, `gx_fifo.cpp`; host `host_main.cpp` (`awl-host`). `platform.cmake` gains a static library `awl_hle`, the host, and `hle_*` tests that link a test-local `rt::kFunctions` table of hand-written guest functions.
+`src/hle/`: `platform.{h,cpp}` (clock, event queue, interrupt delivery, fibers, `OSSaveContext`/`OSLoadContext`), `os_handlers.cpp` (MMIO routing, the native SDK replacements, main-loop bookkeeping), `devices.h` with `dev_core.cpp` (PI, MI, DI stub, SI polling register), `dev_vi.cpp`, `dev_exi.cpp` (EXI with the RTC/SRAM device), `dev_audio.cpp` (DSP responder, ARAM, AI), `dev_gx.cpp` (write-gather port, CP, PE, command-stream parser), `dvd.{h,cpp}`, `boot.{h,cpp}` (boot environment), `hle_common.{h,cpp}` (guest memory access, boot trace), `host_main.cpp` (`awl-host`), `hle_scan.cpp` (`awl-hle-scan`). `tools/recomp/platform.cmake` builds the library `awl_hle`, the host (only when `build/recomp-gen` exists), the scanner and the tests.
 
-Test expectations come from: the SDK code read above (OSContext offsets, register bit tests), public register maps, the tick arithmetic in section 4, and owner-provided traces. Examples: `OSContext` image offsets and the `SelectThread` handshake against hand-written guest threads; deterministic ordering of events at equal ticks; the VI display-interrupt status/clear behaviour as the retrace ISR uses it; FIFO command lengths from the public command formats; the DVD queue's priority and cancel states against `DVDCancelAsync`'s table.
+Tests (`hle_core_tests`, 82 checks; `hle_sched_tests`, 28 checks) need no game files. Expectations come from the SDK code read above (OSContext offsets, register bit tests, the call order of the callback envelope), public register maps, the tick arithmetic in section 4 and the GX command formats. They cover the event queue and clock, PI, the VI display interrupts and beam position, EXI with RTC/SRAM (checksum loop of `UnlockSram`), the GX parser (vertex sizes, finish, token, EFB copy, ring mirror), the DVD queue/cancel/file reads, thread start and switch through `OSSaveContext`/`OSLoadContext`, interrupt delivery and the callback envelope.
 
-Host acceptance (milestone 3): `awl-host` loads the DOL, builds the boot environment, registers handlers, runs the entry, reports the stop or the main-loop success, and writes the boot trace under ignored `build/`. It depends on the generator track delivering whole-DOL output (the boot subset ends at 1,736 functions) and the `hle_abi.h` implementation. Until those reach `main`, M2 code is tested against the declarations and `rt::Ctx` only.
+Run (from the repository root, with the disc extracted under `disc/`; the generated output comes from `awl-recomp gen --full --dol rom/main.dol --rel-dir disc/files --out build/recomp-gen`):
+
+```powershell
+cmake -S . -B build
+cmake --build build --config Release --target awl-host
+build/Release/awl-host.exe --dol rom/main.dol --disc disc --trace build/boot-trace.log [--limit N] [--retraces N]
+```
+
+`awl-host` is deterministic: the trace of two runs is byte-identical (checked).
 
 ## 8. Requests and open questions
 
@@ -332,3 +340,30 @@ Values to capture from a fresh boot of the NTSC-U disc in Dolphin (breakpoints i
 - Instruction-to-tick ratio and the latencies of DVD, EFB copies and token events are model parameters (section 4, 5.2); the original's exact timing is not reproduced.
 - Register layouts for VI display interrupts, AI, ARAM DMA and the PI cause bits are taken from the public register map and confirmed only where the SDK's code reads them (retrace ISR, `__OSDispatchInterrupt`, `ARStartDMA`); bits the code does not touch are not modelled.
 - Names marked medium or low in section 2 may change when the code is read at M2; the manifest's addresses stay valid.
+
+## 9. State after milestones 2 and 3
+
+**What runs.** `awl-host` runs the recompiled entry through `OSInit` (interrupt controller, exception table, SRAM load over EXI, thread init, DSP boot hack skipped, `DVDInit`, `DVDInquiryAsync`), `DBInit`, the game's `main`: video init (`VIInit`, `VIConfigure`, `VIFlush`, `VIWaitForRetrace` with the retrace ISR delivered through the platform's interrupt step), `GXInit` and the first frame setup (4 framebuffer register changes, 1 EFB copy, 1 draw-sync token), audio init (AI, ARAM size probe and DMA, DSP boot ROM handshake, AX task INIT and per-frame mail exchange), `DVDReadAsyncPrio` of the first REL file (about 433 KB), and enters the main loop at `0x8000AC34`. The first REL's `OSLink` succeeds in the recompiled SDK; the run then stops at the call into the REL's prolog (`0x803A2A8C`): the RELs are not part of the generated output yet.
+
+**Main-loop criterion.** Implemented as in section 6 (N consecutive qualifying retraces, default 120). It cannot be met until the REL code runs, because the frame update and draw calls of the loop live there; the boot reaches the loop and the REL load is the furthest point observable now.
+
+**Unmodelled by design (stop loudly).** Any DI register other than DVDInit's two writes and the DI_CONFIG read; SI registers other than the polling register; EXI DMA read-write and RTC writes; MI registers other than those seen; CP/PE registers outside the modelled ranges; any DSP microcode mail other than the boot sequence and the AX frame pair; unknown GX command opcodes; execution on a context the platform does not know.
+
+**Stub register (everything temporary the runtime does; each use is logged in the boot trace unless noted).**
+
+| Stub | Where | Behaviour | Removed by |
+| --- | --- | --- | --- |
+| GBA absent | `GBAInit`, `GBAGetStatus`, `GBAReset`, `GBARead`, `GBAWrite` | return GBA_NOT_READY (1) | GBA link support, if ever |
+| PAD neutral input | `PADInit`, `PADReset`, `PADRecalibrate`, `PADRead`, `PADControlMotor` | channel 0 connected with no input, channels 1-3 absent; first 8 calls logged | P3 input (`PadAdapter`) |
+| DVD streaming | commands 6, 7, 9 | accepted and completed with result 0 and no data | P4 audio streaming |
+| DVD timing | all commands | fixed latency (1 ms + 4 ticks per byte) | measured drive model, if wanted |
+| DVD drive info | `DVDInquiryAsync` | placeholder revision and device code | Dolphin question 5 |
+| DSP silence | DSP responder, AI DMA | boot ROM and AX frame handshake only; no mixing, no samples consumed; DMA replays the buffer | P4 audio |
+| `__OSInitAudioSystem`, `SIInit` | manifest | no-op | none needed (hardware bring-up with no native analogue) |
+| EXI cards | channels 0-1 | no card (EXT clear); CS2 and the UART read zero | P3 saves |
+| RTC/SRAM defaults | EXI device | fixed time (2026-01-01), stereo, English, no progressive scan | settings |
+| GX | CP, PE, FIFO | idle command processor; finish/token/copy completed after 2000 ticks; the stream is parsed and not drawn | P2 |
+| Boot environment | `boot.cpp` | arena, FST/BI2 placement, console type, ARAM size, DI_CONFIG are assumptions printed in the boot-trace header | Dolphin questions 1 and 5 |
+| Timing | everything | 4 instructions per tick; event latencies are model parameters | measurement |
+
+**Contract points the runtime relies on.** `awl-recomp gen` must recompile functions whose only platform evidence is constant-address MMIO (`platform.privileged == 0`) and stub only `rfi`/`sc` functions; with the committed generator every such function is a `platformBoundary` stub and the host stops at the first PI write. The host was verified with that one-line change (`codegen.cpp`, `f.platform.any()` replaced by `f.platform.privileged != 0`) applied locally; it is requested from the generator track.
