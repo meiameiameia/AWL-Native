@@ -29,6 +29,7 @@ struct Options {
     std::string relDir;
     std::string out = "build/recomp-gen";
     std::string manifest = "tools/recomp/hle_manifest.txt";
+    std::string expectDigest;   // gen fails unless the output digest equals this sha256
     std::string target;
     uint32_t addr = 0;
     uint32_t count = 16;
@@ -53,6 +54,7 @@ bool parseArgs(int argc, char** argv, Options& o) {
         else if (a == "--rel-dir") next(o.relDir);
         else if (a == "--out") next(o.out);
         else if (a == "--hle-manifest") next(o.manifest);
+        else if (a == "--expect-digest") next(o.expectDigest);
         else if (a == "--full") o.full = true;
         else if (a == "--addr" && i + 1 < argc) o.addr = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0));
         else if (a == "--count" && i + 1 < argc) o.count = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0));
@@ -69,8 +71,9 @@ void usage() {
         "  rel        link the RELs at fixed bases, decode and discover functions in them\n"
         "  discover   function discovery, coverage and indirect-branch classification\n"
         "  disasm     --addr A [--count N]  disassemble text\n"
-        "  gen        --out DIR [--full] [--hle-manifest FILE]   emit C++ for the boot path (or the whole DOL with --full);\n"
-        "             manifest defaults to tools/recomp/hle_manifest.txt\n");
+        "  gen        --out DIR [--full] [--hle-manifest FILE] [--expect-digest SHA256]\n"
+        "             emit C++ for the boot path, or with --full the whole DOL and the RELs; writes gen_digest.txt\n"
+        "             (SHA-256 of every file and of the whole output); manifest defaults to tools/recomp/hle_manifest.txt\n");
 }
 
 // Loads the game's modules from the directory: every wlp0/1/2.rel that exists (a partial set is allowed so a
@@ -317,6 +320,29 @@ int main(int argc, char** argv) {
         }
         return 0;
     }
+    if (o.command == "tables") {
+        DiscoveryInput in;
+        in.relTargets = relTargetsIntoDol(dol, rels);
+        const Discovery d = discoverFunctions(prog, in);
+        for (const auto& j : d.bctrUnique) {
+            if (j.kind != IndirectKind::JumpTableScanned) continue;
+            std::printf("bctr 0x%08X (function 0x%08X): table 0x%08X, %u entries scanned\n", j.addr, j.funcStart, j.table, j.count);
+            for (uint32_t a = j.addr - 40; a <= j.addr; a += 4) {
+                if (const Insn* i = prog.at(a)) std::printf("    %08x  %s\n", a, disassemble(*i).c_str());
+            }
+        }
+        return 0;
+    }
+    if (o.command == "noreturn") {
+        DiscoveryInput in;
+        in.relTargets = relTargetsIntoDol(dol, rels);
+        return reportNoReturn(prog, discoverFunctions(prog, in));
+    }
+    if (o.command == "overlaps") {
+        DiscoveryInput in;
+        in.relTargets = relTargetsIntoDol(dol, rels);
+        return reportOverlaps(prog, discoverFunctions(prog, in));
+    }
     if (o.command == "discover" || o.command == "gen") {
         std::vector<HleEntry> hle;
         if (o.command == "gen" && !loadManifest(o.manifest, hle)) return 1;
@@ -338,7 +364,21 @@ int main(int argc, char** argv) {
             if (!prepareRels(dol, rels, relSet, err)) { std::fprintf(stderr, "REL: %s\n", err.c_str()); return 1; }
             if (!findOsLink(prog, d, dol, os, err)) { std::fprintf(stderr, "OSLink: %s\n", err.c_str()); return 1; }
         }
-        return generateCode(prog, d, hle, withRels ? &relSet : nullptr, withRels ? &os : nullptr, o.out, o.full);
+        const int rc = generateCode(prog, d, hle, withRels ? &relSet : nullptr, withRels ? &os : nullptr, o.out, o.full);
+        if (rc == 0 && !o.expectDigest.empty()) {
+            std::ifstream digestIn(o.out + "/gen_digest.txt", std::ios::binary);
+            std::stringstream ss;
+            ss << digestIn.rdbuf();
+            const std::string text = ss.str();
+            const size_t at = text.rfind("output ");
+            const std::string actual = at == std::string::npos ? "" : text.substr(at + 7, 64);
+            if (actual != o.expectDigest) {
+                std::fprintf(stderr, "output digest mismatch: expected %s, generated %s\n", o.expectDigest.c_str(), actual.c_str());
+                return 1;
+            }
+            std::printf("  output digest matches the expected value\n");
+        }
+        return rc;
     }
     usage();
     return 2;

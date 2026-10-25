@@ -157,6 +157,7 @@ void unresolvedJump(Ctx& c, uint32_t site) { stop(c, StopKind::UnresolvedJump, s
 void badJump(Ctx& c, uint32_t site, uint32_t target) { stop(c, StopKind::BadIndirect, site, target, "jump-table index outside the resolved targets"); }
 void unimplemented(Ctx& c, uint32_t site, const char* what) { stop(c, StopKind::Unimplemented, site, 0, what); }
 void privileged(Ctx& c, uint32_t site, const char* what) { stop(c, StopKind::Privileged, site, 0, what); }
+void returnedFromNoReturn(Ctx& c, uint32_t site, uint32_t callee) { stop(c, StopKind::BadReturn, site, callee, "a function the analysis found never returns has returned"); }
 void badReturn(Ctx& c, uint32_t site) { stop(c, StopKind::BadReturn, site, c.lr, "blr with LR different from the shadow-stack return address"); }
 
 uint64_t timeBase(Ctx& c) { return g_timeBase ? g_timeBase(c) : c.m->icount / 4; }
