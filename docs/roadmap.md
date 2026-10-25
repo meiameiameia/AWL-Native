@@ -18,7 +18,7 @@ Strategy (adopted 2026-10-24): statically recompile the original PowerPC code in
 
 ## P2 tracks
 
-The tracks meet only at the GX intermediate representation `src/gx/gx_ir.h`: the GX core track drafts it in its first milestone, the architect reviews and freezes it, and from then on changes are requested, not made by a track. Both tracks work headless (offscreen rendering, no window) for automated checks; the game window is opened only for owner acceptance at an agreed safe time.
+The tracks meet only at the GX intermediate representation `src/gx/gx_ir.h`: drafted by the GX core track, frozen by the architect as version 1 on 2026-10-25, and from then on changed only on request. With the P1 tracks closed, the DX11 renderer track also maintains the rest of the platform runtime (`src/hle/**` except `dev_gx.cpp`, plus `tests/hle_*` and `docs/research/hle-platform.md`). Both tracks work headless (offscreen rendering, no window) for automated checks; the game window is opened only for owner acceptance at an agreed safe time.
 
 | Track | Owns | Delivers |
 | --- | --- | --- |
