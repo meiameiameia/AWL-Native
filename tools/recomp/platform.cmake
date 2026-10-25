@@ -16,11 +16,15 @@ endif()
 # Platform runtime library: clock, events, interrupts, fibers, hardware models, native SDK replacements.
 file(GLOB AWL_HLE_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/hle/*.cpp)
 list(FILTER AWL_HLE_SOURCES EXCLUDE REGEX "(hle_scan|host_main|capture_compare_main)\\.cpp$")
-list(APPEND AWL_HLE_SOURCES ${CMAKE_SOURCE_DIR}/src/input.cpp)   # PadAdapter for the PAD replacement
+if(TARGET awl_pad_input)   # src/gfx/gfx.cmake builds src/input.cpp once for the PAD replacement and the window input
+    set(AWL_HLE_PAD_LIB awl_pad_input)
+else()
+    list(APPEND AWL_HLE_SOURCES ${CMAKE_SOURCE_DIR}/src/input.cpp)   # PadAdapter for the PAD replacement
+endif()
 add_library(awl_hle STATIC ${AWL_HLE_SOURCES})
 target_include_directories(awl_hle PUBLIC ${CMAKE_SOURCE_DIR}/src/hle ${CMAKE_SOURCE_DIR}/include)
 target_compile_definitions(awl_hle PRIVATE _CRT_SECURE_NO_WARNINGS)
-target_link_libraries(awl_hle PUBLIC awl_recomp_core awl_recomp_runtime xinput)
+target_link_libraries(awl_hle PUBLIC awl_recomp_core awl_recomp_runtime xinput ${AWL_HLE_PAD_LIB})
 if(TARGET awl_gx)   # P2: the GX FIFO in dev_gx.cpp feeds the GX core
     target_link_libraries(awl_hle PUBLIC awl_gx)
 endif()
@@ -76,6 +80,7 @@ if(TARGET awl_recomp_gen)
     target_link_libraries(awl-host PRIVATE awl_hle awl_recomp_gen)
     if(TARGET awl_gfx)   # P2: game window and DirectX 11 renderer
         target_link_libraries(awl-host PRIVATE awl_gfx)
+        target_compile_definitions(awl-host PRIVATE AWL_HAVE_GFX)
     endif()
     if(MSVC)
         target_compile_options(awl-host PRIVATE /W4 /fp:strict)

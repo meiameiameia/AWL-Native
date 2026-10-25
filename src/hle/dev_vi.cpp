@@ -2,6 +2,7 @@
 // Timing: a field lasts 675,675 time-base ticks (59.94 Hz) and a line 2,574 ticks; field n starts at tick
 // n * 675,675. Register roles follow the SDK's VIInit/VIFlush/retrace ISR (docs/research/hle-platform.md).
 #include "devices.h"
+#include "dev_vi.h"
 
 namespace awl::hle {
 namespace {
@@ -9,6 +10,8 @@ namespace {
 constexpr uint32_t kRegs = 0x40;                 // halfword registers 0x2000-0x207F
 constexpr uint32_t kDi0 = 0x30, kDiBytes = 4;    // display interrupt registers at 0x30, 0x34, 0x38, 0x3C
 constexpr uint32_t kPosV = 0x2C, kPosH = 0x2E;   // current beam position
+
+ViRetraceHook g_retraceHook;
 
 class Vi : public Device {
 public:
@@ -101,8 +104,33 @@ private:
         hi |= 0x8000;
         updateLine();
         const uint64_t field = p_.now() / kFieldTicks;
-        if (field != lastField_ || !haveField_) { haveField_ = true; lastField_ = field; p_.onRetrace(); }
+        if (field != lastField_ || !haveField_) {
+            haveField_ = true;
+            lastField_ = field;
+            if (g_retraceHook) retraceHook();
+            p_.onRetrace();
+        }
         schedule(idx);
+    }
+
+    // Host hook (--window / --capture-frames / --realtime-pace): tells it which framebuffer the VI shows from this field on.
+    // Registers: TFBL 0x1C (bits 0-23 address, bit 28 = address << 5), VTR 0x00 (bits 4-13 active lines per field), DCR 0x02
+    // (bit 0 enable, bit 2 non-interlaced), 0x48 (low byte = stride in 16-byte units), 0x70 (framebuffer width in pixels).
+    void retraceHook() {
+        const uint64_t latches = p_.counters.fbLatches;
+        if (latches == hookLatches_) { g_retraceHook(nullptr); return; }
+        hookLatches_ = latches;
+        const uint32_t tfbl = (static_cast<uint32_t>(reg_[0x1C / 2]) << 16) | reg_[0x1E / 2];
+        ViFrameInfo f;
+        f.xfbAddr = (tfbl & 0x00FFFFFFu) << ((tfbl & 0x10000000u) ? 5 : 0);
+        f.interlaced = (reg_[0x02 / 2] & 4) == 0;
+        const uint32_t lines = (reg_[0x00 / 2] >> 4) & 0x3FF;
+        f.height = f.interlaced ? lines * 2 : lines;
+        f.width = reg_[0x70 / 2];
+        f.strideBytes = (reg_[0x48 / 2] & 0xFF) * 16u;
+        f.latchIndex = latches;
+        const bool enabled = (reg_[0x02 / 2] & 1) != 0;
+        g_retraceHook(enabled && f.width && f.height ? &f : nullptr);
     }
 
     void updateLine() {
@@ -119,10 +147,13 @@ private:
     uint64_t gen_[4] = {};
     uint64_t lastField_ = 0;
     bool haveField_ = false;
+    uint64_t hookLatches_ = 0;
 };
 
 }  // namespace
 
 std::unique_ptr<Device> makeVi(Platform& p) { return std::make_unique<Vi>(p); }
+
+void setViRetraceHook(ViRetraceHook hook) { g_retraceHook = std::move(hook); }
 
 }  // namespace awl::hle
