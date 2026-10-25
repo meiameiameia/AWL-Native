@@ -382,59 +382,60 @@ Purpose: replace the platform's assumed boot values and timings with what the or
 ### 10.1 One-time setup
 
 1. Start `C:\tools\Dolphin-x64\Dolphin.exe`. This copy keeps its settings and output in `%APPDATA%\Dolphin Emulator\` (type that into the Windows Explorer address bar to open it). Below, that folder is called the **Dolphin user folder**. (If a file named `portable.txt` is ever added next to `Dolphin.exe`, the user folder becomes `C:\tools\Dolphin-x64\User\` instead.)
-2. Turn on the debugging windows: **Options > Configure**, then look in the **General**, **Interface** and **Advanced** tabs for a checkbox called **Show Debugging UI** (or Enable Debugging) and tick it. After that the **View** menu lists *Show Code*, *Show Registers*, *Show Breakpoints*, *Show Memory* and *Show Log*, and a **JIT** menu appears.
-3. Open **View > Show Log Configuration**. Set **Verbosity** to **Notice**, tick **Write to File**, tick **Write to Window**, and tick every log type in the list (or at least *Memory Map*). The log file will be `Logs\dolphin.log` inside the Dolphin user folder.
-4. Open **View > Show Breakpoints**, **View > Show Code**, **View > Show Registers**, **View > Show Memory** and **View > Show Log**. The windows can be dragged next to the main window; none of them needs to be large.
+2. Turn on the debugging windows: **Options > Configure**, then look in the **General**, **Interface** and **Advanced** tabs for a checkbox called **Show Debugging UI** (or Enable Debugging) and tick it. After that the debugger appears as tabs (confirmed on Dolphin 2606-91): **Code**, **Registers**, **Breakpoints** and **Memory**, and a **JIT** menu appears. Portuguese UI: **Options** is *Opções*, **View** is *Ver*.
+3. Open **View > Log Configuration** (Portuguese UI: **Ver > Configuração de Relatório**). Set **Verbosity** to **Notice**, tick **Write to File**, tick **Write to Window**, and tick every log type in the list (or at least *Memory Map*). The log file will be `Logs\dolphin.log` inside the Dolphin user folder.
+4. Make sure the **Code**, **Registers**, **Breakpoints** and **Memory** tabs are visible (they may be under **View**, or docked as tabs). The windows can be dragged next to the main window; none of them needs to be large.
 5. Make a folder for the results: `C:\Users\mperez\Projects\awl-native\build\dolphin-capture\` (create it in Explorer if it does not exist). `build` is not part of the repository, so nothing from the game is ever committed. Every file you save goes there.
 6. Only if a breakpoint does not trigger in the steps below: **Config > Advanced > CPU Emulation Engine** set to **Interpreter (slowest)**. The default (JIT) normally works.
 
 ### 10.2 How to start the game and place breakpoints
 
-The game must be started once, paused, given its breakpoints, and then **reset**, so the breakpoints are in place from the very first instruction:
+**Do not use Emulation > Reset.** On a GameCube, Reset is the console's reset button: the game handles it, and in the first run it hung and never reached the program entry. Use **Options > Boot to Pause** instead (checked on Dolphin 2606-91): with it ticked, Dolphin stops at the very first instruction of the game program, PC = `80003154`, so breakpoints can be placed before anything runs.
 
-1. **File > Open...** and choose `C:\Users\mperez\Projects\awl-native\rom\game.iso`. Let it start for a few seconds, then **Emulation > Pause**.
-2. In the **Breakpoints** window use the **+** button (or right-click > Add breakpoint) and type the address **without** `0x`, for example `80003154`. Each breakpoint has an edit dialog (double-click it or right-click > Edit) with two checkboxes: **Break** (stop the game here) and **Log** (write a line to the log and keep running). The two kinds used below are called *break* and *log*. When a *log* breakpoint is hit, Dolphin writes a line like `BP <address> ... (<r3> <r4> <r5> ...) LR=<address>` to the log: the numbers are the first argument registers (r3, r4, r5, ...) and the caller address.
-3. Set the breakpoints of the part you are doing (10.3 to 10.6), then **Emulation > Reset**. The game restarts and runs into them.
-4. When a *break* breakpoint stops the game, the Code and Registers windows update. Do what the step says, then **Emulation > Play** to continue.
-5. Between captures clear the breakpoint list (the **Clear** button in the Breakpoints window) so each capture only contains what you intend.
+1. Once: tick **Options > Boot to Pause** (Portuguese UI: **Opções**; the item keeps the name *Boot to Pause* or a close translation of it, and has a checkbox).
+2. **File > Open...** and choose `C:\Users\mperez\Projects\awl-native\rom\game.iso`. Dolphin starts paused. The **Code** tab shows PC = `80003154`.
+3. In the **Breakpoints** tab use the **+** button (or right-click > Add breakpoint) and type the address **without** `0x`, for example `80003268`. Each breakpoint has an edit dialog (double-click it or right-click > Edit) with two checkboxes: **Break** (stop the game here) and **Log** (write a line to the log and keep running). The two kinds used below are called *break* and *log*. When a *log* breakpoint is hit, Dolphin writes a line like `BP <address> ... (<r3> <r4> <r5> ...) LR=<address>` to the log: the numbers are the first argument registers (r3, r4, r5, ...) and the caller address.
+4. Set the breakpoints of the capture you are doing (10.3 to 10.6), then press **Emulation > Play** (Portuguese UI: **Emulação**). The game runs into them.
+5. When a *break* breakpoint stops the game, the Code and Registers tabs update. Do what the step says, then press **Play** again to continue.
+6. For each later capture: **Emulation > Stop**, open the ISO again with **File > Open...** (it is paused at `80003154` again), clear the breakpoint list (the **Clear** button, or delete the entries) and set the next capture's breakpoints, then **Play**. If a capture produces a log, copy `Logs\dolphin.log` away **before** opening the ISO again, because a new run may overwrite it.
 
 ### 10.3 Capture A: memory when the game program starts (question 1)
 
-Breakpoints: *break* at `80003154` (the first instruction of the game program).
+Breakpoints: none needed for the first dump, because the game is already stopped at `80003154`.
 
-1. Reset as in 10.2. The game stops at `80003154`.
-2. In the **Memory** window click **Dump MRAM**. Dolphin writes `Dump\mem1.raw` inside the Dolphin user folder (24 MB).
+1. Open the ISO as in 10.2. The game is paused at `80003154`.
+2. In the **Memory** tab click **Dump MRAM**. Dolphin writes `Dump\mem1.raw` inside the Dolphin user folder (24 MB).
 3. In Explorer move that file to `C:\Users\mperez\Projects\awl-native\build\dolphin-capture\` and rename it `A-at-entry-mem1.raw`. (Dolphin overwrites `mem1.raw` on the next dump, so move it before taking another.)
-4. Still stopped, look at the **Registers** window and write down the values of **TBU** and **TBL** (the time base) if they are listed; type them into a text file `A-notes.txt` in the same folder. If they are not shown, skip this.
-5. Add a second *break* breakpoint at `80003268` (the instruction right after the system initialisation returns) and press **Emulation > Play**. When it stops, click **Dump MRAM** again and save the file as `A-after-osinit-mem1.raw`, the same way.
+4. Still stopped, look at the **Registers** tab and write down the values of **TBU** and **TBL** (the time base) if they are listed; type them into a text file `A-notes.txt` in the same folder (for example `TBU: 00000000` and `TBL: 0001F4A0` on two lines). If they are not shown, skip this.
+5. Add a *break* breakpoint at `80003268` (the instruction right after the system initialisation returns) and press **Play**. When it stops, click **Dump MRAM** again and save the file as `A-after-osinit-mem1.raw`, the same way.
 
 What I read from these files: the whole low-memory area (boot information, file table, memory-arena pointers, clock values, console type) and the drive-information buffer (question 5), and I compare them to the assumed values printed at the top of `build\boot-trace.log`.
 
 ### 10.4 Capture B: the video mode and the frame rhythm (questions 2 and 3)
 
-Breakpoints (clear the old ones first):
+Stop the game and open the ISO again (10.2, step 6). Breakpoints (clear the old ones first):
 
 - *break* at `801BED34` (the game asks the video system to configure itself).
 - *log* at `8017A7F8` (end of each frame: one hit per frame).
 
-1. Reset. The game stops at `801BED34`. Read register **r3** in the Registers window (a number such as `803xxxxx`) and write it in `B-notes.txt`. Click **Dump MRAM** and save the file as `B-viconfigure-mem1.raw`.
-2. Press **Emulation > Play** and let the game run for about 15 seconds (it will sit on its first screens; that is fine). Then **Emulation > Stop**.
+1. Press **Play**. The game stops at `801BED34`. Read register **r3** in the Registers tab (a number such as `803xxxxx`) and write it in `B-notes.txt` (for example `r3: 803A1B20`). Click **Dump MRAM** and save the file as `B-viconfigure-mem1.raw`.
+2. Press **Play** and let the game run for about 15 seconds (it will sit on its first screens; that is fine). Then **Emulation > Stop**.
 3. Copy `Logs\dolphin.log` from the Dolphin user folder to the capture folder as `B-frames.log`. Every line for `8017A7F8` carries a time stamp, so I can work out the frame period; the render mode is read from the memory file at the address in r3.
 
 ### 10.5 Capture C: the order of the first system calls (question 6)
 
-Breakpoints (clear the old ones first), all *log*: `801B0DE0`, `801BADF0`, `801BE3BC`, `801CB378`, `801C19D8`, `801C3D48`, `801C2018`, `801B70D4`, `801BA66C`, `801BC9D8`, `801BF68C`, `801CED04`.
+Stop the game and open the ISO again. Breakpoints (clear the old ones first), all *log*: `801B0DE0`, `801BADF0`, `801BE3BC`, `801CB378`, `801C19D8`, `801C3D48`, `801C2018`, `801B70D4`, `801BA66C`, `801BC9D8`, `801BF68C`, `801CED04`.
 
 (In order they are: system initialisation, DVD init, video init, graphics init, audio-interface init, DSP init, ARAM init, create thread, open file, read from disc, set next frame buffer, copy the picture.)
 
-1. Reset and let the game run for about 15 seconds, then **Emulation > Stop**.
+1. Press **Play** and let the game run for about 15 seconds, then **Emulation > Stop**.
 2. Copy `Logs\dolphin.log` to the capture folder as `C-calls.log`. Each line shows the address, the register values at that moment and a time stamp. I compare the order and the arguments with `boot-trace.log` from `awl-host`.
 
 ### 10.6 Capture D: the audio processor conversation (the two DSP/AX checks)
 
-Breakpoints (clear the old ones first), both *log*: `801C3D34` (the game sends a message to the audio processor; the message is the first number, r3) and `801C3D30` (the game has just read a message from the audio processor; again r3).
+Stop the game and open the ISO again. Breakpoints (clear the old ones first), both *log*: `801C3D34` (the game sends a message to the audio processor; the message is the first number, r3) and `801C3D30` (the game has just read a message from the audio processor; again r3).
 
-1. Reset and let the game run for about 10 seconds, then **Emulation > Stop**.
+1. Press **Play** and let the game run for about 10 seconds, then **Emulation > Stop**.
 2. Copy `Logs\dolphin.log` to the capture folder as `D-dsp.log`.
 
 What I look for: the first message from the audio processor is `8071FEED`; the game then sends five pairs of messages starting with `80F3A001`, `80F3C002`, `80F3A002`, `80F3B002` and `80F3D001`; the processor answers `DCD10000`; and for every audio frame the game sends a message starting with `BABE` plus an address and the processor answers `DCD10001`. If that matches, the audio part of the platform is right; if not, the log shows what to change.
