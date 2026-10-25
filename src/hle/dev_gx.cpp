@@ -3,10 +3,13 @@
 // services the SDK waits on can be completed: draw-done (finish), draw-sync tokens and EFB copies. Nothing is drawn.
 // Register roles and command formats: public GameCube documentation and what GXInit/GXSetDrawSync/GXPEInit do in the DOL
 // (docs/research/hle-platform.md, sections 2.7 and 5.5).
+#include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <vector>
 
 #include "devices.h"
+#include "gx/gx_dump.h"
 
 namespace awl::hle {
 namespace {
@@ -14,15 +17,68 @@ namespace {
 constexpr uint64_t kFinishLatency = 2000;   // ticks between the BP finish command reaching the GP and the interrupt
 constexpr uint64_t kTokenLatency = 2000;
 
+// ---- Stream capture ---------------------------------------------------------------------------------------------
+// AWL_GX_CAPTURE=<file> writes the command stream (format: src/gx/gx_dump.h) of the retraces AWL_GX_FRAMES=<first>-<last>
+// (default: all). Frames before <first> contribute only their state-setting commands, so a later start still has the
+// register state. The file belongs under build/.
+class Capture {
+public:
+    Capture() {
+        const char* path = std::getenv("AWL_GX_CAPTURE");
+        if (!path || !*path) return;
+        const char* frames = std::getenv("AWL_GX_FRAMES");
+        if (frames && *frames) {
+            char* end = nullptr;
+            first_ = static_cast<uint32_t>(std::strtoul(frames, &end, 0));
+            if (*end == '-') last_ = static_cast<uint32_t>(std::strtoul(end + 1, nullptr, 0));
+            else last_ = first_;
+        }
+        if (!w_.open(path)) return;
+        std::fprintf(stderr, "gx capture: %s, retraces %u-%u\n", path, first_, last_);
+    }
+
+    // Called with every 32-byte chunk before it is parsed and after the parse, so that the display lists called by the
+    // chunk are written before the chunk (the reader pops them in call order).
+    void begin(uint32_t retrace, bool pendingEmpty) {
+        mode_ = Mode::Off;
+        if (!w_.isOpen()) return;
+        if (retrace > last_) { w_.close(); return; }
+        if (retrace >= first_ && (active_ || pendingEmpty)) active_ = true;
+        mode_ = active_ ? Mode::Active : Mode::Prelude;
+        if (mode_ == Mode::Active && retrace != frame_) {
+            frame_ = retrace;
+            w_.frame(retrace);
+        }
+    }
+    void end(const uint8_t* data, size_t n) {
+        if (mode_ == Mode::Active) w_.fifo(data, n);
+    }
+    void displayList(uint32_t addr, uint32_t size, const uint8_t* data) {
+        if (mode_ == Mode::Active) w_.displayList(addr, size, data);
+    }
+    void command(uint8_t op, const uint8_t* d, size_t n) {
+        if (mode_ == Mode::Prelude && (op == 0x08 || op == 0x10 || op == 0x61)) w_.prelude(d, n);
+    }
+
+private:
+    enum class Mode { Off, Prelude, Active };
+    gx::dump::Writer w_;
+    Mode mode_ = Mode::Off;
+    bool active_ = false;
+    uint32_t first_ = 0, last_ = 0xFFFFFFFFu, frame_ = 0xFFFFFFFFu;
+};
+
 // ---- Parser ---------------------------------------------------------------------------------------------------
 class GxParser {
 public:
     explicit GxParser(Platform& p) : p_(p) {}
 
     void feed(Ctx& c, const uint8_t* data, size_t n) {
+        cap_.begin(static_cast<uint32_t>(p_.counters.retraces), pending_.empty());
         pending_.insert(pending_.end(), data, data + n);
         size_t used = parse(c, pending_.data(), pending_.size(), 0);
         pending_.erase(pending_.begin(), pending_.begin() + static_cast<std::ptrdiff_t>(used));
+        cap_.end(data, n);
     }
     void reset() { pending_.clear(); }
 
@@ -68,6 +124,7 @@ private:
             } else {
                 stopHw(c, op, "GX FIFO: unknown command opcode (the stream is out of sync or the opcode is not modelled)");
             }
+            cap_.command(op, d + i, need);
             i += need;
             ++commands;
         }
@@ -78,6 +135,7 @@ private:
         if (depth >= 4) stopHw(c, addr, "GX display list nested deeper than 4");
         const uint8_t* dl = p_.mem().ptr(0x80000000u | (addr & 0x01FFFFFFu), size);
         if (!dl) stopHw(c, addr, "GX display list outside MEM1");
+        cap_.displayList(addr, size, dl);
         const size_t used = parse(c, dl, size, depth + 1);
         if (used != size) stopHw(c, addr, "GX display list ends inside a command");
     }
@@ -132,6 +190,7 @@ private:
     }
 
     Platform& p_;
+    Capture cap_;
     std::vector<uint8_t> pending_;
     uint32_t vcdLo_ = 0, vcdHi_ = 0;
     uint32_t vatA_[8] = {}, vatB_[8] = {}, vatC_[8] = {};
