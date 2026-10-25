@@ -53,7 +53,7 @@ Focus loss pauses the game: at the next retrace the host stops running the guest
 
 `gfx::WindowInput` feeds keys (from window messages) and XInput controller 0 into the project's `NativeInputAccumulator` and `PadAdapter` (`src/input.cpp`). Defaults: W/A/S/D main stick, arrows D-pad, Space = A, Backspace = B, X = X, Tab = Y, Z = Z, Q = L, E = R, Enter = Start; Esc, F11 and Alt+Enter belong to the window. Input is active only while the window has focus: losing focus releases every key and clears the pad, and keys pressed while unfocused are dropped. The tests check the mapping against the SDK button constants.
 
-`src/hle/pad_source.cpp` (the PAD replacement) currently reads XInput directly and has no keyboard or focus rules. Routing the window's `WindowInput::sample()` into it needs a hook there (proposed patch in the hand-over notes); until then `--pad xinput` gives controller input only, without the focus rules.
+`awl-host --window` installs `WindowInput::sample()` as the PAD provider (`setPadProvider`, `src/hle/pad_source.*`), so `PADRead` returns the keyboard and controller state while the window has focus and reports the controller absent otherwise (the host also pauses the guest on focus loss). Without `--window` the PAD replacement is unchanged (neutral by default, `--pad xinput` for the controller without focus rules). `hle_sched_tests` checks the provider path (PADStatus fields, absent controller, back to neutral).
 
 ### Build structure
 
@@ -170,6 +170,5 @@ The draw tests' expected pixels are worked out from the combiner equation in the
 ## 11. Open items
 
 - Milestone 2 (IR rendering) waits for `src/gx/gx_ir.h`.
-- PAD hook (section 2); the owner must approve the patch to `src/hle/pad_source.*`.
 - Window behaviours (resize, fullscreen toggle, Esc/Alt+F4/close, focus pause, input) are written but not run; they need the owner at an agreed time.
 - All **verify** points above are settled by comparison with the owner's Dolphin captures once the first screens render.

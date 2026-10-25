@@ -15,6 +15,11 @@ struct PadReading {
 
 enum class PadMode { Neutral, XInput };
 
+// A host that owns a window supplies channel 0 itself (keyboard and focus-gated controller): while a provider is set, readPad
+// returns what it returns whatever the mode. Neutral stays the default when no provider is set. One provider per process.
+using PadProvider = PadReading (*)(void* user);
+void setPadProvider(PadProvider fn, void* user);   // null removes it
+
 // Channel 0 only. In XInput mode every call polls the controller and advances the adapter by one frame.
 PadReading readPad(PadMode mode);
 

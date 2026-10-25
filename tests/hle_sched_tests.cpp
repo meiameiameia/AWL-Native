@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "devices.h"
+#include "pad_source.h"
 #include "guest.h"
 #include "platform.h"
 
@@ -17,7 +18,7 @@ constexpr uint32_t kCtxMain = 0x80100000, kCtxThread = 0x80101000, kMarkBase = 0
 constexpr uint32_t kThreadMem = 0x80120000;   // an OSThread: context at +0, state halfword at +0x2C8
 constexpr uint32_t kMarkA = kMarkBase + 0, kMarkB = kMarkBase + 4, kMarkC = kMarkBase + 8, kMarkD = kMarkBase + 12, kMarkE = kMarkBase + 16,
                    kMarkF = kMarkBase + 20, kIrqCount = kMarkBase + 24, kIrqR3 = kMarkBase + 28, kIrqR4 = kMarkBase + 32,
-                   kIrqMsr = kMarkBase + 36, kMarkMsr = kMarkBase + 40, kSeq = kMarkBase + 64, kSeqLen = kMarkBase + 60;
+                   kIrqMsr = kMarkBase + 36, kMarkMsr = kMarkBase + 40, kHandlerR1 = kMarkBase + 52, kHandlerChain = kMarkBase + 56, kSeq = kMarkBase + 64, kSeqLen = kMarkBase + 60;
 namespace awl::rt {
 namespace {
 
@@ -69,6 +70,9 @@ void fIrq(Ctx& c) {      // 0x80002200: exception handler from the table
     mark(c, kIrqR3, c.r[3]);
     mark(c, kIrqR4, c.r[4]);
     mark(c, kIrqMsr, c.msr);
+    mark(c, kHandlerR1, c.r[1]);
+    mark(c, kHandlerChain, ld32(c, c.r[1]));
+    st32(c, c.r[1] + 4, 0xBADBAD00);                         // what a callee's prologue does: its LR goes to 4(r1)
     AWL_CALL(c, 0x80002210, 0x80003A00, stubClear);          // the device stops asserting its line
     c.lr = savedLr;
     ret(c, 0x80002220);
@@ -150,7 +154,14 @@ void fExitThread2(Ctx& c) {   // 0x80002A00
     c.lr = savedLr;
     ret(c, 0x80002A20);
 }
-void fCallback(Ctx& c) { at(c, 0x80002500, 1); seq(c, 100 + c.r[3] * 10 + c.r[4]); ret(c, 0x80002504); }
+void fCallback(Ctx& c) {
+    at(c, 0x80002500, 1);
+    seq(c, 100 + c.r[3] * 10 + c.r[4]);
+    mark(c, kHandlerR1, c.r[1]);
+    mark(c, kHandlerChain, ld32(c, c.r[1]));
+    st32(c, c.r[1] + 4, 0xBADBAD00);
+    ret(c, 0x80002504);
+}
 void fDisableSched(Ctx& c) { at(c, 0x801B6B98, 1); seq(c, 1); ret(c, 0x801B6B9C); }
 void fEnableSched(Ctx& c) { at(c, 0x801B6BD8, 1); seq(c, 2); ret(c, 0x801B6BDC); }
 void fReschedule(Ctx& c) { at(c, 0x801B70A4, 1); seq(c, 3); ret(c, 0x801B70A8); }
@@ -277,6 +288,7 @@ void testInterrupt(Rig& r) {
     r.boot->cr = 0x11000000;
     r.boot->msr = 0x00000032;                  // floating point not available in the interrupted context
     m.w32(kIrqCount, 0);
+    m.w32(0x80190004, 0xCAFEF00D);             // the interrupted function's LR slot: a prologue stored it and has not run its stwu yet
     const bool ok = Platform::get().run(*r.boot, 0x80002300);
     CHECK(ok && !Platform::get().report().stopped);
     CHECK(m.r32(kIrqCount) == 1);              // delivered once: the handler cleared the line
@@ -287,6 +299,10 @@ void testInterrupt(Rig& r) {
     CHECK(m.r32(kCtxMain + 0x19C) == (0x00000032u | kMsrEE));   // SRR1 holds the interrupted MSR (the trigger had enabled EE)
     CHECK(m.r32(kCtxMain + 4) == 0x80190000 && m.r32(kCtxMain + 0x14) == 0x55555555 && m.r32(kCtxMain + 0x80) == 0x11000000);
     CHECK((r.boot->msr & kMsrEE) != 0);        // the interrupted context keeps its own MSR
+    // The vector tail (0x801B1CC8-0x801B1CD0: stwu r1,-8(r1)) gives the handler its own 8-byte frame below the interrupted r1,
+    // so the handler's prologue (stw r0,4(r1)) cannot overwrite the interrupted function's LR slot at 4(r1).
+    CHECK(m.r32(kHandlerR1) == 0x80190000 - 8 && m.r32(kHandlerChain) == 0x80190000);
+    CHECK(m.r32(0x80190004) == 0xCAFEF00D);
 }
 
 void testDecrementer(Rig& r) {
@@ -297,6 +313,7 @@ void testDecrementer(Rig& r) {
     m.w32(0x80003000 + 4 * 8, 0x80002200);     // decrementer handler (exception 8)
     m.w32(kIrqCount, 0);
     r.boot->msr = 0x00002032;
+    r.boot->r[1] = 0x80190000;
     const bool ok = Platform::get().run(*r.boot, 0x80002600);
     CHECK(ok && !Platform::get().report().stopped);
     CHECK(m.r32(kMarkBase + 40) == 0);         // not yet after 10 ticks
@@ -335,11 +352,55 @@ void testPad(Rig& r) {
     }
 }
 
+PadReading testProvider(void* user) {
+    ++*static_cast<int*>(user);
+    PadReading p;
+    p.connected = true;
+    p.buttons = 0x1100;                       // A + Start (SDK bits)
+    p.stickX = 127; p.stickY = -128; p.substickX = -5; p.substickY = 6;
+    p.triggerL = 200; p.triggerR = 9;
+    return p;
+}
+PadReading testAbsent(void*) { return PadReading(); }   // connected = false: the window has no focus
+
+// Each platform run needs a fresh rig.
+void padRun(Rig& r, uint32_t e) {
+    GuestMem m = r.g();
+    for (uint32_t i = 0; i < 48; ++i) m.w8(e + i, 0xEE);
+    CHECK(Platform::get().run(*r.boot, 0x80002700) && !Platform::get().report().stopped);
+}
+
+void testPadProvider(Rig& r) {
+    GuestMem m = r.g();
+    int calls = 0;
+    setPadProvider(testProvider, &calls);
+    padRun(r, kMarkBase + 128);
+    CHECK(calls == 1);                                       // one PADRead, one poll of the provider
+    const uint32_t e = kMarkBase + 128;
+    CHECK(m.r16(e) == 0x1100);                                // PADStatus: button u16, stick x/y, substick x/y, triggers l/r, analog a/b, err
+    CHECK(m.r8(e + 2) == 0x7F && m.r8(e + 3) == 0x80 && m.r8(e + 4) == 0xFB && m.r8(e + 5) == 6);
+    CHECK(m.r8(e + 6) == 200 && m.r8(e + 7) == 9 && m.r8(e + 8) == 0 && m.r8(e + 9) == 0 && m.r8(e + 10) == 0 && m.r8(e + 11) == 0);
+    for (uint32_t ch = 1; ch < 4; ++ch) CHECK(m.r8(e + 12 * ch + 10) == 0xFF);
+    setPadProvider(nullptr, nullptr);
+}
+
+void testPadProviderAbsent(Rig& r) {
+    GuestMem m = r.g();
+    const uint32_t e = kMarkBase + 128;
+    // a provider that reports the controller absent (unfocused window) gives PAD_ERR_NO_CONTROLLER on channel 0 too
+    setPadProvider(testAbsent, nullptr);
+    padRun(r, e);
+    CHECK(m.r8(e + 10) == 0xFF && m.r16(e) == 0);
+    setPadProvider(nullptr, nullptr);                         // back to the deterministic neutral default
+}
+
 void testCallbackEnvelope(Rig& r) {
     GuestMem m = r.g();
     m.w32(0x800000D4, kCtxMain);
     m.w32(kSeqLen, 0);
     r.boot->msr = 0x00002032;
+    r.boot->r[1] = 0x80190000;
+    m.w32(0x80190004, 0xCAFEF00D);
     const bool ok = Platform::get().run(*r.boot, 0x80002400);
     CHECK(ok && !Platform::get().report().stopped);
     CHECK(m.r32(kSeqLen) == 4);
@@ -347,6 +408,8 @@ void testCallbackEnvelope(Rig& r) {
     CHECK(m.r32(kSeq + 4) == 100 + 5 * 10 + 6);  // the callback with r3 = 5, r4 = 6
     CHECK(m.r32(kSeq + 8) == 2);               // OSEnableScheduler
     CHECK(m.r32(kSeq + 12) == 3);              // __OSReschedule
+    CHECK(m.r32(kHandlerR1) == 0x80190000 - 8 && m.r32(kHandlerChain) == 0x80190000);   // same frame rule as the interrupt vector
+    CHECK(m.r32(0x80190004) == 0xCAFEF00D);
 }
 
 }  // namespace
@@ -365,6 +428,8 @@ int main() try {
     { Rig r; testDecrementer(r); }
     { Rig r; testThreadExitAndReuse(r); }
     { Rig r; testPad(r); }
+    { Rig r; testPadProvider(r); }
+    { Rig r; testPadProviderAbsent(r); }
     { Rig r; testCallbackEnvelope(r); }
     std::printf("hle scheduler tests: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
