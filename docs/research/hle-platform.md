@@ -149,6 +149,8 @@ The GX library (`GXInit` `0x801CB378` through `0x801D2BA8`, hmawl names for 60+ 
 
 The host plays the part of the IPL and apploader: it produces the state the DOL entry expects, without running their code. The disc extraction provides the inputs: `disc/sys/boot.bin` (disc header), `disc/sys/bi2.bin` (8 KB boot info 2), `disc/sys/fst.bin` (file-system table), and `disc/files/`.
 
+**Single table.** Every value the platform assumes at boot lives in `src/hle/boot_table.cpp` (`bootValues()`: boot magic, memory size, console type, TV mode, ARAM size, clocks, RAM top and BI2 size for the placement rule, the MSR at entry, DI_CONFIG, the drive information, the RTC start). `bootFields()` lists the low-memory words built from it, each tagged *assumed* (chosen by the platform), *from disc* (copied from `sys/boot.bin`) or *OS-written* (produced by the recompiled OS itself). The boot builder, the DI/DVD/EXI models, the host and `awl-capture-compare` all read the same table, so adopting a Dolphin capture means editing numbers in that one file (the capture report names the member to change). The values are printed at the top of `build/boot-trace.log` (`boot.low`, `boot.layout`, `boot.cpu`, `boot.devices`, `boot.time`).
+
 ### 3.1 Low memory and boot data
 
 Each value below is either read by the recompiled code before it is written (evidence = the reader), or is a hardware fact; unread fields are zero.
@@ -298,9 +300,9 @@ Reached when, after the boot sequence, **N consecutive VI retraces (N = 120 by d
 
 ## 7. Source layout and tests
 
-`src/hle/`: `platform.{h,cpp}` (clock, event queue, interrupt delivery, fibers, `OSSaveContext`/`OSLoadContext`), `os_handlers.cpp` (MMIO routing, the native SDK replacements, main-loop bookkeeping), `devices.h` with `dev_core.cpp` (PI, MI, DI stub, SI polling register), `dev_vi.cpp`, `dev_exi.cpp` (EXI with the RTC/SRAM device), `dev_audio.cpp` (DSP responder, ARAM, AI), `dev_gx.cpp` (write-gather port, CP, PE, command-stream parser), `dvd.{h,cpp}`, `boot.{h,cpp}` (boot environment), `hle_common.{h,cpp}` (guest memory access, boot trace), `host_main.cpp` (`awl-host`), `hle_scan.cpp` (`awl-hle-scan`). `tools/recomp/platform.cmake` builds the library `awl_hle`, the host (only when `build/recomp-gen` exists), the scanner and the tests.
+`src/hle/`: `platform.{h,cpp}` (clock, event queue, interrupt delivery, fibers, `OSSaveContext`/`OSLoadContext`), `os_handlers.cpp` (MMIO routing, the native SDK replacements, main-loop bookkeeping), `devices.h` with `dev_core.cpp` (PI, MI, DI stub, SI polling register), `dev_vi.cpp`, `dev_exi.cpp` (EXI with the RTC/SRAM device), `dev_audio.cpp` (DSP responder, ARAM, AI), `dev_gx.cpp` (write-gather port, CP, PE, command-stream parser), `dvd.{h,cpp}`, `boot.{h,cpp}` (boot environment), `boot_table.{h,cpp}` (the single table of assumed boot values), `hle_common.{h,cpp}` (guest memory access, boot trace), `host_main.cpp` (`awl-host`), `hle_scan.cpp` (`awl-hle-scan`), `capture_parse.{h,cpp}` and `capture_compare.{h,cpp}` with `capture_compare_main.cpp` (`awl-capture-compare`, section 10.8), `dump_host_memory.ps1`. `tools/recomp/platform.cmake` builds the library `awl_hle`, the host (only when `build/recomp-gen` exists), the scanner, the capture comparison and the tests.
 
-Tests (`hle_core_tests`, 111 checks; `hle_sched_tests`, 59 checks) need no game files. Expectations come from the SDK code read above (OSContext offsets, register bit tests, the call order of the callback envelope), public register maps, the tick arithmetic in section 4 and the GX command formats. They cover the event queue and clock, PI, the VI display interrupts and beam position, EXI with RTC/SRAM (checksum loop of `UnlockSram`), the GX parser (vertex sizes, finish, token, EFB copy, ring mirror), the DVD queue/cancel/file reads, the main-loop criterion, thread start and switch through `OSSaveContext`/`OSLoadContext`, thread exit and reuse of the same `OSThread` memory, interrupt and decrementer delivery, the callback envelope and the PAD status layout.
+Tests (`hle_core_tests`, 111 checks; `hle_sched_tests`, 59 checks; `hle_capture_tests`, 588 checks) need no game files. Expectations come from the SDK code read above (OSContext offsets, register bit tests, the call order of the callback envelope), public register maps, the tick arithmetic in section 4 and the GX command formats. They cover the event queue and clock, PI, the VI display interrupts and beam position, EXI with RTC/SRAM (checksum loop of `UnlockSram`), the GX parser (vertex sizes, finish, token, EFB copy, ring mirror), the DVD queue/cancel/file reads, the main-loop criterion, thread start and switch through `OSSaveContext`/`OSLoadContext`, thread exit and reuse of the same `OSThread` memory, interrupt and decrementer delivery, the callback envelope and the PAD status layout.
 
 Run (from the repository root, with the disc extracted under `disc/`; the generated output comes from `awl-recomp gen --full --dol rom/main.dol --rel-dir disc/files --out build/recomp-gen`):
 
@@ -322,6 +324,7 @@ build/Release/awl-host.exe --dol rom/main.dol --disc disc --trace build/boot-tra
 4. **REL dispatch**: after the recompiled `OSLink` (`0x801B4860`) returns, the REL's functions must be registered at `base + offset`, and removed after `OSUnlink` (`0x801B4ABC`). Please decide whether the generator does this inside the generated `OSLink`/`OSUnlink` bodies (the platform leaves both recompiled) or exposes a hook for the platform to call.
 5. `hleCall` should set `c.pc = guestAddr` before the handler runs so one handler function can serve several manifest entries and report the address.
 6. Optional: a `void* host` field in `Ctx` for the platform's per-thread data.
+7. **Call arguments in the trace (for the question 6 comparison)**: `TraceHit` (`guest.h`) records callee, site, depth and instruction count but no registers, so `awl-capture-compare` can compare the order of calls with Dolphin's log but not their arguments. Please add `r3`-`r6` (or a `uint32_t args[4]`) to `TraceHit`, filled in `pushFrame` from the context, only while `traceMaxDepth` is non-zero. The comparison and `awl-host` then need only a one-line change each (the report already has an argument column for the Dolphin side).
 
 ### 8.2 Dolphin black-box questions
 
@@ -379,63 +382,86 @@ Purpose: replace the platform's assumed boot values and timings with what the or
 ### 10.1 One-time setup
 
 1. Start `C:\tools\Dolphin-x64\Dolphin.exe`. This copy keeps its settings and output in `%APPDATA%\Dolphin Emulator\` (type that into the Windows Explorer address bar to open it). Below, that folder is called the **Dolphin user folder**. (If a file named `portable.txt` is ever added next to `Dolphin.exe`, the user folder becomes `C:\tools\Dolphin-x64\User\` instead.)
-2. Turn on the debugging windows: **Options > Configure**, then look in the **General**, **Interface** and **Advanced** tabs for a checkbox called **Show Debugging UI** (or Enable Debugging) and tick it. After that the **View** menu lists *Show Code*, *Show Registers*, *Show Breakpoints*, *Show Memory* and *Show Log*, and a **JIT** menu appears.
-3. Open **View > Show Log Configuration**. Set **Verbosity** to **Notice**, tick **Write to File**, tick **Write to Window**, and tick every log type in the list (or at least *Memory Map*). The log file will be `Logs\dolphin.log` inside the Dolphin user folder.
-4. Open **View > Show Breakpoints**, **View > Show Code**, **View > Show Registers**, **View > Show Memory** and **View > Show Log**. The windows can be dragged next to the main window; none of them needs to be large.
+2. Turn on the debugging windows: **Options > Configure**, then look in the **General**, **Interface** and **Advanced** tabs for a checkbox called **Show Debugging UI** (or Enable Debugging) and tick it. After that the debugger appears as tabs (confirmed on Dolphin 2606-91): **Code**, **Registers**, **Breakpoints** and **Memory**, and a **JIT** menu appears. Portuguese UI: **Options** is *Opções*, **View** is *Ver*.
+3. Open **View > Log Configuration** (Portuguese UI: **Ver > Configuração de Relatório**). Set **Verbosity** to **Notice**, tick **Write to File**, tick **Write to Window**, and tick every log type in the list (or at least *Memory Map*). The log file will be `Logs\dolphin.log` inside the Dolphin user folder.
+4. Make sure the **Code**, **Registers**, **Breakpoints** and **Memory** tabs are visible (they may be under **View**, or docked as tabs). The windows can be dragged next to the main window; none of them needs to be large.
 5. Make a folder for the results: `C:\Users\mperez\Projects\awl-native\build\dolphin-capture\` (create it in Explorer if it does not exist). `build` is not part of the repository, so nothing from the game is ever committed. Every file you save goes there.
 6. Only if a breakpoint does not trigger in the steps below: **Config > Advanced > CPU Emulation Engine** set to **Interpreter (slowest)**. The default (JIT) normally works.
 
 ### 10.2 How to start the game and place breakpoints
 
-The game must be started once, paused, given its breakpoints, and then **reset**, so the breakpoints are in place from the very first instruction:
+**Do not use Emulation > Reset.** On a GameCube, Reset is the console's reset button: the game handles it, and in the first run it hung and never reached the program entry. Use **Options > Boot to Pause** instead (checked on Dolphin 2606-91): with it ticked, Dolphin stops at the very first instruction of the game program, PC = `80003154`, so breakpoints can be placed before anything runs.
 
-1. **File > Open...** and choose `C:\Users\mperez\Projects\awl-native\rom\game.iso`. Let it start for a few seconds, then **Emulation > Pause**.
-2. In the **Breakpoints** window use the **+** button (or right-click > Add breakpoint) and type the address **without** `0x`, for example `80003154`. Each breakpoint has an edit dialog (double-click it or right-click > Edit) with two checkboxes: **Break** (stop the game here) and **Log** (write a line to the log and keep running). The two kinds used below are called *break* and *log*. When a *log* breakpoint is hit, Dolphin writes a line like `BP <address> ... (<r3> <r4> <r5> ...) LR=<address>` to the log: the numbers are the first argument registers (r3, r4, r5, ...) and the caller address.
-3. Set the breakpoints of the part you are doing (10.3 to 10.6), then **Emulation > Reset**. The game restarts and runs into them.
-4. When a *break* breakpoint stops the game, the Code and Registers windows update. Do what the step says, then **Emulation > Play** to continue.
-5. Between captures clear the breakpoint list (the **Clear** button in the Breakpoints window) so each capture only contains what you intend.
+1. Once: tick **Options > Boot to Pause** (Portuguese UI: **Opções**; the item keeps the name *Boot to Pause* or a close translation of it, and has a checkbox).
+2. **File > Open...** and choose `C:\Users\mperez\Projects\awl-native\rom\game.iso`. Dolphin starts paused. The **Code** tab shows PC = `80003154`.
+3. In the **Breakpoints** tab use the **+** button (or right-click > Add breakpoint) and type the address **without** `0x`, for example `80003268`. Each breakpoint has an edit dialog (double-click it or right-click > Edit) with two checkboxes: **Break** (stop the game here) and **Log** (write a line to the log and keep running). The two kinds used below are called *break* and *log*. When a *log* breakpoint is hit, Dolphin writes a line like `BP <address> ... (<r3> <r4> <r5> ...) LR=<address>` to the log: the numbers are the first argument registers (r3, r4, r5, ...) and the caller address.
+4. Set the breakpoints of the capture you are doing (10.3 to 10.6), then press **Emulation > Play** (Portuguese UI: **Emulação**). The game runs into them.
+5. When a *break* breakpoint stops the game, the Code and Registers tabs update. Do what the step says, then press **Play** again to continue.
+6. For each later capture: **Emulation > Stop**, open the ISO again with **File > Open...** (it is paused at `80003154` again), clear the breakpoint list (the **Clear** button, or delete the entries) and set the next capture's breakpoints, then **Play**. If a capture produces a log, copy `Logs\dolphin.log` away **before** opening the ISO again, because a new run may overwrite it.
 
 ### 10.3 Capture A: memory when the game program starts (question 1)
 
-Breakpoints: *break* at `80003154` (the first instruction of the game program).
+Breakpoints: none needed for the first dump, because the game is already stopped at `80003154`.
 
-1. Reset as in 10.2. The game stops at `80003154`.
-2. In the **Memory** window click **Dump MRAM**. Dolphin writes `Dump\mem1.raw` inside the Dolphin user folder (24 MB).
+1. Open the ISO as in 10.2. The game is paused at `80003154`.
+2. In the **Memory** tab click **Dump MRAM**. Dolphin writes `Dump\mem1.raw` inside the Dolphin user folder (24 MB).
 3. In Explorer move that file to `C:\Users\mperez\Projects\awl-native\build\dolphin-capture\` and rename it `A-at-entry-mem1.raw`. (Dolphin overwrites `mem1.raw` on the next dump, so move it before taking another.)
-4. Still stopped, look at the **Registers** window and write down the values of **TBU** and **TBL** (the time base) if they are listed; type them into a text file `A-notes.txt` in the same folder. If they are not shown, skip this.
-5. Add a second *break* breakpoint at `80003268` (the instruction right after the system initialisation returns) and press **Emulation > Play**. When it stops, click **Dump MRAM** again and save the file as `A-after-osinit-mem1.raw`, the same way.
+4. Still stopped, look at the **Registers** tab and write down the values of **TBU** and **TBL** (the time base) if they are listed; type them into a text file `A-notes.txt` in the same folder (for example `TBU: 00000000` and `TBL: 0001F4A0` on two lines). If they are not shown, skip this.
+5. Add a *break* breakpoint at `80003268` (the instruction right after the system initialisation returns) and press **Play**. When it stops, click **Dump MRAM** again and save the file as `A-after-osinit-mem1.raw`, the same way.
 
 What I read from these files: the whole low-memory area (boot information, file table, memory-arena pointers, clock values, console type) and the drive-information buffer (question 5), and I compare them to the assumed values printed at the top of `build\boot-trace.log`.
 
 ### 10.4 Capture B: the video mode and the frame rhythm (questions 2 and 3)
 
-Breakpoints (clear the old ones first):
+Stop the game and open the ISO again (10.2, step 6). Breakpoints (clear the old ones first):
 
 - *break* at `801BED34` (the game asks the video system to configure itself).
 - *log* at `8017A7F8` (end of each frame: one hit per frame).
 
-1. Reset. The game stops at `801BED34`. Read register **r3** in the Registers window (a number such as `803xxxxx`) and write it in `B-notes.txt`. Click **Dump MRAM** and save the file as `B-viconfigure-mem1.raw`.
-2. Press **Emulation > Play** and let the game run for about 15 seconds (it will sit on its first screens; that is fine). Then **Emulation > Stop**.
+1. Press **Play**. The game stops at `801BED34`. Read register **r3** in the Registers tab (a number such as `803xxxxx`) and write it in `B-notes.txt` (for example `r3: 803A1B20`). Click **Dump MRAM** and save the file as `B-viconfigure-mem1.raw`.
+2. Press **Play** and let the game run for about 15 seconds (it will sit on its first screens; that is fine). Then **Emulation > Stop**.
 3. Copy `Logs\dolphin.log` from the Dolphin user folder to the capture folder as `B-frames.log`. Every line for `8017A7F8` carries a time stamp, so I can work out the frame period; the render mode is read from the memory file at the address in r3.
 
 ### 10.5 Capture C: the order of the first system calls (question 6)
 
-Breakpoints (clear the old ones first), all *log*: `801B0DE0`, `801BADF0`, `801BE3BC`, `801CB378`, `801C19D8`, `801C3D48`, `801C2018`, `801B70D4`, `801BA66C`, `801BC9D8`, `801BF68C`, `801CED04`.
+Stop the game and open the ISO again. Breakpoints (clear the old ones first), all *log*: `801B0DE0`, `801BADF0`, `801BE3BC`, `801CB378`, `801C19D8`, `801C3D48`, `801C2018`, `801B70D4`, `801BA66C`, `801BC9D8`, `801BF68C`, `801CED04`.
 
 (In order they are: system initialisation, DVD init, video init, graphics init, audio-interface init, DSP init, ARAM init, create thread, open file, read from disc, set next frame buffer, copy the picture.)
 
-1. Reset and let the game run for about 15 seconds, then **Emulation > Stop**.
+1. Press **Play** and let the game run for about 15 seconds, then **Emulation > Stop**.
 2. Copy `Logs\dolphin.log` to the capture folder as `C-calls.log`. Each line shows the address, the register values at that moment and a time stamp. I compare the order and the arguments with `boot-trace.log` from `awl-host`.
 
 ### 10.6 Capture D: the audio processor conversation (the two DSP/AX checks)
 
-Breakpoints (clear the old ones first), both *log*: `801C3D34` (the game sends a message to the audio processor; the message is the first number, r3) and `801C3D30` (the game has just read a message from the audio processor; again r3).
+Stop the game and open the ISO again. Breakpoints (clear the old ones first), both *log*: `801C3D34` (the game sends a message to the audio processor; the message is the first number, r3) and `801C3D30` (the game has just read a message from the audio processor; again r3).
 
-1. Reset and let the game run for about 10 seconds, then **Emulation > Stop**.
+1. Press **Play** and let the game run for about 10 seconds, then **Emulation > Stop**.
 2. Copy `Logs\dolphin.log` to the capture folder as `D-dsp.log`.
 
 What I look for: the first message from the audio processor is `8071FEED`; the game then sends five pairs of messages starting with `80F3A001`, `80F3C002`, `80F3A002`, `80F3B002` and `80F3D001`; the processor answers `DCD10000`; and for every audio frame the game sends a message starting with `BABE` plus an address and the processor answers `DCD10001`. If that matches, the audio part of the platform is right; if not, the log shows what to change.
 
-### 10.7 When you are done
+### 10.7 When you are done (owner steps end here)
 
 Tell me the files are in `build\dolphin-capture\`. The expected set is `A-at-entry-mem1.raw`, `A-after-osinit-mem1.raw`, `A-notes.txt`, `B-viconfigure-mem1.raw`, `B-notes.txt`, `B-frames.log`, `C-calls.log` and `D-dsp.log`. The memory files are about 24 MB each and are game data: they stay in `build\`, are never committed, and are only read by local analysis tools.
+
+### 10.8 Reading the captures: `awl-capture-compare`
+
+Console tool (no window, no game process). Inputs: the files of section 10.7 in `build\dolphin-capture\`, the platform's `build\boot-trace.log`, the disc's `disc\sys\boot.bin`, `bi2.bin` and `fst.bin`, and optionally the platform's own memory images. Output: `build\dolphin-capture\compare-report.md`. Everything stays under `build\`; the report prints only the compared fields (low-memory words, pointers, drive information, the render-mode fields, call addresses and arguments, DSP mail values) and `identical`/`differs in N bytes` for the file-table and BI2 blocks, never other memory contents.
+
+```powershell
+cmake --build build --config Release --target awl-host awl-capture-compare
+# once per change of the platform: its own memory at the entry and after OSInit, and the trace with the call lines
+src\hle\dump_host_memory.ps1
+build\Release\awl-capture-compare.exe
+```
+
+Missing files give a "not captured" section and the rest still runs; lines the parser cannot read are listed under *Parse notes* (first ten per file) instead of stopping it. Options: `--capture`, `--trace`, `--disc`, `--host-dumps`, `--out`. `awl-host` gained `--calls DEPTH` (default 16: record the calls of the functions in `capture_parse.cpp` as `call` lines in the trace, plus `boot.after-osinit icount=N`), `--dump-boot FILE` and `--dump-mem FILE`; `dump_host_memory.ps1` runs it twice, the second time stopped at instruction N, which is where OSInit has returned (its callee `DVDInit` runs inside OSInit, so the drive-information buffer is filled by then in both).
+
+What each section answers, and what to do with it:
+
+- **Q1/Q5**: every table field in `0x80000000-0xFF` and `0x800030C0-0xFF` with the assumed value, the value Dolphin has at the entry and after OSInit, and the platform's own value after OSInit (for OS-written fields). Fields that differ come with the table member to change (`boot_table.cpp`). Non-zero words the table does not model are listed so a missing field is visible. BI2 and FST placement (pointers against the layout rule, contents against `sys/`), the arena words and the drive-information buffer follow.
+- **Q2/Q3**: the interval between the game's end-of-frame calls from the time stamps of `B-frames.log` (median, mean, min, max, in field periods) beside the platform's, the time base at the entry, and the render-mode object at `r3` decoded from the B dump with the TV format compared to the table's `tvMode`.
+- **Q6**: the logged calls of capture C in order against the platform's calls (longest-common-subsequence alignment of the first 150 events per side; differences listed), then the first hit of each function with Dolphin's `r3`-`r6` and caller. The platform side has no arguments yet (request 7 in section 8.1).
+- **DSP/AX**: the checks of section 10.6 on the Dolphin log (first message, five command words, `DCD10000`, `BABE` frames answered by `DCD10001`) and the first 24 messages of each direction beside the platform's.
+
+**Parser.** The layout of Dolphin's breakpoint-log line is not verified. The parser takes the marker `BP` (or the word *breakpoint*), a hexadecimal address, an optional symbol, an argument list in parentheses (or loose `rN=value` tokens) separated by spaces or commas with or without `0x`, `LR=` (or `LR:`) with the caller, and a leading time stamp in any of `MM:SS:mmm` (Dolphin's own layout), `HH:MM:SS:mmm`, `HH:MM:SS.fff`, `MM:SS.fff` or `[seconds.fff]`; wrapped minutes are undone. Tests (`hle_capture_tests`) cover each variant with invented lines. A line that mentions a breakpoint but cannot be read is reported, never dropped silently; if the first real log differs, the lines in *Parse notes* are all that is needed to extend it.
