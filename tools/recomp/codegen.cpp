@@ -9,6 +9,7 @@
 #include <map>
 #include <set>
 
+#include "modules.h"
 #include "runtime/guest.h"
 
 namespace awl::recomp {
@@ -30,18 +31,41 @@ struct GenStats {
     size_t functions = 0, stubs = 0, hle = 0, mmioRecompiled = 0, instructions = 0, bytes = 0;
     size_t midFunctionTails = 0, unsupportedInsns = 0, unresolvedBctr = 0, jumpTables = 0, fellOff = 0;
     std::map<std::string, size_t> unsupportedKinds;
+    std::vector<std::string> errors;   // generation errors; any of them fails the run
 };
+
+// Where the function being emitted lives. DOL functions use their real addresses; REL functions are analysed at
+// a synthetic base and every address they use is formed from the module's section bases (rb is the base of the
+// function's own section, loaded once at entry), so the generated code works wherever OSLink places the module.
+struct ModuleView {
+    const RelSet* rels = nullptr;
+    const RelModule* mod = nullptr;   // null for a DOL function
+};
+
+std::string relSymbol(const RelModule& m, uint32_t synthAddr) {
+    uint32_t sec = 0, off = 0;
+    m.locate(synthAddr, sec, off);
+    return S("m%u_s%u_%08X", m.rel->id, sec, off);
+}
 
 class FnEmitter {
 public:
-    FnEmitter(const Program& p, const Discovery& d, const std::set<uint32_t>& gen, const Function& f, GenStats& st)
-        : p_(p), d_(d), gen_(gen), f_(f), st_(st), body_(f.body.begin(), f.body.end()) {}
+    FnEmitter(const Program& p, const Discovery& d, const std::set<uint32_t>& gen, const Function& f, GenStats& st,
+              ModuleView mv = {}, std::string nameOverride = {})
+        : p_(p), d_(d), gen_(gen), f_(f), st_(st), rels_(mv.rels), mod_(mv.mod), nameOverride_(std::move(nameOverride)),
+          body_(f.body.begin(), f.body.end()) {
+        if (mod_) {
+            uint32_t off = 0;
+            mod_->locate(f.start, fnSec_, off);
+        }
+    }
 
     std::string emit() {
         collectLabels();
         std::string out;
-        out += S("void %s(Ctx& c) {\n", fname(f_.start).c_str());
+        out += S("void %s(Ctx& c) {\n", (nameOverride_.empty() ? sym(f_.start) : nameOverride_).c_str());
         out += "    uint32_t ea = 0;\n    (void)ea;\n";
+        if (mod_) out += S("    const uint32_t rb = c.m->relBase[%u][%u];\n    (void)rb;\n", mod_->rel->id, fnSec_);
         body_text_.clear();
         for (size_t k = 0; k < f_.body.size(); ++k) {
             const uint32_t a = f_.body[k];
@@ -56,8 +80,8 @@ public:
                 const uint32_t nxt = a + 4;
                 if (k + 1 < f_.body.size() && f_.body[k + 1] == nxt) continue;
                 flush();
-                if (nxt == f_.fallsInto && gen_.count(nxt)) { checkpoint(a); line(S("return %s(c);", fname(nxt).c_str())); }
-                else { ++st_.fellOff; line(S("rt::unimplemented(c, 0x%08X, \"control flow leaves the discovered function body\");", a)); }
+                if (nxt == f_.fallsInto && gen_.count(nxt)) { checkpoint(a); line(S("return %s(c);", sym(nxt).c_str())); }
+                else { ++st_.fellOff; line(S("rt::unimplemented(c, %s, \"control flow leaves the discovered function body\");", ADDR(a).c_str())); }
             }
         }
         out += body_text_;
@@ -76,14 +100,14 @@ private:
     }
     // Emit the pc/icount update for an instruction that can trap or call (counted including itself).
     void trapPoint(const Insn& i) {
-        line(S("rt::at(c, 0x%08X, %d);", i.addr, pend_));
+        line(S("rt::at(c, %s, %d);", ADDR(i.addr).c_str(), pend_));
         pend_ = 0;
     }
 
     // Preemption checkpoint (pending instructions must already be flushed): records the pc and compares the
     // retired count against the deadline/limit. Emitted at every return, tail transfer and backward branch;
     // calls already pass through rt::at.
-    void checkpoint(uint32_t addr) { line(S("rt::at(c, 0x%08X, 0);", addr)); }
+    void checkpoint(uint32_t addr) { line(S("rt::at(c, %s, 0);", ADDR(addr).c_str())); }
 
     static bool fallsThrough(const Insn& i) {
         if (i.op == Op::b) return i.lk();
@@ -121,6 +145,7 @@ private:
     std::string F0(uint32_t n) const { return S("c.f[%u].ps0", n); }
 
     std::string eaD(const Insn& i) const {   // d(rA)
+        if (dyn_) return i.rA() == 0 ? simmExpr(i) : S("%s + %s", R(i.rA()).c_str(), simmExpr(i).c_str());
         if (i.rA() == 0) return U(i.simm());
         if (i.simm() == 0) return R(i.rA());
         return S("%s + %s", R(i.rA()).c_str(), U(i.simm()).c_str());
@@ -152,27 +177,74 @@ private:
         ++st_.unsupportedInsns;
         ++st_.unsupportedKinds[opName(i.op)];
         flush();
-        line(S("rt::unimplemented(c, 0x%08X, \"%s\");", i.addr, why));
+        line(S("rt::unimplemented(c, %s, \"%s\");", ADDR(i.addr).c_str(), why));
     }
 
     void tailCall(const Insn& i, uint32_t target) {
         flush();
         if (gen_.count(target)) {
             checkpoint(i.addr);
-            line(S("return %s(c);", fname(target).c_str()));
+            line(S("return %s(c);", sym(target).c_str()));
         } else {
             ++st_.midFunctionTails;
-            line(S("rt::unimplemented(c, 0x%08X, \"tail branch to an address that is not a recompiled function entry\");", i.addr));
+            line(S("rt::unimplemented(c, %s, \"tail branch to an address that is not a recompiled function entry\");", ADDR(i.addr).c_str()));
         }
     }
 
     void emitInsn(const Insn& i);
+
+    // ---- addresses and symbols ------------------------------------------------------------------------
+    // C++ expression for a guest address used by the code being emitted. REL code never embeds linked
+    // addresses: positions inside a module are section bases (loaded by OSLink) plus fixed offsets.
+    std::string ADDR(uint32_t addr) const {
+        if (rels_) {
+            if (const RelModule* m = rels_->moduleFor(addr)) {
+                uint32_t sec = 0, off = 0;
+                if (m->locate(addr, sec, off)) {
+                    if (m == mod_ && sec == fnSec_) return S("(rb + 0x%Xu)", off);
+                    return S("(c.m->relBase[%u][%u] + 0x%Xu)", m->rel->id, sec, off);
+                }
+            }
+        }
+        return S("0x%08X", addr);
+    }
+    std::string sym(uint32_t addr) const {
+        if (rels_) if (const RelModule* m = rels_->moduleFor(addr)) return relSymbol(*m, addr);
+        return fname(addr);
+    }
+
+    // The 16-bit piece of a module address that an ADDR16_xx relocation places in an instruction immediate.
+    std::string dynPiece(const DynReloc& d) const {
+        const std::string s = S("(c.m->relBase[%u][%u] + 0x%Xu)", d.module, d.section, d.addend);
+        switch (d.type) {
+            case 6: return S("((%s + 0x8000u) >> 16)", s.c_str());   // _HA
+            case 5: return S("(%s >> 16)", s.c_str());               // _HI
+            default: return S("(%s & 0xFFFFu)", s.c_str());          // ADDR16, _LO
+        }
+    }
+    std::string simmExpr(const Insn& i) const { return dyn_ ? S("rt::sext16(%s)", dynPiece(*dyn_).c_str()) : U(i.simm()); }
+    static bool dynAware(Op op) {
+        switch (op) {
+            case Op::addi: case Op::addis: case Op::ori: case Op::oris:
+            case Op::lwz: case Op::lbz: case Op::lhz: case Op::lha: case Op::lwzu: case Op::lbzu: case Op::lhzu: case Op::lhau:
+            case Op::stw: case Op::stb: case Op::sth: case Op::stwu: case Op::stbu: case Op::sthu: case Op::lmw: case Op::stmw:
+            case Op::lfs: case Op::lfd: case Op::lfsu: case Op::lfdu: case Op::stfs: case Op::stfd: case Op::stfsu: case Op::stfdu:
+                return true;
+            default:
+                return false;
+        }
+    }
 
     const Program& p_;
     const Discovery& d_;
     const std::set<uint32_t>& gen_;
     const Function& f_;
     GenStats& st_;
+    const RelSet* rels_;
+    const RelModule* mod_;
+    std::string nameOverride_;
+    uint32_t fnSec_ = 0;
+    const DynReloc* dyn_ = nullptr;   // relocation on the instruction being emitted, if any
     std::set<uint32_t> body_;
     std::set<uint32_t> labels_;
     std::string body_text_;
@@ -183,12 +255,30 @@ void FnEmitter::emitInsn(const Insn& i) {
     ++pend_;
     const uint32_t D = i.rD(), A = i.rA(), B = i.rB();
     const bool oe = i.oe();
+    dyn_ = nullptr;
+    if (mod_) {
+        const auto it = mod_->dyn.find(i.addr);
+        if (it != mod_->dyn.end()) {
+            dyn_ = &it->second;
+            if (!dynAware(i.op)) {
+                st_.errors.push_back(S("%s: relocated immediate on %s at 0x%08X, which the generator cannot express", sym(f_.start).c_str(), opName(i.op), i.addr));
+                dyn_ = nullptr;
+            }
+        }
+    }
     switch (i.op) {
         // ---- integer arithmetic ----
-        case Op::addi: line(A == 0 ? S("%s = %s;", R(D).c_str(), U(i.simm()).c_str())
-                                   : S("%s = %s + %s;", R(D).c_str(), R(A).c_str(), U(i.simm()).c_str())); break;
-        case Op::addis: line(A == 0 ? S("%s = %s;", R(D).c_str(), U(i.simm() * 65536).c_str())
-                                    : S("%s = %s + %s;", R(D).c_str(), R(A).c_str(), U(i.simm() * 65536).c_str())); break;
+        case Op::addi: line(A == 0 ? S("%s = %s;", R(D).c_str(), simmExpr(i).c_str())
+                                   : S("%s = %s + %s;", R(D).c_str(), R(A).c_str(), simmExpr(i).c_str())); break;
+        case Op::addis:
+            if (dyn_) {
+                const std::string hi = S("(%s << 16)", dynPiece(*dyn_).c_str());
+                line(A == 0 ? S("%s = %s;", R(D).c_str(), hi.c_str()) : S("%s = %s + %s;", R(D).c_str(), R(A).c_str(), hi.c_str()));
+            } else {
+                line(A == 0 ? S("%s = %s;", R(D).c_str(), U(i.simm() * 65536).c_str())
+                            : S("%s = %s + %s;", R(D).c_str(), R(A).c_str(), U(i.simm() * 65536).c_str()));
+            }
+            break;
         case Op::addic: line(S("%s = rt::addx<true, false>(c, %s, %s, 0);", R(D).c_str(), R(A).c_str(), U(i.simm()).c_str())); break;
         case Op::addic_rc: line(S("%s = rt::addx<true, false>(c, %s, %s, 0);", R(D).c_str(), R(A).c_str(), U(i.simm()).c_str()));
             line(S("rt::cr0(c, %s);", R(D).c_str())); break;
@@ -216,8 +306,10 @@ void FnEmitter::emitInsn(const Insn& i) {
         case Op::cmp: line(S("rt::cmps(c, %u, %s, %s);", i.crfD(), R(A).c_str(), R(B).c_str())); break;
         case Op::cmpl: line(S("rt::cmpu(c, %u, %s, %s);", i.crfD(), R(A).c_str(), R(B).c_str())); break;
         // ---- logical ----
-        case Op::ori: line(S("%s = %s | 0x%Xu;", R(A).c_str(), R(i.rS()).c_str(), i.uimm())); break;
-        case Op::oris: line(S("%s = %s | 0x%Xu;", R(A).c_str(), R(i.rS()).c_str(), i.uimm() << 16)); break;
+        case Op::ori: line(dyn_ ? S("%s = %s | %s;", R(A).c_str(), R(i.rS()).c_str(), dynPiece(*dyn_).c_str())
+                                : S("%s = %s | 0x%Xu;", R(A).c_str(), R(i.rS()).c_str(), i.uimm())); break;
+        case Op::oris: line(dyn_ ? S("%s = %s | (%s << 16);", R(A).c_str(), R(i.rS()).c_str(), dynPiece(*dyn_).c_str())
+                                 : S("%s = %s | 0x%Xu;", R(A).c_str(), R(i.rS()).c_str(), i.uimm() << 16)); break;
         case Op::xori: line(S("%s = %s ^ 0x%Xu;", R(A).c_str(), R(i.rS()).c_str(), i.uimm())); break;
         case Op::xoris: line(S("%s = %s ^ 0x%Xu;", R(A).c_str(), R(i.rS()).c_str(), i.uimm() << 16)); break;
         case Op::andi_rc: line(S("%s = %s & 0x%Xu;", R(A).c_str(), R(i.rS()).c_str(), i.uimm())); line(S("rt::cr0(c, %s);", R(A).c_str())); break;
@@ -328,14 +420,14 @@ void FnEmitter::emitInsn(const Insn& i) {
             const uint32_t s = i.spr();
             if (s == 8) line(S("%s = c.lr;", R(D).c_str()));
             else if (s == 9) line(S("%s = c.ctr;", R(D).c_str()));
-            else { trapPoint(i); line(S("%s = rt::mfspr(c, 0x%08X, %u);", R(D).c_str(), i.addr, s)); }
+            else { trapPoint(i); line(S("%s = rt::mfspr(c, %s, %u);", R(D).c_str(), ADDR(i.addr).c_str(), s)); }
             break;
         }
         case Op::mtspr: {
             const uint32_t s = i.spr();
             if (s == 8) line(S("c.lr = %s;", R(i.rS()).c_str()));
             else if (s == 9) line(S("c.ctr = %s;", R(i.rS()).c_str()));
-            else { trapPoint(i); line(S("rt::mtspr(c, 0x%08X, %u, %s);", i.addr, s, R(i.rS()).c_str())); }
+            else { trapPoint(i); line(S("rt::mtspr(c, %s, %u, %s);", ADDR(i.addr).c_str(), s, R(i.rS()).c_str())); }
             break;
         }
         case Op::mftb: line(S("%s = rt::mftb(c, %u);", R(D).c_str(), i.spr())); break;
@@ -347,7 +439,7 @@ void FnEmitter::emitInsn(const Insn& i) {
         case Op::mtsrin: line(S("c.sr[%s >> 28] = %s;", R(B).c_str(), R(i.rS()).c_str())); break;
         case Op::tlbie: case Op::tlbsync: case Op::dcbi: break;   // no TLB or cache model in the spike runtime
         case Op::rfi: case Op::sc: case Op::eciwx: case Op::ecowx:
-            flush(); line(S("rt::privileged(c, 0x%08X, \"%s\");", i.addr, opName(i.op))); break;
+            flush(); line(S("rt::privileged(c, %s, \"%s\");", ADDR(i.addr).c_str(), opName(i.op))); break;
         case Op::tw: case Op::twi: unsupported(i, "trap instruction"); break;
         // ---- floating point ----
         case Op::lfs: trapPoint(i); line(S("rt::lfs(c, %u, %s);", D, eaD(i).c_str())); break;
@@ -437,8 +529,8 @@ void FnEmitter::emitInsn(const Insn& i) {
             const uint32_t t = i.branchTarget();
             if (i.lk()) {
                 trapPoint(i);
-                if (gen_.count(t)) line(S("AWL_CALL(c, 0x%08X, 0x%08X, %s);", i.addr, t, fname(t).c_str()));
-                else { ++st_.unsupportedInsns; ++st_.unsupportedKinds["bl-to-non-function"]; line(S("rt::unimplemented(c, 0x%08X, \"call to an address that is not a recompiled function\");", i.addr)); }
+                if (gen_.count(t)) line(S("AWL_CALL(c, %s, %s, %s);", ADDR(i.addr).c_str(), ADDR(t).c_str(), sym(t).c_str()));
+                else { ++st_.unsupportedInsns; ++st_.unsupportedKinds["bl-to-non-function"]; line(S("rt::unimplemented(c, %s, \"call to an address that is not a recompiled function\");", ADDR(i.addr).c_str())); }
             } else if (body_.count(t) && !(t != f_.start && gen_.count(t))) {
                 flush();
                 if (t <= i.addr) checkpoint(i.addr);   // backward branch
@@ -453,19 +545,19 @@ void FnEmitter::emitInsn(const Insn& i) {
             flush();
             const std::string cond = condition(i);
             if (i.lk()) {
-                if (t == i.addr + 4) { line(S("c.lr = 0x%08X;", i.addr + 4)); break; }   // bcl 20,31,$+4: read the pc
+                if (t == i.addr + 4) { line(S("c.lr = %s;", ADDR(i.addr + 4).c_str())); break; }   // bcl 20,31,$+4: read the pc
                 unsupported(i, "conditional call");
                 break;
             }
             const std::string cnd = cond.empty() ? "true" : cond;
             if (body_.count(t) && !(t != f_.start && gen_.count(t))) {
-                if (t <= i.addr) line(S("if (%s) { rt::at(c, 0x%08X, 0); goto L_%08X; }", cnd.c_str(), i.addr, t));   // backward branch
+                if (t <= i.addr) line(S("if (%s) { rt::at(c, %s, 0); goto L_%08X; }", cnd.c_str(), ADDR(i.addr).c_str(), t));   // backward branch
                 else line(S("if (%s) goto L_%08X;", cnd.c_str(), t));
             } else if (gen_.count(t)) {
-                line(S("if (%s) { rt::at(c, 0x%08X, 0); return %s(c); }", cnd.c_str(), i.addr, fname(t).c_str()));
+                line(S("if (%s) { rt::at(c, %s, 0); return %s(c); }", cnd.c_str(), ADDR(i.addr).c_str(), sym(t).c_str()));
             } else {
                 ++st_.midFunctionTails;
-                line(S("if (%s) rt::unimplemented(c, 0x%08X, \"conditional branch out of the function body\");", cnd.c_str(), i.addr));
+                line(S("if (%s) rt::unimplemented(c, %s, \"conditional branch out of the function body\");", cnd.c_str(), i.addr));
             }
             break;
         }
@@ -475,12 +567,12 @@ void FnEmitter::emitInsn(const Insn& i) {
                 const std::string cond = condition(i);
                 if (!cond.empty()) { unsupported(i, "conditional blrl"); break; }
                 line("{ const uint32_t target = c.lr;");
-                line(S("  rt::callIndirect(c, 0x%08X, target); }", i.addr));
+                line(S("  rt::callIndirect(c, %s, target); }", ADDR(i.addr).c_str()));
             } else {
                 flush();
                 const std::string cond = condition(i);
-                if (cond.empty()) { checkpoint(i.addr); line(S("rt::ret(c, 0x%08X);", i.addr)); line("return;"); }
-                else line(S("if (%s) { rt::at(c, 0x%08X, 0); rt::ret(c, 0x%08X); return; }", cond.c_str(), i.addr, i.addr));
+                if (cond.empty()) { checkpoint(i.addr); line(S("rt::ret(c, %s);", ADDR(i.addr).c_str())); line("return;"); }
+                else line(S("if (%s) { rt::at(c, %s, 0); rt::ret(c, %s); return; }", cond.c_str(), ADDR(i.addr).c_str(), ADDR(i.addr).c_str()));
             }
             break;
         }
@@ -489,29 +581,36 @@ void FnEmitter::emitInsn(const Insn& i) {
                 trapPoint(i);
                 const std::string cond = condition(i);
                 if (!cond.empty()) { unsupported(i, "conditional bctrl"); break; }
-                line(S("rt::callIndirect(c, 0x%08X, c.ctr);", i.addr));
+                line(S("rt::callIndirect(c, %s, c.ctr);", ADDR(i.addr).c_str()));
             } else if (isIndirectJump(i)) {
                 flush();
                 const IndirectJump* j = jumpAt(i.addr);
                 if (!j || j->kind == IndirectKind::Unresolved || j->kind == IndirectKind::Conditional) {
                     ++st_.unresolvedBctr;
-                    line(S("rt::unresolvedJump(c, 0x%08X);", i.addr));
+                    line(S("rt::unresolvedJump(c, %s);", ADDR(i.addr).c_str()));
                 } else if (j->kind == IndirectKind::JumpTableBounded || j->kind == IndirectKind::JumpTableScanned) {
                     ++st_.jumpTables;
                     checkpoint(i.addr);   // targets may be backward
-                    line("switch (c.ctr) {");
+                    // In a REL the table holds linked addresses: dispatch on the offset within this section.
+                    line(mod_ ? "switch (c.ctr - rb) {" : "switch (c.ctr) {");
                     std::set<uint32_t> done;
                     for (uint32_t t : j->targets) {
                         if (!done.insert(t).second) continue;
-                        line(S("case 0x%08X: goto L_%08X;", t, t), true);
+                        if (mod_) {
+                            uint32_t sec = 0, off = 0;
+                            if (!mod_->locate(t, sec, off) || sec != fnSec_) { unsupported(i, "jump-table target outside the function's section"); continue; }
+                            line(S("case 0x%Xu: goto L_%08X;", off, t), true);
+                        } else {
+                            line(S("case 0x%08X: goto L_%08X;", t, t), true);
+                        }
                     }
-                    line(S("default: rt::badJump(c, 0x%08X, c.ctr);", i.addr), true);
+                    line(S("default: rt::badJump(c, %s, c.ctr);", ADDR(i.addr).c_str()), true);
                     line("}");
                 } else if (j->kind == IndirectKind::ConstTailJump) {
                     tailCall(i, j->constTarget);
                 } else {   // IndirectTailCall
                     checkpoint(i.addr);
-                    line(S("rt::tailIndirect(c, 0x%08X, c.ctr);", i.addr));
+                    line(S("rt::tailIndirect(c, %s, c.ctr);", ADDR(i.addr).c_str()));
                     line("return;");
                 }
             } else {
@@ -585,6 +684,8 @@ std::set<uint32_t> bootClosure(const Program& prog, const Discovery& d, const st
     return seen;
 }
 
+std::string hex8(uint32_t v) { return S("0x%08X", v); }
+
 std::string evidenceText(const Function& f) {
     std::string e;
     for (const auto& k : f.platform.privilegedKinds) { if (!e.empty()) e += "; "; e += k; }
@@ -594,8 +695,8 @@ std::string evidenceText(const Function& f) {
 
 }  // namespace
 
-int generateCode(const Program& prog, const Discovery& d, const std::vector<HleEntry>& hle, const std::string& outDir,
-                 bool full) {
+int generateCode(const Program& prog, const Discovery& d, const std::vector<HleEntry>& hle, const RelSet* rels,
+                 const OsLinkEvidence* os, const std::string& outDir, bool full) {
     namespace fs = std::filesystem;
     std::set<uint32_t> hleAddrs;
     std::map<uint32_t, const HleEntry*> hleByAddr;
@@ -609,6 +710,16 @@ int generateCode(const Program& prog, const Discovery& d, const std::vector<HleE
             if (!d.funcs.count(*it)) it = gen.erase(it); else ++it;
         }
     }
+    // REL modules are generated with the whole DOL only (the boot closure never reaches them).
+    const bool withRels = full && rels && !rels->modules.empty();
+    if (withRels && !os) {
+        std::fprintf(stderr, "RELs were given but OSLink/OSUnlink were not identified\n");
+        return 1;
+    }
+    std::set<uint32_t> genAll = gen;   // every function start the emitter may call: the DOL's and the modules' (synthetic)
+    if (withRels)
+        for (const auto& m : rels->modules)
+            for (const auto& [a, f] : m->disc.funcs) { (void)f; genAll.insert(a); }
     fs::create_directories(outDir);
     GenStats st;
     std::vector<std::string> files;
@@ -620,23 +731,25 @@ int generateCode(const Program& prog, const Discovery& d, const std::vector<HleE
         "// Generated by awl-recomp from the local DOL. Derived from game bytes: keep out of version control.\n"
         "#include \"gen_decls.h\"\n#include <cmath>\nnamespace rt = awl::rt;\nusing namespace awl::rt;\n\n";
     std::string chunk;
-    uint32_t chunkWindow = 0;
+    std::string chunkName;
     auto flushChunk = [&]() {
         if (chunk.empty()) return;
-        const std::string name = S("gen_%08X.cpp", chunkWindow);
-        out.write(name, prelude + chunk);
-        files.push_back(name);
+        out.write(chunkName, prelude + chunk);
+        files.push_back(chunkName);
         chunk.clear();
     };
     std::string decls = "#pragma once\n#include \"guest.h\"\n#include \"hle_abi.h\"\n";
     for (uint32_t a : gen) decls += S("void %s(awl::rt::Ctx& c);\n", fname(a).c_str());
+    if (withRels)
+        for (const auto& m : rels->modules)
+            for (const auto& [a, f] : m->disc.funcs) { (void)f; decls += S("void %s(awl::rt::Ctx& c);\n", relSymbol(*m, a).c_str()); }
     out.write("gen_decls.h", decls);
     for (uint32_t a : gen) {
         const Function& f = d.funcs.at(a);
         ++st.functions;
-        const uint32_t window = a & ~(kChunkWindow - 1);
-        if (!chunk.empty() && window != chunkWindow) flushChunk();
-        chunkWindow = window;
+        const std::string name = S("gen_%08X.cpp", a & ~(kChunkWindow - 1));
+        if (!chunk.empty() && name != chunkName) flushChunk();
+        chunkName = name;
         if (hleByAddr.count(a)) {
             ++st.hle;
             chunk += S("void %s(Ctx& c) { rt::hleCall(c, 0x%08X); }\n\n", fname(a).c_str(), a);
@@ -648,11 +761,47 @@ int generateCode(const Program& prog, const Discovery& d, const std::vector<HleE
                 ++st.mmioRecompiled;
                 chunk += S("// platform evidence: %s\n", evidenceText(f).c_str());
             }
-            FnEmitter e(prog, d, gen, f, st);
-            chunk += e.emit();
+            // The SDK OSLink/OSUnlink stay recompiled; after a successful call the generated wrapper tells the
+            // runtime about the module (see rt::moduleLinked), which registers its functions for dispatch.
+            const bool wrapLink = withRels && a == os->osLink, wrapUnlink = withRels && a == os->osUnlink;
+            if (wrapLink || wrapUnlink) {
+                FnEmitter e(prog, d, gen, f, st, {}, fname(a) + "_impl");
+                chunk += e.emit();
+                chunk += S("// %s: module functions are registered once the recompiled SDK function reports success.\n", wrapLink ? "OSLink" : "OSUnlink");
+                chunk += S("void %s(Ctx& c) {\n    const uint32_t info = c.r[3];\n    %s_impl(c);\n    if (c.r[3] != 0) rt::%s(c, info);\n}\n\n",
+                           fname(a).c_str(), fname(a).c_str(), wrapLink ? "moduleLinked" : "moduleUnlinked");
+            } else {
+                FnEmitter e(prog, d, gen, f, st);
+                chunk += e.emit();
+            }
         }
     }
     flushChunk();
+    // REL module functions, chunked by section-relative address window within each module.
+    size_t relFunctions = 0;
+    if (withRels) {
+        for (const auto& m : rels->modules) {
+            for (const auto& [a, f] : m->disc.funcs) {
+                ++relFunctions;
+                uint32_t sec = 0, off = 0;
+                m->locate(a, sec, off);
+                const std::string name = S("gen_m%u_%08X.cpp", m->rel->id, (a - m->layout.base) & ~(kChunkWindow - 1));
+                if (!chunk.empty() && name != chunkName) flushChunk();
+                chunkName = name;
+                if (f.platform.privileged != 0) {
+                    st.errors.push_back(S("%s: privileged instruction in a REL function (module %u section %u offset 0x%X)", relSymbol(*m, a).c_str(), m->rel->id, sec, off));
+                    continue;
+                }
+                if (f.platform.any()) {
+                    ++st.mmioRecompiled;
+                    chunk += S("// platform evidence: %s\n", evidenceText(f).c_str());
+                }
+                FnEmitter e(*m->prog, m->disc, genAll, f, st, ModuleView{rels, m.get()});
+                chunk += e.emit();
+            }
+            flushChunk();
+        }
+    }
     // Dispatch table
     {
         std::string t = "#include \"gen_decls.h\"\nnamespace awl::rt {\nconst FnEntry kFunctions[] = {\n";
@@ -671,9 +820,37 @@ int generateCode(const Program& prog, const Discovery& d, const std::vector<HleE
             t += "namespace {\nconst HleName kHleNames[] = {\n" + names;
             t += S("};\nstruct HleNamesDeclarer { HleNamesDeclarer() { declareHleNames(kHleNames, %zu); } } g_hleNamesDeclarer;\n}\n", named);
         }
+        if (withRels) {
+            // The module tables live in gen_rel_dispatch.cpp; calling into it from here keeps that object linked when
+            // the generated code is a static library.
+            t += "void declareGeneratedRelModules();\nnamespace {\nstruct RelModulesDeclarer { RelModulesDeclarer() { declareGeneratedRelModules(); } } g_relModulesDeclarer;\n}\n";
+        }
         t += "}\n";
         out.write("gen_dispatch.cpp", t);
         files.push_back("gen_dispatch.cpp");
+    }
+    // REL module tables: section lengths and the (section, offset) of every function, declared at start-up.
+    if (withRels) {
+        std::string t = "#include \"gen_decls.h\"\nnamespace awl::rt {\nnamespace {\n";
+        for (const auto& m : rels->modules) {
+            t += S("const uint32_t kRel%uLengths[] = {", m->rel->id);
+            for (const RelSection& s : m->rel->sections) t += S("%u, ", s.length);
+            t += "};\n";
+            t += S("const RelFnDecl kRel%uFns[] = {\n", m->rel->id);
+            for (const auto& [a, f] : m->disc.funcs) {
+                (void)f;
+                uint32_t sec = 0, off = 0;
+                m->locate(a, sec, off);
+                t += S("    {%u, 0x%X, %s},\n", sec, off, relSymbol(*m, a).c_str());
+            }
+            t += "};\n";
+        }
+        t += "const RelModuleDecl kRelModules[] = {\n";
+        for (const auto& m : rels->modules)
+            t += S("    {%u, %zu, kRel%uLengths, kRel%uFns, %zu},\n", m->rel->id, m->rel->sections.size(), m->rel->id, m->rel->id, m->disc.funcs.size());
+        t += S("};\n}\nvoid declareGeneratedRelModules() { declareRelModules(kRelModules, %zu); }\n}\n", rels->modules.size());
+        out.write("gen_rel_dispatch.cpp", t);
+        files.push_back("gen_rel_dispatch.cpp");
     }
     {
         std::string cm = "set(AWL_RECOMP_GEN_SOURCES\n";
@@ -683,13 +860,22 @@ int generateCode(const Program& prog, const Discovery& d, const std::vector<HleE
     }
     const size_t removed = out.removeStale(files);
     std::printf("generated %zu functions (%zu platform stubs, %zu HLE calls, %zu MMIO-only recompiled), %zu instructions into %zu files under %s\n",
-                st.functions, st.stubs, st.hle, st.mmioRecompiled, st.instructions, files.size(), outDir.c_str());
+                st.functions + relFunctions, st.stubs, st.hle, st.mmioRecompiled, st.instructions, files.size(), outDir.c_str());
+    if (withRels) {
+        std::printf("  REL modules: %zu, %zu functions; OSLink %s, OSUnlink %s (wrapped to register module functions)\n", rels->modules.size(),
+                    relFunctions, hex8(os->osLink).c_str(), hex8(os->osUnlink).c_str());
+    }
     std::printf("  files written %zu, unchanged %zu, stale removed %zu\n", out.written, out.unchanged, removed);
     std::printf("  jump tables emitted: %zu; unresolved bctr: %zu; tails/branches to non-function targets: %zu; bodies that fall off: %zu\n",
                 st.jumpTables, st.unresolvedBctr, st.midFunctionTails, st.fellOff);
     std::printf("  untranslated instructions: %zu\n", st.unsupportedInsns);
     for (const auto& [k, v] : st.unsupportedKinds) std::printf("    %-24s %zu\n", k.c_str(), v);
-    return 0;
+    for (const auto& e : st.errors) std::fprintf(stderr, "error: %s\n", e.c_str());
+    return st.errors.empty() ? 0 : 1;
+}
+
+int generateCode(const Program& prog, const Discovery& d, const std::vector<HleEntry>& hle, const std::string& outDir, bool full) {
+    return generateCode(prog, d, hle, nullptr, nullptr, outDir, full);
 }
 
 }  // namespace awl::recomp

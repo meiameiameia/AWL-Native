@@ -16,6 +16,7 @@
 #include "codegen.h"
 #include "image.h"
 #include "manifest.h"
+#include "modules.h"
 #include "ppc.h"
 
 using namespace awl::recomp;
@@ -72,17 +73,25 @@ void usage() {
         "             manifest defaults to tools/recomp/hle_manifest.txt\n");
 }
 
+// Loads the game's modules from the directory: every wlp0/1/2.rel that exists (a partial set is allowed so a
+// synthetic module can be tested); an existing file that fails to parse, or a directory with none, is an error.
 bool loadRels(const Options& o, std::vector<RelImage>& rels) {
     if (o.relDir.empty()) return true;
     for (const char* n : {"wlp0.rel", "wlp1.rel", "wlp2.rel"}) {
+        const std::string path = o.relDir + "/" + n;
+        if (!std::ifstream(path, std::ios::binary)) continue;
         RelImage r;
         std::string err;
-        if (!loadRel(o.relDir + "/" + n, r, err)) {
+        if (!loadRel(path, r, err)) {
             std::fprintf(stderr, "%s: %s\n", n, err.c_str());
             return false;
         }
         r.name = n;
         rels.push_back(std::move(r));
+    }
+    if (rels.empty()) {
+        std::fprintf(stderr, "no wlp0.rel, wlp1.rel or wlp2.rel found in %s\n", o.relDir.c_str());
+        return false;
     }
     return true;
 }
@@ -320,7 +329,16 @@ int main(int argc, char** argv) {
             for (const auto& e : errors) std::fprintf(stderr, "%s\n", e.c_str());
             return 1;
         }
-        return generateCode(prog, d, hle, o.out, o.full);
+        // With the whole DOL, the modules are generated too: each is linked at a synthetic layout for analysis, and
+        // the SDK's OSLink/OSUnlink are identified from evidence so their wrappers can register the module code.
+        RelSet relSet;
+        OsLinkEvidence os;
+        const bool withRels = o.full && !rels.empty();
+        if (withRels) {
+            if (!prepareRels(dol, rels, relSet, err)) { std::fprintf(stderr, "REL: %s\n", err.c_str()); return 1; }
+            if (!findOsLink(prog, d, dol, os, err)) { std::fprintf(stderr, "OSLink: %s\n", err.c_str()); return 1; }
+        }
+        return generateCode(prog, d, hle, withRels ? &relSet : nullptr, withRels ? &os : nullptr, o.out, o.full);
     }
     usage();
     return 2;

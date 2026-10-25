@@ -22,6 +22,8 @@ namespace awl::rt {
 constexpr uint32_t kMem1Size = 0x01800000;       // 24 MB main memory
 constexpr uint32_t kLockedCacheSize = 0x4000;    // 16 KB data cache locked at 0xE0000000
 constexpr uint32_t kMaxCallDepth = 8192;
+constexpr uint32_t kMaxRelModules = 8;     // module ids 1..7 (id 0 is the DOL)
+constexpr uint32_t kMaxRelSections = 32;
 
 struct Fpr {
     double ps0 = 0.0;
@@ -113,6 +115,14 @@ struct Machine {
     uint32_t traceMaxDepth = 0;        // 0 = tracing off; otherwise record calls up to this depth
     std::vector<BoundaryHit> faults;   // census mode: unmapped/MMIO accesses that were absorbed
 
+    // Linked REL modules. relBase[id][section] is the guest address of a section of the module with that id
+    // (0 when absent or not linked); generated REL code forms every address from it. dynFunctions holds the
+    // linked modules' recompiled functions at their linked addresses, sorted by address (see moduleLinked).
+    struct DynFn { uint32_t addr; GuestFn fn; uint32_t module; };
+    uint32_t relBase[kMaxRelModules][kMaxRelSections] = {};
+    bool relLinked[kMaxRelModules] = {};
+    std::vector<DynFn> dynFunctions;
+
 private:
     uint64_t limit_ = ~0ull;
 };
@@ -161,6 +171,32 @@ struct HleName {
     const char* name;
 };
 void declareHleNames(const HleName* table, uint32_t count);
+
+// Generated REL modules. Each module's functions are known by (section, offset); their guest addresses exist
+// only once the SDK's OSLink has placed the module. The generated dispatch table declares one RelModuleDecl per
+// module (static initialiser, like declareHleNames); the generated OSLink/OSUnlink wrappers call moduleLinked /
+// moduleUnlinked after a successful link/unlink with the OSModuleInfo pointer that was passed in r3.
+struct RelFnDecl {
+    uint32_t section;
+    uint32_t offset;
+    GuestFn fn;
+};
+struct RelModuleDecl {
+    uint32_t id;
+    uint32_t numSections;
+    const uint32_t* sectionLengths;   // numSections entries, as in the REL the code was generated from
+    const RelFnDecl* fns;
+    uint32_t fnCount;
+};
+void declareRelModules(const RelModuleDecl* table, uint32_t count);
+// Reads the linked module's section table from guest memory (OSModuleInfo: id at +0, section count at +0x0C,
+// absolute section-table address at +0x10; entries are {address | exec bit, length}), checks it against the
+// generated module, records the section bases and registers the module's functions at their linked addresses.
+// Stops loudly for an unknown module id, a section count or length that differs from the generated module, a
+// module that is already linked, or a function address that collides with a registered one.
+void moduleLinked(Ctx& c, uint32_t info);
+// Removes the module's functions and section bases.
+void moduleUnlinked(Ctx& c, uint32_t info);
 
 // Retire n instructions on the shared counter (straight-line code between trap points).
 inline void tick(Ctx& c, uint32_t n) { c.m->icount += n; }
@@ -303,6 +339,7 @@ constexpr uint32_t mask(uint32_t mb, uint32_t me) {
     const uint32_t b = 0xFFFFFFFFu << (31 - me);
     return mb <= me ? (a & b) : (a | b);
 }
+inline uint32_t sext16(uint32_t v) { return static_cast<uint32_t>(static_cast<int32_t>(static_cast<int16_t>(v))); }
 inline uint32_t rotl(uint32_t x, uint32_t n) { n &= 31; return n ? (x << n) | (x >> (32 - n)) : x; }
 
 inline void setCr(Ctx& c, uint32_t field, uint32_t v) {

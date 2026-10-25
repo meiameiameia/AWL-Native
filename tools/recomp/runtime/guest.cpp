@@ -32,6 +32,8 @@ MmioWrite g_mmioWrite = nullptr;
 TimeBaseSource g_timeBase = nullptr;
 PreemptHook g_preemptHook = nullptr;
 uint64_t g_deadline = ~0ull;   // preemption deadline in retired instructions; ~0 = none
+const RelModuleDecl* g_relModules = nullptr;
+uint32_t g_relModuleCount = 0;
 
 std::vector<Machine*>& machines() {
     static std::vector<Machine*> v;
@@ -130,7 +132,11 @@ GuestFn lookupFunction(const Machine& m, uint32_t addr) {
         const uint32_t mid = (lo + hi) / 2;
         if (m.functions[mid].addr < addr) lo = mid + 1; else hi = mid;
     }
-    return (lo < m.functionCount && m.functions[lo].addr == addr) ? m.functions[lo].fn : nullptr;
+    if (lo < m.functionCount && m.functions[lo].addr == addr) return m.functions[lo].fn;
+    // Not in the DOL's table: a function of a linked REL module.
+    const auto& dyn = m.dynFunctions;
+    const auto it = std::lower_bound(dyn.begin(), dyn.end(), addr, [](const Machine::DynFn& e, uint32_t a) { return e.addr < a; });
+    return (it != dyn.end() && it->addr == addr) ? it->fn : nullptr;
 }
 
 void callIndirect(Ctx& c, uint32_t site, uint32_t target) {
@@ -252,6 +258,61 @@ void mmioInstall(MmioRead read, MmioWrite write) {
 }
 
 void timeBaseInstall(TimeBaseSource source) { g_timeBase = source; }
+
+void declareRelModules(const RelModuleDecl* table, uint32_t count) {
+    g_relModules = table;
+    g_relModuleCount = count;
+}
+
+void moduleLinked(Ctx& c, uint32_t info) {
+    Machine& m = *c.m;
+    const uint32_t id = ld32(c, info);
+    const RelModuleDecl* decl = nullptr;
+    for (uint32_t i = 0; i < g_relModuleCount; ++i) if (g_relModules[i].id == id) decl = &g_relModules[i];
+    if (!decl || id >= kMaxRelModules)
+        stop(c, StopKind::Contract, c.pc, id, "OSLink succeeded for a module id that has no generated code (module id in addr)");
+    if (m.relLinked[id]) stop(c, StopKind::Contract, c.pc, id, "OSLink succeeded for a module that is already linked (module id in addr)");
+    const uint32_t numSections = ld32(c, info + 0x0C);
+    const uint32_t table = ld32(c, info + 0x10);
+    if (numSections != decl->numSections)
+        stop(c, StopKind::Contract, c.pc, numSections, "linked module has a different section count than the generated code (count in addr)");
+    uint32_t base[kMaxRelSections] = {};
+    for (uint32_t i = 0; i < numSections; ++i) {
+        const uint32_t addr = ld32(c, table + 8 * i) & ~3u;
+        const uint32_t length = ld32(c, table + 8 * i + 4);
+        if (length != decl->sectionLengths[i])
+            stop(c, StopKind::Contract, c.pc, length, "linked module section length differs from the generated code (length in addr)");
+        base[i] = length ? addr : 0;
+    }
+    std::vector<Machine::DynFn> added;
+    for (uint32_t i = 0; i < decl->fnCount; ++i) {
+        const RelFnDecl& f = decl->fns[i];
+        if (f.section >= numSections || base[f.section] == 0)
+            stop(c, StopKind::Contract, c.pc, f.section, "generated module function lies in a section the linked module does not have (section in addr)");
+        added.push_back({base[f.section] + f.offset, f.fn, id});
+    }
+    auto byAddr = [](const Machine::DynFn& a, const Machine::DynFn& b) { return a.addr < b.addr; };
+    std::sort(added.begin(), added.end(), byAddr);
+    std::vector<Machine::DynFn> merged(m.dynFunctions.size() + added.size());
+    std::merge(m.dynFunctions.begin(), m.dynFunctions.end(), added.begin(), added.end(), merged.begin(), byAddr);
+    for (size_t i = 1; i < merged.size(); ++i)
+        if (merged[i - 1].addr == merged[i].addr)
+            stop(c, StopKind::Contract, c.pc, merged[i].addr, "module function address collides with an already registered function (address in addr)");
+    m.dynFunctions = std::move(merged);
+    std::memcpy(m.relBase[id], base, sizeof base);
+    m.relLinked[id] = true;
+}
+
+void moduleUnlinked(Ctx& c, uint32_t info) {
+    Machine& m = *c.m;
+    const uint32_t id = ld32(c, info);
+    if (id >= kMaxRelModules || !m.relLinked[id])
+        stop(c, StopKind::Contract, c.pc, id, "OSUnlink succeeded for a module that was not linked through the generated code (module id in addr)");
+    auto& v = m.dynFunctions;
+    v.erase(std::remove_if(v.begin(), v.end(), [id](const Machine::DynFn& f) { return f.module == id; }), v.end());
+    std::memset(m.relBase[id], 0, sizeof m.relBase[id]);
+    m.relLinked[id] = false;
+}
 
 void preemptInstall(PreemptHook hook) {
     g_preemptHook = hook;
