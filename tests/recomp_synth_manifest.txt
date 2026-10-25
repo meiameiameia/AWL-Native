@@ -1,0 +1,2 @@
+# HLE manifest for the synthetic end-to-end fixture (tests/recomp_synth_dol.cpp); no game data.
+dol 0x80003400 SynthHle  # synthetic fixture: li r3,1; blr replaced by a native handler

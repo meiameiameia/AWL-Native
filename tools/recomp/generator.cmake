@@ -33,7 +33,7 @@ if(EXISTS "${AWL_RECOMP_GEN_DIR}/sources.cmake")
     target_compile_definitions(awl-recomp-spike PRIVATE _CRT_SECURE_NO_WARNINGS)
     target_link_libraries(awl-recomp-spike PRIVATE awl_recomp_core awl_recomp_runtime)
     if(MSVC)
-        target_compile_options(awl-recomp-spike PRIVATE /W4 /fp:strict)
+        target_compile_options(awl-recomp-spike PRIVATE /W4 /fp:strict /MP)   # /MP: the generated chunks compile in parallel
         set_source_files_properties(${AWL_RECOMP_GEN_SOURCES} PROPERTIES COMPILE_OPTIONS "/wd4102;/wd4702;/wd4100;/wd4189")
     endif()
 endif()
@@ -73,4 +73,34 @@ if(MSVC)
 else()
     target_compile_options(recomp_contract_tests PRIVATE -Wall -Wextra)
     target_compile_options(recomp_manifest_tests PRIVATE -Wall -Wextra)
+endif()
+
+# End-to-end generator test: a hand-assembled DOL goes through `awl-recomp gen` at build time and the generated
+# code is compiled into the test (no game bytes involved).
+set(AWL_SYNTH_DIR "${CMAKE_BINARY_DIR}/recomp-synth")
+add_executable(recomp_synth_dol tests/recomp_synth_dol.cpp)
+set(AWL_SYNTH_OUTPUTS
+    "${AWL_SYNTH_DIR}/gen_80000000.cpp" "${AWL_SYNTH_DIR}/gen_dispatch.cpp" "${AWL_SYNTH_DIR}/gen_decls.h")
+add_custom_command(
+    OUTPUT ${AWL_SYNTH_OUTPUTS}
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${AWL_SYNTH_DIR}"
+    COMMAND recomp_synth_dol "${AWL_SYNTH_DIR}/synth.dol"
+    COMMAND awl-recomp gen --dol "${AWL_SYNTH_DIR}/synth.dol" --out "${AWL_SYNTH_DIR}"
+            --hle-manifest "${CMAKE_SOURCE_DIR}/tests/recomp_synth_manifest.txt"
+    DEPENDS recomp_synth_dol awl-recomp "${CMAKE_SOURCE_DIR}/tests/recomp_synth_manifest.txt"
+    COMMENT "Generating the synthetic end-to-end fixture")
+add_executable(recomp_generated_tests tests/recomp_generated_tests.cpp "${AWL_SYNTH_DIR}/gen_80000000.cpp" "${AWL_SYNTH_DIR}/gen_dispatch.cpp")
+target_include_directories(recomp_generated_tests PRIVATE "${AWL_SYNTH_DIR}")
+target_compile_definitions(recomp_generated_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+target_link_libraries(recomp_generated_tests PRIVATE awl_recomp_runtime)
+add_test(NAME recomp_generated_tests COMMAND recomp_generated_tests)
+if(MSVC)
+    target_compile_options(recomp_synth_dol PRIVATE /W4)
+    target_compile_definitions(recomp_synth_dol PRIVATE _CRT_SECURE_NO_WARNINGS)
+    target_compile_options(recomp_generated_tests PRIVATE /W4 /fp:strict)
+    set_source_files_properties("${AWL_SYNTH_DIR}/gen_80000000.cpp" "${AWL_SYNTH_DIR}/gen_dispatch.cpp"
+        PROPERTIES COMPILE_OPTIONS "/wd4102;/wd4702;/wd4100;/wd4189")
+else()
+    target_compile_options(recomp_synth_dol PRIVATE -Wall -Wextra)
+    target_compile_options(recomp_generated_tests PRIVATE -Wall -Wextra)
 endif()

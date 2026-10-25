@@ -1,6 +1,8 @@
 // Tests for the HLE manifest reader and for the generator's handling of manifest entries, on a tiny
 // program assembled by hand (no game bytes). The accepted and rejected forms follow the format documented
 // in the header of tools/recomp/hle_manifest.txt.
+#include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -159,7 +161,10 @@ std::string readFile(const std::filesystem::path& p) {
 
 std::string readAllGenerated(const std::filesystem::path& dir) {
     std::string all;
-    for (const char* n : {"gen_000.cpp", "gen_dispatch.cpp", "gen_decls.h"}) all += readFile(dir / n);
+    std::vector<std::string> names;
+    for (const auto& e : std::filesystem::directory_iterator(dir)) names.push_back(e.path().filename().string());
+    std::sort(names.begin(), names.end());
+    for (const auto& n : names) if (n.rfind("gen_", 0) == 0) all += readFile(dir / n);
     return all;
 }
 
@@ -181,6 +186,56 @@ void testValidation() {
         CHECK(!validateHleManifest(p.entries, d, "m.txt", errors));
         CHECK(errors.size() == 1 && contains(errors[0], "m.txt:1: ") && contains(errors[0], "is not a discovered DOL function start"));
     }
+}
+
+// Two functions in different 32 KB address windows: 0x80003100 calls 0x8000B100 (each `li r3,N; blr`).
+struct TwoWindows {
+    DolImage dol;
+    TwoWindows() {
+        dol.file.assign(0x40, 0);
+        put(dol.file, 0x00, B(0x80003100, 0x8000B100, true));
+        put(dol.file, 0x04, kBlr);
+        put(dol.file, 0x20, LI(3, 2));
+        put(dol.file, 0x24, kBlr);
+        DolSection a, b;
+        a.index = 0; a.text = true; a.fileOffset = 0; a.addr = 0x80003100; a.size = 0x20;
+        b.index = 1; b.text = true; b.fileOffset = 0x20; b.addr = 0x8000B100; b.size = 0x20;
+        dol.sections = {a, b};
+        dol.entry = 0x80003100;
+    }
+};
+
+void testIncrementalOutput() {
+    namespace fs = std::filesystem;
+    TwoWindows t;
+    const Program prog = buildProgram(t.dol);
+    const Discovery d = discoverFunctions(prog, DiscoveryInput{});
+    const fs::path out = fs::temp_directory_path() / "awl_recomp_incremental_test";
+    fs::remove_all(out);
+    CHECK(generateCode(prog, d, {}, out.string(), true) == 0);
+    // Chunks are named by address window, not by order.
+    CHECK(fs::exists(out / "gen_80000000.cpp") && fs::exists(out / "gen_80008000.cpp") && fs::exists(out / "sources.cmake"));
+    std::ofstream(out / "gen_stale.cpp") << "// left over from an earlier run\n";
+    std::ofstream(out / "notes.txt") << "not generated output\n";
+    const auto old = fs::file_time_type::clock::now() - std::chrono::hours(1);
+    const char* all[] = {"gen_80000000.cpp", "gen_80008000.cpp", "gen_dispatch.cpp", "gen_decls.h", "sources.cmake"};
+    for (const char* n : all) fs::last_write_time(out / n, old);
+
+    // Regenerating with nothing changed rewrites nothing, so file timestamps survive; the stale chunk goes away.
+    CHECK(generateCode(prog, d, {}, out.string(), true) == 0);
+    for (const char* n : all) CHECK(fs::last_write_time(out / n) == old);
+    CHECK(!fs::exists(out / "gen_stale.cpp") && fs::exists(out / "notes.txt"));
+
+    // Replacing one function by an HLE call changes only its own window's chunk and the dispatch table (names).
+    const Parsed p = parse("dol 0x8000B100 SecondFn  # synthetic fixture\n");
+    CHECK(p.ok);
+    CHECK(generateCode(prog, d, p.entries, out.string(), true) == 0);
+    CHECK(fs::last_write_time(out / "gen_80008000.cpp") != old);
+    CHECK(fs::last_write_time(out / "gen_dispatch.cpp") != old);
+    CHECK(fs::last_write_time(out / "gen_80000000.cpp") == old);
+    CHECK(fs::last_write_time(out / "gen_decls.h") == old);
+    CHECK(fs::last_write_time(out / "sources.cmake") == old);
+    fs::remove_all(out);
 }
 
 void testEmission() {
@@ -247,6 +302,7 @@ int main() {
     testParserRejects();
     testValidation();
     testEmission();
+    testIncrementalOutput();
     std::printf("recomp manifest tests: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }
