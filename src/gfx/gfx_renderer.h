@@ -26,6 +26,9 @@ public:
     static constexpr uint32_t kEfbWidth = 640, kEfbHeight = 528;
 
     bool init(Device& dev, std::string& err);
+    // The XFB copy's vertical (deflicker) filter: on by default, as the hardware applies the taps of the copy command. Dolphin's default
+    // setting leaves it off, which gives a sharper picture; a setting for the owner, not a fidelity fix.
+    void setCopyFilter(bool on) { copyFilter_ = on; }
     void setOcclusionDebug(uint32_t firstSeq, uint32_t count) { occFrom_ = firstSeq; occCount_ = count; }
 
     // gx::Backend
@@ -93,6 +96,7 @@ private:
     std::unordered_map<uint32_t, Gpu> copyTextures_;   // by EfbCopyCommand::id (copies to textures)
     std::vector<XfbEntry> xfb_;
     uint64_t xfbSeq_ = 0, useClock_ = 0, textureBytes_ = 0;
+    bool copyFilter_ = true;
     ComPtr<ID3D11Query> frameQuery_;
     uint32_t frameDraws_ = 0, frameFirstSeq_ = 0;
     bool frameStats_ = std::getenv("AWL_GFX_FRAMESTATS") != nullptr;

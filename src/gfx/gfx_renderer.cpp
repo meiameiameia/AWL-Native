@@ -798,7 +798,7 @@ void Renderer::efbCopy(const gx::EfbCopyCommand& cc) {
     // The filter: the vertical taps apply only when the copy is not scaled; a half-scale texture copy averages 2x2 texels.
     const bool box = cc.target == gx::CopyTarget::Texture && cc.halfScale;
     float taps[7] = {0, 0, 0, 1, 0, 0, 0};
-    if (cc.target == gx::CopyTarget::Xfb) {
+    if (cc.target == gx::CopyTarget::Xfb && copyFilter_) {
         int sum = 0;
         for (int i = 0; i < 7; ++i) sum += cc.vfilter[i];
         if (sum > 0) for (int i = 0; i < 7; ++i) taps[i] = cc.vfilter[i] / static_cast<float>(sum);
