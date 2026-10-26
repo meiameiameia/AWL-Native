@@ -113,10 +113,11 @@ public:
             const gx::CoreStats& s = core_.stats();
             const double frames = p_.counters.retraces ? double(p_.counters.retraces) : 1.0;
             std::fprintf(stderr, "gx core: %llu commands, %llu draws, %llu vertices, %llu triangles (%llu culled), %llu copies, %llu pipeline rebuilds, textures %llu decoded / %llu cached, "
-                         "%.1f MB hashed; %.3f s in the core = %.1f us per retrace\n",
+                         "%.1f MB hashed + %.1f MB compared; %.3f s in the core = %.1f us per retrace\n",
                          (unsigned long long)s.commands, (unsigned long long)s.draws, (unsigned long long)s.vertices, (unsigned long long)s.triangles, (unsigned long long)s.culledTriangles,
                          (unsigned long long)s.copies, (unsigned long long)s.pipelineRebuilds, (unsigned long long)s.textureDecodes, (unsigned long long)s.textureCacheHits,
-                         s.textureBytesHashed / 1048576.0, s.busySeconds, 1e6 * s.busySeconds / frames);
+                         s.textureBytesHashed / 1048576.0, s.textureBytesCompared / 1048576.0, s.busySeconds, 1e6 * s.busySeconds / frames);
+            std::fprintf(stderr, "gx core split: pipeline %.3f s, vertices+XF+primitives %.3f s, backend %.3f s\n", s.pipelineSeconds, s.vertexSeconds, s.backendSeconds);
         }
     }
     void displayList(uint32_t addr, uint32_t size, const uint8_t* data) override { cap_.displayList(addr, size, data); }
