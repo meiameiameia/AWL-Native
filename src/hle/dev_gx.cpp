@@ -105,6 +105,7 @@ class GxFeed : public gx::StreamObserver {
 public:
     explicit GxFeed(Platform& p) : p_(p), mem_(p), host_(p), core_(mem_, gx::backendHub(), host_) {
         core_.setObserver(this);
+        core_.setProfiling(std::getenv("AWL_GX_STATS") != nullptr);
         parseOptions();
     }
     ~GxFeed() override {
@@ -113,10 +114,10 @@ public:
             const gx::CoreStats& s = core_.stats();
             const double frames = p_.counters.retraces ? double(p_.counters.retraces) : 1.0;
             std::fprintf(stderr, "gx core: %llu commands, %llu draws, %llu vertices, %llu triangles (%llu culled), %llu copies, %llu pipeline rebuilds, textures %llu decoded / %llu cached, "
-                         "%.1f MB hashed + %.1f MB compared; %.3f s in the core = %.1f us per retrace\n",
+                         "%.1f MB hashed + %.1f MB compared (%llu bindings trusted within an invalidate epoch), %llu draws on the 4-wide path; %.3f s in the core = %.1f us per retrace\n",
                          (unsigned long long)s.commands, (unsigned long long)s.draws, (unsigned long long)s.vertices, (unsigned long long)s.triangles, (unsigned long long)s.culledTriangles,
                          (unsigned long long)s.copies, (unsigned long long)s.pipelineRebuilds, (unsigned long long)s.textureDecodes, (unsigned long long)s.textureCacheHits,
-                         s.textureBytesHashed / 1048576.0, s.textureBytesCompared / 1048576.0, s.busySeconds, 1e6 * s.busySeconds / frames);
+                         s.textureBytesHashed / 1048576.0, s.textureBytesCompared / 1048576.0, (unsigned long long)s.textureTrusted, (unsigned long long)s.batchedDraws, s.busySeconds, 1e6 * s.busySeconds / frames);
             std::fprintf(stderr, "gx core split: pipeline %.3f s, vertices+XF+primitives %.3f s, backend %.3f s\n", s.pipelineSeconds, s.vertexSeconds, s.backendSeconds);
         }
     }

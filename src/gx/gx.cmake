@@ -6,6 +6,7 @@ add_library(awl_gx STATIC
     src/gx/gx_dump.cpp
     src/gx/gx_core.cpp
     src/gx/gx_draw.cpp
+    src/gx/gx_vertex.cpp
     src/gx/gx_pipeline.cpp
     src/gx/gx_texture.cpp
     src/gx/gx_record.cpp
@@ -46,4 +47,14 @@ if(MSVC)
     target_compile_options(gx_core_tests PRIVATE /W4 /fp:strict)
 else()
     target_compile_options(gx_core_tests PRIVATE -Wall -Wextra)
+endif()
+
+# Replay benchmark of the vertex path with a checksumming backend (bit-identity check for optimisations).
+add_executable(awl-gx-bench src/gx/gx_bench.cpp)
+target_compile_definitions(awl-gx-bench PRIVATE _CRT_SECURE_NO_WARNINGS)
+target_link_libraries(awl-gx-bench PRIVATE awl_gx)
+if(MSVC)
+    target_compile_options(awl-gx-bench PRIVATE /W4 /fp:strict)
+else()
+    target_compile_options(awl-gx-bench PRIVATE -Wall -Wextra)
 endif()

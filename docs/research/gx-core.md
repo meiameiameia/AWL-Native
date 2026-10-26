@@ -8,7 +8,7 @@ Current state of the GX core track. Nothing here is derived from game bytes beyo
 | --- | --- | --- |
 | IR | `src/gx/gx_ir.h` (v2, frozen, architect-owned) | per-draw / per-copy commands, pipeline state, textures, `Backend` interface |
 | Command processor | `src/gx/gx_core.{h,cpp}` (`Core`) | consumes the write-gather byte stream (display lists included), CP/XF/BP state, completion services through `CoreHost` |
-| Vertices, XF, primitives | `src/gx/gx_draw.cpp` | vertex loading (direct/indexed), position/normal matrices, projection, lighting channels, texgen, quad/strip/fan/line/point conversion, face culling |
+| Vertices, XF, primitives | `src/gx/gx_vertex.{h,cpp}` (`VertexEngine`; draw framing in `gx_draw.cpp`, shared types in `gx_common.h`) | vertex loading (direct/indexed), position/normal matrices, projection, lighting channels, texgen, quad/strip/fan/line/point conversion, face culling |
 | Pipeline and copies | `src/gx/gx_pipeline.cpp` | BP/XF registers -> `PipelineState` (viewport, scissor, depth, blend, alpha compare, fog, TEV, indirect, texture maps), EFB copies, aliasing of copy textures |
 | Textures | `src/gx/gx_texture.cpp` | decode of I4 I8 IA4 IA8 RGB565 RGB5A3 RGBA8 C4 C8 C14X2 CMPR (+ TLUT, mips) to RGBA8, content-hash key, LRU decode cache (192 MB) |
 | Recording / hub | `src/gx/gx_record.{h,cpp}` | `RecordingBackend` (text dump per retrace, texture PNGs), `BackendHub` (`awl::gx::backendHub()`) |
@@ -18,7 +18,7 @@ Current state of the GX core track. Nothing here is derived from game bytes beyo
 
 **Renderer hookup.** The platform delivers every command to `awl::gx::backendHub()`; a renderer calls `backendHub().add(&backend)` before the run starts (backends are called synchronously on the guest thread, in stream order; pointers in the commands are valid only during the call, `shared_ptr<const Texture>` may be kept). Errors in the stream throw `GxError`, which `dev_gx.cpp` turns into a hardware stop with the stream offset and register/command.
 
-**Options.** `awl-host ... --gx-dump N [--gx-dump-from F] [--gx-dump-dir D]` writes `frame_<retrace>.txt` (IR text, state printed when it changes, up to 64 vertices per draw) and `tex_<key>.png` (level 0 of each bound texture) for retraces F..F+N-1 (default dir `build/gxdump`; `AWL_GX_DUMP_DIR` also works). `AWL_GX_STATS=1` prints the core's counters and cost at exit. `AWL_GX_CAPTURE=<file>` / `AWL_GX_FRAMES=<first>-<last>` write the raw stream (`gx_dump.h`) for `awl-gx-survey <dump> [--out report] [--frames]`.
+**Options.** `awl-host ... --gx-dump N [--gx-dump-from F] [--gx-dump-dir D]` writes `frame_<retrace>.txt` (IR text, state printed when it changes, up to 64 vertices per draw) and `tex_<key>.png` (level 0 of each bound texture) for retraces F..F+N-1 (default dir `build/gxdump`; `AWL_GX_DUMP_DIR` also works). `AWL_GX_STATS=1` prints the core's counters and cost at exit (it turns the profiling clocks on). `AWL_GX_SCALAR=1` runs the scalar reference path. `awl-gx-bench --mem <MEM1 image> --dump <gx dump> [--reps N] [--profile]` replays a captured stream against a memory image (produce them with `awl-host --dump-mem` and `AWL_GX_CAPTURE`/`AWL_GX_FRAMES`) and reports ns per vertex, ms per frame and the output checksum. `AWL_GX_CAPTURE=<file>` / `AWL_GX_FRAMES=<first>-<last>` write the raw stream (`gx_dump.h`) for `awl-gx-survey <dump> [--out report] [--frames]`.
 
 ## 2. How far the run gets, and what the game uses (survey)
 
@@ -55,13 +55,26 @@ Deterministic run, `awl-host --retraces 3000 --limit 0` (DX11 track's EFB window
 - **Texture IA formats**: IA8 and the TLUT IA8 entry have alpha in the first byte; IA4 has alpha in the high nibble (public decoders; no observed texture uses them). CMPR uses 5/8 and 3/8 interpolation like the earlier TPL decoder.
 
 
-## 4. Cost (Release, Core::feed wall time, `AWL_GX_STATS=1`)
+## 4. Cost (Release)
 
-Whole run to retrace 4118: 101 M commands, 13.06 M draws, 255.9 M vertices, 1.48 M pipeline rebuilds, **47.9 s in the core** (11.6 ms per retrace averaged, which is about **30 ms per title frame** at 30 fps and about 170,000 vertices per frame: this is nearly the whole 33 ms frame budget before the guest CPU and the renderer). Split: vertices + XF + primitives 34.4 s, pipeline rebuilds 6.5 s, backend calls 0.4 s. Timings on this machine are noisy (one run measured while another game was running took 80 s).
+**Vertex path, measured with `awl-gx-bench`** (replays 4 title frames, 152,000 vertices and 7,200 draws each, from a captured stream and a MEM1 image through the real core with a checksumming backend; one core for all passes so caches are warm; median of 7 passes, 3 runs; the machine is a shared desktop, so run-to-run spread is about 5%):
 
-- Texture rehashing after the SDK's per-load invalidation was 1.5 s of 9 s on the first 1378 retraces (5.7 GB hashed). The core now keeps the raw bytes (and palette) of each texture binding's last decode and compares byte for byte (exact), hashing only a new or changed binding: over the whole run 470 MB hashed and 64.7 GB compared. The content-key semantics are unchanged. Rehashing no longer dominates (the pipeline rebuild is 14% of the core, memcmp included).
-- Per-vertex work dominates: about 100-130 ns per vertex (lighting about a third; the constant-attenuation spot path added in this pass saved about 20%). Options if it must shrink further: a worker pool for the vertex stage (draws are independent given a state snapshot; the backend would still be called in stream order, which needs a flush at each copy/token/finish and gives the backend a deferred rather than synchronous call, an IR contract point for the architect), vectorising the transform, or caching transformed vertices per (array indices, matrix) tuple.
-- The logos cost about 34 microseconds per retrace.
+| | before (afc2c28) | now |
+| --- | --- | --- |
+| whole core per frame, excluding the backend | 17.7 ms | 5.5 ms |
+| per vertex, whole core (parse + pipeline + vertex stage) | 96 ns | 37 ns |
+| vertex stage only (`--profile`, includes about 3 ns of timer reads) | 98 ns | 28 ns, i.e. about 25 ns |
+| texture/pipeline part per frame | 1.9 ms | 0.6 ms |
+
+The checksum over every vertex, index and state id of the replay is identical before and after (`C09284AE74FA7894`), so the optimised path is bit-identical to the original scalar one on 608,000 real vertices. The full-run triangle and cull counts match too (113,731,551 triangles, 21,969,798 culled over 4,118 retraces). `AWL_GX_SCALAR=1` switches the specialised loaders and the 4-wide path off (the reference), and `gx_core_tests` compares both paths bit for bit.
+
+What changed: (1) the vertex stage is its own engine (`gx_vertex.cpp`) with a per-format plan (attribute loaders chosen once per vertex format as template instances for the shapes the game uses: indexed s16/f32 positions, 8-bit-indexed f32 normals, indexed RGB565/RGBA4444/RGBA8 color, indexed s16/f32/s8 texcoord; anything else uses the generic loader); (2) per-draw decoding is hoisted and cached (plans compare the register values they were built from, XF register/light/post-matrix changes mark state dirty, matrices are fetched once per matrix index); (3) the XF stage of a draw with uniform matrices runs four vertices at a time in SSE registers (positions, normals, one-light lighting with constant attenuation, texgens with the dual post matrix), performing the same IEEE operations in the same order per lane; draws that need anything else (per-vertex matrix indices, spot/specular attenuation, color texgens, normalised post transform) use the scalar path; (4) 16-bit and f32 big-endian attributes are loaded with SIMD shuffles; (5) texture bindings that were verified since the last texture-cache invalidate are not read again (see below); (6) buffers are reused and the profiling clocks are off unless asked for.
+
+Texture reads. The SDK invalidates the texture cache (BP 0x66) whenever it changes texture memory, as the hardware requires. The core therefore keeps, per texture binding, the raw bytes of its last decode and the invalidate epoch in which they were verified: inside an epoch the bytes are not read again, in a new epoch they are compared byte for byte (exact) and hashed only if they differ. A change of texture memory without an invalidate is not observed, as on hardware. Over the full title run: 470 MB hashed, 3.5 GB compared, 199,000 bindings trusted.
+
+Whole title run (`AWL_GX_STATS=1`, to retrace 4118): 13.06 M draws (12.28 M on the 4-wide path), 255.9 M vertices, 19 s in the core with the profiling clocks on (47.9 s before). The logos cost about 34 microseconds per retrace.
+
+Not done: the worker pool (not needed at this cost); further per-vertex gains would come from SIMD color decoding and a float-only culling test (the culling determinant runs in double to stay identical).
 
 ## 5. Open points
 
