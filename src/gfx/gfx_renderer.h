@@ -80,7 +80,7 @@ private:
 
     ComPtr<ID3D11VertexShader> vs_, copyVs_, clearVs_;
     ComPtr<ID3D11InputLayout> layout_;
-    ComPtr<ID3D11PixelShader> copyPs_, clearPs_;
+    ComPtr<ID3D11PixelShader> copyPs_, clearPs_, solidPs_;
     ComPtr<ID3D11Buffer> vb_, ib_, tevCb_, copyCb_, clearCb_;
     uint32_t vbCap_ = 0, ibCap_ = 0, vbCursor_ = 0, ibCursor_ = 0;
     std::vector<tev::Vertex> verts_;
@@ -94,7 +94,7 @@ private:
     std::vector<XfbEntry> xfb_;
     uint64_t xfbSeq_ = 0, useClock_ = 0, textureBytes_ = 0;
     ComPtr<ID3D11Query> frameQuery_;
-    uint32_t frameDraws_ = 0;
+    uint32_t frameDraws_ = 0, frameFirstSeq_ = 0;
     bool frameStats_ = std::getenv("AWL_GFX_FRAMESTATS") != nullptr;
     uint32_t occFrom_ = 0, occCount_ = 0;   // AWL_GFX_OCCLUSION=<first draw seq>,<count>: print the samples each draw passes
     std::map<std::string, ComPtr<ID3D11SamplerState>> samplers_;
