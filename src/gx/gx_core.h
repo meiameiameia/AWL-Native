@@ -56,9 +56,12 @@ public:
 
 struct CoreStats {
     uint64_t commands = 0, draws = 0, vertices = 0, triangles = 0, copies = 0;
-    uint64_t textureDecodes = 0, textureCacheHits = 0, textureBytesHashed = 0;
+    uint64_t textureDecodes = 0, textureCacheHits = 0, textureBytesHashed = 0, textureBytesCompared = 0;
     uint64_t pipelineRebuilds = 0, culledTriangles = 0, displayLists = 0;
     double busySeconds = 0;       // wall time spent inside feed()
+    double pipelineSeconds = 0;   // of which: pipeline rebuilds (texture binding, hashing and decoding included)
+    double vertexSeconds = 0;     // of which: vertex loading, XF and primitive conversion
+    double backendSeconds = 0;    // of which: time inside the backend (draw and copy calls)
 };
 
 // ---- Register state (inspectable for tests and tools) -------------------------------------------------------------
@@ -79,6 +82,8 @@ uint64_t gxHash64(const uint8_t* p, size_t n, uint64_t seed);
 
 class Core {
 public:
+    struct LightObj { float color[4], a[3], k[3], pos[3], dir[3]; };   // XF light memory 0x600 + 16 * i, decoded
+
     Core(const GuestMemory& mem, Backend& backend, CoreHost& host);
     Core(const Core&) = delete;
     Core& operator=(const Core&) = delete;
@@ -122,6 +127,28 @@ private:
         bool hasCol[2];
         float tex[8][2];
     };
+    struct TexGenCtx {
+        uint32_t type, src, form;
+        bool stq, dual, normalize;
+        int idx;                 // texture matrix currently cached in m (-1: none)
+        float m[12], post[12];
+    };
+    struct DrawCtx {            // everything that is constant while one draw command runs
+        float proj[6];
+        bool ortho, lit, nmValid;
+        uint32_t numColors, numTexGens;
+        uint32_t chan[2][2];    // channel control words [channel][color, alpha]
+        LightObj lights[8];
+        uint32_t lightLoaded;
+        int pnIdx;
+        float pm[12], nm[9];
+        TexGenCtx tg[8];
+        const uint8_t* win[16];
+        uint32_t winBytes[16];
+        float posScale, texScale[8];
+    };
+    void beginDraw(const VtxFmt& f);
+    const LightObj& light(uint32_t i);
     VtxFmt vertexFormat(uint32_t vat) const;
     bool draw(uint8_t op, const uint8_t* d, size_t n, size_t& used);
     const uint8_t* elem(const AttrFmt& a, uint32_t array, const uint8_t*& p, uint32_t directBytes, uint32_t elemBytes);
@@ -166,12 +193,17 @@ private:
     uint32_t texGeneration_ = 0;            // incremented by TX_INVALIDATE / preload: the texture cache's validity epoch
     std::vector<Vertex> verts_;
     std::vector<uint16_t> idx_;
+    DrawCtx dc_{};
 
     // Texture decode cache, keyed by the content hash.
     struct CacheEntry { std::shared_ptr<const Texture> tex; uint64_t bytes; };
     std::unordered_map<uint64_t, CacheEntry> texCache_;
     std::list<uint64_t> texLru_;
     uint64_t texCacheBytes_ = 0;
+    // Raw bytes of the last decode per texture binding, for the exact unchanged-content check.
+    struct Snapshot { bool valid = false; uint32_t tuple[8] = {}; std::vector<uint8_t> raw; std::vector<uint16_t> pal; uint64_t key = 0; };
+    std::unordered_map<uint64_t, Snapshot> snapshots_;
+    uint64_t snapBytes_ = 0;
     // Memoised bindings per map (valid while the registers and the epoch are unchanged).
     struct MapMemo { uint32_t regs[8]; uint32_t epoch; uint32_t tlutEpoch; TexBinding binding; bool valid = false; };
     MapMemo memo_[8];

@@ -30,6 +30,7 @@ uint64_t gxHash64(const uint8_t* p, size_t n, uint64_t seed) {
 namespace {
 
 constexpr uint64_t kCacheBudgetBytes = 192ull << 20;
+constexpr uint64_t kSnapshotBudgetBytes = 192ull << 20;
 
 uint16_t be16(const uint8_t* p) { return static_cast<uint16_t>(p[0] << 8 | p[1]); }
 uint32_t pack(uint32_t r, uint32_t g, uint32_t b, uint32_t a) { return r | g << 8 | b << 16 | a << 24; }
@@ -155,16 +156,44 @@ std::shared_ptr<const Texture> Core::loadTexture(const TexRequest& req) {
         if (req.tlutOffset * 256 + palCount > tlutRam_.size()) fail("palette beyond the TMEM palette area", 0x98);
         pal = &tlutRam_[req.tlutOffset * 256];
     }
-    stats_.textureBytesHashed += total;
-    uint64_t key = gxHash64(raw, total, 0x41574C47ull);
-    key = gxHash64(reinterpret_cast<const uint8_t*>(&req.format), 4, key);
-    const uint32_t dims[3] = {req.width, req.height, n};
-    key = gxHash64(reinterpret_cast<const uint8_t*>(dims), sizeof dims, key);
-    if (indexed) {
-        key = gxHash64(reinterpret_cast<const uint8_t*>(pal), palCount * 2, key);
-        key = gxHash64(reinterpret_cast<const uint8_t*>(&req.tlutFormat), 4, key);
-    }
-    auto it = texCache_.find(key);
+    // Exact change detection without rehashing: the raw bytes (and palette) of the last decode of this texture binding are
+    // kept, and a byte-for-byte comparison (an order of magnitude cheaper than the hash) shows whether they are unchanged;
+    // only a binding seen for the first time, or whose bytes changed, is hashed. The key stays a content hash.
+    const uint32_t palBytes = indexed ? palCount * 2 : 0;
+    const uint32_t tuple[8] = {req.addr, req.width, req.height, req.format, n, req.tlutOffset, req.tlutFormat, total};
+    const uint64_t tupleKey = gxHash64(reinterpret_cast<const uint8_t*>(tuple), sizeof tuple, 0x534E4150ull);
+    uint64_t key = 0;
+    Snapshot& snap = snapshots_[tupleKey];
+    if (snap.valid && std::memcmp(snap.tuple, tuple, sizeof tuple) == 0 && snap.raw.size() == total && snap.pal.size() == palBytes &&
+        std::memcmp(snap.raw.data(), raw, total) == 0 && (palBytes == 0 || std::memcmp(snap.pal.data(), pal, palBytes) == 0)) {
+        key = snap.key;
+        stats_.textureBytesCompared += total + palBytes;
+    } else {
+        stats_.textureBytesHashed += total;
+        key = gxHash64(raw, total, 0x41574C47ull);
+        key = gxHash64(reinterpret_cast<const uint8_t*>(&req.format), 4, key);
+        const uint32_t dims[3] = {req.width, req.height, n};
+        key = gxHash64(reinterpret_cast<const uint8_t*>(dims), sizeof dims, key);
+        if (indexed) {
+            key = gxHash64(reinterpret_cast<const uint8_t*>(pal), palCount * 2, key);
+            key = gxHash64(reinterpret_cast<const uint8_t*>(&req.tlutFormat), 4, key);
+        }
+        snapBytes_ -= snap.raw.size() + snap.pal.size();
+        snap.valid = true;
+        std::memcpy(snap.tuple, tuple, sizeof tuple);
+        snap.raw.assign(raw, raw + total);
+        snap.pal.resize(palBytes);
+        if (palBytes) std::memcpy(snap.pal.data(), pal, palBytes);
+        snap.key = key;
+        snapBytes_ += snap.raw.size() + snap.pal.size();
+        if (snapBytes_ > kSnapshotBudgetBytes) {          // simple bound: forget every other snapshot
+            for (auto it2 = snapshots_.begin(); it2 != snapshots_.end();) {
+                if (&it2->second == &snap) { ++it2; continue; }
+                snapBytes_ -= it2->second.raw.size() + it2->second.pal.size();
+                it2 = snapshots_.erase(it2);
+            }
+        }
+    }    auto it = texCache_.find(key);
     if (it != texCache_.end()) {
         ++stats_.textureCacheHits;
         texLru_.remove(key);
