@@ -128,9 +128,10 @@ bool buildKey(const gx::PipelineState& s, tev::PixelShaderKey& k, std::string& w
     }
     for (int t = 0; t < 4; ++t) { k.swaps[t].r = s.tev.swap[t][0]; k.swaps[t].g = s.tev.swap[t][1]; k.swaps[t].b = s.tev.swap[t][2]; k.swaps[t].a = s.tev.swap[t][3]; }
     k.projectiveMask = 0xFF;   // IR convention 4: the texture unit always divides by q (q = 1 for ST texgens)
+    static const bool noAlpha = std::getenv("AWL_GFX_DEBUG_NOALPHA") != nullptr;   // debugging aid: ignore the alpha test
     k.alphaComp0 = static_cast<uint8_t>(s.alphaCompare.comp0);
-    k.alphaComp1 = static_cast<uint8_t>(s.alphaCompare.comp1);
-    k.alphaLogic = static_cast<uint8_t>(s.alphaCompare.logic);
+    if (noAlpha) { k.alphaComp0 = k.alphaComp1 = 7; k.alphaLogic = 0; }
+    if (!noAlpha) { k.alphaComp1 = static_cast<uint8_t>(s.alphaCompare.comp1); k.alphaLogic = static_cast<uint8_t>(s.alphaCompare.logic); }
     k.fogType = static_cast<uint8_t>(s.fog.type);
     k.fogOrtho = s.fog.orthographic;
     k.efbFormat = static_cast<uint8_t>(s.efbFormat);
@@ -548,7 +549,8 @@ void Renderer::draw(const gx::DrawCommand& dc) {
     c->RSSetScissorRects(1, &sc);
     c->RSSetState(raster_.Get());
     c->OMSetBlendState(blendState(s.blend), nullptr, 0xFFFFFFFFu);
-    c->OMSetDepthStencilState(depthState(s.depth), 0);
+    static const bool noDepth = std::getenv("AWL_GFX_DEBUG_NODEPTH") != nullptr;   // debugging aid: depth test off
+    if (noDepth) c->OMSetDepthStencilState(noDepth_.Get(), 0); else c->OMSetDepthStencilState(depthState(s.depth), 0);
     c->IASetInputLayout(layout_.Get());
     c->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     UINT stride = sizeof(tev::Vertex), offset = vbOffset;
@@ -561,6 +563,12 @@ void Renderer::draw(const gx::DrawCommand& dc) {
     c->PSSetConstantBuffers(0, 1, &cbuf);
     c->PSSetShaderResources(0, 8, srvs);
     c->PSSetSamplers(0, 8, smps);
+    if (frameStats_ && !frameQuery_) {
+        D3D11_QUERY_DESC qd = {D3D11_QUERY_OCCLUSION, 0};
+        dev_->device()->CreateQuery(&qd, frameQuery_.GetAddressOf());
+        if (frameQuery_) { c->Begin(frameQuery_.Get()); frameDraws_ = 0; }
+    }
+    ++frameDraws_;
     ComPtr<ID3D11Query> occ;
     if (occFrom_ && dc.seq >= occFrom_ && dc.seq < occFrom_ + occCount_) {   // debugging aid (AWL_GFX_OCCLUSION=<first seq>,<count>)
         D3D11_QUERY_DESC qd = {D3D11_QUERY_OCCLUSION, 0};
@@ -572,6 +580,16 @@ void Renderer::draw(const gx::DrawCommand& dc) {
         c->End(occ.Get());
         UINT64 samples = 0;
         while (c->GetData(occ.Get(), &samples, sizeof samples, 0) == S_FALSE) {}
+        float bx0 = 1e30f, bx1 = -1e30f, by0 = 1e30f, by1 = -1e30f, bz0 = 1e30f, bz1 = -1e30f;
+        for (const tev::Vertex& v : verts_) {
+            if (!(v.pos[3] > 0)) continue;
+            bx0 = std::min(bx0, v.pos[0] / v.pos[3]); bx1 = std::max(bx1, v.pos[0] / v.pos[3]);
+            by0 = std::min(by0, v.pos[1] / v.pos[3]); by1 = std::max(by1, v.pos[1] / v.pos[3]);
+            bz0 = std::min(bz0, v.pos[2] / v.pos[3]); bz1 = std::max(bz1, v.pos[2] / v.pos[3]);
+        }
+        std::fprintf(stderr, "ndcbox x[%.2f,%.2f] y[%.2f,%.2f] z[%.4f,%.4f] vp(%.0f,%.0f,%.0f,%.0f) sc(%d,%d,%d,%d) ", bx0, bx1, by0, by1, bz0, bz1, s.viewport.x, s.viewport.y, s.viewport.width, s.viewport.height, s.scissor.x0, s.scissor.y0, s.scissor.x1, s.scissor.y1);
+        std::fprintf(stderr, "map0w=%u ", s.maps[0].width);
+        std::fprintf(stderr, "vpraw scale(%.2f,%.2f,%.1f) offset(%.2f,%.2f,%.1f) ", s.viewport.scale[0], s.viewport.scale[1], s.viewport.scale[2], s.viewport.offset[0], s.viewport.offset[1], s.viewport.offset[2]);
         std::fprintf(stderr, "occlusion seq=%u prim=%d verts=%zu idx=%zu samples=%llu depth=%d/%d write=%d blend=%d stages=%u map0=%d\n", dc.seq, static_cast<int>(dc.primitive),
                      verts_.size(), idx_.size(), static_cast<unsigned long long>(samples), s.depth.test, static_cast<int>(s.depth.func), s.depth.write, static_cast<int>(s.blend.mode),
                      s.tev.numStages, s.maps[0].valid);
@@ -613,6 +631,13 @@ void Renderer::clearRect(const gx::EfbCopyCommand& cc) {
 
 void Renderer::efbCopy(const gx::EfbCopyCommand& cc) {
     ++stats_.copies;
+    if (frameStats_ && frameQuery_ && cc.target == gx::CopyTarget::Xfb) {   // AWL_GFX_FRAMESTATS=1: samples passed by every draw since the previous XFB copy
+        dev_->context()->End(frameQuery_.Get());
+        UINT64 samples = 0;
+        while (dev_->context()->GetData(frameQuery_.Get(), &samples, sizeof samples, 0) == S_FALSE) {}
+        std::fprintf(stderr, "framestats copy=%u draws=%u samples=%llu\n", cc.id, frameDraws_, static_cast<unsigned long long>(samples));
+        frameQuery_.Reset();
+    }
     if (cc.efbFormat != gx::PixelFormat::RGB8_Z24) { report("EFB copy from a pixel format other than RGB8_Z24"); }
     if (!cc.srcWidth || !cc.srcHeight || !cc.destWidth || !cc.destHeight || cc.srcX + cc.srcWidth > kEfbWidth || cc.srcY + cc.srcHeight > kEfbHeight ||
         cc.destWidth > 2048 || cc.destHeight > 2048) {

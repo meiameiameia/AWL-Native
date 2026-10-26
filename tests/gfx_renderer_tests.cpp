@@ -292,6 +292,45 @@ int main() {
         CHECK(near3(img, 320, 110, 0, 0, 0) && near3(img, 320, 113, 0, 0, 0) && near3(img, 100, 111, 0, 0, 0) && near3(img, 500, 111, 0, 0, 0));
     }
 
+    // 5b3. Render to texture, then composite: a 64x32 region (scissor 0,0-63,31) gets a red left half and a green right half, is copied to
+    //      a texture (copy id 50), and a full-screen quad samples that copy through the binding's efbCopyId. Clip x in [-1, -0.8] is the
+    //      region's 64 pixels (viewport 640 wide), y in [0.857143, 1] its 32 rows. The composite shows red on the left half of the screen.
+    {
+        gx::EfbCopyCommand c0 = xfbCopy(49, 0xE200, false);
+        c0.clear.color = c0.clear.alpha = true; c0.clear.rgba[3] = 255;
+        r.efbCopy(c0);
+        const uint8_t red[4] = {255, 0, 0, 255}, green[4] = {0, 255, 0, 255}, white[4] = {255, 255, 255, 255};
+        gx::PipelineState s = baseState();
+        s.scissor = {0, 0, 63, 31};
+        const float y0 = 1.0f - 2.0f * 32.0f / 448.0f;
+        Quad left(-1.0f, y0, -0.9f, 1.0f, -1.0f, red), right(-0.9f, y0, -0.8f, 1.0f, -1.0f, green);
+        r.draw(left.cmd(s));
+        r.draw(right.cmd(s));
+        gx::EfbCopyCommand tc{};
+        tc.id = 50; tc.target = gx::CopyTarget::Texture;
+        tc.srcX = 0; tc.srcY = 0; tc.srcWidth = 64; tc.srcHeight = 32;
+        tc.destAddr = 0x1000; tc.destWidth = 64; tc.destHeight = 32;
+        tc.efbFormat = gx::PixelFormat::RGB8_Z24; tc.texFormat = 6; tc.yScale = 1.0f;
+        tc.clear.color = tc.clear.alpha = true; tc.clear.rgba[0] = tc.clear.rgba[1] = tc.clear.rgba[2] = tc.clear.rgba[3] = 255;   // as the game: clear to white
+        r.efbCopy(tc);
+        gx::PipelineState c = baseState();
+        gx::TevStage& st = c.tev.stages[0];
+        st.texMap = 0; st.texCoord = 0;
+        st.color.in[3] = static_cast<uint8_t>(gx::TevColorIn::TexC);
+        st.alpha.in[3] = static_cast<uint8_t>(gx::TevAlphaIn::TexA);
+        c.maps[0].valid = true; c.maps[0].efbCopyId = 50; c.maps[0].width = 64; c.maps[0].height = 32;
+        c.maps[0].sampler = {gx::WrapMode::Clamp, gx::WrapMode::Clamp, gx::FilterMode::Near, false, 0, 0, 0, 1, false, false};
+        c.texScale[0].sSize = 64; c.texScale[0].tSize = 32;
+        Quad full(-1, -1, 1, 1, -1.0f, white);
+        r.draw(full.cmd(c));
+        r.efbCopy(xfbCopy(51, 0xE300, false));
+        CHECK(r.xfbImage(0xE300, img, why));
+        CHECK(near3(img, 100, 100, 255, 0, 0) && near3(img, 300, 400, 255, 0, 0));   // left half: the red of the region
+        CHECK(near3(img, 400, 100, 0, 255, 0) && near3(img, 600, 400, 0, 255, 0));   // right half: green
+        // the clear after the copy whitened the 64x32 region of the EFB itself, and the full-screen composite covers it again
+        r.efbCopy(xfbCopy(52, 0xE400, false));
+    }
+
     // 5c. Indirect texturing (the convention the renderer implements; scale not yet verified against hardware): a 4x1 texture sampled
     //     through an indirect lookup. Indirect texel (S, T, U) = (A, B, G) = (192, 128, 0); bias 128 on S and T gives (64, 0, 0); matrix element
     //     4.0 gives offset s = 4 * 64 / 256 = 1 texel. A pixel whose base texel is 0.625 samples texel 1, base 3.125 clamps to texel 3.
