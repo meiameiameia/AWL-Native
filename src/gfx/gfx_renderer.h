@@ -15,6 +15,7 @@
 #include "gfx/gfx_device.h"
 #include "gfx/gfx_output.h"
 #include "gfx/gfx_shader_cache.h"
+#include "gfx/gfx_tev.h"
 #include "gx/gx_ir.h"
 
 namespace awl::gfx {
@@ -24,6 +25,7 @@ public:
     static constexpr uint32_t kEfbWidth = 640, kEfbHeight = 528;
 
     bool init(Device& dev, std::string& err);
+    void setOcclusionDebug(uint32_t firstSeq, uint32_t count) { occFrom_ = firstSeq; occCount_ = count; }
 
     // gx::Backend
     void draw(const gx::DrawCommand& d) override;
@@ -36,7 +38,7 @@ public:
 
     struct Stats {
         uint64_t draws = 0, drawsSkipped = 0, triangles = 0, copies = 0, copiesApproximated = 0;
-        uint64_t texturesUploaded = 0, textureBytes = 0;
+        uint64_t texturesUploaded = 0, textureBytes = 0, texturesEvicted = 0;
     };
     const Stats& stats() const { return stats_; }
     const PixelShaderCache::Stats& shaderStats() const { return shaders_.stats(); }
@@ -49,16 +51,18 @@ private:
         ComPtr<ID3D11Texture2D> tex;
         ComPtr<ID3D11ShaderResourceView> srv;
         uint32_t w = 0, h = 0;
+        uint64_t bytes = 0, lastUse = 0;
     };
     struct XfbEntry { Gpu gpu; uint32_t addr = 0; uint64_t seq = 0; };
 
     void report(const std::string& reason);
+    void trimCaches();
     bool uploadTexture(const gx::Texture& t, Gpu& out);
     ID3D11ShaderResourceView* mapSrv(const gx::TexBinding& b, std::string& why);
     ID3D11SamplerState* sampler(const gx::Sampler& s);
     ID3D11BlendState* blendState(const gx::BlendState& b);
     ID3D11DepthStencilState* depthState(const gx::DepthState& d);
-    bool upload(ComPtr<ID3D11Buffer>& buf, uint32_t& capacity, uint32_t bind, const void* data, uint32_t bytes);
+    bool upload(ComPtr<ID3D11Buffer>& buf, uint32_t& capacity, uint32_t& cursor, uint32_t bind, const void* data, uint32_t bytes, uint32_t& offset);
     bool createGpu(Gpu& g, uint32_t w, uint32_t h, bool renderTarget);
     void clearRect(const gx::EfbCopyCommand& c);
 
@@ -77,7 +81,9 @@ private:
     ComPtr<ID3D11InputLayout> layout_;
     ComPtr<ID3D11PixelShader> copyPs_, clearPs_;
     ComPtr<ID3D11Buffer> vb_, ib_, tevCb_, copyCb_, clearCb_;
-    uint32_t vbCap_ = 0, ibCap_ = 0;
+    uint32_t vbCap_ = 0, ibCap_ = 0, vbCursor_ = 0, ibCursor_ = 0;
+    std::vector<tev::Vertex> verts_;
+    std::vector<uint16_t> idx_;
     ComPtr<ID3D11RasterizerState> raster_, rasterNoScissor_;
     ComPtr<ID3D11BlendState> noBlend_;
     ComPtr<ID3D11DepthStencilState> noDepth_;
@@ -85,7 +91,8 @@ private:
     std::unordered_map<uint64_t, Gpu> textures_;       // by Texture::key
     std::unordered_map<uint32_t, Gpu> copyTextures_;   // by EfbCopyCommand::id (copies to textures)
     std::vector<XfbEntry> xfb_;
-    uint64_t xfbSeq_ = 0;
+    uint64_t xfbSeq_ = 0, useClock_ = 0, textureBytes_ = 0;
+    uint32_t occFrom_ = 0, occCount_ = 0;   // AWL_GFX_OCCLUSION=<first draw seq>,<count>: print the samples each draw passes
     std::map<std::string, ComPtr<ID3D11SamplerState>> samplers_;
     std::map<std::string, ComPtr<ID3D11BlendState>> blends_;
     std::map<std::string, ComPtr<ID3D11DepthStencilState>> depths_;

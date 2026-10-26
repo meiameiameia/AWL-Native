@@ -122,6 +122,8 @@ HlslResult generatePixelShader(const PixelShaderKey& key) {
         "    float4 tevreg[4];\n"
         "    float4 alphaRef;\n"
         "    float4 stageScale[16];\n"
+        "    float4 indScale[4];\n"
+        "    float4 indMtx[6];\n"
         "    float4 fogParam;\n"
         "    float4 fogColor;\n"
         "};\n"
@@ -136,11 +138,20 @@ HlslResult generatePixelShader(const PixelShaderKey& key) {
         "};\n"
         "float4 main(PsIn i) : SV_Target0 {\n";
     g.line("float4 r_prev = tevreg[0]; float4 r_reg0 = tevreg[1]; float4 r_reg1 = tevreg[2]; float4 r_reg2 = tevreg[3];");
+    g.line("float2 prevTexel = float2(0.0, 0.0);   // the previous stage's final texture coordinate in texels (indirect 'add previous')");
 
     for (uint32_t n = 0; n < key.numStages && g.why.empty(); ++n) {
         const Stage& s = key.stages[n];
         const std::string tag = "stage " + std::to_string(n) + ": ";
-        if (s.indStage != kNone) { g.fail(tag + "indirect texturing is not generated yet"); break; }
+        if (s.indStage != kNone) {
+            if (s.indStage > 3 || key.ind[s.indStage].texMap == kNone || key.ind[s.indStage].texCoord == kNone || key.ind[s.indStage].texMap > 7 || key.ind[s.indStage].texCoord > 7) {
+                g.fail(tag + "indirect lookup " + std::to_string(s.indStage) + " has no map or coordinate set"); break;
+            }
+            if (s.indFormat != 0) { g.fail(tag + "indirect texturing with offsets narrower than 8 bits is not generated yet"); break; }
+            if (s.indAlpha != 0) { g.fail(tag + "indirect bump alpha is not generated yet"); break; }
+            if (s.indMatrix > 3) { g.fail(tag + "indirect S/T-only matrices are not generated yet"); break; }
+            if (s.indWrapS > 6 || s.indWrapT > 6) { g.fail(tag + "indirect wrap code out of range"); break; }
+        }
         if (s.alpCmp != CMP_NONE && s.alpCmp != CMP_RGB8_GT && s.alpCmp != CMP_RGB8_EQ) { g.fail(tag + "alpha compare mode other than A8 (R8/GR16/BGR24 forms on alpha are not defined)"); break; }
         if (s.colCmp > CMP_RGB8_EQ || s.alpCmp > CMP_RGB8_EQ) { g.fail(tag + "compare mode out of range"); break; }
         if (s.rasChannel == RAS_ALPHA_BUMP || s.rasChannel == RAS_ALPHA_BUMP_N) { g.fail(tag + "alpha-bump raster source needs indirect texturing"); break; }
@@ -152,10 +163,34 @@ HlslResult generatePixelShader(const PixelShaderKey& key) {
         if (s.colDest > 3 || s.alpDest > 3 || s.colScale > 3 || s.alpScale > 3 || s.colBias > 2 || s.alpBias > 2) { g.fail(tag + "register encoding out of range"); break; }
 
         g.line("{   // " + tag.substr(0, tag.size() - 2));
+        // Texture coordinate of the stage in texels: the coordinate set scaled by TexCoordScale, then (indirect) wrapped, offset by
+        // the previous stage and by the indirect lookup (offsets = matrix * (S, T, U) / 256 texels; S, T, U = A, B, G of the sample).
+        const bool hasCoord = s.texCoord != kNone;
+        const std::string cstr = hasCoord ? std::to_string(s.texCoord) : "";
+        const std::string nstr = std::to_string(n);
+        if (hasCoord && s.texCoord > 7) { g.fail(tag + "coordinate set out of range"); break; }
+        g.line(std::string("    float2 texel = ") + (hasCoord ? "(i.uv" + cstr + ".xy / i.uv" + cstr + ".z) * stageScale[" + nstr + "].xy" : "float2(0.0, 0.0)") + ";");
+        if (s.indStage != kNone) {
+            const IndStage& is = key.ind[s.indStage];
+            const std::string im = std::to_string(is.texMap), ic = std::to_string(is.texCoord), ik = std::to_string(s.indStage);
+            g.line("    float2 itc = (i.uv" + ic + ".xy / i.uv" + ic + ".z) * indScale[" + ik + "].xy;");
+            g.line("    float4 it = tex" + im + ".Sample(smp" + im + ", itc);");
+            g.line(std::string("    float3 stu = floor(float3(it.a, it.b, it.g) * 255.0 + 0.5) - float3(") + ((s.indBias & 1) ? "128.0" : "0.0") + ", " + ((s.indBias & 2) ? "128.0" : "0.0") + ", " +
+                   ((s.indBias & 4) ? "128.0" : "0.0") + ");");
+            if (s.indMatrix == 0) g.line("    float2 ioff = float2(0.0, 0.0);");
+            else g.line("    float2 ioff = float2(dot(indMtx[" + std::to_string(2 * (s.indMatrix - 1)) + "].xyz, stu), dot(indMtx[" + std::to_string(2 * (s.indMatrix - 1) + 1) + "].xyz, stu)) / 256.0;");
+            auto wrap = [](uint8_t code, const char* v) -> std::string {
+                if (code == 0) return v;
+                if (code == 6) return "0.0";
+                const int size = 256 >> (code - 1);
+                return std::string("(") + v + " - floor(" + v + " / " + std::to_string(size) + ".0) * " + std::to_string(size) + ".0)";
+            };
+            g.line("    texel = float2(" + wrap(s.indWrapS, "texel.x") + ", " + wrap(s.indWrapT, "texel.y") + ")" + (s.indAddPrev ? " + prevTexel" : "") + " + ioff;");
+        }
+        g.line("    prevTexel = texel;");
         if (texOk) {
-            const std::string m = std::to_string(s.texMap), c = std::to_string(s.texCoord);
-            const bool proj = (key.projectiveMask >> s.texCoord) & 1;
-            g.line("    float2 st = " + std::string(proj ? "i.uv" + c + ".xy / i.uv" + c + ".z" : "i.uv" + c + ".xy") + " * stageScale[" + std::to_string(n) + "].xy;");
+            const std::string m = std::to_string(s.texMap);
+            g.line("    float2 st = texel * stageScale[" + nstr + "].zw;");
             g.line("    float4 tex_raw = tex" + m + ".Sample(smp" + m + ", st);");
             g.line("    float4 tex = " + Gen::swizzle("tex_raw", key.swaps[s.texSwap]) + ";");
         } else {

@@ -2,7 +2,7 @@
 // runs the recompiled entry point and reports where it stops. Deterministic: time is derived from retired instructions.
 //   awl-host --dol rom/main.dol [--disc disc] [--trace build/boot-trace.log] [--retraces N] [--limit N] [--pad neutral|xinput]
 //            [--calls DEPTH] [--dump-boot FILE] [--dump-mem FILE] [--realtime]
-//            [--window] [--realtime-pace] [--capture-frames N DIR [--capture-from F]] [--gfx-warp]
+//            [--window] [--realtime-pace] [--capture-frames N DIR [--capture-from F [--capture-every K]]] [--gfx-warp]
 // --calls records the calls of the functions in capture_parse.h (to DEPTH) as "call" trace lines, for awl-capture-compare;
 // --dump-boot writes MEM1 as the game program starts, --dump-mem writes MEM1 when the run ends (use --limit to stop at an instruction).
 // P2 video (src/gfx): --window opens the game window and runs until it is closed (Esc, close button, Alt+F4) unless --retraces or --limit
@@ -111,7 +111,7 @@ int main(int argc, char** argv) {
     uint32_t callDepth = 16;            // --calls: deepest call level recorded for the capture comparison (0 = off)
     std::string dumpBoot, dumpMem;
     bool optWindow = false, optPace = false, optWarp = false, retracesGiven = false, limitGiven = false;
-    uint32_t captureFrames = 0, captureFrom = 0;
+    uint32_t captureFrames = 0, captureFrom = 0, captureEvery = 1;
     std::string captureDir;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -126,6 +126,7 @@ int main(int argc, char** argv) {
         else if (a == "--realtime-pace") optPace = true;
         else if (a == "--gfx-warp") optWarp = true;
         else if (a == "--capture-from" && i + 1 < argc) captureFrom = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0));
+        else if (a == "--capture-every" && i + 1 < argc) captureEvery = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0));
         else if (a == "--capture-frames" && i + 2 < argc) { captureFrames = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0)); captureDir = argv[++i]; }
         else if (a == "--realtime") cfg.rtcSeconds = hostRtcSeconds();     // clock from the host: not deterministic
         else if (a == "--calls" && i + 1 < argc) callDepth = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0));
@@ -181,6 +182,7 @@ int main(int argc, char** argv) {
         go.pace = optPace;
         go.captureFrames = captureFrames;
         go.captureFrom = captureFrom;
+        go.captureEvery = captureEvery;
         go.captureDir = captureDir;
         go.forceWarp = optWarp;
         video = std::make_unique<gfx::VideoOutput>();
@@ -195,6 +197,7 @@ int main(int argc, char** argv) {
         if (v->haveDevice()) {   // window or capture: the DX11 renderer draws the GX core's commands
             renderer = std::make_unique<gfx::Renderer>();
             if (!renderer->init(v->device(), err)) { std::fprintf(stderr, "renderer: %s\n", err.c_str()); return 1; }
+            if (const char* occ = std::getenv("AWL_GFX_OCCLUSION")) { unsigned a = 0, b = 0; if (std::sscanf(occ, "%u,%u", &a, &b) == 2) renderer->setOcclusionDebug(a, b); }
             rendererSource = std::make_unique<gfx::RendererSource>(*renderer);
             rendererEfb = std::make_unique<RendererEfb>(*renderer);
             v->setSource(rendererSource.get());

@@ -42,7 +42,7 @@ struct OutputOptions {
     bool window = false;            // open the game window and present into it
     bool pace = false;              // real-time pacing of retraces (implied by window)
     uint32_t captureFrames = 0;     // write BMPs of N presented frames, starting at presented frame captureFrom (names carry the presented index)
-    uint32_t captureFrom = 0;
+    uint32_t captureFrom = 0, captureEvery = 1;   // only every captureEvery-th presented frame from captureFrom on
     std::string captureDir;         // folder for the captures (under build/)
     bool forceWarp = false;         // software device for byte-reproducible captures on any machine
     WindowOptions windowOptions;

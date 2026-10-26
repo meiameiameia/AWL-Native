@@ -34,8 +34,16 @@ struct Stage {
     uint8_t rasChannel = RAS_ZERO;
     uint8_t kColorSel = 0, kAlphaSel = 0;       // GX_TEV_KCSEL_* / KASEL_* (0-7 fractions, 12-15 K0-K3, 16-31 single channels)
     uint8_t rasSwap = 0, texSwap = 0;           // index of the swap table applied to the raster / texture colour
-    uint8_t indStage = kNone;                   // indirect texturing is not generated yet: any value other than kNone is rejected
+    // Indirect texturing (GX_SetTevIndirect): indStage = which indirect lookup (0-3, PixelShaderKey::ind) feeds this stage, kNone = none.
+    uint8_t indStage = kNone;
+    uint8_t indFormat = 0;                      // 0 = 8-bit offsets (the others are rejected)
+    uint8_t indBias = 0;                        // bit 0 S, bit 1 T, bit 2 U: subtract 128 from that component
+    uint8_t indMatrix = 0;                      // 0 none (zero offset), 1-3 = static matrix 0-2 (the S/T-only forms 5-7, 9-11 are rejected)
+    uint8_t indWrapS = 0, indWrapT = 0;         // 0 off, 1-5 wrap the base coordinate (in texels) to 256, 128, 64, 32, 16; 6 = zero
+    uint8_t indAddPrev = 0;                     // add the previous stage's final texel coordinate
+    uint8_t indAlpha = 0;                       // bump alpha select (rejected unless 0)
 };
+struct IndStage { uint8_t texMap = kNone, texCoord = kNone, scaleS = 0, scaleT = 0; };   // RAS1_IREF / SS: map, coordinate set, divide by 2^scale
 
 struct SwapTable { uint8_t r = 0, g = 1, b = 2, a = 3; };   // source channel (0=R 1=G 2=B 3=A) for each output channel
 
@@ -43,8 +51,9 @@ struct SwapTable { uint8_t r = 0, g = 1, b = 2, a = 3; };   // source channel (0
 struct PixelShaderKey {
     uint8_t numStages = 1;
     Stage stages[16];
+    IndStage ind[4];
     SwapTable swaps[4];
-    uint8_t projectiveMask = 0;   // bit n: coordinate set n carries q and is divided per pixel (the IR always does: 0xFF)
+    uint8_t projectiveMask = 0;   // unused: the texture unit always divides by q (IR convention 4)
     // alpha compare: comparison codes GX_NEVER..GX_ALWAYS = 0..7, logic AND/OR/XOR/XNOR = 0..3
     uint8_t alphaComp0 = 7, alphaComp1 = 7, alphaLogic = 0;
     uint8_t fogType = 0;          // 0 = none, else GX_FOG_LIN 2, EXP 4, EXP2 5, REVEXP 6, REVEXP2 7 (perspective projections only)
@@ -72,11 +81,13 @@ struct TevConstants {
     float kcolor[4][4];   // K0-K3, RGBA in 0..1
     float tevreg[4][4];   // PREV, REG0, REG1, REG2 initial values
     float alphaRef[4];    // x = ref0, y = ref1 (0..255), zw unused
-    float stageScale[16][4];   // xy: texel size of the stage's coordinate set divided by its map size (TexCoordScale / texture size; 1,1 normally)
+    float stageScale[16][4];   // per stage: xy = TexCoordScale (texels per unit coordinate), zw = 1 / map size; normalized st = coord * xy * zw
+    float indScale[4][4];      // per indirect lookup: xy = coordinate scale for its map: TexCoordScale / 2^scale / map size
+    float indMtx[6][4];        // static indirect matrices: row 2m = s row (xyz), row 2m + 1 = t row of matrix m (exponent applied)
     float fogParam[4];    // a, b, c of GX_SetFog (see the generator)
     float fogColor[4];    // RGB in 0..1
 };
-static_assert(sizeof(TevConstants) == 144 + 256 + 32, "must match the cbuffer in the generated HLSL");
+static_assert(sizeof(TevConstants) == 144 + 256 + 64 + 96 + 32, "must match the cbuffer in the generated HLSL");
 
 // Vertex shader for post-transform vertices (clip-space position, two colours, eight 3-component coordinate sets).
 // GX clip z in [-w, 0] becomes D3D z in [0, w] (z + w); the viewport depth range [near, far] is set on the D3D viewport.

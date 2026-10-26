@@ -117,6 +117,14 @@ bool buildKey(const gx::PipelineState& s, tev::PixelShaderKey& k, std::string& w
         o.kColorSel = t.konstColor; o.kAlphaSel = t.konstAlpha;
         o.rasSwap = t.rasSwap; o.texSwap = t.texSwap;
         o.indStage = t.indirect.indStage;
+        if (t.indirect.indStage != gx::kNoMap) {
+            o.indFormat = t.indirect.format; o.indBias = t.indirect.biasMask; o.indMatrix = t.indirect.matrix;
+            o.indWrapS = t.indirect.wrapS; o.indWrapT = t.indirect.wrapT; o.indAddPrev = t.indirect.addPrevious; o.indAlpha = t.indirect.alphaSelect;
+        }
+    }
+    for (uint32_t i = 0; i < 4 && i < s.tev.numIndirect; ++i) {
+        k.ind[i].texMap = s.tev.indirectStage[i].texMap; k.ind[i].texCoord = s.tev.indirectStage[i].texCoord;
+        k.ind[i].scaleS = s.tev.indirectStage[i].scaleS; k.ind[i].scaleT = s.tev.indirectStage[i].scaleT;
     }
     for (int t = 0; t < 4; ++t) { k.swaps[t].r = s.tev.swap[t][0]; k.swaps[t].g = s.tev.swap[t][1]; k.swaps[t].b = s.tev.swap[t][2]; k.swaps[t].a = s.tev.swap[t][3]; }
     k.projectiveMask = 0xFF;   // IR convention 4: the texture unit always divides by q (q = 1 for ST texgens)
@@ -137,11 +145,11 @@ void Renderer::report(const std::string& reason) {
 }
 
 void Renderer::printSummary() const {
-    std::printf("renderer: %llu draws (%llu skipped), %llu triangles, %llu EFB copies (%llu approximated), %llu textures uploaded (%.1f MB); "
+    std::printf("renderer: %llu draws (%llu skipped), %llu triangles, %llu EFB copies (%llu approximated), %llu textures uploaded (%.1f MB, %llu evicted); "
                 "shaders %zu compiled, %llu rejected, %llu cache hits\n",
                 (unsigned long long)stats_.draws, (unsigned long long)stats_.drawsSkipped, (unsigned long long)stats_.triangles,
                 (unsigned long long)stats_.copies, (unsigned long long)stats_.copiesApproximated, (unsigned long long)stats_.texturesUploaded,
-                stats_.textureBytes / 1048576.0, shaders_.size(), (unsigned long long)shaders_.stats().rejected, (unsigned long long)shaders_.stats().hits);
+                stats_.textureBytes / 1048576.0, (unsigned long long)stats_.texturesEvicted, shaders_.size(), (unsigned long long)shaders_.stats().rejected, (unsigned long long)shaders_.stats().hits);
     for (const auto& u : unsupported_) std::printf("renderer: not exact: %s x %llu\n", u.first.c_str(), (unsigned long long)u.second);
 }
 
@@ -222,18 +230,23 @@ bool Renderer::init(Device& dev, std::string& err) {
     return true;
 }
 
-bool Renderer::upload(ComPtr<ID3D11Buffer>& buf, uint32_t& capacity, uint32_t bind, const void* data, uint32_t bytes) {
-    if (!buf || capacity < bytes) {
-        capacity = std::max<uint32_t>(bytes, capacity * 2);
-        capacity = std::max<uint32_t>(capacity, 1u << 16);
+// Appends to a dynamic buffer used as a ring: NO_OVERWRITE while there is room, DISCARD (a fresh buffer behind the scenes) when it wraps.
+bool Renderer::upload(ComPtr<ID3D11Buffer>& buf, uint32_t& capacity, uint32_t& cursor, uint32_t bind, const void* data, uint32_t bytes, uint32_t& offset) {
+    if (!buf || bytes > capacity) {
+        capacity = std::max<uint32_t>(bytes, std::max<uint32_t>(capacity * 2, 4u << 20));
         D3D11_BUFFER_DESC bd = {};
         bd.ByteWidth = capacity; bd.Usage = D3D11_USAGE_DYNAMIC; bd.BindFlags = bind; bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
         if (FAILED(dev_->device()->CreateBuffer(&bd, nullptr, buf.ReleaseAndGetAddressOf()))) return false;
+        cursor = capacity;   // forces the discard path below
     }
+    D3D11_MAP mode = D3D11_MAP_WRITE_NO_OVERWRITE;
+    if (cursor + bytes > capacity) { mode = D3D11_MAP_WRITE_DISCARD; cursor = 0; }
     D3D11_MAPPED_SUBRESOURCE m;
-    if (FAILED(dev_->context()->Map(buf.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return false;
-    std::memcpy(m.pData, data, bytes);
+    if (FAILED(dev_->context()->Map(buf.Get(), 0, mode, 0, &m))) return false;
+    std::memcpy(static_cast<uint8_t*>(m.pData) + cursor, data, bytes);
     dev_->context()->Unmap(buf.Get(), 0);
+    offset = cursor;
+    cursor += (bytes + 15) & ~15u;
     return true;
 }
 
@@ -256,6 +269,7 @@ bool Renderer::uploadTexture(const gx::Texture& t, Gpu& out) {
     if (FAILED(dev_->device()->CreateTexture2D(&d, init, out.tex.ReleaseAndGetAddressOf()))) return false;
     if (FAILED(dev_->device()->CreateShaderResourceView(out.tex.Get(), nullptr, out.srv.ReleaseAndGetAddressOf()))) return false;
     out.w = t.width; out.h = t.height;
+    out.bytes = t.rgba.size() * 4;
     ++stats_.texturesUploaded;
     stats_.textureBytes += t.rgba.size() * 4;
     return true;
@@ -270,9 +284,11 @@ ID3D11ShaderResourceView* Renderer::mapSrv(const gx::TexBinding& b, std::string&
     }
     if (!b.image) { why = "texture map has neither an image nor an EFB copy"; return nullptr; }
     const auto it = textures_.find(b.image->key);
-    if (it != textures_.end()) return it->second.srv.Get();
+    if (it != textures_.end()) { it->second.lastUse = ++useClock_; return it->second.srv.Get(); }
     Gpu g;
     if (!uploadTexture(*b.image, g)) { why = "texture upload failed"; return nullptr; }
+    g.lastUse = ++useClock_;
+    textureBytes_ += g.bytes;
     return textures_.emplace(b.image->key, std::move(g)).first->second.srv.Get();
 }
 
@@ -346,12 +362,35 @@ ID3D11DepthStencilState* Renderer::depthState(const gx::DepthState& s) {
     return depths_.emplace(key, st).first->second.Get();
 }
 
+// Keeps the texture cache within a byte budget (least recently used first) and the copy-texture table within a count. Called between
+// draws, so no texture of the draw being built can disappear.
+void Renderer::trimCaches() {
+    constexpr uint64_t kBudget = 512ull << 20;
+    if (textureBytes_ > kBudget) {
+        std::vector<std::pair<uint64_t, uint64_t>> order;   // (lastUse, key)
+        for (const auto& e : textures_) order.push_back({e.second.lastUse, e.first});
+        std::sort(order.begin(), order.end());
+        for (const auto& o : order) {
+            if (textureBytes_ <= kBudget / 4 * 3) break;
+            textureBytes_ -= textures_[o.second].bytes;
+            textures_.erase(o.second);
+            ++stats_.texturesEvicted;
+        }
+    }
+    if (copyTextures_.size() > 512) {
+        std::vector<uint32_t> ids;
+        for (const auto& e : copyTextures_) ids.push_back(e.first);
+        std::sort(ids.begin(), ids.end());
+        for (size_t i = 0; i + 256 < ids.size(); ++i) copyTextures_.erase(ids[i]);
+    }
+}
+
 void Renderer::draw(const gx::DrawCommand& dc) {
     ++stats_.draws;
+    trimCaches();
     depthDirty_ = true;
     const gx::PipelineState& s = *dc.state;
     auto skip = [&](const std::string& why) { report(why); ++stats_.drawsSkipped; };
-    if (dc.primitive != gx::Primitive::Triangles) { skip("lines and points are not rendered (wide-primitive expansion not implemented)"); return; }
     if (!dc.indexCount || !dc.vertexCount) return;
     if (dc.vertexCount > 65535) { skip("draw with more than 65535 vertices"); return; }
     if (s.viewport.width <= 0 || s.viewport.height <= 0) { skip("empty viewport"); return; }
@@ -371,27 +410,54 @@ void Renderer::draw(const gx::DrawCommand& dc) {
 
     // Textures and per-stage coordinate scale.
     tev::TevConstants cb = {};
-    for (auto& sc : cb.stageScale) { sc[0] = 1.0f; sc[1] = 1.0f; }
+    for (auto& sc : cb.stageScale) { sc[0] = 1.0f; sc[1] = 1.0f; sc[2] = 1.0f; sc[3] = 1.0f; }
     ID3D11ShaderResourceView* srvs[8] = {};
     ID3D11SamplerState* smps[8] = {};
     bool mapDone[8] = {};
+    auto bindMap = [&](uint32_t m) -> bool {
+        if (m > 7) { skip("texture map out of range"); return false; }
+        if (mapDone[m]) return true;
+        srvs[m] = mapSrv(s.maps[m], why);
+        if (!srvs[m]) { skip(why); return false; }
+        smps[m] = sampler(s.maps[m].sampler);
+        mapDone[m] = true;
+        return true;
+    };
     for (uint32_t i = 0; i < s.tev.numStages; ++i) {
         const gx::TevStage& t = s.tev.stages[i];
-        if (t.texMap == gx::kNoMap || t.texCoord == gx::kNoMap) continue;
-        if (t.texMap > 7 || t.texCoord > 7) { skip("texture map or coordinate set out of range"); return; }
-        const gx::TexBinding& b = s.maps[t.texMap];
-        const gx::TexCoordScale& ts = s.texScale[t.texCoord];
-        if (ts.cylWrapS || ts.cylWrapT) { skip("cylindrical texture coordinate wrapping"); return; }
-        if (ts.rangeBiasS || ts.rangeBiasT) { skip("texture coordinate range bias"); return; }
-        if (!mapDone[t.texMap]) {
-            srvs[t.texMap] = mapSrv(b, why);
-            if (!srvs[t.texMap]) { skip(why); return; }
-            smps[t.texMap] = sampler(b.sampler);
-            mapDone[t.texMap] = true;
+        float* sc = cb.stageScale[i];
+        if (t.texCoord != gx::kNoMap) {
+            if (t.texCoord > 7) { skip("texture coordinate set out of range"); return; }
+            const gx::TexCoordScale& ts = s.texScale[t.texCoord];
+            if (ts.cylWrapS || ts.cylWrapT) { skip("cylindrical texture coordinate wrapping"); return; }
+            if (ts.rangeBiasS || ts.rangeBiasT) report("texture coordinate range bias (ignored: coordinates are used unbiased)");
+            sc[0] = ts.sSize; sc[1] = ts.tSize;
         }
-        if (b.width) cb.stageScale[i][0] = static_cast<float>(ts.sSize) / b.width;
-        if (b.height) cb.stageScale[i][1] = static_cast<float>(ts.tSize) / b.height;
+        if (t.texMap != gx::kNoMap) {
+            if (!bindMap(t.texMap)) return;
+            const gx::TexBinding& b = s.maps[t.texMap];
+            if (b.width) sc[2] = 1.0f / b.width;
+            if (b.height) sc[3] = 1.0f / b.height;
+        }
     }
+    for (uint32_t k = 0; k < s.tev.numIndirect && k < 4; ++k) {
+        const gx::IndirectStage& is = s.tev.indirectStage[k];
+        if (is.texMap > 7 || is.texCoord > 7) continue;   // an indirect lookup no stage uses may name anything
+        bool used = false;
+        for (uint32_t i = 0; i < s.tev.numStages; ++i) used |= s.tev.stages[i].indirect.indStage == k;
+        if (!used) continue;
+        if (!bindMap(is.texMap)) return;
+        const gx::TexCoordScale& ts = s.texScale[is.texCoord];
+        const gx::TexBinding& b = s.maps[is.texMap];
+        if (b.width) cb.indScale[k][0] = static_cast<float>(ts.sSize) / static_cast<float>(1u << is.scaleS) / b.width;
+        if (b.height) cb.indScale[k][1] = static_cast<float>(ts.tSize) / static_cast<float>(1u << is.scaleT) / b.height;
+    }
+    for (int m = 0; m < 3; ++m)
+        for (int row = 0; row < 2; ++row)
+            for (int col = 0; col < 3; ++col) cb.indMtx[2 * m + row][col] = s.tev.indirectMatrix[m][row][col];
+    bool anyIndirect = false;
+    for (uint32_t i = 0; i < s.tev.numStages; ++i) anyIndirect |= s.tev.stages[i].indirect.indStage != gx::kNoMap;
+    if (anyIndirect) report("indirect texturing offsets use the matrix / 256 in texels (scale not verified against hardware)");
     for (int r = 0; r < 4; ++r)
         for (int c = 0; c < 4; ++c) { cb.tevreg[r][c] = s.tev.reg[r][c] / 255.0f; cb.kcolor[r][c] = s.tev.konst[r][c] / 255.0f; }
     cb.fogParam[0] = s.fog.a; cb.fogParam[1] = s.fog.b; cb.fogParam[2] = s.fog.c;
@@ -399,16 +465,75 @@ void Renderer::draw(const gx::DrawCommand& dc) {
     cb.alphaRef[0] = s.alphaCompare.ref0;
     cb.alphaRef[1] = s.alphaCompare.ref1;
 
-    std::vector<tev::Vertex> verts(dc.vertexCount);
-    for (uint32_t i = 0; i < dc.vertexCount; ++i) {
-        const gx::Vertex& v = dc.vertices[i];
-        tev::Vertex& o = verts[i];
+    // Vertices and indices to draw: triangles as they are; points become screen-aligned squares, lines quads along the line
+    // (size in 1/6 pixel, EFB pixels), expanded here in clip space.
+    verts_.clear();
+    idx_.clear();
+    auto convert = [&](const gx::Vertex& v) {
+        tev::Vertex o;
         std::memcpy(o.pos, v.pos, sizeof o.pos);
         for (int c = 0; c < 4; ++c) { o.col0[c] = v.color[0][c] / 255.0f; o.col1[c] = v.color[1][c] / 255.0f; }
         std::memcpy(o.uv, v.tex, sizeof o.uv);
+        return o;
+    };
+    const float vpW = s.viewport.width, vpH = s.viewport.height;
+    static const uint16_t kQuadIdx[6] = {0, 1, 2, 2, 1, 3};
+    static const float kTexOffset[8] = {0.0f, 1.0f / 16, 1.0f / 8, 1.0f / 4, 0.5f, 1.0f, 0.0f, 0.0f};   // GX_TO_ZERO .. GX_TO_ONE
+    if (dc.primitive == gx::Primitive::Triangles) {
+        verts_.reserve(dc.vertexCount);
+        for (uint32_t i = 0; i < dc.vertexCount; ++i) verts_.push_back(convert(dc.vertices[i]));
+        idx_.assign(dc.indices, dc.indices + dc.indexCount);
+    } else if (dc.primitive == gx::Primitive::Points) {
+        const float half = s.pointSize / 6.0f * 0.5f;
+        const float off = kTexOffset[s.pointTexOffset & 7];
+        for (uint32_t k = 0; k < dc.indexCount; ++k) {
+            const gx::Vertex& v = dc.vertices[dc.indices[k]];
+            if (!(v.pos[3] > 0.0f)) continue;   // behind the eye: no sprite
+            const float dx = half * 2.0f / vpW * v.pos[3], dy = half * 2.0f / vpH * v.pos[3];
+            const uint16_t base = static_cast<uint16_t>(verts_.size());
+            for (int corner = 0; corner < 4; ++corner) {   // TL, TR, BL, BR
+                tev::Vertex o = convert(v);
+                o.pos[0] += (corner & 1) ? dx : -dx;
+                o.pos[1] += (corner & 2) ? -dy : dy;
+                for (int t = 0; t < 8; ++t) {
+                    if (!s.texScale[t].pointOffset) continue;
+                    if (corner & 1) o.uv[t][0] += off;
+                    if (corner & 2) o.uv[t][1] += off;
+                }
+                verts_.push_back(o);
+            }
+            for (uint16_t i : kQuadIdx) idx_.push_back(static_cast<uint16_t>(base + i));
+        }
+        report("point sprites: texture coordinate offset applied in normalized coordinate units (not verified against hardware)");
+    } else {
+        const float half = s.lineWidth / 6.0f * 0.5f;
+        for (uint32_t k = 0; k + 1 < dc.indexCount; k += 2) {
+            const gx::Vertex& a0 = dc.vertices[dc.indices[k]];
+            const gx::Vertex& a1 = dc.vertices[dc.indices[k + 1]];
+            if (!(a0.pos[3] > 0.0f) || !(a1.pos[3] > 0.0f)) continue;
+            const float x0 = a0.pos[0] / a0.pos[3] * vpW * 0.5f, y0 = a0.pos[1] / a0.pos[3] * vpH * 0.5f;
+            const float x1 = a1.pos[0] / a1.pos[3] * vpW * 0.5f, y1 = a1.pos[1] / a1.pos[3] * vpH * 0.5f;
+            const float lx = x1 - x0, ly = y1 - y0, len = std::sqrt(lx * lx + ly * ly);
+            if (len < 1e-6f) continue;
+            const float px = -ly / len * half, py = lx / len * half;   // half-width perpendicular, in pixels
+            const uint16_t base = static_cast<uint16_t>(verts_.size());
+            const gx::Vertex* ends[4] = {&a0, &a0, &a1, &a1};
+            const float sign[4] = {1, -1, 1, -1};
+            for (int c = 0; c < 4; ++c) {
+                tev::Vertex o = convert(*ends[c]);
+                o.pos[0] += sign[c] * px * 2.0f / vpW * ends[c]->pos[3];
+                o.pos[1] += sign[c] * py * 2.0f / vpH * ends[c]->pos[3];
+                verts_.push_back(o);
+            }
+            for (uint16_t i : kQuadIdx) idx_.push_back(static_cast<uint16_t>(base + i));
+        }
+        if (s.lineTexOffset) report("line texture coordinate offsets (ignored)");
     }
-    if (!upload(vb_, vbCap_, D3D11_BIND_VERTEX_BUFFER, verts.data(), static_cast<uint32_t>(verts.size() * sizeof(tev::Vertex))) ||
-        !upload(ib_, ibCap_, D3D11_BIND_INDEX_BUFFER, dc.indices, dc.indexCount * 2)) { skip("vertex/index buffer upload failed"); return; }
+    if (verts_.size() > 65535) { skip("primitive expansion produced more than 65535 vertices"); return; }
+    if (idx_.empty()) return;
+    uint32_t vbOffset = 0, ibOffset = 0;
+    if (!upload(vb_, vbCap_, vbCursor_, D3D11_BIND_VERTEX_BUFFER, verts_.data(), static_cast<uint32_t>(verts_.size() * sizeof(tev::Vertex)), vbOffset) ||
+        !upload(ib_, ibCap_, ibCursor_, D3D11_BIND_INDEX_BUFFER, idx_.data(), static_cast<uint32_t>(idx_.size() * 2), ibOffset)) { skip("vertex/index buffer upload failed"); return; }
     D3D11_MAPPED_SUBRESOURCE m;
     if (FAILED(dev_->context()->Map(tevCb_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) { skip("constant buffer upload failed"); return; }
     std::memcpy(m.pData, &cb, sizeof cb);
@@ -426,20 +551,34 @@ void Renderer::draw(const gx::DrawCommand& dc) {
     c->OMSetDepthStencilState(depthState(s.depth), 0);
     c->IASetInputLayout(layout_.Get());
     c->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    UINT stride = sizeof(tev::Vertex), offset = 0;
+    UINT stride = sizeof(tev::Vertex), offset = vbOffset;
     ID3D11Buffer* vb = vb_.Get();
     c->IASetVertexBuffers(0, 1, &vb, &stride, &offset);
-    c->IASetIndexBuffer(ib_.Get(), DXGI_FORMAT_R16_UINT, 0);
+    c->IASetIndexBuffer(ib_.Get(), DXGI_FORMAT_R16_UINT, ibOffset);
     c->VSSetShader(vs_.Get(), nullptr, 0);
     c->PSSetShader(ps, nullptr, 0);
     ID3D11Buffer* cbuf = tevCb_.Get();
     c->PSSetConstantBuffers(0, 1, &cbuf);
     c->PSSetShaderResources(0, 8, srvs);
     c->PSSetSamplers(0, 8, smps);
-    c->DrawIndexed(dc.indexCount, 0, 0);
+    ComPtr<ID3D11Query> occ;
+    if (occFrom_ && dc.seq >= occFrom_ && dc.seq < occFrom_ + occCount_) {   // debugging aid (AWL_GFX_OCCLUSION=<first seq>,<count>)
+        D3D11_QUERY_DESC qd = {D3D11_QUERY_OCCLUSION, 0};
+        dev_->device()->CreateQuery(&qd, occ.GetAddressOf());
+        if (occ) c->Begin(occ.Get());
+    }
+    c->DrawIndexed(static_cast<UINT>(idx_.size()), 0, 0);
+    if (occ) {
+        c->End(occ.Get());
+        UINT64 samples = 0;
+        while (c->GetData(occ.Get(), &samples, sizeof samples, 0) == S_FALSE) {}
+        std::fprintf(stderr, "occlusion seq=%u prim=%d verts=%zu idx=%zu samples=%llu depth=%d/%d write=%d blend=%d stages=%u map0=%d\n", dc.seq, static_cast<int>(dc.primitive),
+                     verts_.size(), idx_.size(), static_cast<unsigned long long>(samples), s.depth.test, static_cast<int>(s.depth.func), s.depth.write, static_cast<int>(s.blend.mode),
+                     s.tev.numStages, s.maps[0].valid);
+    }
     ID3D11ShaderResourceView* none[8] = {};
     c->PSSetShaderResources(0, 8, none);
-    stats_.triangles += dc.indexCount / 3;
+    stats_.triangles += idx_.size() / 3;
 }
 
 void Renderer::clearRect(const gx::EfbCopyCommand& cc) {

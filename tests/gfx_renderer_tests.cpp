@@ -261,6 +261,84 @@ int main() {
         CHECK(near3(img, 500, 100, 0, 0, 0));
     }
 
+    // 5b2. Points and lines expand to quads. A point of size 120 (1/6 pixel units) is a 20 pixel square centred on the vertex; a line of width 12
+    //      is 2 pixels thick, centred on the line. Clip (0, 0) is window pixel (320, 224) in the 640x448 viewport.
+    {
+        gx::EfbCopyCommand c0 = xfbCopy(40, 0xE000, false);
+        c0.clear.color = c0.clear.alpha = true; c0.clear.rgba[3] = 255;
+        r.efbCopy(c0);
+        const uint8_t red[4] = {255, 0, 0, 255};
+        gx::PipelineState s = baseState();
+        s.pointSize = 120; s.lineWidth = 12;
+        Quad pq(0, 0, 0, 0, -1.0f, red);
+        gx::DrawCommand pd = pq.cmd(s);
+        pd.primitive = gx::Primitive::Points;
+        const uint16_t one[1] = {0};
+        pd.indices = one; pd.indexCount = 1; pd.vertexCount = 1;
+        r.draw(pd);
+        Quad lq(-0.5f, 0, 0.5f, 0, -1.0f, red);   // vertices 0 and 1 are (-0.5, 0) and (0.5, 0) (the quad's top edge)
+        gx::DrawCommand ld = lq.cmd(s);
+        ld.primitive = gx::Primitive::Lines;
+        const uint16_t pair[2] = {2, 3};
+        ld.indices = pair; ld.indexCount = 2;
+        gx::Vertex* lv = const_cast<gx::Vertex*>(lq.v.data());
+        for (int i = 2; i < 4; ++i) { lv[i].pos[1] = 0.5f; }   // lift the line away from the point: y = +0.5 -> window row 112
+        r.draw(ld);
+        r.efbCopy(xfbCopy(41, 0xE100, false));
+        CHECK(r.xfbImage(0xE100, img, why));
+        CHECK(near3(img, 320, 224, 255, 0, 0) && near3(img, 311, 215, 255, 0, 0) && near3(img, 328, 232, 255, 0, 0));   // inside the 310..329 x 214..233 square
+        CHECK(near3(img, 305, 224, 0, 0, 0) && near3(img, 320, 210, 0, 0, 0) && near3(img, 335, 224, 0, 0, 0));
+        CHECK(near3(img, 320, 111, 255, 0, 0) && near3(img, 320, 112, 255, 0, 0));     // the 2-pixel line covers rows 111 and 112
+        CHECK(near3(img, 320, 110, 0, 0, 0) && near3(img, 320, 113, 0, 0, 0) && near3(img, 100, 111, 0, 0, 0) && near3(img, 500, 111, 0, 0, 0));
+    }
+
+    // 5c. Indirect texturing (the convention the renderer implements; scale not yet verified against hardware): a 4x1 texture sampled
+    //     through an indirect lookup. Indirect texel (S, T, U) = (A, B, G) = (192, 128, 0); bias 128 on S and T gives (64, 0, 0); matrix element
+    //     4.0 gives offset s = 4 * 64 / 256 = 1 texel. A pixel whose base texel is 0.625 samples texel 1, base 3.125 clamps to texel 3.
+    {
+        auto px = [](uint8_t r8, uint8_t g8, uint8_t b8, uint8_t a8) { return uint32_t(a8) << 24 | uint32_t(b8) << 16 | uint32_t(g8) << 8 | r8; };
+        auto m = std::make_shared<gx::Texture>();
+        m->key = 0x5001; m->width = 4; m->height = 1; m->levelCount = 1; m->levels[0] = {4, 1, 0};
+        m->rgba = {px(255, 0, 0, 255), px(0, 255, 0, 255), px(0, 0, 255, 255), px(255, 255, 0, 255)};
+        auto ind = std::make_shared<gx::Texture>();
+        ind->key = 0x5002; ind->width = 1; ind->height = 1; ind->levelCount = 1; ind->levels[0] = {1, 1, 0};
+        ind->rgba = {px(0, 0, 128, 192)};
+        gx::PipelineState s = baseState();
+        gx::TevStage& st = s.tev.stages[0];
+        st.texMap = 0; st.texCoord = 0;
+        st.color.in[3] = static_cast<uint8_t>(gx::TevColorIn::TexC);
+        st.alpha.in[3] = static_cast<uint8_t>(gx::TevAlphaIn::TexA);
+        st.indirect = {0, 0, 3, 0, 1, 0, 0, false, false};
+        s.tev.numIndirect = 1;
+        s.tev.indirectStage[0] = {1, 0, 0, 0};
+        s.tev.indirectMatrix[0][0][0] = 4.0f;
+        s.maps[0].valid = true; s.maps[0].image = m; s.maps[0].width = 4; s.maps[0].height = 1;
+        s.maps[0].sampler = {gx::WrapMode::Clamp, gx::WrapMode::Clamp, gx::FilterMode::Near, false, 0, 0, 0, 1, false, false};
+        s.maps[1].valid = true; s.maps[1].image = ind; s.maps[1].width = 1; s.maps[1].height = 1;
+        s.maps[1].sampler = s.maps[0].sampler;
+        s.texScale[0].sSize = 4; s.texScale[0].tSize = 1;
+        const uint8_t white[4] = {255, 255, 255, 255};
+        Quad q(-1, -1, 1, 1, -1.0f, white);
+        r.draw(q.cmd(s));
+        r.efbCopy(xfbCopy(30, 0xB000, false));
+        CHECK(r.xfbImage(0xB000, img, why));
+        CHECK(near3(img, 100, 100, 0, 255, 0));      // base 0.625 + 1 -> texel 1
+        CHECK(near3(img, 300, 100, 0, 0, 255));      // 1.875 + 1 -> texel 2
+        CHECK(near3(img, 500, 100, 255, 255, 0));    // 3.125 + 1 = 4.125 -> clamped to texel 3
+        // wrap code 6 zeroes the base coordinate: every pixel samples texel 0 + 1
+        s.tev.stages[0].indirect.wrapS = 6; s.tev.stages[0].indirect.wrapT = 6;
+        r.draw(q.cmd(s));
+        r.efbCopy(xfbCopy(31, 0xC000, false));
+        CHECK(r.xfbImage(0xC000, img, why));
+        CHECK(near3(img, 100, 100, 0, 255, 0) && near3(img, 500, 100, 0, 255, 0));
+        // matrix 0 (none) gives no offset: the texture appears undistorted
+        s.tev.stages[0].indirect.wrapS = s.tev.stages[0].indirect.wrapT = 0; s.tev.stages[0].indirect.matrix = 0;
+        r.draw(q.cmd(s));
+        r.efbCopy(xfbCopy(32, 0xD000, false));
+        CHECK(r.xfbImage(0xD000, img, why));
+        CHECK(near3(img, 100, 100, 255, 0, 0) && near3(img, 300, 100, 0, 255, 0) && near3(img, 500, 100, 255, 255, 0));
+    }
+
     // 6. Not rendered exactly means reported, never silently ignored.
     {
         const uint8_t red[4] = {255, 0, 0, 255};
@@ -273,9 +351,9 @@ int main() {
         s4.fog.type = gx::FogType::Exp; s4.fog.orthographic = true;
         r.draw(q.cmd(s4));
         gx::PipelineState s2 = baseState();
-        gx::DrawCommand d = q.cmd(s2);
-        d.primitive = gx::Primitive::Lines;
-        r.draw(d);
+        s2.depth.test = true; s2.depth.compareBeforeTexture = true;
+        s2.alphaCompare.comp0 = gx::CompareFunc::Greater;
+        r.draw(q.cmd(s2));
         gx::PipelineState s3 = baseState();
         s3.blend.mode = gx::BlendMode::Logic; s3.blend.logicOp = gx::LogicOp::Xor;
         r.draw(q.cmd(s3));
@@ -284,7 +362,7 @@ int main() {
         for (const auto& u : r.unsupported()) {
             fog |= u.first.find("range adjustment") != std::string::npos;
             ortho |= u.first.find("orthographic") != std::string::npos;
-            lines |= u.first.find("lines") != std::string::npos;
+            lines |= u.first.find("early depth test") != std::string::npos;
             logic |= u.first.find("logic op") != std::string::npos;
         }
         CHECK(fog && ortho && lines && logic);

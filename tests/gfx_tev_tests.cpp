@@ -130,7 +130,7 @@ struct Fixture {
         ID3D11DeviceContext* c = dev.context();
         c->UpdateSubresource(vb.Get(), 0, nullptr, v, 0, 0);
         TevConstants pc = {};
-        for (auto& sc : pc.stageScale) { sc[0] = 1.0f; sc[1] = 1.0f; }
+        for (auto& sc : pc.stageScale) { sc[0] = sc[1] = sc[2] = sc[3] = 1.0f; }
         std::memcpy(pc.kcolor[0], k0, 16);
         std::memcpy(pc.tevreg[0], tevreg0, 16);
         pc.alphaRef[0] = alphaRef0;
