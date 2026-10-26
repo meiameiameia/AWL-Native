@@ -7,6 +7,7 @@
 // counted. Nothing is ignored silently.
 #pragma once
 
+#include <cstdlib>
 #include <map>
 #include <string>
 #include <unordered_map>
@@ -92,6 +93,9 @@ private:
     std::unordered_map<uint32_t, Gpu> copyTextures_;   // by EfbCopyCommand::id (copies to textures)
     std::vector<XfbEntry> xfb_;
     uint64_t xfbSeq_ = 0, useClock_ = 0, textureBytes_ = 0;
+    ComPtr<ID3D11Query> frameQuery_;
+    uint32_t frameDraws_ = 0;
+    bool frameStats_ = std::getenv("AWL_GFX_FRAMESTATS") != nullptr;
     uint32_t occFrom_ = 0, occCount_ = 0;   // AWL_GFX_OCCLUSION=<first draw seq>,<count>: print the samples each draw passes
     std::map<std::string, ComPtr<ID3D11SamplerState>> samplers_;
     std::map<std::string, ComPtr<ID3D11BlendState>> blends_;
