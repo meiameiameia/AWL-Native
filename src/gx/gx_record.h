@@ -53,6 +53,26 @@ private:
     uint64_t draws_ = 0, vertices_ = 0, inView_ = 0, litVertices_ = 0, litSum_[3] = {}, copies_ = 0, xfbCopies_ = 0;
 };
 
+// Ordered log of what a draw or copy depends on (viewport, scissor, maps with their EFB-copy ids and sizes, texgens, projection kind of
+// the first vertex, copies with source/destination/clear), for retraces [first, first + count). One line per command; draws are
+// merged while the summary stays equal.
+class StateLogBackend : public Backend {
+public:
+    StateLogBackend(const std::string& path, uint32_t first, uint32_t count);
+    ~StateLogBackend() override;
+    void draw(const DrawCommand& d) override;
+    void efbCopy(const EfbCopyCommand& c) override;
+    void frameBoundary(uint32_t retrace) override;
+
+private:
+    void flushRun();
+    FILE* f_ = nullptr;
+    uint32_t first_, count_, retrace_ = 0;
+    bool active_ = false;
+    std::string runKey_;
+    uint64_t runDraws_ = 0, runVertices_ = 0, runIn_ = 0;
+};
+
 // Forwards every command to the registered backends in registration order. Registration is not thread safe: do it before the
 // run starts. The platform's GX model delivers to this hub; the renderer registers itself with add().
 class BackendHub : public Backend {

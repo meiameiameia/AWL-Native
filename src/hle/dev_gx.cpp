@@ -6,6 +6,7 @@
 // (docs/research/hle-platform.md, sections 2.7 and 5.5); the GX core note is docs/research/gx-core.md.
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <memory>
 #include <vector>
 
@@ -15,6 +16,7 @@
 #include "gx/gx_core.h"
 #include "gx/gx_dump.h"
 #include "gx/gx_record.h"
+#include "gx/gx_soft.h"
 
 namespace awl::hle {
 namespace {
@@ -101,16 +103,55 @@ private:
     Platform& p_;
 };
 
+// AWL_GX_SOFT=<dir> [AWL_GX_SOFT_FROM=<retrace>] [AWL_GX_SOFT_COUNT=<n>]: draws the IR of the retraces [from, from + n) with the CPU reference
+// renderer and writes the XFB copy of each as <dir>/xfb_<retrace>.png (the copy that ends the retrace interval it was issued in).
+class SoftRange : public gx::Backend {
+public:
+    SoftRange(const std::string& dir, uint32_t from, uint32_t count) : dir_(dir), from_(from), count_(count) {
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
+        soft_.keepXfb(1);
+    }
+    ~SoftRange() override { writeLast(); }
+    void draw(const gx::DrawCommand& d) override { if (active_) soft_.draw(d); }
+    void efbCopy(const gx::EfbCopyCommand& c) override {
+        if (!active_) return;
+        const size_t before = soft_.xfbImages().size();
+        soft_.efbCopy(c);
+        if (c.target == gx::CopyTarget::Xfb) { pending_ = true; seen_ = before; }
+    }
+    void frameBoundary(uint32_t retrace) override {
+        writeLast();
+        retrace_ = retrace;
+        active_ = retrace >= from_ && retrace - from_ < count_;
+    }
+private:
+    void writeLast() {
+        if (!pending_ || soft_.xfbImages().empty()) return;
+        const auto& im = soft_.xfbImages().back();
+        gx::writePngRgba(dir_ + "/xfb_" + std::to_string(retrace_) + ".png", im.w, im.h, im.px.data());
+        pending_ = false;
+    }
+    std::string dir_;
+    uint32_t from_, count_, retrace_ = 0;
+    bool active_ = false, pending_ = false;
+    size_t seen_ = 0;
+    gx::SoftBackend soft_;
+};
+
 class GxFeed : public gx::StreamObserver {
 public:
     explicit GxFeed(Platform& p) : p_(p), mem_(p), host_(p), core_(mem_, gx::backendHub(), host_) {
         core_.setObserver(this);
         core_.setProfiling(std::getenv("AWL_GX_STATS") != nullptr);
+        core_.setTextureTrust(std::getenv("AWL_GX_NOTRUST") == nullptr);   // diagnostic: re-compare texture bytes at every bind
         parseOptions();
     }
     ~GxFeed() override {
         if (rec_) gx::backendHub().remove(rec_.get());
         if (frameLog_) gx::backendHub().remove(frameLog_.get());
+        if (stateLog_) gx::backendHub().remove(stateLog_.get());
+        if (soft_) gx::backendHub().remove(soft_.get());
         if (std::getenv("AWL_GX_STATS")) {
             const gx::CoreStats& s = core_.stats();
             const double frames = p_.counters.retraces ? double(p_.counters.retraces) : 1.0;
@@ -165,6 +206,18 @@ private:
             else if (a == "--gx-dump-from") from = static_cast<uint32_t>(std::strtoul(__argv[i + 1], nullptr, 0));
             else if (a == "--gx-dump-dir") dir = __argv[i + 1];
         }
+        if (const char* sd = std::getenv("AWL_GX_SOFT")) {
+            const char* softFrom = std::getenv("AWL_GX_SOFT_FROM");
+            const char* softCount = std::getenv("AWL_GX_SOFT_COUNT");
+            soft_ = std::make_unique<SoftRange>(sd, softFrom ? static_cast<uint32_t>(std::strtoul(softFrom, nullptr, 0)) : 0, softCount ? static_cast<uint32_t>(std::strtoul(softCount, nullptr, 0)) : 2);
+            gx::backendHub().add(soft_.get());
+        }
+        if (const char* sl = std::getenv("AWL_GX_STATELOG")) {
+            const char* sfrom = std::getenv("AWL_GX_STATELOG_FROM");
+            const char* scnt = std::getenv("AWL_GX_STATELOG_COUNT");
+            stateLog_ = std::make_unique<gx::StateLogBackend>(sl, sfrom ? static_cast<uint32_t>(std::strtoul(sfrom, nullptr, 0)) : 0, scnt ? static_cast<uint32_t>(std::strtoul(scnt, nullptr, 0)) : 2);
+            gx::backendHub().add(stateLog_.get());
+        }
         if (const char* fl = std::getenv("AWL_GX_FRAMELOG")) {
             frameLog_ = std::make_unique<gx::FrameLogBackend>(fl);
             gx::backendHub().add(frameLog_.get());
@@ -182,6 +235,8 @@ private:
     uint32_t memAt_ = 0;
     std::unique_ptr<gx::RecordingBackend> rec_;
     std::unique_ptr<gx::FrameLogBackend> frameLog_;
+    std::unique_ptr<gx::StateLogBackend> stateLog_;
+    std::unique_ptr<SoftRange> soft_;
 };
 
 // ---- Shared GX state -------------------------------------------------------------------------------------------

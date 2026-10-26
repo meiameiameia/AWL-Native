@@ -10,6 +10,7 @@ add_library(awl_gx STATIC
     src/gx/gx_pipeline.cpp
     src/gx/gx_texture.cpp
     src/gx/gx_record.cpp
+    src/gx/gx_soft.cpp
 )
 target_include_directories(awl_gx PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_compile_definitions(awl_gx PRIVATE _CRT_SECURE_NO_WARNINGS)
@@ -57,4 +58,14 @@ if(MSVC)
     target_compile_options(awl-gx-bench PRIVATE /W4 /fp:strict)
 else()
     target_compile_options(awl-gx-bench PRIVATE -Wall -Wextra)
+endif()
+
+# CPU reference renderer: replays a captured stream and writes the XFB images as PNG (docs/research/gx-core.md).
+add_executable(awl-gx-render src/gx/gx_render_main.cpp)
+target_compile_definitions(awl-gx-render PRIVATE _CRT_SECURE_NO_WARNINGS)
+target_link_libraries(awl-gx-render PRIVATE awl_gx)
+if(MSVC)
+    target_compile_options(awl-gx-render PRIVATE /W4 /fp:strict)
+else()
+    target_compile_options(awl-gx-render PRIVATE -Wall -Wextra)
 endif()
