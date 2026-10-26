@@ -111,7 +111,8 @@ HlslResult generatePixelShader(const PixelShaderKey& key) {
     HlslResult res;
     Gen g;
     if (key.numStages < 1 || key.numStages > 16) { res.unsupported = "stage count " + std::to_string(key.numStages) + " outside 1-16"; return res; }
-    if (key.fogType != 0) { res.unsupported = "fog (type " + std::to_string(key.fogType) + ") is not generated yet"; return res; }
+    if (key.fogType != 0 && (key.fogType < 2 || key.fogType > 7 || key.fogType == 3)) { res.unsupported = "fog type " + std::to_string(key.fogType) + " is not a GX fog type"; return res; }
+    if (key.fogType != 0 && key.fogOrtho) { res.unsupported = "fog with an orthographic projection (parameters not verified against a stream)"; return res; }
     if (key.reserved != 0) { res.unsupported = "reserved key byte is not zero"; return res; }
     if (key.efbFormat != 0) { res.unsupported = "EFB pixel format " + std::to_string(key.efbFormat) + " is not emulated yet (only RGB8)"; return res; }
 
@@ -120,6 +121,11 @@ HlslResult generatePixelShader(const PixelShaderKey& key) {
         "    float4 kcolor[4];\n"
         "    float4 tevreg[4];\n"
         "    float4 alphaRef;\n"
+        "    float4 stageScale[16];\n"
+        "    float4 indScale[4];\n"
+        "    float4 indMtx[6];\n"
+        "    float4 fogParam;\n"
+        "    float4 fogColor;\n"
         "};\n"
         "Texture2D tex0 : register(t0); Texture2D tex1 : register(t1); Texture2D tex2 : register(t2); Texture2D tex3 : register(t3);\n"
         "Texture2D tex4 : register(t4); Texture2D tex5 : register(t5); Texture2D tex6 : register(t6); Texture2D tex7 : register(t7);\n"
@@ -132,12 +138,22 @@ HlslResult generatePixelShader(const PixelShaderKey& key) {
         "};\n"
         "float4 main(PsIn i) : SV_Target0 {\n";
     g.line("float4 r_prev = tevreg[0]; float4 r_reg0 = tevreg[1]; float4 r_reg1 = tevreg[2]; float4 r_reg2 = tevreg[3];");
+    g.line("float2 prevTexel = float2(0.0, 0.0);   // the previous stage's final texture coordinate in texels (indirect 'add previous')");
 
     for (uint32_t n = 0; n < key.numStages && g.why.empty(); ++n) {
         const Stage& s = key.stages[n];
         const std::string tag = "stage " + std::to_string(n) + ": ";
-        if (s.indStage != kNone) { g.fail(tag + "indirect texturing is not generated yet"); break; }
-        if (s.colCmp != CMP_NONE || s.alpCmp != CMP_NONE) { g.fail(tag + "TEV compare modes are not generated yet"); break; }
+        if (s.indStage != kNone) {
+            if (s.indStage > 3 || key.ind[s.indStage].texMap == kNone || key.ind[s.indStage].texCoord == kNone || key.ind[s.indStage].texMap > 7 || key.ind[s.indStage].texCoord > 7) {
+                g.fail(tag + "indirect lookup " + std::to_string(s.indStage) + " has no map or coordinate set"); break;
+            }
+            if (s.indFormat != 0) { g.fail(tag + "indirect texturing with offsets narrower than 8 bits is not generated yet"); break; }
+            if (s.indAlpha != 0) { g.fail(tag + "indirect bump alpha is not generated yet"); break; }
+            if (s.indMatrix > 3) { g.fail(tag + "indirect S/T-only matrices are not generated yet"); break; }
+            if (s.indWrapS > 6 || s.indWrapT > 6) { g.fail(tag + "indirect wrap code out of range"); break; }
+        }
+        if (s.alpCmp != CMP_NONE && s.alpCmp != CMP_RGB8_GT && s.alpCmp != CMP_RGB8_EQ) { g.fail(tag + "alpha compare mode other than A8 (R8/GR16/BGR24 forms on alpha are not defined)"); break; }
+        if (s.colCmp > CMP_RGB8_EQ || s.alpCmp > CMP_RGB8_EQ) { g.fail(tag + "compare mode out of range"); break; }
         if (s.rasChannel == RAS_ALPHA_BUMP || s.rasChannel == RAS_ALPHA_BUMP_N) { g.fail(tag + "alpha-bump raster source needs indirect texturing"); break; }
         if (s.rasChannel > RAS_COLOR1 && s.rasChannel != RAS_ZERO) { g.fail(tag + "raster channel " + std::to_string(s.rasChannel) + " is not valid"); break; }
         if (s.rasSwap > 3 || s.texSwap > 3) { g.fail(tag + "swap table index out of range"); break; }
@@ -147,10 +163,34 @@ HlslResult generatePixelShader(const PixelShaderKey& key) {
         if (s.colDest > 3 || s.alpDest > 3 || s.colScale > 3 || s.alpScale > 3 || s.colBias > 2 || s.alpBias > 2) { g.fail(tag + "register encoding out of range"); break; }
 
         g.line("{   // " + tag.substr(0, tag.size() - 2));
+        // Texture coordinate of the stage in texels: the coordinate set scaled by TexCoordScale, then (indirect) wrapped, offset by
+        // the previous stage and by the indirect lookup (offsets = matrix * (S, T, U) / 256 texels; S, T, U = A, B, G of the sample).
+        const bool hasCoord = s.texCoord != kNone;
+        const std::string cstr = hasCoord ? std::to_string(s.texCoord) : "";
+        const std::string nstr = std::to_string(n);
+        if (hasCoord && s.texCoord > 7) { g.fail(tag + "coordinate set out of range"); break; }
+        g.line(std::string("    float2 texel = ") + (hasCoord ? "(i.uv" + cstr + ".xy / i.uv" + cstr + ".z) * stageScale[" + nstr + "].xy" : "float2(0.0, 0.0)") + ";");
+        if (s.indStage != kNone) {
+            const IndStage& is = key.ind[s.indStage];
+            const std::string im = std::to_string(is.texMap), ic = std::to_string(is.texCoord), ik = std::to_string(s.indStage);
+            g.line("    float2 itc = (i.uv" + ic + ".xy / i.uv" + ic + ".z) * indScale[" + ik + "].xy;");
+            g.line("    float4 it = tex" + im + ".Sample(smp" + im + ", itc);");
+            g.line(std::string("    float3 stu = floor(float3(it.a, it.b, it.g) * 255.0 + 0.5) - float3(") + ((s.indBias & 1) ? "128.0" : "0.0") + ", " + ((s.indBias & 2) ? "128.0" : "0.0") + ", " +
+                   ((s.indBias & 4) ? "128.0" : "0.0") + ");");
+            if (s.indMatrix == 0) g.line("    float2 ioff = float2(0.0, 0.0);");
+            else g.line("    float2 ioff = float2(dot(indMtx[" + std::to_string(2 * (s.indMatrix - 1)) + "].xyz, stu), dot(indMtx[" + std::to_string(2 * (s.indMatrix - 1) + 1) + "].xyz, stu)) / 256.0;");
+            auto wrap = [](uint8_t code, const char* v) -> std::string {
+                if (code == 0) return v;
+                if (code == 6) return "0.0";
+                const int size = 256 >> (code - 1);
+                return std::string("(") + v + " - floor(" + v + " / " + std::to_string(size) + ".0) * " + std::to_string(size) + ".0)";
+            };
+            g.line("    texel = float2(" + wrap(s.indWrapS, "texel.x") + ", " + wrap(s.indWrapT, "texel.y") + ")" + (s.indAddPrev ? " + prevTexel" : "") + " + ioff;");
+        }
+        g.line("    prevTexel = texel;");
         if (texOk) {
-            const std::string m = std::to_string(s.texMap), c = std::to_string(s.texCoord);
-            const bool proj = (key.projectiveMask >> s.texCoord) & 1;
-            g.line("    float2 st = " + std::string(proj ? "i.uv" + c + ".xy / i.uv" + c + ".z" : "i.uv" + c + ".xy") + ";");
+            const std::string m = std::to_string(s.texMap);
+            g.line("    float2 st = texel * stageScale[" + nstr + "].zw;");
             g.line("    float4 tex_raw = tex" + m + ".Sample(smp" + m + ", st);");
             g.line("    float4 tex = " + Gen::swizzle("tex_raw", key.swaps[s.texSwap]) + ";");
         } else {
@@ -165,17 +205,48 @@ HlslResult generatePixelShader(const PixelShaderKey& key) {
         // colour: out = (d (+|-) ((1-c)*a + c*b) + bias) * scale
         g.line("    float3 ca = saturate(" + g.colorInput(s.colA, texOk) + "), cb = saturate(" + g.colorInput(s.colB, texOk) + "), cc = saturate(" +
                g.colorInput(s.colC, texOk) + "), cd = " + g.colorInput(s.colD, texOk) + ";");
-        g.line(std::string("    float3 cres = (cd ") + (s.colSub ? "-" : "+") + " lerp(ca, cb, cc) + " + Gen::biasText(s.colBias) + ") * " + Gen::scaleText(s.colScale) + ";");
+        if (s.colCmp == CMP_NONE) {
+            g.line(std::string("    float3 cres = (cd ") + (s.colSub ? "-" : "+") + " lerp(ca, cb, cc) + " + Gen::biasText(s.colBias) + ") * " + Gen::scaleText(s.colScale) + ";");
+        } else {
+            // compare modes: out = d + (a CMP b ? c : 0) on the 8-bit inputs; bias and scale do not apply
+            const bool eq = s.colCmp == CMP_R8_EQ || s.colCmp == CMP_GR16_EQ || s.colCmp == CMP_BGR24_EQ || s.colCmp == CMP_RGB8_EQ;
+            const char* op = eq ? "==" : ">";
+            g.line("    uint3 ia = (uint3)(ca * 255.0 + 0.5), ib = (uint3)(cb * 255.0 + 0.5);");
+            if (s.colCmp == CMP_RGB8_GT || s.colCmp == CMP_RGB8_EQ) {
+                g.line(std::string("    bool3 cmp = ia ") + op + " ib;");
+                g.line("    float3 cres = cd + float3(cmp.x ? cc.x : 0.0, cmp.y ? cc.y : 0.0, cmp.z ? cc.z : 0.0);");
+            } else {
+                const char* va = (s.colCmp == CMP_R8_GT || s.colCmp == CMP_R8_EQ) ? "ia.r" : (s.colCmp == CMP_GR16_GT || s.colCmp == CMP_GR16_EQ) ? "((ia.g << 8) | ia.r)" : "((ia.b << 16) | (ia.g << 8) | ia.r)";
+                const char* vb = (s.colCmp == CMP_R8_GT || s.colCmp == CMP_R8_EQ) ? "ib.r" : (s.colCmp == CMP_GR16_GT || s.colCmp == CMP_GR16_EQ) ? "((ib.g << 8) | ib.r)" : "((ib.b << 16) | (ib.g << 8) | ib.r)";
+                g.line(std::string("    bool cmp = ") + va + " " + op + " " + vb + ";");
+                g.line("    float3 cres = cd + (cmp ? cc : float3(0.0, 0.0, 0.0));");
+            }
+        }
         g.line(s.colClamp ? "    cres = saturate(cres);" : "    cres = clamp(cres, -1024.0/255.0, 1023.0/255.0);");
         // alpha, same form
         g.line("    float aa = saturate(" + g.alphaInput(s.alpA, texOk) + "), ab = saturate(" + g.alphaInput(s.alpB, texOk) + "), ac = saturate(" +
                g.alphaInput(s.alpC, texOk) + "), ad = " + g.alphaInput(s.alpD, texOk) + ";");
-        g.line(std::string("    float ares = (ad ") + (s.alpSub ? "-" : "+") + " lerp(aa, ab, ac) + " + Gen::biasText(s.alpBias) + ") * " + Gen::scaleText(s.alpScale) + ";");
+        if (s.alpCmp == CMP_NONE) {
+            g.line(std::string("    float ares = (ad ") + (s.alpSub ? "-" : "+") + " lerp(aa, ab, ac) + " + Gen::biasText(s.alpBias) + ") * " + Gen::scaleText(s.alpScale) + ";");
+        } else {
+            g.line("    uint a8a = (uint)(aa * 255.0 + 0.5), a8b = (uint)(ab * 255.0 + 0.5);");
+            g.line(std::string("    float ares = ad + ((a8a ") + (s.alpCmp == CMP_RGB8_EQ ? "==" : ">") + " a8b) ? ac : 0.0);");
+        }
         g.line(s.alpClamp ? "    ares = saturate(ares);" : "    ares = clamp(ares, -1024.0/255.0, 1023.0/255.0);");
         g.line(std::string("    ") + kRegName[s.colDest] + ".rgb = cres; " + kRegName[s.alpDest] + ".a = ares;");
         g.line("}");
     }
     if (!g.why.empty()) { res.unsupported = g.why; return res; }
+
+    // Fog (GX_SetFog): ze = a / (b - z) with z the screen depth in [0, 1], f = clamp(ze - c, 0, 1), then the type's curve, and the colour
+    // moves towards the fog colour by that amount. fogParam = (a, b, c), fogColor in 0..1 (libogc GX_SetFog derives a, b, c).
+    if (key.fogType != 0) {
+        g.line("float fz = saturate(fogParam.x / (fogParam.y - i.pos.z) - fogParam.z);");
+        const char* curve = key.fogType == 2 ? "fz" : key.fogType == 4 ? "1.0 - exp2(-8.0 * fz)" : key.fogType == 5 ? "1.0 - exp2(-8.0 * fz * fz)" :
+                            key.fogType == 6 ? "exp2(-8.0 * (1.0 - fz))" : "exp2(-8.0 * (1.0 - fz) * (1.0 - fz))";
+        g.line(std::string("float fogAmount = ") + curve + ";");
+        g.line("r_prev.rgb = lerp(r_prev.rgb, fogColor.rgb, fogAmount);");
+    }
 
     // Alpha compare on the 8-bit result alpha: (comp0(a, ref0) logic comp1(a, ref1)); a failed test discards the pixel.
     const bool alwaysTrue = key.alphaComp0 == 7 && key.alphaComp1 == 7 && key.alphaLogic == 0;
@@ -195,7 +266,6 @@ HlslResult generatePixelShader(const PixelShaderKey& key) {
 
 const char* vertexShaderHlsl() {
     return R"(
-cbuffer VertexConstants : register(b0) { float4 depthRange; };   // x = near, y = far (viewport z range, 0..1)
 struct VtxIn {
     float4 pos : POSITION; float4 col0 : COLOR0; float4 col1 : COLOR1;
     float3 uv0 : TEXCOORD0; float3 uv1 : TEXCOORD1; float3 uv2 : TEXCOORD2; float3 uv3 : TEXCOORD3;
@@ -208,8 +278,8 @@ struct VtxOut {
 };
 VtxOut main(VtxIn v) {
     VtxOut o;
-    // GX clip space has z in [-w, 0] (near -> -w, far -> 0); the viewport maps it to [near, far] of the depth range.
-    o.pos = float4(v.pos.x, v.pos.y, v.pos.w * depthRange.y + v.pos.z * (depthRange.y - depthRange.x), v.pos.w);
+    // GX clip space has z in [-w, 0] (near -> -w, far -> 0); D3D wants [0, w]. The viewport maps it to [near, far].
+    o.pos = float4(v.pos.x, v.pos.y, v.pos.z + v.pos.w, v.pos.w);
     o.col0 = v.col0; o.col1 = v.col1;
     o.uv0 = v.uv0; o.uv1 = v.uv1; o.uv2 = v.uv2; o.uv3 = v.uv3; o.uv4 = v.uv4; o.uv5 = v.uv5; o.uv6 = v.uv6; o.uv7 = v.uv7;
     return o;

@@ -49,10 +49,11 @@ static bool rejects(const PixelShaderKey& k, const char* word) {
 static void testRejections() {
     PixelShaderKey k = passRaster();
     CHECK(generatePixelShader(k).ok);
-    k = passRaster(); k.fogType = 2;                          CHECK(rejects(k, "fog"));
     k = passRaster(); k.efbFormat = 1;                        CHECK(rejects(k, "EFB pixel format"));
-    k = passRaster(); k.stages[0].colCmp = CMP_R8_GT;         CHECK(rejects(k, "compare"));
-    k = passRaster(); k.stages[0].alpCmp = CMP_RGB8_EQ;       CHECK(rejects(k, "compare"));
+    k = passRaster(); k.stages[0].alpCmp = CMP_R8_GT;         CHECK(rejects(k, "alpha compare mode"));
+    k = passRaster(); k.stages[0].colCmp = 9;                 CHECK(rejects(k, "compare mode out of range"));
+    k = passRaster(); k.fogType = 4; k.fogOrtho = 1;          CHECK(rejects(k, "orthographic"));
+    k = passRaster(); k.fogType = 3;                          CHECK(rejects(k, "not a GX fog type"));
     k = passRaster(); k.stages[0].indStage = 0;               CHECK(rejects(k, "indirect"));
     k = passRaster(); k.stages[0].rasChannel = RAS_ALPHA_BUMP; CHECK(rejects(k, "bump"));
     k = passRaster(); k.numStages = 0;                        CHECK(rejects(k, "stage count"));
@@ -74,7 +75,7 @@ struct Fixture {
     PixelShaderCache cache;
     ComPtr<ID3D11VertexShader> vs;
     ComPtr<ID3D11InputLayout> layout;
-    ComPtr<ID3D11Buffer> vb, vcb, pcb;
+    ComPtr<ID3D11Buffer> vb, pcb;
     ComPtr<ID3D11RasterizerState> raster;
     ComPtr<ID3D11BlendState> blend;
     ComPtr<ID3D11DepthStencilState> depth;
@@ -98,9 +99,7 @@ struct Fixture {
         D3D11_BUFFER_DESC bd = {};
         bd.ByteWidth = sizeof(Vertex) * 4; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
         if (FAILED(d->CreateBuffer(&bd, nullptr, vb.GetAddressOf()))) { err = "vb"; return false; }
-        bd.ByteWidth = sizeof(VertexConstants); bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-        if (FAILED(d->CreateBuffer(&bd, nullptr, vcb.GetAddressOf()))) { err = "vcb"; return false; }
-        bd.ByteWidth = sizeof(TevConstants);
+        bd.ByteWidth = sizeof(TevConstants); bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
         if (FAILED(d->CreateBuffer(&bd, nullptr, pcb.GetAddressOf()))) { err = "pcb"; return false; }
         D3D11_RASTERIZER_DESC rd = {};
         rd.FillMode = D3D11_FILL_SOLID; rd.CullMode = D3D11_CULL_NONE; rd.DepthClipEnable = TRUE;
@@ -130,9 +129,8 @@ struct Fixture {
         }
         ID3D11DeviceContext* c = dev.context();
         c->UpdateSubresource(vb.Get(), 0, nullptr, v, 0, 0);
-        VertexConstants vc = {{0.0f, 1.0f, 0, 0}};
-        c->UpdateSubresource(vcb.Get(), 0, nullptr, &vc, 0, 0);
         TevConstants pc = {};
+        for (auto& sc : pc.stageScale) { sc[0] = sc[1] = sc[2] = sc[3] = 1.0f; }
         std::memcpy(pc.kcolor[0], k0, 16);
         std::memcpy(pc.tevreg[0], tevreg0, 16);
         pc.alphaRef[0] = alphaRef0;
@@ -153,10 +151,8 @@ struct Fixture {
         ID3D11Buffer* vbp = vb.Get();
         c->IASetVertexBuffers(0, 1, &vbp, &stride, &offset);
         c->VSSetShader(vs.Get(), nullptr, 0);
-        ID3D11Buffer* b = vcb.Get();
-        c->VSSetConstantBuffers(0, 1, &b);
         c->PSSetShader(ps, nullptr, 0);
-        b = pcb.Get();
+        ID3D11Buffer* b = pcb.Get();
         c->PSSetConstantBuffers(0, 1, &b);
         ID3D11SamplerState* smp = point.Get();
         c->PSSetSamplers(0, 1, &smp);
@@ -258,6 +254,35 @@ static void testDraws() {
         CHECK(f.draw(k, k0, zero4, ras, 128.0f, nullptr, out, 100.0f));  // false, true -> discarded
         CHECK(px(out, 0, 0, 255, 255));
     }
+    // compare modes: out = d + (a CMP b ? c : 0) on the 8-bit inputs. a = raster (200,100,50), b = K0 (128,64,255).
+    {
+        auto cmpKey = [&](uint8_t mode, uint8_t a, uint8_t b, uint8_t c) {
+            PixelShaderKey k = passRaster();
+            Stage& s = k.stages[0];
+            s.colA = a; s.colB = b; s.colC = c; s.colD = CC_ZERO; s.colCmp = mode;
+            s.kColorSel = 12;   // K0
+            return k;
+        };
+        // RGB8_GT per channel: 200 > 128 yes, 100 > 64 yes, 50 > 255 no; c = ONE -> (255, 255, 0)
+        CHECK(f.draw(cmpKey(CMP_RGB8_GT, CC_RASC, CC_KONST, CC_ONE), k0, zero4, ras, 0, nullptr, out)); CHECK(px(out, 255, 255, 0, 100));
+        // R8_GT compares the red bytes only (200 > 128): c = HALF added to every channel
+        CHECK(f.draw(cmpKey(CMP_R8_GT, CC_RASC, CC_KONST, CC_HALF), k0, zero4, ras, 0, nullptr, out)); CHECK(px(out, 128, 128, 128, 100));
+        // GR16_GT: green:red = 100:200 = 25800 against 64:128 = 16512 -> true; swapped operands -> false, d = 0
+        CHECK(f.draw(cmpKey(CMP_GR16_GT, CC_RASC, CC_KONST, CC_ONE), k0, zero4, ras, 0, nullptr, out)); CHECK(px(out, 255, 255, 255, 100));
+        CHECK(f.draw(cmpKey(CMP_GR16_GT, CC_KONST, CC_RASC, CC_ONE), k0, zero4, ras, 0, nullptr, out)); CHECK(px(out, 0, 0, 0, 100));
+        // BGR24_EQ and RGB8_EQ of equal operands: true
+        CHECK(f.draw(cmpKey(CMP_BGR24_EQ, CC_RASC, CC_RASC, CC_HALF), k0, zero4, ras, 0, nullptr, out)); CHECK(px(out, 128, 128, 128, 100));
+        CHECK(f.draw(cmpKey(CMP_RGB8_EQ, CC_RASC, CC_RASC, CC_ONE), k0, zero4, ras, 0, nullptr, out)); CHECK(px(out, 255, 255, 255, 100));
+        // R8_EQ of different reds: false
+        CHECK(f.draw(cmpKey(CMP_R8_EQ, CC_RASC, CC_KONST, CC_ONE), k0, zero4, ras, 0, nullptr, out)); CHECK(px(out, 0, 0, 0, 100));
+        // alpha A8 compare: a = raster alpha (100) > b = zero -> alpha = d + c, c = konst 1.0 (KASEL 1.0) -> 255; EQ against zero -> 0
+        PixelShaderKey ka = passRaster();
+        ka.stages[0].alpA = CA_RASA; ka.stages[0].alpB = CA_ZERO; ka.stages[0].alpC = CA_KONST; ka.stages[0].alpD = CA_ZERO; ka.stages[0].kAlphaSel = 0;
+        ka.stages[0].alpCmp = CMP_RGB8_GT;
+        CHECK(f.draw(ka, k0, zero4, ras, 0, nullptr, out)); CHECK(px(out, 200, 100, 50, 255));
+        ka.stages[0].alpCmp = CMP_RGB8_EQ;
+        CHECK(f.draw(ka, k0, zero4, ras, 0, nullptr, out)); CHECK(px(out, 200, 100, 50, 0));
+    }
     // texture: a 1x1 texel (255,128,0,255) through swap table 1 = (B,G,R,A) -> (0,128,255,255), modulated by the raster colour white
     {
         Image t;
@@ -286,7 +311,7 @@ static void testDraws() {
     CHECK(st.hits > 0 && st.lookups == st.hits + st.compiled);
     // an unsupported key is cached as a failure with its reason
     PixelShaderKey bad = passRaster();
-    bad.fogType = 4;
+    bad.fogType = 4; bad.fogOrtho = 1;
     std::string e;
     CHECK(f.cache.get(f.dev, bad, e) == nullptr && e.find("fog") != std::string::npos);
     e.clear();
