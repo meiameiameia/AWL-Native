@@ -91,7 +91,46 @@ void Platform::lowerDeadline(uint64_t retired) {
     if (retired <= machine_->icount) retired = machine_->icount + 1;
     if (!hookInstalled_ || retired >= deadline_) return;
     deadline_ = retired;
-    rt::preemptDeadlineSet(deadline_);
+    armHook();
+}
+
+// ---- Idle skip -------------------------------------------------------------------------------------------
+// SelectThread's idle loop (checkpoints 0x801B6FC8 and 0x801B6FD0 in the recompiled SelectThread, generated code gen_801B0000.cpp) spins on the run-queue
+// bit set (small-data word at r13 - 0x5348) with external interrupts enabled: lwz, cmplwi, beq, three instructions per iteration, no
+// other effect. While the word is zero, nothing is runnable and only an event can change that, so the spin up to the next
+// deadline is a pure waste of host time. The hook is entered periodically (a probe, every kIdleProbe retired instructions); when
+// it lands in the loop with nothing pending it adds whole iterations to the retired count up to the instruction before the next
+// real deadline. This is exactly what executing them would have done to the guest (r0 and CR0 end up with the same values, the
+// retired count and therefore the time base advance by the same amount), so event times, callbacks, traces and instruction counts
+// are unchanged; only the host work disappears.
+namespace {
+constexpr uint32_t kIdleLoadPc = 0x801B6FC8, kIdleBranchPc = 0x801B6FD0;   // the two checkpoints of the loop
+constexpr int32_t kRunQueueBitsOffset = -21320;                             // r13 - 0x5348
+constexpr uint64_t kIdleProbe = 2048;
+}  // namespace
+
+void Platform::armHook() {
+    uint64_t dl = deadline_;
+    if (cfg_.idleSkip && machine_->icount + kIdleProbe < dl) dl = machine_->icount + kIdleProbe;
+    rt::preemptDeadlineSet(dl);
+}
+
+void Platform::probeIdle(Ctx& c) {
+    ++idle.probes;
+    if (profile_) ++pcProfile[c.pc];
+    const uint64_t icount = machine_->icount;
+    if ((c.pc == kIdleLoadPc || c.pc == kIdleBranchPc) && (c.msr & kMsrEE) && !decPending_ && callbacks_.empty() && !externalPending() &&
+        mem_.r32(c.r[13] + static_cast<uint32_t>(kRunQueueBitsOffset)) == 0) {
+        uint64_t target = deadline_;                           // the next instruction count at which something may happen
+        if (target > icount + (1ull << 40)) target = icount + (1ull << 40);   // nothing scheduled: the run ends at the instruction limit
+        if (target > icount + 3) {
+            const uint64_t iterations = (target - 1 - icount) / 3;
+            machine_->icount += iterations * 3;
+            ++idle.skips;
+            idle.instructionsSkipped += iterations * 3;
+        }
+    }
+    armHook();
 }
 
 void Platform::post(uint64_t tick, Ev kind, uint64_t a, uint64_t b) {
@@ -132,11 +171,12 @@ void Platform::rearm(Ctx& c) {
     if (pending) dl = std::min<uint64_t>(dl, icount + ((c.msr & kMsrEE) ? 16 : 256));
     deadline_ = dl;
     hookInstalled_ = true;
-    rt::preemptDeadlineSet(dl);
+    armHook();
 }
 
 void Platform::preempt(Ctx& c) {
     Platform& p = get();
+    if (p.cfg_.idleSkip && p.machine_->icount < p.deadline_) { p.probeIdle(c); return; }   // only the idle probe is due
     p.processEvents(c);
     p.deliver(c);
     p.rearm(c);
