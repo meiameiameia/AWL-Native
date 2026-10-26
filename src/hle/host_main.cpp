@@ -9,6 +9,7 @@
 // is given; --realtime-pace sleeps so guest retraces happen at 59.94 Hz of wall time (implied by --window; it never changes what the guest
 // computes); --capture-frames N DIR writes BMPs of the first N presented frames (headless or windowed; DIR belongs under build/);
 // --gfx-warp forces the software Direct3D device. In window mode the keyboard and XInput controller 0 feed PADRead while the window has focus. Without these options the host is the deterministic console host.
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -97,6 +98,7 @@ int main(int argc, char** argv) {
         else if (a == "--pad" && i + 1 < argc) { const std::string v = argv[++i]; cfg.padXInput = v == "xinput"; if (v != "xinput" && v != "neutral") { std::fprintf(stderr, "--pad takes neutral or xinput\n"); return 2; } }
         else if (a == "--retraces" && i + 1 < argc) { cfg.mainLoopRetraces = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0)); retracesGiven = true; }
         else if (a == "--limit" && i + 1 < argc) { limit = std::strtoull(argv[++i], nullptr, 0); limitGiven = true; }
+        else if (a == "--no-idle-skip") cfg.idleSkip = false;      // execute the scheduler idle spin instead of fast-forwarding it (same result, slower)
         else if (a == "--window") optWindow = true;
         else if (a == "--realtime-pace") optPace = true;
         else if (a == "--gfx-warp") optWarp = true;
@@ -225,6 +227,16 @@ int main(int argc, char** argv) {
     if (video) std::printf("video: %llu frames presented, %llu captured, %llu pacing re-anchors\n", static_cast<unsigned long long>(video->presented()),
                            static_cast<unsigned long long>(video->captured()), static_cast<unsigned long long>(video->reanchors()));
 #endif
+    if (std::getenv("AWL_IDLE_STATS"))
+        std::printf("idle skip: %llu probes, %llu skips, %llu instructions fast-forwarded of %llu retired\n", (unsigned long long)plat.idle.probes,
+                    (unsigned long long)plat.idle.skips, (unsigned long long)plat.idle.instructionsSkipped, (unsigned long long)machine.icount);
+    if (!plat.pcProfile.empty()) {
+        std::vector<std::pair<uint64_t, uint32_t>> top;
+        for (const auto& e : plat.pcProfile) top.push_back({e.second, e.first});
+        std::sort(top.rbegin(), top.rend());
+        for (size_t i = 0; i < top.size() && i < 25; ++i)
+            std::printf("pc profile %08X %5.1f%%\n", top[i].second, 100.0 * double(top[i].first) / double(plat.idle.probes));
+    }
     if (machine.traceMaxDepth) writeCallTrace(machine);
     if (!dumpMem.empty() && !writeMemory(dumpMem, mem)) rc = 1;
     const auto& k = plat.counters;

@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstdlib>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -109,6 +110,7 @@ struct Config {
     uint32_t mainLoopRetraces = 120;              // N consecutive qualifying retraces = main loop reached
     bool dvdLatencyModel = true;
     bool padXInput = false;                       // PAD channel 0 reads the first XInput controller (not deterministic); default neutral
+    bool idleSkip = true;                         // fast-forward the scheduler's idle spin to the next event (no guest-visible effect)
     uint32_t rtcSeconds = bootValues().rtcSeconds;   // RTC counter (seconds since 2000-01-01): fixed for deterministic runs
 };
 
@@ -129,6 +131,7 @@ public:
     void attach(Machine& m, const Config& cfg);        // memory, devices, boot-environment-independent state
     void installHandlers();                            // hleRegister / mmioInstall / timeBaseInstall / preemptInstall
     void registerHandlers();                           // hleRegister only (used by tests)
+    void installPreemption();                          // the preemption hook and its first deadline (installHandlers does this too; tests call it alone)
     Machine& machine() { return *machine_; }
     GuestMem& mem() { return mem_; }
     const Config& config() const { return cfg_; }
@@ -189,12 +192,16 @@ public:
         bool haveLatch = false;
         uint64_t lastLatchTick = 0;
     } counters;
+    struct IdleStats { uint64_t probes = 0, skips = 0, instructionsSkipped = 0; } idle;
+    std::unordered_map<uint32_t, uint64_t> pcProfile;   // AWL_PC_PROFILE: guest pc at each idle probe (a sampling profile of the run)
     uint64_t reaped = 0;                   // exited threads whose fibers were freed
     void onRetrace();                      // called by the VI model at every retrace
 
 private:
     friend class Scheduler;
     void handleEvent(Ctx& c, const Event& e);
+    void armHook();                                    // program the runtime's deadline: the semantic deadline, or an earlier idle probe
+    void probeIdle(Ctx& c);
     void deliverException(Ctx& c, uint32_t exception, uint32_t fn, uint32_t r3, uint32_t r4);
     void writeContextImage(Ctx& c, uint32_t osctx, bool exception);
     void startThreadFromImage(Ctx& from, uint32_t osctx);
@@ -217,6 +224,7 @@ private:
     std::function<void(Ctx&, const Event&)> handlers_[16];
     uint64_t deadline_ = ~0ull;
     bool hookInstalled_ = false;
+    bool profile_ = std::getenv("AWL_PC_PROFILE") != nullptr;
     bool entryReturned_ = false;
     uint64_t decGeneration_ = 0;
     bool decPending_ = false;

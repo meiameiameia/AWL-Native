@@ -34,6 +34,7 @@ void stubCallbackTrigger(Ctx& c) { hleCall(c, 0x80003B00); }
 void stubDecTrigger(Ctx& c) { hleCall(c, 0x80003C00); }
 void stubPadRead(Ctx& c) { hleCall(c, 0x801C0824); }
 void stubPadInit(Ctx& c) { hleCall(c, 0x801C06D4); }
+void stubIdlePost(Ctx& c) { hleCall(c, 0x80003D00); }
 
 void fMain(Ctx& c) {   // 0x80002000
     at(c, 0x80002000, 2);
@@ -154,6 +155,25 @@ void fExitThread2(Ctx& c) {   // 0x80002A00
     c.lr = savedLr;
     ret(c, 0x80002A20);
 }
+// The shape of SelectThread's idle spin (0x801B6FC8-0x801B6FD0 in the generated code): lwz of the run-queue bit set at r13 - 0x5348,
+// cmplwi, beq back; checkpoints after the first instruction and at the branch. It leaves when the word becomes non-zero.
+uint64_t g_idleSpins = 0, g_idleExitIcount = 0;
+void fIdleMain(Ctx& c) {   // 0x80002B00
+    at(c, 0x80002B00, 2);
+    const uint32_t savedLr = c.lr;
+    AWL_CALL(c, 0x80002B04, 0x80003D00, stubIdlePost);
+    for (;;) {
+        at(c, 0x801B6FC8, 1);
+        c.r[0] = ld32(c, c.r[13] - 21320);
+        tick(c, 2);
+        ++g_idleSpins;
+        if (c.r[0] != 0) break;
+        at(c, 0x801B6FD0, 0);
+    }
+    g_idleExitIcount = c.m->icount;
+    c.lr = savedLr;
+    ret(c, 0x80002B20);
+}
 void fCallback(Ctx& c) {
     at(c, 0x80002500, 1);
     seq(c, 100 + c.r[3] * 10 + c.r[4]);
@@ -172,7 +192,8 @@ void fReschedule(Ctx& c) { at(c, 0x801B70A4, 1); seq(c, 3); ret(c, 0x801B70A8); 
 const FnEntry kFunctions[] = {
     {0x80002000, fMain},         {0x80002100, fThread},      {0x80002200, fIrq},          {0x80002300, fIntrMain},
     {0x80002400, fCbMain},       {0x80002500, fCallback},    {0x80002600, fDecMain},      {0x80002700, fPadMain},
-    {0x80002800, fExitMain},     {0x80002900, fExitThread1}, {0x80002A00, fExitThread2},
+    {0x80002800, fExitMain},     {0x80002900, fExitThread1}, {0x80002A00, fExitThread2}, {0x80002B00, fIdleMain},
+    {0x80003D00, stubIdlePost},
     {0x80003900, stubTrigger},   {0x80003A00, stubClear},    {0x80003B00, stubCallbackTrigger}, {0x80003C00, stubDecTrigger},
     {0x801B2D8C, stubSave},      {0x801B2E0C, stubLoad},     {0x801B6B98, fDisableSched}, {0x801B6BD8, fEnableSched},
     {0x801B70A4, fReschedule},   {0x801C06D4, stubPadInit},  {0x801C0824, stubPadRead},
@@ -226,15 +247,30 @@ void hCallbackTrigger(Ctx& c) {
     p.deliver(c);
 }
 
+// Idle skip: the platform fast-forwards the idle spin to the next event. A timer event 40,000 ticks away wakes the loop by setting the
+// run-queue word. Skipping must be invisible to the guest: same wake-up tick, same retired-instruction count when the loop exits.
+uint64_t g_wakeTick = 0;
+void hIdlePost(Ctx& c) {
+    Platform& p = Platform::get();
+    p.onEvent(Ev::Custom, [](Ctx& hc, const Event&) {
+        Platform& q = Platform::get();
+        g_wakeTick = q.now();
+        rt::st32(hc, hc.r[13] - 21320, 1);
+    });
+    p.post(p.now() + 40000, Ev::Custom, 0);
+    g_wakeTick = 0;
+    (void)c;
+}
+
 struct Rig {
     std::vector<uint8_t> mem = std::vector<uint8_t>(rt::kMem1Size, 0);
     std::vector<uint8_t> lc = std::vector<uint8_t>(rt::kLockedCacheSize, 0);
     rt::Machine machine;
     std::unique_ptr<Ctx> boot;
-    Rig() {
+    explicit Rig(Config cfg = Config()) {
         machine.mem = mem.data();
         machine.lc = lc.data();
-        Platform::get().attach(machine, Config());
+        Platform::get().attach(machine, cfg);
         boot = std::make_unique<Ctx>(machine);
         boot->msr = 0x00002032;
         rt::setFpscr(*boot, 0);
@@ -394,6 +430,47 @@ void testPadProviderAbsent(Rig& r) {
     setPadProvider(nullptr, nullptr);                         // back to the deterministic neutral default
 }
 
+struct IdleRun { uint64_t spins, exitIcount, wakeTick, wakeIcountDue, skips, skipped; };
+IdleRun runIdle(bool skip) {
+    Config cfg;
+    cfg.idleSkip = skip;
+    Rig r(cfg);
+    GuestMem m = r.g();
+    r.boot->r[13] = 0x80300000;
+    r.boot->r[1] = 0x80190000;
+    r.boot->msr = 0x0000A032;                  // external interrupts enabled, as in the idle loop
+    m.w32(r.boot->r[13] - 21320, 0);
+    rt::g_idleSpins = 0;
+    Platform::get().installPreemption();
+    const uint64_t startTick = Platform::get().now();
+    const bool ok = Platform::get().run(*r.boot, 0x80002B00);
+    CHECK(ok && !Platform::get().report().stopped);
+    IdleRun out;
+    out.spins = rt::g_idleSpins;
+    out.exitIcount = rt::g_idleExitIcount;
+    out.wakeTick = g_wakeTick;
+    out.wakeIcountDue = Platform::get().retiredAt(startTick + 40000);
+    out.skips = Platform::get().idle.skips;
+    out.skipped = Platform::get().idle.instructionsSkipped;
+    return out;
+}
+
+void testIdleSkip() {
+    const IdleRun slow = runIdle(false), fast = runIdle(true);
+    // The wake-up is due 40,000 ticks = 160,000 instructions after the post (4 instructions per tick).
+    CHECK(slow.skips == 0 && slow.skipped == 0);
+    CHECK(slow.spins > 40000);                          // 160,000 instructions at 3 per iteration, executed one by one
+    CHECK(slow.wakeTick >= 40000 && slow.wakeTick <= 40001 + 4);
+    // With the skip the guest sees exactly the same: wake-up tick and the retired-instruction count at the exit.
+    CHECK(fast.wakeTick == slow.wakeTick);
+    CHECK(fast.exitIcount == slow.exitIcount);
+    CHECK(fast.skips > 0 && fast.skipped > 100000);     // nearly all of the wait was fast-forwarded (probes every 2048 instructions)
+    CHECK(fast.spins < slow.spins / 10);                // ... and not executed
+    CHECK(fast.skipped + fast.spins * 3 >= slow.spins * 3 - 3 * 8);   // what was skipped plus what ran covers the same spin
+    // The skip never passes the deadline: the exit is within a few instructions of the due count.
+    CHECK(fast.exitIcount >= fast.wakeIcountDue && fast.exitIcount < fast.wakeIcountDue + 64);
+}
+
 void testCallbackEnvelope(Rig& r) {
     GuestMem m = r.g();
     m.w32(0x800000D4, kCtxMain);
@@ -422,6 +499,7 @@ int main() try {
         rt::hleRegister(0x80003A00, "TestClear", hClear);
         rt::hleRegister(0x80003B00, "TestCallbackTrigger", hCallbackTrigger);
         rt::hleRegister(0x80003C00, "TestDecTrigger", hDecTrigger);
+        rt::hleRegister(0x80003D00, "TestIdlePost", hIdlePost);
     }
     { Rig r; testThreadSwitch(r); }
     { Rig r; testInterrupt(r); }
@@ -431,6 +509,7 @@ int main() try {
     { Rig r; testPadProvider(r); }
     { Rig r; testPadProviderAbsent(r); }
     { Rig r; testCallbackEnvelope(r); }
+    testIdleSkip();
     std::printf("hle scheduler tests: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

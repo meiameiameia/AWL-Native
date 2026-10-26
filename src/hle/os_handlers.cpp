@@ -184,6 +184,10 @@ void Platform::installHandlers() {
     registerHandlers();
     rt::mmioInstall(mmioRead, mmioWrite);
     rt::timeBaseInstall(timeBase);
+    installPreemption();
+}
+
+void Platform::installPreemption() {
     rt::preemptInstall(&Platform::preempt);
     hookInstalled_ = true;
     lowerDeadline(machine_->icount + 1);   // the first hook run arms the real deadline
