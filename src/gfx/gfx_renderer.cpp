@@ -562,10 +562,10 @@ void Renderer::draw(const gx::DrawCommand& dc) {
     if (const char* dd = std::getenv("AWL_GFX_DUMPDRAW")) {   // debugging aid: write one draw's clip-space vertices and indices to <file>
         if (dc.seq == static_cast<uint32_t>(std::strtoul(dd, nullptr, 0)) && std::getenv("AWL_GFX_DUMPDRAW_FILE")) {
             if (FILE* f = std::fopen(std::getenv("AWL_GFX_DUMPDRAW_FILE"), "wb")) {
-                const uint32_t n = static_cast<uint32_t>(verts_.size()), m = static_cast<uint32_t>(idx_.size());
-                std::fwrite(&n, 4, 1, f); std::fwrite(&m, 4, 1, f);
+                const uint32_t nVerts = static_cast<uint32_t>(verts_.size()), nIdx = static_cast<uint32_t>(idx_.size());
+                std::fwrite(&nVerts, 4, 1, f); std::fwrite(&nIdx, 4, 1, f);
                 for (const tev::Vertex& v : verts_) std::fwrite(v.pos, 4, 4, f);
-                std::fwrite(idx_.data(), 2, m, f);
+                std::fwrite(idx_.data(), 2, nIdx, f);
                 std::fclose(f);
             }
         }
@@ -613,9 +613,9 @@ void Renderer::draw(const gx::DrawCommand& dc) {
     static const bool solid = std::getenv("AWL_GFX_DEBUG_SOLID") != nullptr;   // debugging aid: every pixel solid red
     if (solid) {
         if (!solidPs_) {
-            ComPtr<ID3DBlob> sc; std::string e;
-            if (compileHlsl("float4 main() : SV_Target0 { return float4(1,0,0,1); }", "main", "ps_5_0", sc, e))
-                dev_->device()->CreatePixelShader(sc->GetBufferPointer(), sc->GetBufferSize(), nullptr, solidPs_.GetAddressOf());
+            ComPtr<ID3DBlob> solidCode; std::string e;
+            if (compileHlsl("float4 main() : SV_Target0 { return float4(1,0,0,1); }", "main", "ps_5_0", solidCode, e))
+                dev_->device()->CreatePixelShader(solidCode->GetBufferPointer(), solidCode->GetBufferSize(), nullptr, solidPs_.GetAddressOf());
         }
         c->PSSetShader(solidPs_.Get(), nullptr, 0);
     } else {
