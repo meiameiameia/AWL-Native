@@ -3,9 +3,11 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <initializer_list>
 #include <cstring>
 
 #include "gfx/gfx_tev.h"
+#include <windows.h>
 
 namespace awl::gfx {
 
@@ -139,6 +141,23 @@ bool buildKey(const gx::PipelineState& s, tev::PixelShaderKey& k, std::string& w
 }
 
 }  // namespace
+
+// Debugging aid: number of EFB pixels whose colour is not opaque black.
+static size_t countLit(Device& dev, ID3D11Texture2D* tex, uint32_t w, uint32_t h) {
+    D3D11_TEXTURE2D_DESC d = {};
+    tex->GetDesc(&d);
+    d.Usage = D3D11_USAGE_STAGING; d.BindFlags = 0; d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ComPtr<ID3D11Texture2D> st;
+    if (FAILED(dev.device()->CreateTexture2D(&d, nullptr, st.GetAddressOf()))) return 0;
+    dev.context()->CopyResource(st.Get(), tex);
+    D3D11_MAPPED_SUBRESOURCE m;
+    if (FAILED(dev.context()->Map(st.Get(), 0, D3D11_MAP_READ, 0, &m))) return 0;
+    size_t lit = 0;
+    for (uint32_t y = 0; y < h; ++y)
+        for (uint32_t x = 0; x < w; ++x) { const uint8_t* p = static_cast<const uint8_t*>(m.pData) + size_t(y) * m.RowPitch + x * 4; if (p[0] | p[1] | p[2]) ++lit; }
+    dev.context()->Unmap(st.Get(), 0);
+    return lit;
+}
 
 void Renderer::report(const std::string& reason) {
     uint64_t& n = unsupported_[reason];
@@ -540,14 +559,47 @@ void Renderer::draw(const gx::DrawCommand& dc) {
     std::memcpy(m.pData, &cb, sizeof cb);
     dev_->context()->Unmap(tevCb_.Get(), 0);
 
+    if (const char* dd = std::getenv("AWL_GFX_DUMPDRAW")) {   // debugging aid: write one draw's clip-space vertices and indices to <file>
+        if (dc.seq == static_cast<uint32_t>(std::strtoul(dd, nullptr, 0)) && std::getenv("AWL_GFX_DUMPDRAW_FILE")) {
+            if (FILE* f = std::fopen(std::getenv("AWL_GFX_DUMPDRAW_FILE"), "wb")) {
+                const uint32_t n = static_cast<uint32_t>(verts_.size()), m = static_cast<uint32_t>(idx_.size());
+                std::fwrite(&n, 4, 1, f); std::fwrite(&m, 4, 1, f);
+                for (const tev::Vertex& v : verts_) std::fwrite(v.pos, 4, 4, f);
+                std::fwrite(idx_.data(), 2, m, f);
+                std::fclose(f);
+            }
+        }
+    }
     ID3D11DeviceContext* c = dev_->context();
     ID3D11RenderTargetView* rtv = efbRtv_.Get();
     c->OMSetRenderTargets(1, &rtv, dsv_.Get());
-    D3D11_VIEWPORT vp = {s.viewport.x, s.viewport.y, s.viewport.width, s.viewport.height, s.viewport.nearZ, s.viewport.farZ};
+    // D3D11 silently ignores a viewport whose depth range leaves [0, 1] and keeps the previous one. The XF registers give a far value of
+    // 16777216 / 16777215 (just above 1.0), so the range is clamped to what the depth buffer can hold.
+    const auto unit = [](float v) { return v < 0.0f ? 0.0f : v > 1.0f ? 1.0f : v; };
+    D3D11_VIEWPORT vp = {s.viewport.x, s.viewport.y, s.viewport.width, s.viewport.height, unit(s.viewport.nearZ), unit(s.viewport.farZ)};
     c->RSSetViewports(1, &vp);
+    if (std::getenv("AWL_GFX_LITPROBE") && dc.seq == static_cast<uint32_t>(std::strtoul(std::getenv("AWL_GFX_LITPROBE"), nullptr, 0))) {
+        UINT n1 = 1; D3D11_VIEWPORT g1[1] = {}; c->RSGetViewports(&n1, g1);
+        std::fprintf(stderr, "fiber=%p thread=%lu ", GetCurrentFiber(), GetCurrentThreadId());
+        std::fprintf(stderr, "vpset want(%.4f,%.4f,%.4f,%.4f z %.6f-%.6f) got n=%u (%.4f,%.4f,%.4f,%.4f z %.6f-%.6f)\n", vp.TopLeftX, vp.TopLeftY, vp.Width, vp.Height, vp.MinDepth, vp.MaxDepth, n1,
+                     g1[0].TopLeftX, g1[0].TopLeftY, g1[0].Width, g1[0].Height, g1[0].MinDepth, g1[0].MaxDepth);
+    }
+    if (std::getenv("AWL_GFX_VPCHECK")) {   // debugging aid: does the viewport we set stick?
+        UINT n1 = 1; D3D11_VIEWPORT g1[1] = {}; c->RSGetViewports(&n1, g1);
+        const bool ok = g1[0].Width == vp.Width && g1[0].Height == vp.Height && g1[0].MinDepth == vp.MinDepth;
+        static uint64_t good = 0, bad = 0;
+        (ok ? good : bad)++;
+        static void* lastFiber = nullptr; static bool lastOk = true;
+        if (GetCurrentFiber() != lastFiber || ok != lastOk || (good + bad) % 100000 == 0) {
+            std::fprintf(stderr, "vpcheck seq=%u fiber=%p ok=%d (good %llu bad %llu) want %.0fx%.0f z%.4f got %.0fx%.0f z%.4f\n", dc.seq, GetCurrentFiber(), ok, (unsigned long long)good, (unsigned long long)bad,
+                         vp.Width, vp.Height, vp.MinDepth, g1[0].Width, g1[0].Height, g1[0].MinDepth);
+            lastFiber = GetCurrentFiber(); lastOk = ok;
+        }
+    }
     D3D11_RECT sc = {s.scissor.x0, s.scissor.y0, s.scissor.x1 + 1, s.scissor.y1 + 1};
     c->RSSetScissorRects(1, &sc);
-    c->RSSetState(raster_.Get());
+    static const bool noScissor = std::getenv("AWL_GFX_DEBUG_NOSCISSOR") != nullptr;   // debugging aid: no scissor
+    c->RSSetState(noScissor ? rasterNoScissor_.Get() : raster_.Get());
     c->OMSetBlendState(blendState(s.blend), nullptr, 0xFFFFFFFFu);
     static const bool noDepth = std::getenv("AWL_GFX_DEBUG_NODEPTH") != nullptr;   // debugging aid: depth test off
     if (noDepth) c->OMSetDepthStencilState(noDepth_.Get(), 0); else c->OMSetDepthStencilState(depthState(s.depth), 0);
@@ -558,7 +610,17 @@ void Renderer::draw(const gx::DrawCommand& dc) {
     c->IASetVertexBuffers(0, 1, &vb, &stride, &offset);
     c->IASetIndexBuffer(ib_.Get(), DXGI_FORMAT_R16_UINT, ibOffset);
     c->VSSetShader(vs_.Get(), nullptr, 0);
-    c->PSSetShader(ps, nullptr, 0);
+    static const bool solid = std::getenv("AWL_GFX_DEBUG_SOLID") != nullptr;   // debugging aid: every pixel solid red
+    if (solid) {
+        if (!solidPs_) {
+            ComPtr<ID3DBlob> sc; std::string e;
+            if (compileHlsl("float4 main() : SV_Target0 { return float4(1,0,0,1); }", "main", "ps_5_0", sc, e))
+                dev_->device()->CreatePixelShader(sc->GetBufferPointer(), sc->GetBufferSize(), nullptr, solidPs_.GetAddressOf());
+        }
+        c->PSSetShader(solidPs_.Get(), nullptr, 0);
+    } else {
+        c->PSSetShader(ps, nullptr, 0);
+    }
     ID3D11Buffer* cbuf = tevCb_.Get();
     c->PSSetConstantBuffers(0, 1, &cbuf);
     c->PSSetShaderResources(0, 8, srvs);
@@ -566,7 +628,7 @@ void Renderer::draw(const gx::DrawCommand& dc) {
     if (frameStats_ && !frameQuery_) {
         D3D11_QUERY_DESC qd = {D3D11_QUERY_OCCLUSION, 0};
         dev_->device()->CreateQuery(&qd, frameQuery_.GetAddressOf());
-        if (frameQuery_) { c->Begin(frameQuery_.Get()); frameDraws_ = 0; }
+        if (frameQuery_) { c->Begin(frameQuery_.Get()); frameDraws_ = 0; frameFirstSeq_ = dc.seq; }
     }
     ++frameDraws_;
     ComPtr<ID3D11Query> occ;
@@ -575,7 +637,31 @@ void Renderer::draw(const gx::DrawCommand& dc) {
         dev_->device()->CreateQuery(&qd, occ.GetAddressOf());
         if (occ) c->Begin(occ.Get());
     }
+    const bool probe = std::getenv("AWL_GFX_LITPROBE") && dc.seq == static_cast<uint32_t>(std::strtoul(std::getenv("AWL_GFX_LITPROBE"), nullptr, 0));
+    if (probe) {   // the D3D11 state actually bound for this draw
+        UINT nvp = 1; D3D11_VIEWPORT gv[1] = {}; c->RSGetViewports(&nvp, gv);
+        UINT nsc = 1; D3D11_RECT gs[1] = {}; c->RSGetScissorRects(&nsc, gs);
+        ComPtr<ID3D11RasterizerState> rs; c->RSGetState(rs.GetAddressOf());
+        D3D11_RASTERIZER_DESC rdesc = {}; if (rs) rs->GetDesc(&rdesc);
+        ID3D11RenderTargetView* grtv[1] = {}; ID3D11DepthStencilView* gdsv = nullptr; c->OMGetRenderTargets(1, grtv, &gdsv);
+        D3D11_RENDER_TARGET_VIEW_DESC rv = {}; if (grtv[0]) grtv[0]->GetDesc(&rv);
+        ComPtr<ID3D11Resource> rres; if (grtv[0]) grtv[0]->GetResource(rres.GetAddressOf());
+        ComPtr<ID3D11Texture2D> rt2; if (rres) rres.As(&rt2);
+        D3D11_TEXTURE2D_DESC td = {}; if (rt2) rt2->GetDesc(&td);
+        ComPtr<ID3D11BlendState> bs; FLOAT bf[4]; UINT sm; c->OMGetBlendState(bs.GetAddressOf(), bf, &sm);
+        D3D11_BLEND_DESC bd = {}; if (bs) bs->GetDesc(&bd);
+        ComPtr<ID3D11DepthStencilState> dss; UINT sref; c->OMGetDepthStencilState(dss.GetAddressOf(), &sref);
+        D3D11_DEPTH_STENCIL_DESC dd = {}; if (dss) dss->GetDesc(&dd);
+        std::fprintf(stderr, "d3dstate viewport(%.1f,%.1f,%.1f,%.1f z %.4f-%.4f) scissor(%ld,%ld,%ld,%ld) raster{fill %d cull %d clip %d scissor %d} rtv %ux%u dsv %p blend{en %d mask %u} depth{en %d write %d func %d} samplemask %08X\n",
+                     gv[0].TopLeftX, gv[0].TopLeftY, gv[0].Width, gv[0].Height, gv[0].MinDepth, gv[0].MaxDepth, gs[0].left, gs[0].top, gs[0].right, gs[0].bottom,
+                     rdesc.FillMode, rdesc.CullMode, rdesc.DepthClipEnable, rdesc.ScissorEnable, td.Width, td.Height, static_cast<void*>(gdsv), bd.RenderTarget[0].BlendEnable,
+                     bd.RenderTarget[0].RenderTargetWriteMask, dd.DepthEnable, dd.DepthWriteMask, dd.DepthFunc, sm);
+        if (grtv[0]) grtv[0]->Release();
+        if (gdsv) gdsv->Release();
+    }
+    const size_t litBefore = probe ? countLit(*dev_, efb_.tex.Get(), kEfbWidth, kEfbHeight) : 0;
     c->DrawIndexed(static_cast<UINT>(idx_.size()), 0, 0);
+    if (probe) std::fprintf(stderr, "litprobe seq=%u before=%zu after=%zu\n", dc.seq, litBefore, countLit(*dev_, efb_.tex.Get(), kEfbWidth, kEfbHeight));
     if (occ) {
         c->End(occ.Get());
         UINT64 samples = 0;
@@ -588,6 +674,43 @@ void Renderer::draw(const gx::DrawCommand& dc) {
             bz0 = std::min(bz0, v.pos[2] / v.pos[3]); bz1 = std::max(bz1, v.pos[2] / v.pos[3]);
         }
         std::fprintf(stderr, "ndcbox x[%.2f,%.2f] y[%.2f,%.2f] z[%.4f,%.4f] vp(%.0f,%.0f,%.0f,%.0f) sc(%d,%d,%d,%d) ", bx0, bx1, by0, by1, bz0, bz1, s.viewport.x, s.viewport.y, s.viewport.width, s.viewport.height, s.scissor.x0, s.scissor.y0, s.scissor.x1, s.scissor.y1);
+        double area = 0; uint32_t inside = 0, tris = 0;
+        for (size_t t = 0; t + 2 < idx_.size(); t += 3) {
+            const tev::Vertex* v[3] = {&verts_[idx_[t]], &verts_[idx_[t + 1]], &verts_[idx_[t + 2]]};
+            bool ok = true; double px[3], py[3];
+            for (int k = 0; k < 3; ++k) {
+                const float w = v[k]->pos[3], zz = v[k]->pos[2] + w;
+                ok = ok && w > 0 && std::fabs(v[k]->pos[0]) <= w && std::fabs(v[k]->pos[1]) <= w && zz >= 0 && zz <= w;
+                px[k] = v[k]->pos[0] / w * vpW * 0.5; py[k] = v[k]->pos[1] / w * vpH * 0.5;
+            }
+            ++tris;
+            if (ok) { ++inside; area += std::fabs((px[1] - px[0]) * (py[2] - py[0]) - (px[2] - px[0]) * (py[1] - py[0])) * 0.5; }
+        }
+        uint64_t cover = 0;   // pixel centres inside each triangle (overlaps counted), window coordinates y down
+        for (size_t t = 0; t + 2 < idx_.size(); t += 3) {
+            double x[3], y[3];
+            bool ok = true;
+            for (int k = 0; k < 3; ++k) {
+                const tev::Vertex& v = verts_[idx_[t + k]];
+                if (!(v.pos[3] > 0)) { ok = false; break; }
+                x[k] = s.viewport.x + (v.pos[0] / v.pos[3] * 0.5 + 0.5) * s.viewport.width;
+                y[k] = s.viewport.y + (0.5 - v.pos[1] / v.pos[3] * 0.5) * s.viewport.height;
+            }
+            if (!ok) continue;
+            const double a2 = (x[1] - x[0]) * (y[2] - y[0]) - (x[2] - x[0]) * (y[1] - y[0]);
+            if (std::fabs(a2) < 1e-9) continue;
+            const int x0 = std::max(0, (int)std::floor(std::min({x[0], x[1], x[2]}))), x1 = std::min(639, (int)std::ceil(std::max({x[0], x[1], x[2]})));
+            const int y0 = std::max(0, (int)std::floor(std::min({y[0], y[1], y[2]}))), y1 = std::min(447, (int)std::ceil(std::max({y[0], y[1], y[2]})));
+            for (int py = y0; py <= y1; ++py)
+                for (int px = x0; px <= x1; ++px) {
+                    const double cx = px + 0.5, cy = py + 0.5;
+                    const double w0 = (x[1] - cx) * (y[2] - cy) - (x[2] - cx) * (y[1] - cy);
+                    const double w1 = (x[2] - cx) * (y[0] - cy) - (x[0] - cx) * (y[2] - cy);
+                    const double w2 = (x[0] - cx) * (y[1] - cy) - (x[1] - cx) * (y[0] - cy);
+                    if ((a2 > 0 && w0 >= 0 && w1 >= 0 && w2 >= 0) || (a2 < 0 && w0 <= 0 && w1 <= 0 && w2 <= 0)) ++cover;
+                }
+        }
+        std::fprintf(stderr, "tris=%u inside=%u area=%.1f cpucover=%llu ", tris, inside, area, (unsigned long long)cover);
         std::fprintf(stderr, "map0w=%u ", s.maps[0].width);
         std::fprintf(stderr, "vpraw scale(%.2f,%.2f,%.1f) offset(%.2f,%.2f,%.1f) ", s.viewport.scale[0], s.viewport.scale[1], s.viewport.scale[2], s.viewport.offset[0], s.viewport.offset[1], s.viewport.offset[2]);
         std::fprintf(stderr, "occlusion seq=%u prim=%d verts=%zu idx=%zu samples=%llu depth=%d/%d write=%d blend=%d stages=%u map0=%d\n", dc.seq, static_cast<int>(dc.primitive),
@@ -635,7 +758,7 @@ void Renderer::efbCopy(const gx::EfbCopyCommand& cc) {
         dev_->context()->End(frameQuery_.Get());
         UINT64 samples = 0;
         while (dev_->context()->GetData(frameQuery_.Get(), &samples, sizeof samples, 0) == S_FALSE) {}
-        std::fprintf(stderr, "framestats copy=%u draws=%u samples=%llu\n", cc.id, frameDraws_, static_cast<unsigned long long>(samples));
+        std::fprintf(stderr, "framestats copy=%u firstseq=%u draws=%u samples=%llu\n", cc.id, frameFirstSeq_, frameDraws_, static_cast<unsigned long long>(samples));
         frameQuery_.Reset();
     }
     if (cc.efbFormat != gx::PixelFormat::RGB8_Z24) { report("EFB copy from a pixel format other than RGB8_Z24"); }

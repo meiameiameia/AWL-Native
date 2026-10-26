@@ -321,6 +321,9 @@ int main() {
         c.maps[0].valid = true; c.maps[0].efbCopyId = 50; c.maps[0].width = 64; c.maps[0].height = 32;
         c.maps[0].sampler = {gx::WrapMode::Clamp, gx::WrapMode::Clamp, gx::FilterMode::Near, false, 0, 0, 0, 1, false, false};
         c.texScale[0].sSize = 64; c.texScale[0].tSize = 32;
+        // The game's viewport depth range as the core decodes it from the XF registers: near 1/1024 and far = 16777216 / 16777215, which is
+        // just above 1.0. D3D silently ignores a viewport whose MaxDepth exceeds 1, leaving the 64x32 viewport of the copy pass in place.
+        c.viewport.nearZ = 0.000976622f; c.viewport.farZ = 16777216.0f / 16777215.0f;
         Quad full(-1, -1, 1, 1, -1.0f, white);
         r.draw(full.cmd(c));
         r.efbCopy(xfbCopy(51, 0xE300, false));
