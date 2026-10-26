@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "dev_efb.h"
 #include "devices.h"
 #include "dvd.h"
 #include "platform.h"
@@ -568,13 +569,66 @@ void testDvdCorruptExtraction() {
     fs::remove_all(root);
 }
 
+// ---- EFB access window ------------------------------------------------------------------------------------
+struct FakeEfb : EfbAccess {
+    int peeks = 0, pokes = 0;
+    EfbKind lastKind = EfbKind::Color;
+    uint32_t lastX = 0, lastY = 0, lastValue = 0;
+    uint32_t peek(rt::Ctx&, EfbKind k, uint32_t x, uint32_t y) override { ++peeks; lastKind = k; lastX = x; lastY = y; return 0x00123456; }
+    void poke(rt::Ctx&, EfbKind k, uint32_t x, uint32_t y, uint32_t v) override { ++pokes; lastKind = k; lastX = x; lastY = y; lastValue = v; }
+};
+
+void testEfb() {
+    Rig r;
+    // Address layout (libogc GX_PeekARGB / GX_PeekZ): base | x << 2 | y << 12 | type << 22, x and y 10 bits, type 0 colour, 1 depth.
+    // 0xC848B668 is the address the game's GXPeekZ built when the run stopped: 0x48B668 = (1 << 22) | (139 << 12) | (410 << 2).
+    const EfbAddress a = decodeEfbAddress(0xC848B668);
+    CHECK(a.kind == EfbKind::Depth && a.type == 1 && a.x == 410 && a.y == 139);
+    const EfbAddress b = decodeEfbAddress(0xC8000000 | (639u << 2) | (527u << 12));
+    CHECK(b.kind == EfbKind::Color && b.x == 639 && b.y == 527);
+    CHECK(inEfbWindow(0xC8000000) && inEfbWindow(0xC8FFFFFF) && !inEfbWindow(0xC9000000) && !inEfbWindow(0xC7FFFFFF) && !inEfbWindow(0xCC000000));
+
+    // Default provider: depth peeks read the far plane and are logged once per call site; colour peeks and pokes stop.
+    const std::string path = (std::filesystem::temp_directory_path() / "awl_efb_trace.log").string();
+    trace().open(path);
+    r.ctx->pc = 0x801CE03C;
+    CHECK(efbRead(*r.ctx, 0xC848B668, 4) == 0x00FFFFFF);
+    CHECK(efbRead(*r.ctx, 0xC848B66C, 4) == 0x00FFFFFF);        // same call site: not logged again
+    r.ctx->pc = 0x80001234;
+    CHECK(efbRead(*r.ctx, 0xC8400000, 4) == 0x00FFFFFF);        // another call site
+    trace().close();
+    {
+        std::ifstream f(path);
+        std::string line, all;
+        int lines = 0;
+        while (std::getline(f, line)) { all += line + "\n"; ++lines; }
+        CHECK(lines == 2);
+        CHECK(all.find("pc=801CE03C x=410 y=139") != std::string::npos && all.find("pc=80001234 x=0 y=0") != std::string::npos);
+    }
+    std::filesystem::remove(path);
+    CHECK(stops([&] { efbRead(*r.ctx, 0xC8000000, 4); }, rt::StopKind::Mmio));            // colour peek
+    CHECK(stops([&] { efbWrite(*r.ctx, 0xC8400000, 4, 0); }, rt::StopKind::Mmio));        // poke
+    CHECK(stops([&] { efbRead(*r.ctx, 0xC8400000, 2); }, rt::StopKind::Mmio));            // width
+    CHECK(stops([&] { efbRead(*r.ctx, 0xC8800000, 4); }, rt::StopKind::Mmio));            // type 2 is not modelled
+    CHECK(stops([&] { efbRead(*r.ctx, 0xC8400002, 4); }, rt::StopKind::Mmio));            // misaligned
+
+    // A renderer-supplied provider receives decoded accesses.
+    FakeEfb fake;
+    setEfbAccess(&fake);
+    CHECK(efbRead(*r.ctx, 0xC848B668, 4) == 0x00123456 && fake.peeks == 1 && fake.lastKind == EfbKind::Depth && fake.lastX == 410 && fake.lastY == 139);
+    efbWrite(*r.ctx, 0xC8000000 | (5u << 2) | (7u << 12), 4, 0xFF102030);
+    CHECK(fake.pokes == 1 && fake.lastKind == EfbKind::Color && fake.lastX == 5 && fake.lastY == 7 && fake.lastValue == 0xFF102030);
+    setEfbAccess(nullptr);
+    CHECK(efbRead(*r.ctx, 0xC8400000, 4) == 0x00FFFFFF);        // default again
+}
+
 }  // namespace
 
 int main() try {
     const struct { const char* name; void (*fn)(); } tests[] = {
         {"time constants", testTimeConstants}, {"events and clock", testEventQueueAndClock}, {"PI", testPi}, {"VI", testVi},
         {"main-loop criterion", testMainLoopCriterion}, {"call trace arguments", testCallTraceArguments}, {"SI", testSi}, {"DSP mailbox", testDspMailbox}, {"AI DMA rate", testAiDmaRate}, {"EXI", testExi}, {"GX", testGx}, {"DVD", testDvd}, {"DVD FST validation", testDvdFstValidation},
-        {"DVD corrupt extraction", testDvdCorruptExtraction},
+        {"DVD corrupt extraction", testDvdCorruptExtraction}, {"EFB access", testEfb},
     };
     for (const auto& t : tests) {
         std::printf("[%s]\n", t.name);

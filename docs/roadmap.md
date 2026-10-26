@@ -62,6 +62,8 @@ Every temporary runtime stub is listed here with its address or service, its log
 | `__OSInitAudioSystem` | net effect only (DSP left reset); `SIInit` reproduces handler registration and unmask, no SI transfers | once | P4 / P3 |
 | EXI | no memory cards; RTC fixed at 2026-01-01; SRAM defaults | every access to absent devices | P3 (saves), P5 (real clock) |
 | GX | command stream parsed, not drawn; finish/token/copy complete after 2,000 ticks | counters | P2 |
+| EFB peeks (`0xC8xxxxxx`) | Z peeks return `0x00FFFFFF` (far plane) until the renderer reads back real depth; color peeks and pokes stop | once per call site, with coordinates | P2 (renderer `EfbAccess`) |
+| EFB copies to guest memory | copies do not write guest RAM; a texture bind that falls back to RAM after a copy, or a CPU read of a copy destination, is logged | once per address | P3 (read-back when a reached path needs it) |
 | Boot environment | values confirmed by Capture A; console type kept retail (`0x00000003`) by decision; system time fixed in deterministic mode | printed in the boot-trace header | P5 (real-time mode default) |
 | Clock | 4 instructions per time-base tick | model parameter | P3 calibration |
 | `fres` / `frsqrte` | exact reciprocal placeholders, not the hardware estimate (3 and 138 sites) | generator note | P3 (needs an FP reference capture) |

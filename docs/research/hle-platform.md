@@ -272,6 +272,7 @@ One `mmioInstall` pair routes by block:
 | DI | `0xCC006000` | accepts the two `DVDInit` writes; any other access stops |
 | SI | `0xCC006400` | only the polling register (0x30) is modelled; every other access stops |
 | EXI | `0xCC006800` | three channels with the SDK's control/DMA/immediate registers; channel 0 device 1 = RTC and SRAM; every other device absent (EXT clear, ID reads 0) |
+| EFB access | `0xC8000000-0xC8FFFFFF` | CPU peeks and pokes of the EFB, routed by the generator runtime to the same model as the hardware window; `dev_efb.*` decodes x, y and type and forwards to an `EfbAccess` provider (default: logged far-plane depth peeks, everything else stops) |
 | GX FIFO | `0xCC008000` | write-gather port: accepts 1/2/4/8-byte writes, packs them big-endian into the stream; reads stop |
 
 Unsupported registers and sizes stop with the guest pc and address (`rt::stop`), never ignore. Reads of write-only registers stop too.

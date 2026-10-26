@@ -1,5 +1,6 @@
 // Native replacements of SDK functions (the entries of tools/recomp/hle_manifest.txt), the MMIO routing, the
 // preemption hook installation and the main-loop bookkeeping.
+#include "dev_efb.h"
 #include "devices.h"
 #include "dvd.h"
 #include "pad_source.h"
@@ -11,6 +12,7 @@ namespace {
 
 uint64_t mmioRead(Ctx& c, uint32_t addr, uint32_t size) {
     Platform& p = Platform::get();
+    if (inEfbWindow(addr)) return efbRead(c, addr, size);
     const int b = blockOf(addr);
     if (b < 0) stopHw(c, addr, "hardware register outside every modelled block");
     return p.dev(static_cast<uint32_t>(b)).read(c, addr, size);
@@ -18,6 +20,7 @@ uint64_t mmioRead(Ctx& c, uint32_t addr, uint32_t size) {
 
 void mmioWrite(Ctx& c, uint32_t addr, uint32_t size, uint64_t value) {
     Platform& p = Platform::get();
+    if (inEfbWindow(addr)) { efbWrite(c, addr, size, value); return; }
     const int b = blockOf(addr);
     if (b < 0) stopHw(c, addr, "hardware register outside every modelled block");
     p.dev(static_cast<uint32_t>(b)).write(c, addr, size, value);
