@@ -30,14 +30,12 @@ bool stateNeutral(uint32_t r) {
 
 Core::Core(const GuestMemory& mem, Backend& backend, CoreHost& host) : mem_(mem), backend_(backend), host_(host) {
     tlutRam_.assign(1024 * 256, 0);
-    verts_.reserve(4096);
-    idx_.reserve(8192);
 }
 
 void Core::fail(const std::string& what, uint32_t code) const { throw GxError(what, offset_, code); }
 
 void Core::feed(const uint8_t* data, size_t n) {
-    const auto t0 = std::chrono::steady_clock::now();
+    const auto t0 = profile_ ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
     if (retrace_ != frameSeen_) {
         frameSeen_ = retrace_;
         backend_.frameBoundary(retrace_);
@@ -45,7 +43,7 @@ void Core::feed(const uint8_t* data, size_t n) {
     pending_.insert(pending_.end(), data, data + n);
     const size_t used = parse(pending_.data(), pending_.size(), 0);
     pending_.erase(pending_.begin(), pending_.begin() + static_cast<std::ptrdiff_t>(used));
-    stats_.busySeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    if (profile_) stats_.busySeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 }
 
 size_t Core::parse(const uint8_t* d, size_t n, int depth) {
@@ -132,6 +130,7 @@ void Core::xfLoad(uint32_t addr, uint32_t count, const uint8_t* words) {
             fail(hex("XF load outside the modelled memory map at", a), 0x10);
         }
     }
+    engine_.xfWritten(addr, count);
 }
 
 void Core::xfIndexed(uint32_t op, uint32_t w) {

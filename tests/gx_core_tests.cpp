@@ -420,6 +420,85 @@ void testEfbCopies() {
     check(q.host.logs.size() == 1, "and not again");
 }
 
+// The specialised loaders and the 4-wide batch XF must give bit-identical vertices to the generic scalar path (AWL_GX_SCALAR=1),
+// for draws whose size is not a multiple of four, with lighting, two texgens and both post-matrix forms.
+void testBatchPathEqualsScalar() {
+    auto build = [](Mem& m, Stream& s) {
+        // arrays: pos s16 xyz (shift 8) stride 6 at 0x1000, nrm f32 stride 12 at 0x2000, col RGB565 stride 2 at 0x3000, tex s16 st (shift 10) stride 4 at 0x4000
+        for (uint32_t i = 0; i < 64; ++i) {
+            m.put16(0x1000 + 6 * i, uint16_t(int16_t(int(i * 37) % 1500 - 700)));
+            m.put16(0x1002 + 6 * i, uint16_t(int16_t(int(i * 91) % 1200 - 500)));
+            m.put16(0x1004 + 6 * i, uint16_t(int16_t(-300 - int(i * 53) % 900)));
+            const float n[3] = {float(int(i * 7) % 13 - 6), float(int(i * 5) % 11 - 5), float(int(i * 3) % 9 + 1)};
+            const float len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+            for (int k = 0; k < 3; ++k) m.putf(0x2000 + 12 * i + 4 * k, n[k] / len);
+            m.put16(0x3000 + 2 * i, uint16_t(i * 1021));
+            m.put16(0x4000 + 4 * i, uint16_t(int16_t(int(i * 211) % 2000 - 300)));
+            m.put16(0x4002 + 4 * i, uint16_t(int16_t(int(i * 97) % 1800)));
+        }
+        s.xff(0x1020, {2.0f, 0.0f, 2.5f, 0.0f, -0.5f, -1.5f});          // perspective, near 1 far 3
+        s.xf(0x1026, {0});
+        s.xff(0x0000, {0.9f, 0.1f, 0.0f, 0.5f, -0.1f, 0.9f, 0.2f, -0.25f, 0.0f, -0.2f, 0.95f, 0.125f});   // position matrix 0
+        s.xff(0x0400, {0.9f, 0.1f, 0.0f, -0.1f, 0.9f, 0.2f, 0.0f, -0.2f, 0.95f});                        // normal matrix 0
+        s.xff(0x0078, {0.5f, 0.0f, 0.0f, 0.25f, 0.0f, 0.5f, 0.0f, 0.125f, 0.0f, 0.0f, 1.0f, 0.0f});     // texture matrix 30
+        s.xff(0x00F0, {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f});        // matrix 60: identity
+        s.xff(0x0500 + 4 * 61, {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f});   // post matrix 61: identity
+        s.xff(0x0500 + 4 * 5, {0.5f, 0.25f, 0.0f, 0.1f, 0.0f, 0.75f, 0.5f, 0.2f, 0.0f, 0.0f, 1.0f, 0.3f});   // post matrix 5
+        s.xf(0x1018, {(30u << 6) | (60u << 12)});                       // tex0 -> matrix 30, tex1 -> 60
+        std::vector<uint32_t> light(16, 0);
+        light[3] = 0xE0C0A0FFu;
+        const float lp[3] = {3.0f, 4.0f, 5.0f}, la[3] = {1.0f, 0, 0}, lk[3] = {2.0f, 0, 0};
+        for (int i = 0; i < 3; ++i) { std::memcpy(&light[10 + i], &lp[i], 4); std::memcpy(&light[4 + i], &la[i], 4); std::memcpy(&light[7 + i], &lk[i], 4); }
+        s.xf(0x0600, light);
+        s.xf(0x1009, {1}).xf(0x100A, {0x20304050u}).xf(0x100C, {0x80604020u});
+        s.xf(0x100E, {(1u << 0) | (1u << 1) | (1u << 2) | (2u << 7) | (1u << 9) | (1u << 10)});   // vertex material, light 0, diffuse clamp, spot attenuation
+        s.xf(0x1010, {0});
+        s.xf(0x103F, {2}).xf(0x1040, {(5u << 7)}).xf(0x1041, {(1u << 1) | (1u << 2) | (0u << 7)}).xf(0x1012, {1});
+        s.xf(0x1050, {61u}).xf(0x1051, {5u});
+        s.bp(0x00, 1u << 4);
+        s.cp(0x50, (2u << 9) | (2u << 11) | (2u << 13)).cp(0x60, 2u);
+        s.cp(0x70, 1u | (3u << 1) | (8u << 4) | (4u << 10) | (0u << 14) | (1u << 21) | (3u << 22) | (10u << 25));
+        s.cp(0xA0, 0x1000).cp(0xB0, 6).cp(0xA1, 0x2000).cp(0xB1, 12).cp(0xA2, 0x3000).cp(0xB2, 2).cp(0xA4, 0x4000).cp(0xB4, 4);
+    };
+    uint64_t batched = 0;
+    auto run = [&](bool scalar) {
+        Mem mem;
+        Stream s;
+        build(mem, s);
+        for (uint32_t count : {1u, 3u, 4u, 5u, 7u, 11u, 8u}) {
+            s.drawHdr(count % 2 ? 0x98 : 0x90, count);      // odd counts as strips (a single vertex makes no triangle), even counts as triangle lists
+            for (uint32_t i = 0; i < count; ++i) { s.u8((i * 5 + count) % 64); s.u8((i * 3 + 2 * count) % 64); s.u8((i * 11 + 7) % 64); s.u8((i * 13 + 3 * count) % 64); }
+        }
+        if (scalar) _putenv_s("AWL_GX_SCALAR", "1");
+        Rec rec;
+        Host host;
+        Core core{mem, rec, host};
+        _putenv_s("AWL_GX_SCALAR", "");
+        core.feed(s.b.data(), s.b.size());
+        batched = core.stats().batchedDraws;
+        return rec.draws;
+    };
+    uint64_t batchedScalar = 0;
+    const auto batch = run(false);
+    const uint64_t batchedFast = batched;
+    const auto scalar = run(true);
+    batchedScalar = batched;
+    check(batchedFast == 7 && batchedScalar == 0, "the 4-wide path runs for the indexed draws and is off in scalar mode");
+    check(batch.size() == scalar.size() && batch.size() == 6, "batch and scalar paths deliver the same draws");
+    bool same = batch.size() == scalar.size();
+    for (size_t d = 0; same && d < batch.size(); ++d) {
+        same = batch[d].idx == scalar[d].idx && batch[d].v.size() == scalar[d].v.size();
+        for (size_t i = 0; same && i < batch[d].v.size(); ++i) {
+            const Vertex &a = batch[d].v[i], &b = scalar[d].v[i];
+            // compare the defined contents bit for bit: clip position, both colors, the two texgen outputs
+            same = std::memcmp(a.pos, b.pos, sizeof a.pos) == 0 && std::memcmp(a.color, b.color, sizeof a.color) == 0 && std::memcmp(a.tex, b.tex, sizeof a.tex) == 0;
+        }
+    }
+    check(same, "specialised loaders + 4-wide XF are bit-identical to the scalar path (11 vertices = 3 batches, lighting, 2 texgens)");
+    // Hand check of one vertex of the first draw (index 5): the first draw has one vertex only, so no triangle; use the last draw instead.
+    check(!batch.empty() && !batch.back().v.empty() && std::isfinite(batch.back().v[0].pos[0]) && batch.back().v[0].pos[3] > 0.0f, "perspective w = -z is positive for points in front of the camera");
+}
+
 void testStreamHandling() {
     Rig r;
     // Commands split over feed() calls
@@ -538,6 +617,7 @@ int main() {
     testBlendAndTev();
     testTextureFormats();
     testEfbCopies();
+    testBatchPathEqualsScalar();
     testStreamHandling();
     testFailures();
     testRecorderText();

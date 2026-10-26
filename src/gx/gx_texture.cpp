@@ -164,9 +164,16 @@ std::shared_ptr<const Texture> Core::loadTexture(const TexRequest& req) {
     const uint64_t tupleKey = gxHash64(reinterpret_cast<const uint8_t*>(tuple), sizeof tuple, 0x534E4150ull);
     uint64_t key = 0;
     Snapshot& snap = snapshots_[tupleKey];
-    if (snap.valid && std::memcmp(snap.tuple, tuple, sizeof tuple) == 0 && snap.raw.size() == total && snap.pal.size() == palBytes &&
-        std::memcmp(snap.raw.data(), raw, total) == 0 && (palBytes == 0 || std::memcmp(snap.pal.data(), pal, palBytes) == 0)) {
+    const bool sameBinding = snap.valid && std::memcmp(snap.tuple, tuple, sizeof tuple) == 0 && snap.raw.size() == total && snap.pal.size() == palBytes;
+    if (sameBinding && snap.epoch == texGeneration_ && snap.tlutEpoch == tlutEpoch_) {
+        // Verified since the last texture-cache invalidate: the SDK invalidates after changing texture memory, so the bytes
+        // are not read again (a change without an invalidate is not observed, as on hardware).
         key = snap.key;
+        ++stats_.textureTrusted;
+    } else if (sameBinding && std::memcmp(snap.raw.data(), raw, total) == 0 && (palBytes == 0 || std::memcmp(snap.pal.data(), pal, palBytes) == 0)) {
+        key = snap.key;
+        snap.epoch = texGeneration_;
+        snap.tlutEpoch = tlutEpoch_;
         stats_.textureBytesCompared += total + palBytes;
     } else {
         stats_.textureBytesHashed += total;
@@ -185,6 +192,8 @@ std::shared_ptr<const Texture> Core::loadTexture(const TexRequest& req) {
         snap.pal.resize(palBytes);
         if (palBytes) std::memcpy(snap.pal.data(), pal, palBytes);
         snap.key = key;
+        snap.epoch = texGeneration_;
+        snap.tlutEpoch = tlutEpoch_;
         snapBytes_ += snap.raw.size() + snap.pal.size();
         if (snapBytes_ > kSnapshotBudgetBytes) {          // simple bound: forget every other snapshot
             for (auto it2 = snapshots_.begin(); it2 != snapshots_.end();) {
