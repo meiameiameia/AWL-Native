@@ -6,6 +6,7 @@
 // (docs/research/hle-platform.md, sections 2.7 and 5.5); the GX core note is docs/research/gx-core.md.
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <memory>
 #include <vector>
 
@@ -15,6 +16,7 @@
 #include "gx/gx_core.h"
 #include "gx/gx_dump.h"
 #include "gx/gx_record.h"
+#include "gx/gx_soft.h"
 
 namespace awl::hle {
 namespace {
@@ -101,15 +103,55 @@ private:
     Platform& p_;
 };
 
+// AWL_GX_SOFT=<dir> [AWL_GX_SOFT_FROM=<retrace>] [AWL_GX_SOFT_COUNT=<n>]: draws the IR of the retraces [from, from + n) with the CPU reference
+// renderer and writes the XFB copy of each as <dir>/xfb_<retrace>.png (the copy that ends the retrace interval it was issued in).
+class SoftRange : public gx::Backend {
+public:
+    SoftRange(const std::string& dir, uint32_t from, uint32_t count) : dir_(dir), from_(from), count_(count) {
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
+        soft_.keepXfb(1);
+    }
+    ~SoftRange() override { writeLast(); }
+    void draw(const gx::DrawCommand& d) override { if (active_) soft_.draw(d); }
+    void efbCopy(const gx::EfbCopyCommand& c) override {
+        if (!active_) return;
+        const size_t before = soft_.xfbImages().size();
+        soft_.efbCopy(c);
+        if (c.target == gx::CopyTarget::Xfb) { pending_ = true; seen_ = before; }
+    }
+    void frameBoundary(uint32_t retrace) override {
+        writeLast();
+        retrace_ = retrace;
+        active_ = retrace >= from_ && retrace - from_ < count_;
+    }
+private:
+    void writeLast() {
+        if (!pending_ || soft_.xfbImages().empty()) return;
+        const auto& im = soft_.xfbImages().back();
+        gx::writePngRgba(dir_ + "/xfb_" + std::to_string(retrace_) + ".png", im.w, im.h, im.px.data());
+        pending_ = false;
+    }
+    std::string dir_;
+    uint32_t from_, count_, retrace_ = 0;
+    bool active_ = false, pending_ = false;
+    size_t seen_ = 0;
+    gx::SoftBackend soft_;
+};
+
 class GxFeed : public gx::StreamObserver {
 public:
     explicit GxFeed(Platform& p) : p_(p), mem_(p), host_(p), core_(mem_, gx::backendHub(), host_) {
         core_.setObserver(this);
         core_.setProfiling(std::getenv("AWL_GX_STATS") != nullptr);
+        core_.setTextureTrust(std::getenv("AWL_GX_NOTRUST") == nullptr);   // diagnostic: re-compare texture bytes at every bind
         parseOptions();
     }
     ~GxFeed() override {
         if (rec_) gx::backendHub().remove(rec_.get());
+        if (frameLog_) gx::backendHub().remove(frameLog_.get());
+        if (stateLog_) gx::backendHub().remove(stateLog_.get());
+        if (soft_) gx::backendHub().remove(soft_.get());
         if (std::getenv("AWL_GX_STATS")) {
             const gx::CoreStats& s = core_.stats();
             const double frames = p_.counters.retraces ? double(p_.counters.retraces) : 1.0;
@@ -126,6 +168,7 @@ public:
 
     void feed(Ctx& c, const uint8_t* data, size_t n) {
         const uint32_t retrace = static_cast<uint32_t>(p_.counters.retraces);
+        if (memAt_ && retrace >= memAt_ && !core_.midCommand()) dumpMemory();
         cap_.begin(retrace, !core_.midCommand());
         core_.setRetrace(retrace);
         try {
@@ -142,7 +185,19 @@ public:
     void reset() {}
 
 private:
+    // AWL_GX_MEM_AT=<retrace> AWL_GX_MEM_FILE=<file>: write MEM1 as it is when that retrace first sends commands (for awl-gx-bench).
+    void dumpMemory() {
+        const char* path = std::getenv("AWL_GX_MEM_FILE");
+        const uint8_t* base = p_.mem().ptr(0x80000000u, 0x01800000u);
+        memAt_ = 0;
+        if (!path || !base) return;
+        if (FILE* f = std::fopen(path, "wb")) {
+            std::fwrite(base, 1, 0x01800000u, f);
+            std::fclose(f);
+        }
+    }
     void parseOptions() {
+        if (const char* m = std::getenv("AWL_GX_MEM_AT")) memAt_ = static_cast<uint32_t>(std::strtoul(m, nullptr, 0));
         uint32_t count = 0, from = 0;
         std::string dir = std::getenv("AWL_GX_DUMP_DIR") ? std::getenv("AWL_GX_DUMP_DIR") : "build/gxdump";
         for (int i = 1; i + 1 < __argc; ++i) {
@@ -150,6 +205,22 @@ private:
             if (a == "--gx-dump") count = static_cast<uint32_t>(std::strtoul(__argv[i + 1], nullptr, 0));
             else if (a == "--gx-dump-from") from = static_cast<uint32_t>(std::strtoul(__argv[i + 1], nullptr, 0));
             else if (a == "--gx-dump-dir") dir = __argv[i + 1];
+        }
+        if (const char* sd = std::getenv("AWL_GX_SOFT")) {
+            const char* softFrom = std::getenv("AWL_GX_SOFT_FROM");
+            const char* softCount = std::getenv("AWL_GX_SOFT_COUNT");
+            soft_ = std::make_unique<SoftRange>(sd, softFrom ? static_cast<uint32_t>(std::strtoul(softFrom, nullptr, 0)) : 0, softCount ? static_cast<uint32_t>(std::strtoul(softCount, nullptr, 0)) : 2);
+            gx::backendHub().add(soft_.get());
+        }
+        if (const char* sl = std::getenv("AWL_GX_STATELOG")) {
+            const char* sfrom = std::getenv("AWL_GX_STATELOG_FROM");
+            const char* scnt = std::getenv("AWL_GX_STATELOG_COUNT");
+            stateLog_ = std::make_unique<gx::StateLogBackend>(sl, sfrom ? static_cast<uint32_t>(std::strtoul(sfrom, nullptr, 0)) : 0, scnt ? static_cast<uint32_t>(std::strtoul(scnt, nullptr, 0)) : 2);
+            gx::backendHub().add(stateLog_.get());
+        }
+        if (const char* fl = std::getenv("AWL_GX_FRAMELOG")) {
+            frameLog_ = std::make_unique<gx::FrameLogBackend>(fl);
+            gx::backendHub().add(frameLog_.get());
         }
         if (count) {
             rec_ = std::make_unique<gx::RecordingBackend>(dir, from, count);
@@ -161,7 +232,11 @@ private:
     PlatformHost host_;
     gx::Core core_;
     Capture cap_;
+    uint32_t memAt_ = 0;
     std::unique_ptr<gx::RecordingBackend> rec_;
+    std::unique_ptr<gx::FrameLogBackend> frameLog_;
+    std::unique_ptr<gx::StateLogBackend> stateLog_;
+    std::unique_ptr<SoftRange> soft_;
 };
 
 // ---- Shared GX state -------------------------------------------------------------------------------------------

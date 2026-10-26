@@ -106,6 +106,8 @@ bool writePng(const std::string& path, uint32_t w, uint32_t h, const uint32_t* r
 
 }  // namespace
 
+bool writePngRgba(const std::string& path, uint32_t w, uint32_t h, const uint32_t* rgba) { return writePng(path, w, h, rgba); }
+
 std::string describePipeline(const PipelineState& s) {
     std::string o;
     o += fmt("  efb=%s colors=%u texcoords=%u cull=%u\n", kFmt[static_cast<int>(s.efbFormat) & 3], s.numColorChannels, s.numTexCoords, s.cullMode);
@@ -214,6 +216,101 @@ void RecordingBackend::efbCopy(const EfbCopyCommand& c) {
 }
 void RecordingBackend::sync(SyncKind kind, uint16_t token) {
     if (f_) std::fprintf(f_, "sync %s %u\n", kind == SyncKind::DrawDone ? "done" : kind == SyncKind::Token ? "token" : "token-int", token);
+}
+
+FrameLogBackend::FrameLogBackend(const std::string& path) {
+    std::error_code ec;
+    const std::filesystem::path p(path);
+    if (p.has_parent_path()) std::filesystem::create_directories(p.parent_path(), ec);
+    f_ = std::fopen(path.c_str(), "w");
+    if (f_) std::fputs("retrace draws vertices inView% meanLitRGB(color0 draws) copies xfbCopies\n", f_);
+}
+FrameLogBackend::~FrameLogBackend() {
+    flush();
+    if (f_) std::fclose(f_);
+}
+void FrameLogBackend::draw(const DrawCommand& d) {
+    ++draws_;
+    vertices_ += d.vertexCount;
+    for (uint32_t i = 0; i < d.vertexCount; ++i) {
+        const float* c = d.vertices[i].pos;
+        if (c[3] > 0 && c[2] <= 0 && c[2] >= -c[3] && c[0] >= -c[3] && c[0] <= c[3] && c[1] >= -c[3] && c[1] <= c[3]) ++inView_;
+    }
+    if (d.state->numColorChannels && d.state->tev.stages[0].ras == RasColor::Color0A0) {
+        for (uint32_t i = 0; i < d.vertexCount; ++i)
+            for (int k = 0; k < 3; ++k) litSum_[k] += d.vertices[i].color[0][k];
+        litVertices_ += d.vertexCount;
+    }
+}
+void FrameLogBackend::efbCopy(const EfbCopyCommand& c) {
+    ++copies_;
+    if (c.target == CopyTarget::Xfb) ++xfbCopies_;
+}
+void FrameLogBackend::flush() {
+    if (f_ && open_ && (draws_ || copies_)) {
+        const double n = litVertices_ ? double(litVertices_) : 1.0;
+        std::fprintf(f_, "%u %llu %llu %.1f %.0f,%.0f,%.0f %llu %llu\n", retrace_, static_cast<unsigned long long>(draws_), static_cast<unsigned long long>(vertices_),
+                     vertices_ ? 100.0 * double(inView_) / double(vertices_) : 0.0, litSum_[0] / n, litSum_[1] / n, litSum_[2] / n, static_cast<unsigned long long>(copies_),
+                     static_cast<unsigned long long>(xfbCopies_));
+        std::fflush(f_);
+    }
+    draws_ = vertices_ = inView_ = litVertices_ = copies_ = xfbCopies_ = 0;
+    litSum_[0] = litSum_[1] = litSum_[2] = 0;
+}
+void FrameLogBackend::frameBoundary(uint32_t retrace) {
+    flush();
+    retrace_ = retrace;
+    open_ = true;
+}
+
+StateLogBackend::StateLogBackend(const std::string& path, uint32_t first, uint32_t count) : first_(first), count_(count) {
+    std::error_code ec;
+    const std::filesystem::path p(path);
+    if (p.has_parent_path()) std::filesystem::create_directories(p.parent_path(), ec);
+    f_ = std::fopen(path.c_str(), "w");
+}
+StateLogBackend::~StateLogBackend() {
+    flushRun();
+    if (f_) std::fclose(f_);
+}
+void StateLogBackend::flushRun() {
+    if (f_ && runDraws_) {
+        std::fprintf(f_, "  x%llu draws, %llu vertices (%llu inside the clip volume): %s\n", static_cast<unsigned long long>(runDraws_), static_cast<unsigned long long>(runVertices_),
+                     static_cast<unsigned long long>(runIn_), runKey_.c_str());
+    }
+    runDraws_ = runVertices_ = runIn_ = 0;
+    runKey_.clear();
+}
+void StateLogBackend::frameBoundary(uint32_t retrace) {
+    flushRun();
+    retrace_ = retrace;
+    active_ = retrace >= first_ && retrace - first_ < count_;
+    if (active_ && f_) std::fprintf(f_, "== retrace %u\n", retrace);
+}
+void StateLogBackend::draw(const DrawCommand& d) {
+    if (!active_ || !f_) return;
+    const PipelineState& s = *d.state;
+    std::string key = fmt("viewport %g,%g %gx%g z[%g,%g] scissor (%d,%d)-(%d,%d) texcoords %u cull %u depth %d/%s/%d blend %s", s.viewport.x, s.viewport.y, s.viewport.width, s.viewport.height, s.viewport.nearZ,
+                          s.viewport.farZ, s.scissor.x0, s.scissor.y0, s.scissor.x1, s.scissor.y1, s.numTexCoords, s.cullMode, s.depth.test, kCmp[static_cast<int>(s.depth.func) & 7], s.depth.write,
+                          kBlendMode[static_cast<int>(s.blend.mode) & 3]);
+    for (int m = 0; m < 8; ++m)
+        if (s.maps[m].valid) key += fmt(" map%d %ux%u %s", m, s.maps[m].width, s.maps[m].height, s.maps[m].image ? "ram" : fmt("efbcopy%u", s.maps[m].efbCopyId).c_str());
+    key += fmt(" tev%u texscale0 %ux%u", s.tev.numStages, s.texScale[0].sSize, s.texScale[0].tSize);
+    if (key != runKey_) {
+        flushRun();
+        runKey_ = key;
+    }
+    ++runDraws_;
+    runVertices_ += d.vertexCount;
+    for (uint32_t i = 0; i < d.vertexCount; ++i) {
+        const float* c = d.vertices[i].pos;
+        if (c[3] > 0 && c[2] <= 0 && c[2] >= -c[3] && c[0] >= -c[3] && c[0] <= c[3] && c[1] >= -c[3] && c[1] <= c[3]) ++runIn_;
+    }
+}
+void StateLogBackend::efbCopy(const EfbCopyCommand& c) {
+    if (!active_ || !f_) return;
+    flushRun();
+    std::fputs(describeCopy(c).c_str(), f_);
 }
 
 void BackendHub::remove(Backend* b) { list_.erase(std::remove(list_.begin(), list_.end(), b), list_.end()); }

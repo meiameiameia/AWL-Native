@@ -69,6 +69,7 @@ public:
     // Wall-time accounting in CoreStats (busy/pipeline/vertex/backend seconds): off by default because the clock reads cost
     // about as much as a small draw.
     void setProfiling(bool on) { profile_ = on; }
+    void setTextureTrust(bool on) { trustEpoch_ = on; }   // false: compare the bytes of every texture binding at every draw (diagnostic)
     bool midCommand() const { return !pending_.empty(); }   // a command is split across feed() calls
 
     const CoreStats& stats() const { return stats_; }
@@ -120,6 +121,7 @@ private:
     CoreStats stats_;
     StreamObserver* obs_ = nullptr;
     bool profile_ = false;
+    bool trustEpoch_ = true;
 
     std::shared_ptr<const PipelineState> pipe_;
     uint32_t stateId_ = 0;

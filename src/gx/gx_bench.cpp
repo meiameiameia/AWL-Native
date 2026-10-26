@@ -27,6 +27,7 @@ struct Memory : GuestMemory {
 
 struct Sink : Backend {
     uint64_t sum = 0, draws = 0, vertices = 0, indices = 0, copies = 0;
+    uint64_t inView = 0, behind = 0, outside = 0, farZ = 0, nearZ = 0;
     double seconds = 0;                       // time spent in this backend (its checksumming), subtracted from the core's wall time
     static uint64_t mix(uint64_t h, uint64_t v) { return (h ^ v) * 0x100000001B3ull; }
     void draw(const DrawCommand& d) override {
@@ -36,6 +37,12 @@ struct Sink : Backend {
         indices += d.indexCount;
         uint64_t h = sum;
         for (uint32_t i = 0; i < d.vertexCount; ++i) {
+            const float* c = d.vertices[i].pos;
+            if (c[3] <= 0) ++behind;
+            else if (c[2] > 0) ++farZ;
+            else if (c[2] < -c[3]) ++nearZ;
+            else if (c[0] < -c[3] || c[0] > c[3] || c[1] < -c[3] || c[1] > c[3]) ++outside;
+            else ++inView;
             uint32_t w[30];
             static_assert(sizeof(Vertex) == 120, "vertex layout");
             std::memcpy(w, &d.vertices[i], sizeof w);
@@ -125,7 +132,8 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "core error: %s (offset %llu)\n", e.what(), static_cast<unsigned long long>(e.streamOffset));
         return 3;
     }
-    (void)lastChecksum;    std::sort(perVertex.begin(), perVertex.end());
+    (void)lastChecksum;
+    std::printf("vertex clip classes (last pass): in view %llu, outside x/y %llu, w<=0 %llu, z>0 (beyond far) %llu, z<-w (before near) %llu\n", (unsigned long long)sink.inView, (unsigned long long)sink.outside, (unsigned long long)sink.behind, (unsigned long long)sink.farZ, (unsigned long long)sink.nearZ);    std::sort(perVertex.begin(), perVertex.end());
     std::sort(perFrame.begin(), perFrame.end());
     std::printf("frames %u; median %.1f ns per vertex (min %.1f), %.2f ms per frame excluding the backend (min %.2f); checksum %016llX\n", frames, perVertex[perVertex.size() / 2], perVertex.front(),
                 perFrame[perFrame.size() / 2], perFrame.front(), static_cast<unsigned long long>(checksum));

@@ -142,7 +142,7 @@ void Core::bindMap(uint32_t map, TexBinding& out) {
     const uint32_t base = map < 4 ? 0x80 + map : 0xA0 + (map - 4);
     const uint32_t regs[8] = {bp_[base], bp_[base + 4], bp_[base + 8], bp_[base + 12], bp_[base + 16], bp_[base + 20], bp_[base + 24], 0};
     MapMemo& m = memo_[map];
-    if (m.valid && std::memcmp(m.regs, regs, sizeof regs) == 0 && m.epoch == texGeneration_ && m.tlutEpoch == tlutEpoch_) {
+    if (trustEpoch_ && m.valid && std::memcmp(m.regs, regs, sizeof regs) == 0 && m.epoch == texGeneration_ && m.tlutEpoch == tlutEpoch_) {
         out = m.binding;
         return;
     }

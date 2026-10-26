@@ -165,7 +165,7 @@ std::shared_ptr<const Texture> Core::loadTexture(const TexRequest& req) {
     uint64_t key = 0;
     Snapshot& snap = snapshots_[tupleKey];
     const bool sameBinding = snap.valid && std::memcmp(snap.tuple, tuple, sizeof tuple) == 0 && snap.raw.size() == total && snap.pal.size() == palBytes;
-    if (sameBinding && snap.epoch == texGeneration_ && snap.tlutEpoch == tlutEpoch_) {
+    if (trustEpoch_ && sameBinding && snap.epoch == texGeneration_ && snap.tlutEpoch == tlutEpoch_) {
         // Verified since the last texture-cache invalidate: the SDK invalidates after changing texture memory, so the bytes
         // are not read again (a change without an invalidate is not observed, as on hardware).
         key = snap.key;
