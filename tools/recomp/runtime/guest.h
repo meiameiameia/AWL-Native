@@ -256,6 +256,19 @@ inline uint8_t* host(Ctx& c, uint32_t ea, uint32_t n) {
 uint64_t loadSlow(Ctx& c, uint32_t ea, uint32_t size);
 void storeSlow(Ctx& c, uint32_t ea, uint32_t size, uint64_t value);
 
+// Store watch (diagnostic, architect-approved): built only with /DAWL_STORE_WATCH_ENABLED, so default builds are unchanged.
+// AWL_STORE_WATCH=<hex address>,<hex length> logs every guest store that touches the range (see guest.cpp).
+#ifdef AWL_STORE_WATCH_ENABLED
+extern uint32_t g_storeWatchLo, g_storeWatchLen;
+void storeWatchHit(Ctx& c, uint32_t ea, uint32_t size, uint64_t value);
+#define AWL_WATCH_STORE(c, ea, size, v) \
+    do { const uint32_t w_ = (ea) & 0x0FFFFFFFu; \
+         if (((w_ - ::awl::rt::g_storeWatchLo) < ::awl::rt::g_storeWatchLen) | ((w_ + (size) - 1u - ::awl::rt::g_storeWatchLo) < ::awl::rt::g_storeWatchLen)) \
+             ::awl::rt::storeWatchHit((c), (ea), (size), (v)); } while (0)
+#else
+#define AWL_WATCH_STORE(c, ea, size, v) ((void)0)
+#endif
+
 inline uint8_t ld8(Ctx& c, uint32_t ea) { const uint8_t* p = hostMem(c, ea, 1); return p ? *p : static_cast<uint8_t>(loadSlow(c, ea, 1)); }
 inline uint16_t ld16(Ctx& c, uint32_t ea) {
     const uint8_t* p = hostMem(c, ea, 2);
@@ -273,20 +286,24 @@ inline uint64_t ld64(Ctx& c, uint32_t ea) {
     uint64_t v; std::memcpy(&v, p, 8); return _byteswap_uint64(v);
 }
 inline void st8(Ctx& c, uint32_t ea, uint32_t v) {
+    AWL_WATCH_STORE(c, ea, 1u, v & 0xFFu);
     uint8_t* p = hostMem(c, ea, 1);
     if (p) *p = static_cast<uint8_t>(v); else storeSlow(c, ea, 1, v & 0xFFu);
 }
 inline void st16(Ctx& c, uint32_t ea, uint32_t v) {
+    AWL_WATCH_STORE(c, ea, 2u, v & 0xFFFFu);
     uint8_t* p = hostMem(c, ea, 2);
     if (!p) { storeSlow(c, ea, 2, v & 0xFFFFu); return; }
     const uint16_t b = _byteswap_ushort(static_cast<uint16_t>(v)); std::memcpy(p, &b, 2);
 }
 inline void st32(Ctx& c, uint32_t ea, uint32_t v) {
+    AWL_WATCH_STORE(c, ea, 4u, v);
     uint8_t* p = hostMem(c, ea, 4);
     if (!p) { storeSlow(c, ea, 4, v); return; }
     const uint32_t b = _byteswap_ulong(v); std::memcpy(p, &b, 4);
 }
 inline void st64(Ctx& c, uint32_t ea, uint64_t v) {
+    AWL_WATCH_STORE(c, ea, 8u, v);
     uint8_t* p = hostMem(c, ea, 8);
     if (!p) { storeSlow(c, ea, 8, v); return; }
     const uint64_t b = _byteswap_uint64(v); std::memcpy(p, &b, 8);
@@ -312,6 +329,7 @@ inline void stwcx(Ctx& c, uint32_t ea, uint32_t v) {
     c.cr = (c.cr & 0x0FFFFFFFu) | ((ok ? 2u : 0u) << 28) | (c.so << 28);
 }
 inline void dcbz(Ctx& c, uint32_t ea) {
+    AWL_WATCH_STORE(c, ea & ~31u, 32u, 0u);
     std::memset(host(c, ea & ~31u, 32), 0, 32);
     if (c.reservationValid && c.reservation == (ea & ~31u)) c.reservationValid = false;
 }

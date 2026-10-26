@@ -30,6 +30,7 @@ bool stateNeutral(uint32_t r) {
 
 Core::Core(const GuestMemory& mem, Backend& backend, CoreHost& host) : mem_(mem), backend_(backend), host_(host) {
     tlutRam_.assign(1024 * 256, 0);
+    tmem_.assign(1u << 20, 0);
 }
 
 void Core::fail(const std::string& what, uint32_t code) const { throw GxError(what, offset_, code); }
@@ -172,7 +173,8 @@ void Core::bpWrite(uint32_t reg, uint32_t v) {
             host_.token(static_cast<uint16_t>(v), true);
             break;
         case 0x52: efbCopy(); break;
-        case 0x60: case 0x61: case 0x62: case 0x63: case 0x66: ++texGeneration_; break;   // preload / cache invalidate
+        case 0x63: texPreload(); ++texGeneration_; break;      // GXPreLoadEntireTexture: the copy into TMEM happens at this write
+        case 0x60: case 0x61: case 0x62: case 0x66: ++texGeneration_; break;   // preload registers / cache invalidate
         case 0x65: tlutLoad(); break;
         case 0xE0: case 0xE1: case 0xE2: case 0xE3: case 0xE4: case 0xE5: case 0xE6: case 0xE7:
             tevColor_[(v >> 23) & 1][(reg - 0xE0) >> 1][reg & 1] = v & 0x7FFFFF;

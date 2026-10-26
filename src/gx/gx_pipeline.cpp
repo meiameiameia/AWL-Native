@@ -166,8 +166,9 @@ void Core::bindMap(uint32_t map, TexBinding& out) {
     s.maxLod = static_cast<float>(bitsOf(mode1, 8, 8)) / 16.0f;
 
     const uint32_t addr = bitsOf(img3, 0, 24) << 5;
+    const bool preloaded = bitsOf(regs[3], 21, 1) != 0;   // TX_SETIMAGE1 image type: 1 = the texture sits in TMEM (preloaded), bits 0-14 = its line offset
     uint32_t levels = 1;
-    if (usesMips(s.minFilter)) {
+    if (usesMips(s.minFilter) && !preloaded) {
         uint32_t possible = 1;
         for (uint32_t d = std::max<uint32_t>(b.width, b.height); d > 1; d >>= 1) ++possible;
         levels = std::min<uint32_t>({possible, static_cast<uint32_t>(std::ceil(s.maxLod)) + 1, 11u});
@@ -175,7 +176,7 @@ void Core::bindMap(uint32_t map, TexBinding& out) {
     // Aliasing of an earlier EFB copy (convention 8): same start address, destination bytes unchanged since the copy.
     bool aliased = false;
     for (CopyRecord& rec : copies_) {
-        if (rec.addr != addr) continue;
+        if (preloaded || rec.addr != addr) continue;
         const uint8_t* now = mem_.read(rec.addr, rec.bytes);
         if (now && gxHash64(now, rec.bytes, 0x4350ull) == rec.memHash) {
             b.efbCopyId = rec.id;
@@ -189,7 +190,7 @@ void Core::bindMap(uint32_t map, TexBinding& out) {
         break;
     }
     if (!aliased) {
-        TexRequest req{addr, b.width, b.height, format, levels, bitsOf(tlut, 0, 10), bitsOf(tlut, 10, 2)};
+        TexRequest req{preloaded ? (0x80000000u | (bitsOf(regs[3], 0, 15) << 5)) : addr, b.width, b.height, format, levels, bitsOf(tlut, 0, 10), bitsOf(tlut, 10, 2), preloaded ? bitsOf(regs[4], 0, 15) << 5 : 0u};
         b.image = loadTexture(req);
     }
     m.valid = true;

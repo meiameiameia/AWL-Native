@@ -1,6 +1,8 @@
 #include "guest.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <unordered_map>
 #include <vector>
 #include <xmmintrin.h>
@@ -72,6 +74,80 @@ void platformBoundary(Ctx& c, uint32_t fnAddr, const char* evidence) {
 }
 
 void limitReached(Ctx& c) { stop(c, StopKind::InstructionLimit, c.pc, 0, "instruction limit reached"); }
+
+#ifdef AWL_STORE_WATCH_ENABLED
+#pragma warning(push)
+#pragma warning(disable : 4996)   // getenv, sscanf, fopen: diagnostic only
+// Store watch (diagnostic, architect-approved). AWL_STORE_WATCH=<hex address>,<hex length> [AWL_STORE_WATCH_FROM=<icount>]
+// [AWL_STORE_WATCH_MAX=<lines>] [AWL_STORE_WATCH_LOG=<file>] [AWL_STORE_WATCH_VALUE=<hex> [AWL_STORE_WATCH_MASK=<hex>]: only
+// stores whose value & mask equals VALUE]. The address is a physical MEM1 address (0xCC008000 selects the GX write-gather
+// port). Consecutive stores of one guest pc to adjacent addresses are merged into one line: "W icount=<first>..<last>
+// pc=<trap point> fn=<innermost recompiled function> from=<its call site> ea=<first>..<next> n=<stores> size=<bytes>
+// first=<value> last=<value> chain=<call sites, innermost first>". pc is the last trap point (at()) passed, so it names the
+// loop, not the exact store.
+uint32_t g_storeWatchLo = 0, g_storeWatchLen = 0;
+namespace {
+struct StoreWatchState {
+    FILE* out = stderr;
+    uint64_t from = 0, maxLines = 200000, lines = 0, hits = 0, value = 0, valueMask = ~0ull;
+    bool filterValue = false;   // AWL_STORE_WATCH_VALUE=<hex>: only stores of exactly this value are logged
+    bool open = false;
+    uint32_t pc = 0, fn = 0, site = 0, startEa = 0, nextEa = 0, size = 0;
+    char chain[128] = {};   // call sites of the innermost frames, innermost first
+    uint64_t n = 0, firstIc = 0, lastIc = 0, firstVal = 0, lastVal = 0;
+    StoreWatchState() {
+        if (const char* w = std::getenv("AWL_STORE_WATCH")) {
+            unsigned long long a = 0, l = 0;
+            if (std::sscanf(w, "%llx,%llx", &a, &l) == 2) { g_storeWatchLo = static_cast<uint32_t>(a) & 0x0FFFFFFFu; g_storeWatchLen = static_cast<uint32_t>(l); }
+        }
+        if (const char* f = std::getenv("AWL_STORE_WATCH_FROM")) from = std::strtoull(f, nullptr, 0);
+        if (const char* v = std::getenv("AWL_STORE_WATCH_VALUE")) { value = std::strtoull(v, nullptr, 16); filterValue = true; }
+        if (const char* v = std::getenv("AWL_STORE_WATCH_MASK")) valueMask = std::strtoull(v, nullptr, 16);
+        if (const char* m = std::getenv("AWL_STORE_WATCH_MAX")) maxLines = std::strtoull(m, nullptr, 0);
+        if (const char* p = std::getenv("AWL_STORE_WATCH_LOG")) if (FILE* f = std::fopen(p, "w")) out = f;
+    }
+    void flush() {
+        if (!open) return;
+        open = false;
+        if (lines++ >= maxLines) return;
+        std::fprintf(out, "W icount=%llu..%llu pc=%08X fn=%08X from=%08X ea=%08X..%08X n=%llu size=%u first=%llX last=%llX chain=%s\n",
+                     (unsigned long long)firstIc, (unsigned long long)lastIc, pc, fn, site, startEa, nextEa, (unsigned long long)n, size,
+                     (unsigned long long)firstVal, (unsigned long long)lastVal, chain);
+    }
+    ~StoreWatchState() { flush(); std::fprintf(out, "W total stores into the range: %llu\n", (unsigned long long)hits); if (out != stderr) std::fclose(out); }
+};
+StoreWatchState& storeWatch() { static StoreWatchState s; return s; }
+struct StoreWatchInit { StoreWatchInit() { storeWatch(); } } g_storeWatchInit;
+}  // namespace
+
+void storeWatchHit(Ctx& c, uint32_t ea, uint32_t size, uint64_t value) {
+    StoreWatchState& s = storeWatch();
+    if (c.m->icount < s.from || (s.filterValue && (value & s.valueMask) != s.value)) return;
+    ++s.hits;
+    const uint32_t fn = c.sp ? c.cs[c.sp - 1].callee : 0, site = c.sp ? c.cs[c.sp - 1].site : 0;
+    if (s.open && s.pc == c.pc && s.fn == fn && s.size == size && s.nextEa == ea) {
+        s.nextEa = ea + size;
+        ++s.n;
+        s.lastIc = c.m->icount;
+        s.lastVal = value;
+        return;
+    }
+    s.flush();
+    s.open = true;
+    {
+        char* p = s.chain;
+        for (uint32_t i = 0; i < 8 && i < c.sp; ++i) {
+            const int w = std::snprintf(p, s.chain + sizeof s.chain - p, "%s%08X", i ? "<" : "", c.cs[c.sp - 1 - i].site);
+            if (w <= 0 || p + w >= s.chain + sizeof s.chain) break;
+            p += w;
+        }
+        *p = 0;
+    }
+    s.pc = c.pc; s.fn = fn; s.site = site; s.startEa = ea; s.nextEa = ea + size; s.size = size; s.n = 1;
+    s.firstIc = s.lastIc = c.m->icount; s.firstVal = s.lastVal = value;
+}
+#pragma warning(pop)
+#endif
 
 void registerMachine(Machine& m) { machines().push_back(&m); }
 

@@ -370,6 +370,41 @@ void testTextureFormats() {
     check(r.core.stats().textureDecodes == decodes, "identical texture content hits the decode cache");
 }
 
+// GXPreLoadEntireTexture (BP 0x60-0x63) copies the texture into texture memory; a map set to the "preloaded" image type (bit 21 of
+// TX_SETIMAGE1, bits 0-14 = TMEM line offset) samples TMEM, so overwriting the RAM copy afterwards (the game frees its font arc after
+// preloading) must not change the texture. A map of the cached type reads RAM as before.
+void testTexturePreload() {
+    Rig r;
+    Mem& m = r.mem;
+    auto bindWith = [&](uint32_t fmt, uint32_t w, uint32_t h, uint32_t ramAddr, uint32_t img1, uint32_t img2) {
+        Stream s = base2d();
+        s.bp(0x28, 0x40).bp(0x88, (w - 1) | (h - 1) << 10 | fmt << 20).bp(0x94, ramAddr >> 5).bp(0x8C, img1).bp(0x90, img2).bp(0x80, 0).bp(0x84, 0).bp(0x98, 0);
+        s.cp(0x50, 1u << 9).cp(0x70, 3u << 1);
+        s.drawHdr(0x90, 3);
+        for (int i = 0; i < 3; ++i) s.u16(uint16_t(i)).u16(0);
+        r.feed(s);
+        return r.rec.draws.back().state.maps[0].image;
+    };
+    // I4 8x8 (one 32-byte tile, tile type 1 in the preload registers): texel (0,0) = high nibble 1, texel (1,0) = low nibble F.
+    m.bytes[0x4000] = 0x1F;
+    Stream pre;
+    pre.bp(0x60, 0x4000 >> 5).bp(0x61, 0x40).bp(0x62, 0).bp(0x63, 1u | 1u << 15);   // RAM 0x4000, even bank at line 0x40, 1 line
+    r.feed(pre);
+    m.bytes[0x4000] = 0xA5;                                                         // the RAM copy changes after the preload
+    auto t = bindWith(0, 8, 8, 0x4000, 0x200000 | 0x40, 0);
+    check(t && t->rgba[0] == 0x11111111u && t->rgba[1] == 0xFFFFFFFFu, "preloaded I4 is sampled from TMEM, not from the changed RAM");
+    t = bindWith(0, 8, 8, 0x4000, 0x40, 0);
+    check(t && t->rgba[0] == 0xAAAAAAAAu && t->rgba[1] == 0x55555555u, "the same map with the cached image type reads RAM");
+    // RGBA8 4x4 (tile type 3): RAM tile = 32 bytes of (A,R) pairs, then 32 bytes of (G,B) pairs. Texel 0: A 0x80 R 0x10 G 0x20 B 0x30.
+    m.bytes[0x5000] = 0x80; m.bytes[0x5001] = 0x10; m.bytes[0x5020] = 0x20; m.bytes[0x5021] = 0x30;
+    Stream pre8;
+    pre8.bp(0x60, 0x5000 >> 5).bp(0x61, 0x10).bp(0x62, 0x20).bp(0x63, 1u | 3u << 15);   // AR line to even bank line 0x10, GB line to odd bank line 0x20
+    r.feed(pre8);
+    m.bytes[0x5000] = 0; m.bytes[0x5001] = 0; m.bytes[0x5020] = 0; m.bytes[0x5021] = 0;
+    t = bindWith(6, 4, 4, 0x5000, 0x200000 | 0x10, 0x20);
+    check(t && t->rgba[0] == (0x10u | 0x20u << 8 | 0x30u << 16 | 0x80u << 24), "preloaded RGBA8 is gathered from the even and odd banks");
+}
+
 void testEfbCopies() {
     Rig r;
     Stream s = base2d();
@@ -692,6 +727,7 @@ int main() {
     testTexGenAndLighting();
     testBlendAndTev();
     testTextureFormats();
+    testTexturePreload();
     testEfbCopies();
     testBatchPathEqualsScalar();
     testPerspectiveObjectAndDarkLight();
