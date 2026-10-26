@@ -99,10 +99,12 @@ private:
 
     // ---- gx_texture.cpp: texture decoding and cache ----
     struct TexRequest {
-        uint32_t addr, width, height, format, levels, tlutOffset, tlutFormat;
+        uint32_t addr, width, height, format, levels, tlutOffset, tlutFormat;   // addr bit 31: the bytes come from TMEM (a preloaded texture), the low bits are the TMEM byte offset
+        uint32_t tmemOdd = 0;   // preloaded RGBA8: byte offset of the odd bank (the GB lines)
     };
     std::shared_ptr<const Texture> loadTexture(const TexRequest& req);
     void tlutLoad();
+    void texPreload();
 
     // ---- state ----
     const GuestMemory& mem_;
@@ -135,7 +137,7 @@ private:
     std::list<uint64_t> texLru_;
     uint64_t texCacheBytes_ = 0;
     // Raw bytes of the last decode per texture binding, for the exact unchanged-content check.
-    struct Snapshot { bool valid = false; uint32_t tuple[8] = {}; std::vector<uint8_t> raw; std::vector<uint16_t> pal; uint64_t key = 0; uint32_t epoch = 0, tlutEpoch = 0; };
+    struct Snapshot { bool valid = false; uint32_t tuple[9] = {}; std::vector<uint8_t> raw; std::vector<uint16_t> pal; uint64_t key = 0; uint32_t epoch = 0, tlutEpoch = 0; };
     std::unordered_map<uint64_t, Snapshot> snapshots_;
     uint64_t snapBytes_ = 0;
     // Memoised bindings per map (valid while the registers and the epoch are unchanged).
@@ -143,6 +145,7 @@ private:
     MapMemo memo_[8];
     std::vector<uint16_t> tlutRam_;         // TMEM TLUT area as 16-bit entries (offset unit: 256 entries)
     uint32_t tlutEpoch_ = 0;
+    std::vector<uint8_t> tmem_;             // 1 MiB texture memory: only what GXPreLoad*Texture (BP 0x60-0x63) copied in is modelled; cached textures are read from RAM
 
     // EFB copies to textures that later binds may alias (convention 8).
     struct CopyRecord { uint32_t id, addr, bytes, format, width, height; uint64_t memHash; bool warned; };

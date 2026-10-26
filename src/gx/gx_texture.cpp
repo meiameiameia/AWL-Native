@@ -134,6 +134,33 @@ void Core::tlutLoad() {
     ++tlutEpoch_;
 }
 
+// BP 0x60-0x63 (GXPreLoadEntireTexture): `count` 32-byte lines are copied from RAM into texture memory at the even offset (libogc
+// writes the RAM address to 0x60, the even and odd TMEM offsets, in lines, to 0x61/0x62, and the line count and tile type to
+// 0x63, which starts the copy). A texture bound with the "preloaded" image type (bit 21 of TX_SETIMAGE1) is then sampled from
+// TMEM, so later changes of the RAM copy do not reach it: the game frees the RAM copy of its font after preloading it.
+void Core::texPreload() {
+    const uint32_t src = (bp_[0x60] & 0xFFFFFF) << 5, even = (bp_[0x61] & 0x7FFF) << 5;
+    const uint32_t count = bp_[0x63] & 0x7FFF, type = (bp_[0x63] >> 15) & 3;
+    if (type == 3) {
+        // 32-bit (RGBA8) textures: every 4x4 tile is two RAM lines, the AR line then the GB line; the AR lines go to the even
+        // bank and the GB lines to the odd bank, `count` tiles each (libogc advances the RAM address by two lines per tile).
+        const uint32_t odd = (bp_[0x62] & 0x7FFF) << 5;
+        if (even + count * 32 > tmem_.size() || odd + count * 32 > tmem_.size()) fail("texture preload beyond the 1 MiB texture memory", 0x63);
+        const uint8_t* data = mem_.read(src, count * 64);
+        if (!data) fail("texture preload reads outside memory", 0x60);
+        for (uint32_t t = 0; t < count; ++t) {
+            std::memcpy(tmem_.data() + even + t * 32, data + t * 64, 32);
+            std::memcpy(tmem_.data() + odd + t * 32, data + t * 64 + 32, 32);
+        }
+        return;
+    }
+    const uint32_t bytes = count * 32;
+    if (even + bytes > tmem_.size()) fail("texture preload beyond the 1 MiB texture memory", 0x63);
+    const uint8_t* data = mem_.read(src, bytes);
+    if (!data) fail("texture preload reads outside memory", 0x60);
+    std::memcpy(tmem_.data() + even, data, bytes);
+}
+
 std::shared_ptr<const Texture> Core::loadTexture(const TexRequest& req) {
     TileGeom g{};
     if (!tileGeom(req.format, g)) fail("texture format not supported: " + std::to_string(req.format), 0x88);
@@ -147,8 +174,23 @@ std::shared_ptr<const Texture> Core::loadTexture(const TexRequest& req) {
         lv[l] = {w, h, levelBytes(req.format, w, h), total};
         total += lv[l].bytes;
     }
-    const uint8_t* raw = mem_.read(req.addr, total);
-    if (!raw) fail("texture data outside memory at " + std::to_string(req.addr), 0x94);
+    const bool fromTmem = (req.addr & 0x80000000u) != 0;
+    const uint32_t srcAddr = req.addr & 0x7FFFFFFFu;
+    std::vector<uint8_t> gathered;   // preloaded RGBA8: the AR and GB lines of the two banks put back in RAM order
+    const uint8_t* raw = fromTmem ? (uint64_t(srcAddr) + total <= tmem_.size() ? tmem_.data() + srcAddr : nullptr) : mem_.read(srcAddr, total);
+    if (raw && fromTmem && req.format == 6) {
+        const uint32_t tiles = total / 64;
+        if (uint64_t(req.tmemOdd) + tiles * 32 > tmem_.size() || uint64_t(srcAddr) + tiles * 32 > tmem_.size()) raw = nullptr;
+        else {
+            gathered.resize(total);
+            for (uint32_t t = 0; t < tiles; ++t) {
+                std::memcpy(gathered.data() + t * 64, tmem_.data() + srcAddr + t * 32, 32);
+                std::memcpy(gathered.data() + t * 64 + 32, tmem_.data() + req.tmemOdd + t * 32, 32);
+            }
+            raw = gathered.data();
+        }
+    }
+    if (!raw) fail((fromTmem ? "preloaded texture beyond texture memory at " : "texture data outside memory at ") + std::to_string(srcAddr), 0x94);
     const uint16_t* pal = nullptr;
     uint32_t palCount = 0;
     if (indexed) {
@@ -160,7 +202,7 @@ std::shared_ptr<const Texture> Core::loadTexture(const TexRequest& req) {
     // kept, and a byte-for-byte comparison (an order of magnitude cheaper than the hash) shows whether they are unchanged;
     // only a binding seen for the first time, or whose bytes changed, is hashed. The key stays a content hash.
     const uint32_t palBytes = indexed ? palCount * 2 : 0;
-    const uint32_t tuple[8] = {req.addr, req.width, req.height, req.format, n, req.tlutOffset, req.tlutFormat, total};
+    const uint32_t tuple[9] = {req.addr, req.width, req.height, req.format, n, req.tlutOffset, req.tlutFormat, total, req.tmemOdd};
     const uint64_t tupleKey = gxHash64(reinterpret_cast<const uint8_t*>(tuple), sizeof tuple, 0x534E4150ull);
     uint64_t key = 0;
     Snapshot& snap = snapshots_[tupleKey];
