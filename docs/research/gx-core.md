@@ -22,29 +22,30 @@ Current state of the GX core track. Nothing here is derived from game bytes beyo
 
 ## 2. How far the run gets, and what the game uses (survey)
 
-`awl-host` is deterministic. After the DX11 track's interrupt-frame fix the run passes the old `OSGetResetButtonState` stop and now ends at **retrace 1378** with a memory fault on an EFB Z peek (`0xC848B668`, `0x801CE03C` from `0x800DA1D4`, `0x8019B8F8`, `0x8017A770`; platform work in progress). Captured: 1,149 frames with commands, 939,781 draws, 19,964,059 vertices, 334,434 display-list calls (125 MB of list data), 21 MB of FIFO bytes. The core processed everything without a stop.
+Deterministic run, `awl-host --retraces 3000 --limit 0` (DX11 track's EFB window and logged Z-peek provider merged): it reaches **retrace 4118** (main-loop criterion, 11.1 G instructions, about 3.5 minutes of wall time). The core processed the whole run without a stop: 2,518 frames with commands, 13,062,763 draws, 255,914,851 vertices, 4,157,738 display-list calls (1.58 GB of list data), 272 MB of FIFO bytes (capture file 1.85 GB).
 
 | Retraces | Content |
 | --- | --- |
 | 0-18 | no draws; clears to XFB |
 | 19-1029 | the three start-up logos (see below) |
-| 1030-1116 | no draws (one clear per frame) |
-| 1117-1376 | a **3D scene**, one frame every 2 retraces (30 fps), about 6,700-7,600 draws and 148,000-162,000 vertices per frame; 131 copies to a 64x32 texture and 1,144 copies to XFB over the whole run |
+| 1030-1116 | no draws (one clear per frame); the disc trace shows `Message.arc` and the NPC text tables (1042-1084), `title.agc` / `title.tpl` (1087), the title map objects (1096) and `sound/TITLE.arc` (1102) loading |
+| 1117-4116 | the **title screen**: a 3D scene (town background) plus 2D text, one frame every 2 retraces (30 fps), about 6,700-7,600 draws and 148,000-170,000 vertices per frame, the same content for the whole 3,000-retrace window (neutral pad: no menu input yet); 1,501 copies to a 64x32 texture and 2,514 copies to XFB over the run |
 
 **Logos (19-1029).** Textured quads, orthographic projection, one TEV stage, RGB5A3 images 359x127, 431x147 and 330x136 (linear, clamp). Decoded they read "LICENSED BY NINTENDO" and the Natsume logo (eyeballed on the dumped PNGs).
 
-**3D scene (1117-1376), observed:**
+**Title scene (1117-4116), observed (counts from the retrace 1378 survey; the 4118 survey adds only: a third 2-stage TEV form `ONE` / `RASA*TEXA` (25,500 draws), blend src-alpha/one and one/one, 64 distinct textures, tex1 from tex0):**
 - Commands: display lists (called 334,434 times), CP/XF/BP loads, indexed XF loads: none. Primitives: triangle fans 398k, strips 350k, quads 139k, points 28.6k, triangles 24k; no lines. Vertex formats (38 distinct, all VAT 0): positions indexed 8/16-bit s16 xyz with shifts 4-14 (or direct f32), normals indexed 8-bit f32 (or s16), color0 indexed RGB565 or RGBA4444 (8/16-bit indices), texcoords indexed s16 >> 14 / s16 >> 6..9 / f32 / s8 >> 6 / u8, a few direct formats (pos xy f32 + st f32; pos xyz f32 only for the points). No matrix-index bytes and no color1. Arrays: pos 107 distinct bases (max index 5015), tex0 108, col0 66, nrm 3; strides 2, 4, 6, 8, 12.
 - XF: perspective projections (4 parameter sets) and the 2D orthographic one; position matrices 0-24 (every 3 rows) reloaded per object, a normal matrix per draw (105k loads), 2x4 texture matrices 30/33/36; **one light** (light 0 and light 2 loaded 131 times) with the channel's attenuation bit set in spotlight mode (diffuse clamp), color0 material from vertex or register, alpha unlit; 1 texgen (regular ST from tex0 through the post matrix) or 3 texgens (position source, ABC1 form) for the indirect effect.
 - Pixel pipeline: 1 TEV stage (TEXC*RASC / TEXA*RASA, or C0*TEXC for the 28.6k point sprites, C0/C1 konst-register blends for 11.8k draws) and a 2-stage indirect effect (17,161 draws: 2 indirect stages with matrix 1, bias 3, wrap 0/6; map 0 IA8 128x128 repeat and map 1 I8 128x128 clamp); swap tables with the rswap/tswap = 1 selection; alpha compare variants (a > 127 for 739k draws, always, 1..255 gequal/lequal); z lequal with write (879k draws), no-write (29k) or off; blend off (863k), src-alpha/one (46k), src-alpha/inv-src-alpha (31k); **linear fog** (type 2, perspective) on 860k draws; cull back (517k), none (373k) and front (2.6k); EFB RGB8_Z24 throughout.
 - Textures (28 formats/sizes, 43 distinct images): CMPR 32x32 to 1024x1024 with mips (lin_mip_lin, max LOD 3, some with LOD bias, repeat), RGB565 4x4 and 8x8, I4 1008x648, I8 and IA8 128x128, IA4 32x32 and 64x64, RGBA8 64x32 (the render-to-texture target, 2,620 draws sample it via the copy alias), RGB5A3 (logos, 292x15, 512x325, 64x32). No TLUT loads, no color-index textures.
 - Points: size 96/48 (1/6 px) with texture offset; the 28.6k points are drawn with a 4x4 RGB565 texture.
 - EFB copies: XFB copies as in the logos; the render-to-texture copy is 64x32 RGBA8 with clear, scissor 64x32, vertical filter {21,22,21} defaults.
-- Still unobserved: display-list-free XF indexed loads, matrix-index bytes, color1, STQ/emboss/color texgens, lines, TLUTs, compare-mode TEV ops, logic ops, specular/spotlight coefficients other than trivial (not checked), more than one light per channel.
+- The I4 1008x648 texture is the Japanese kana font atlas (its lower part holds unwritten memory); the text is drawn as 2D quads with it (about 67 draws per frame).
+- Still unobserved: XF indexed loads, matrix-index bytes, color1, STQ/emboss/color texgens, lines, TLUTs, compare-mode TEV ops, logic ops, specular/spotlight coefficients other than trivial (not checked), more than one light per channel.
 
 ## 3. Conventions settled by the implementation
 
-- **Clip space and depth** (IR convention 1): confirmed on the game's own projection (ortho z' = z/1024 - 1 maps z=0 to -1, i.e. -w at w = 1) and in synthetic tests (libogc perspective: near -> z = -w, far -> z = 0). The 3D scene of retraces 1117-1376 has depth-tested draws (z lequal) that a renderer can now check.
+- **Clip space and depth** (IR convention 1): confirmed on the game's own projection (ortho z' = z/1024 - 1 maps z=0 to -1, i.e. -w at w = 1) and in synthetic tests (libogc perspective: near -> z = -w, far -> z = 0). The title scene has depth-tested draws (z lequal) that a renderer can now check.
 - **Face culling** (IR convention 6): the core culls with the sign of the determinant of the (x, y, w) rows. Evidence from the game: its logo quads are submitted clockwise as seen on screen (top-left, top-right, bottom-right, bottom-left, y up after the projection) and survive GEN_MODE cull hardware value 1 (libogc `GX_CULL_BACK`), so **a front face is clockwise on the screen**. `gx_ir.h` convention 6 states this since version 2. The sign is one constant, `kFrontFaceDeterminantSign` in `gx_draw.cpp`; `gx_core_tests` fails if it is flipped.
 - **Texcoords** (convention 4): the logo quads give (s,t) = (0,0)..(1,1) with SU_SSIZE/TSIZE equal to the texture size, as the IR states.
 - **Scissor**: BP scissor corners minus twice the box-offset register (libogc stores (offset+342)>>1); observed (0,0)-(639,447).
@@ -56,12 +57,14 @@ Current state of the GX core track. Nothing here is derived from game bytes beyo
 
 ## 4. Cost (Release, Core::feed wall time, `AWL_GX_STATS=1`)
 
-Whole run to retrace 1378 (heavy 3D frames dominate): 8.2 M commands, 939,781 draws, 19.96 M vertices, 119,261 pipeline rebuilds. Typical result 3.9-5.1 s in the core (machine load adds noise; one run with another game running took 80 s), that is about **15 ms per 3D frame** at 30 fps, split: vertices + XF + primitives about 2.7 s (about 130 ns per vertex, of which lighting about 55 ns), pipeline rebuilds about 0.6 s, backend calls 0.03 s. The logos cost about 34 microseconds per retrace.
+Whole run to retrace 4118: 101 M commands, 13.06 M draws, 255.9 M vertices, 1.48 M pipeline rebuilds, **47.9 s in the core** (11.6 ms per retrace averaged, which is about **30 ms per title frame** at 30 fps and about 170,000 vertices per frame: this is nearly the whole 33 ms frame budget before the guest CPU and the renderer). Split: vertices + XF + primitives 34.4 s, pipeline rebuilds 6.5 s, backend calls 0.4 s. Timings on this machine are noisy (one run measured while another game was running took 80 s).
 
-Texture rehashing after the SDK's per-load invalidation was 1.5 s of 9 s (5.7 GB hashed); the core now keeps the raw bytes (and palette) of each texture binding's last decode and compares byte for byte (memcmp, exact), hashing only a new or changed binding: 43 MB hashed and 5.65 GB compared in the same run. The content-key semantics are unchanged. Remaining cost is per-vertex work; candidates if it must shrink: skip lighting for vertices whose normal/position are equal, a per-draw vertex cache for repeated index tuples, or moving the core to its own thread.
+- Texture rehashing after the SDK's per-load invalidation was 1.5 s of 9 s on the first 1378 retraces (5.7 GB hashed). The core now keeps the raw bytes (and palette) of each texture binding's last decode and compares byte for byte (exact), hashing only a new or changed binding: over the whole run 470 MB hashed and 64.7 GB compared. The content-key semantics are unchanged. Rehashing no longer dominates (the pipeline rebuild is 14% of the core, memcmp included).
+- Per-vertex work dominates: about 100-130 ns per vertex (lighting about a third; the constant-attenuation spot path added in this pass saved about 20%). Options if it must shrink further: a worker pool for the vertex stage (draws are independent given a state snapshot; the backend would still be called in stream order, which needs a flush at each copy/token/finish and gives the backend a deferred rather than synchronous call, an IR contract point for the architect), vectorising the transform, or caching transformed vertices per (array indices, matrix) tuple.
+- The logos cost about 34 microseconds per retrace.
 
 ## 5. Open points
 
-- The run ends at retrace 1378 on an EFB Z peek (platform track). When it is on main: merge, re-run the survey through the title and menus.
-- Spot/specular attenuation, emboss and color texgens, compare-mode TEV, logic ops, TLUT paths and the IA4/IA8 bit order have no real stream (the 3D scene exercises spot-mode with trivial coefficients, fog, indirect texturing, CMPR mips and a copy texture, but only decoded; nothing is compared with the original yet).
-- Not verified against Dolphin: all of the above. The owner's Dolphin captures of the logo frames and of the 3D scene are the next evidence.
+- The title scene is reached; the menus need pad input (the host runs with neutral input). A scripted pad (press Start/A at chosen retraces) in the platform layer would extend the survey into the menus.
+- Spot/specular attenuation beyond constant coefficients, emboss and color texgens, compare-mode TEV, logic ops, TLUT paths and the IA4/IA8 bit order have no real stream (the title scene exercises spot-mode with constant coefficients, fog, indirect texturing, CMPR mips, a copy texture, points, IA4/IA8/I4/I8 textures, but they are only decoded; nothing is compared with the original yet).
+- Not verified against Dolphin: all of the above. The owner's Dolphin captures of the logo frames and of the title scene are the next evidence.

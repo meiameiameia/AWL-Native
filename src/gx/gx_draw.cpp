@@ -75,7 +75,9 @@ float lightFactor(const Core::LightObj& l, uint32_t ctrl, const float p[3], cons
     if (dist > 0.0f) { const float inv = 1.0f / dist; ldir[0] *= inv; ldir[1] *= inv; ldir[2] *= inv; }
     float attn = 1.0f;
     if (bitsOf(ctrl, 9, 1)) {
-        if (bitsOf(ctrl, 10, 1)) {                       // spotlight: cosine attenuation over distance attenuation
+        if (bitsOf(ctrl, 10, 1) && l.a[1] == 0.0f && l.a[2] == 0.0f && l.k[1] == 0.0f && l.k[2] == 0.0f) {
+            attn = std::max(0.0f, l.a[0]) / l.k[0];       // constant attenuation (GX_SP_OFF / GX_DA_OFF coefficients): no angle or distance terms
+        } else if (bitsOf(ctrl, 10, 1)) {                // spotlight: cosine attenuation over distance attenuation
             const float c = std::max(0.0f, dot3(ldir, l.dir));
             const float num = std::max(0.0f, l.a[0] + l.a[1] * c + l.a[2] * c * c);
             attn = num / (l.k[0] + l.k[1] * dist + l.k[2] * dist2);
@@ -274,7 +276,7 @@ void Core::lightChannels(const RawVertex& r, const float vpos[3], const float vn
         float fc[8] = {}, fa[8] = {};
         const uint32_t maskC = bitsOf(cc, 1, 1) ? (bitsOf(cc, 2, 4) | bitsOf(cc, 11, 4) << 4) : 0;
         const uint32_t maskA = bitsOf(ac, 1, 1) ? (bitsOf(ac, 2, 4) | bitsOf(ac, 11, 4) << 4) : 0;
-        for (uint32_t i = 0; i < 8; ++i) {
+        for (uint32_t i = 0; (maskC | maskA) >> i; ++i) {
             if (maskC & (1u << i)) fc[i] = lightFactor(light(i), cc, vpos, vnrm);
             if (maskA & (1u << i)) fa[i] = (maskA == maskC && ac == cc) ? fc[i] : lightFactor(light(i), ac, vpos, vnrm);
         }
