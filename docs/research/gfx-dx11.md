@@ -162,6 +162,24 @@ CPU access to the EFB goes through the window `0xC8000000-0xC8FFFFFF`: the addre
 
 **Known native difference:** game logic that depends on a depth peek sees GPU-precision results (the depth buffer is a D24 target rasterised by the host GPU), which can differ slightly across GPUs and from the hardware's own interpolation. It is unaffected by the resolution scale. A pick that compares a peeked Z against a threshold is the sensitive case.
 
+## 9b. Renderer status (milestone 2)
+
+`gfx::Renderer` (`src/gfx/gfx_renderer.*`) is a `gx::Backend` registered on `gx::backendHub()` by `awl-host` whenever a window or `--capture-frames` creates a device. It renders on a 640 x 528 RGBA8 EFB target with a D24S8 depth buffer (scale 1x; the resolution factor is not wired beyond that).
+
+| Part | State |
+| --- | --- |
+| Vertices, viewport, scissor, depth range | rendered: IR clip space with `z + w`, D3D viewport depth range = the GX viewport range, scissor inclusive, no backend culling (IR convention 6) |
+| TEV | generated per key (section 4): arithmetic stages with bias/scale/clamp/register chaining, all compare modes on colour and the A8 form on alpha, konst, swap tables, raster channels, texture stages with `TexCoordScale / map size` and the divide by q; cached |
+| Alpha compare, fog | alpha compare with all logics; fog for perspective projections, all five curves (formulas of section 4, **verify**) |
+| Textures, samplers | RGBA8 textures by content key with their mip chains; wrap, the six filters, LOD bias and range; texture maps backed by an EFB copy |
+| Depth, blend, masks | depth func/write; blend (all factors, subtract), colour/alpha write masks; logic op copy and no-op |
+| EFB copies | to XFB (vertical filter taps as supplied, clamp rows, y-scale by destination size, clear of colour/alpha/z over the copied rectangle) and to texture RGBA8 (half scale by 2x2 box); presented by `RendererSource` at the VI latch |
+| EFB depth peeks | `EfbAccess` provider reading the depth buffer (the host installs it) |
+
+Reported loudly (first use on stderr, counted, listed by `Renderer::unsupported()` and in the host summary) and the draw skipped: lines and points, logic ops other than copy/no-op, indirect texturing, orthographic fog, fog range adjustment, cylindrical wrap and range bias, texture formats other than RGB8_Z24 EFB, early depth test with an alpha test, texture maps that are unbound. Approximated and counted: copies to textures in formats other than RGBA8 (bit depth and intensity conversion not applied), mipmap generation, gamma other than 1.0. Colour peeks and pokes stop loudly. Dither is ignored (RGB8 EFB only).
+
+Evidence: the logos of the start-up sequence (three crossfaded textured quads over a cleared EFB) render as the game's own images with the XFB copy filter applied; `awl-host --capture-frames` gives byte-identical BMPs across runs and across devices for a given run (checked on the hardware adapter: two runs of frames 340-341 are identical, and the boot trace is unchanged by capturing). Not yet compared with the owner's Dolphin captures: the vertical filter (applied exactly as the copy command supplies it, so the logos look softer than a raw EFB), gamma, the depth-test-off semantics, and the culling convention beyond the logo quads.
+
 ## 10. Tests (all headless; no window is ever opened)
 
 | Test | Covers |
@@ -169,6 +187,7 @@ CPU access to the EFB goes through the window `0xC8000000-0xC8FFFFFF`: the addre
 | `gfx_device_tests` | hardware and forced-WARP device creation; 1:1 blit identity through the real pipeline; letterbox maths; BMP encode/decode round trip and file bytes; diagnostic frame; `VideoOutput` capture (first N of a mixed latch sequence, same bytes on hardware and WARP, loud failure on a bad folder) |
 | `gfx_pacing_tests` | the 1001/60000 s schedule at 10 MHz and 1 GHz counters (60,000 fields = 1001 s exactly; 10^7 fields by hand), early/late/re-anchor/pause behaviour, host clock, four paced retraces take at least four field periods |
 | `gfx_input_tests` | key table against the SDK button constants, sticks, triggers, XInput values, focus rules |
+| `gfx_renderer_tests` | hand-built IR scenes through `Renderer` and the XFB copy: quad placement and orientation, blending (src alpha), depth test/write with the viewport depth range and depth peeks, a texture in four quadrants with nearest sampling and `TexCoordScale`, the copy filter on an edge (taps worked out by hand), the five fog curves, and loud reporting of unsupported states |
 | `gfx_tev_tests` | key identity and hashing; every unsupported feature is rejected with its reason; offscreen draws of hand-computed combiner results (pass-through, konst modulate, bias/scale/clamp, subtract with alpha scale, register chaining, alpha compare with the AND, OR, XOR and XNOR logics, texture with swap table); cache hits and cached rejection |
 
 The draw tests' expected pixels are worked out from the combiner equation in the test source, not produced by the generator.

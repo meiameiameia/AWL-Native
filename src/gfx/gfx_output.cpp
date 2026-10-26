@@ -73,11 +73,11 @@ bool VideoOutput::presentFrame(const FrameDesc& frame) {
     Image img;
     if (!source_->produce(frame, img, error_)) return false;
     if (window_ && !window_->present(img, error_)) return false;
-    if (captured_ < opts_.captureFrames) {
+    if (captured_ < opts_.captureFrames && presented_ >= opts_.captureFrom) {
         Image readback;
         if (!renderOffscreen(img, readback, error_)) return false;
         char name[64];
-        std::snprintf(name, sizeof name, "frame_%04llu.bmp", static_cast<unsigned long long>(captured_));
+        std::snprintf(name, sizeof name, "frame_%04llu.bmp", static_cast<unsigned long long>(presented_));
         if (!writeBmp((std::filesystem::path(opts_.captureDir) / name).string(), readback, error_)) return false;
         ++captured_;
     }

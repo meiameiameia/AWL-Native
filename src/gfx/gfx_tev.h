@@ -44,10 +44,11 @@ struct PixelShaderKey {
     uint8_t numStages = 1;
     Stage stages[16];
     SwapTable swaps[4];
-    uint8_t projectiveMask = 0;   // bit n: coordinate set n carries q and is divided per pixel
+    uint8_t projectiveMask = 0;   // bit n: coordinate set n carries q and is divided per pixel (the IR always does: 0xFF)
     // alpha compare: comparison codes GX_NEVER..GX_ALWAYS = 0..7, logic AND/OR/XOR/XNOR = 0..3
     uint8_t alphaComp0 = 7, alphaComp1 = 7, alphaLogic = 0;
-    uint8_t fogType = 0;          // 0 = none; any other value is rejected for now
+    uint8_t fogType = 0;          // 0 = none, else GX_FOG_LIN 2, EXP 4, EXP2 5, REVEXP 6, REVEXP2 7 (perspective projections only)
+    uint8_t fogOrtho = 0;         // orthographic fog is rejected (parameters unverified)
     uint8_t efbFormat = 0;        // 0 = RGB8_Z24; others are rejected for now (precision rules: design note section 7)
     uint8_t reserved = 0;          // must be 0
 };
@@ -71,13 +72,15 @@ struct TevConstants {
     float kcolor[4][4];   // K0-K3, RGBA in 0..1
     float tevreg[4][4];   // PREV, REG0, REG1, REG2 initial values
     float alphaRef[4];    // x = ref0, y = ref1 (0..255), zw unused
+    float stageScale[16][4];   // xy: texel size of the stage's coordinate set divided by its map size (TexCoordScale / texture size; 1,1 normally)
+    float fogParam[4];    // a, b, c of GX_SetFog (see the generator)
+    float fogColor[4];    // RGB in 0..1
 };
-static_assert(sizeof(TevConstants) == 144, "must match the cbuffer in the generated HLSL");
+static_assert(sizeof(TevConstants) == 144 + 256 + 32, "must match the cbuffer in the generated HLSL");
 
-// Vertex shader for post-transform vertices (clip-space position, two colours, eight 3-component coordinate sets)
-// with the GX depth-range mapping. Constant buffer b0: depthRange.x = near, .y = far (0..1).
+// Vertex shader for post-transform vertices (clip-space position, two colours, eight 3-component coordinate sets).
+// GX clip z in [-w, 0] becomes D3D z in [0, w] (z + w); the viewport depth range [near, far] is set on the D3D viewport.
 const char* vertexShaderHlsl();
-struct VertexConstants { float depthRange[4]; };
 struct Vertex {
     float pos[4];
     float col0[4], col1[4];

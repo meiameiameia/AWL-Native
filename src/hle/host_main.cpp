@@ -2,7 +2,7 @@
 // runs the recompiled entry point and reports where it stops. Deterministic: time is derived from retired instructions.
 //   awl-host --dol rom/main.dol [--disc disc] [--trace build/boot-trace.log] [--retraces N] [--limit N] [--pad neutral|xinput]
 //            [--calls DEPTH] [--dump-boot FILE] [--dump-mem FILE] [--realtime]
-//            [--window] [--realtime-pace] [--capture-frames N DIR] [--gfx-warp]
+//            [--window] [--realtime-pace] [--capture-frames N DIR [--capture-from F]] [--gfx-warp]
 // --calls records the calls of the functions in capture_parse.h (to DEPTH) as "call" trace lines, for awl-capture-compare;
 // --dump-boot writes MEM1 as the game program starts, --dump-mem writes MEM1 when the run ends (use --limit to stop at an instruction).
 // P2 video (src/gfx): --window opens the game window and runs until it is closed (Esc, close button, Alt+F4) unless --retraces or --limit
@@ -18,12 +18,15 @@
 
 #include "boot.h"
 #include "capture_parse.h"
+#include "dev_efb.h"
 #include "dev_vi.h"
 #include "devices.h"
 #include "image.h"
 #include "pad_source.h"
 #ifdef AWL_HAVE_GFX
 #include "gfx/gfx_output.h"
+#include "gfx/gfx_renderer.h"
+#include "gx/gx_record.h"
 #endif
 
 using namespace awl;
@@ -31,6 +34,26 @@ using namespace awl::hle;
 using namespace awl::rt;
 
 namespace {
+
+#ifdef AWL_HAVE_GFX
+// EFB peeks and pokes of the CPU, answered from the renderer's framebuffer. Depth peeks read the GPU depth buffer (24 bits);
+// colour peeks and pokes are not modelled yet and stop loudly like the default provider.
+class RendererEfb : public EfbAccess {
+public:
+    explicit RendererEfb(gfx::Renderer& r) : r_(r) {}
+    uint32_t peek(Ctx& c, EfbKind kind, uint32_t x, uint32_t y) override {
+        if (kind != EfbKind::Depth) stopHw(c, kEfbWindowBase, "EFB colour peek is not modelled yet");
+        uint32_t z = 0;
+        std::string err;
+        if (!r_.peekDepth(x, y, z, err)) { msg_ = "EFB depth peek: " + err; stopHw(c, kEfbWindowBase, msg_.c_str()); }
+        return z;
+    }
+    void poke(Ctx& c, EfbKind, uint32_t, uint32_t, uint32_t) override { stopHw(c, kEfbWindowBase, "EFB poke is not modelled yet"); }
+private:
+    gfx::Renderer& r_;
+    std::string msg_;
+};
+#endif
 
 const char* kindName(StopKind k) {
     switch (k) {
@@ -88,7 +111,7 @@ int main(int argc, char** argv) {
     uint32_t callDepth = 16;            // --calls: deepest call level recorded for the capture comparison (0 = off)
     std::string dumpBoot, dumpMem;
     bool optWindow = false, optPace = false, optWarp = false, retracesGiven = false, limitGiven = false;
-    uint32_t captureFrames = 0;
+    uint32_t captureFrames = 0, captureFrom = 0;
     std::string captureDir;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -102,6 +125,7 @@ int main(int argc, char** argv) {
         else if (a == "--window") optWindow = true;
         else if (a == "--realtime-pace") optPace = true;
         else if (a == "--gfx-warp") optWarp = true;
+        else if (a == "--capture-from" && i + 1 < argc) captureFrom = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0));
         else if (a == "--capture-frames" && i + 2 < argc) { captureFrames = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0)); captureDir = argv[++i]; }
         else if (a == "--realtime") cfg.rtcSeconds = hostRtcSeconds();     // clock from the host: not deterministic
         else if (a == "--calls" && i + 1 < argc) callDepth = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0));
@@ -148,11 +172,15 @@ int main(int argc, char** argv) {
 
 #ifdef AWL_HAVE_GFX
     std::unique_ptr<gfx::VideoOutput> video;
+    std::unique_ptr<gfx::Renderer> renderer;
+    std::unique_ptr<gfx::RendererSource> rendererSource;
+    std::unique_ptr<RendererEfb> rendererEfb;
     if (useVideo) {
         gfx::OutputOptions go;
         go.window = optWindow;
         go.pace = optPace;
         go.captureFrames = captureFrames;
+        go.captureFrom = captureFrom;
         go.captureDir = captureDir;
         go.forceWarp = optWarp;
         video = std::make_unique<gfx::VideoOutput>();
@@ -164,6 +192,15 @@ int main(int argc, char** argv) {
                     captureFrames ? " with frame capture" : "", video->adapterName().empty() ? "(none needed)" : video->adapterName().c_str(),
                     video->usingWarp() ? " (WARP)" : "");
         gfx::VideoOutput* v = video.get();
+        if (v->haveDevice()) {   // window or capture: the DX11 renderer draws the GX core's commands
+            renderer = std::make_unique<gfx::Renderer>();
+            if (!renderer->init(v->device(), err)) { std::fprintf(stderr, "renderer: %s\n", err.c_str()); return 1; }
+            rendererSource = std::make_unique<gfx::RendererSource>(*renderer);
+            rendererEfb = std::make_unique<RendererEfb>(*renderer);
+            v->setSource(rendererSource.get());
+            gx::backendHub().add(renderer.get());
+            setEfbAccess(rendererEfb.get());
+        }
         if (v->input()) {   // window mode: keyboard and the controller, only while the window has focus
             setPadProvider(
                 [](void* user) {
@@ -224,6 +261,7 @@ int main(int argc, char** argv) {
         std::printf("\nentry function returned after %llu instructions\n", static_cast<unsigned long long>(machine.icount));
     }
 #ifdef AWL_HAVE_GFX
+    if (renderer) renderer->printSummary();
     if (video) std::printf("video: %llu frames presented, %llu captured, %llu pacing re-anchors\n", static_cast<unsigned long long>(video->presented()),
                            static_cast<unsigned long long>(video->captured()), static_cast<unsigned long long>(video->reanchors()));
 #endif

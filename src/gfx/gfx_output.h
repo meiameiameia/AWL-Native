@@ -41,7 +41,8 @@ public:
 struct OutputOptions {
     bool window = false;            // open the game window and present into it
     bool pace = false;              // real-time pacing of retraces (implied by window)
-    uint32_t captureFrames = 0;     // write BMPs of the first N presented frames
+    uint32_t captureFrames = 0;     // write BMPs of N presented frames, starting at presented frame captureFrom (names carry the presented index)
+    uint32_t captureFrom = 0;
     std::string captureDir;         // folder for the captures (under build/)
     bool forceWarp = false;         // software device for byte-reproducible captures on any machine
     WindowOptions windowOptions;
@@ -66,6 +67,8 @@ public:
     uint64_t reanchors() const { return pacer_.reanchors(); }
     const std::string& error() const { return error_; }
     bool usingWarp() const { return device_.isWarp(); }
+    Device& device() { return device_; }
+    bool haveDevice() const { return haveDevice_; }
     const std::string& adapterName() const { return device_.adapterName(); }
 
     // One frame through the device path without the window: render `img` 1:1 into an offscreen target and read it back.

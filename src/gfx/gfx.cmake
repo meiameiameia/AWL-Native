@@ -21,12 +21,16 @@ set(AWL_GFX_SOURCES
     src/gfx/gfx_input.cpp
     src/gfx/gfx_output.cpp
     src/gfx/gfx_tev.cpp
-    src/gfx/gfx_shader_cache.cpp)
+    src/gfx/gfx_shader_cache.cpp
+    src/gfx/gfx_renderer.cpp)
 list(TRANSFORM AWL_GFX_SOURCES PREPEND ${CMAKE_SOURCE_DIR}/)
 add_library(awl_gfx STATIC ${AWL_GFX_SOURCES})
 target_include_directories(awl_gfx PUBLIC ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
 target_compile_definitions(awl_gfx PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
 target_link_libraries(awl_gfx PUBLIC awl_pad_input d3d11 dxgi d3dcompiler winmm)
+if(TARGET awl_gx)   # the renderer is a gx::Backend and reads the IR (src/gx/gx_ir.h)
+    target_link_libraries(awl_gfx PUBLIC awl_gx)
+endif()
 if(MSVC)
     target_compile_options(awl_gfx PRIVATE /W4)
 else()
@@ -34,7 +38,7 @@ else()
 endif()
 
 # Tests: all headless (offscreen device, no window). tests/gfx_*.cpp, one executable each.
-foreach(t gfx_device_tests gfx_pacing_tests gfx_input_tests gfx_tev_tests)
+foreach(t gfx_device_tests gfx_pacing_tests gfx_input_tests gfx_tev_tests gfx_renderer_tests)
     add_executable(${t} ${CMAKE_SOURCE_DIR}/tests/${t}.cpp)
     target_link_libraries(${t} PRIVATE awl_gfx)
     target_compile_definitions(${t} PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
