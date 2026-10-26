@@ -216,6 +216,51 @@ void RecordingBackend::sync(SyncKind kind, uint16_t token) {
     if (f_) std::fprintf(f_, "sync %s %u\n", kind == SyncKind::DrawDone ? "done" : kind == SyncKind::Token ? "token" : "token-int", token);
 }
 
+FrameLogBackend::FrameLogBackend(const std::string& path) {
+    std::error_code ec;
+    const std::filesystem::path p(path);
+    if (p.has_parent_path()) std::filesystem::create_directories(p.parent_path(), ec);
+    f_ = std::fopen(path.c_str(), "w");
+    if (f_) std::fputs("retrace draws vertices inView% meanLitRGB(color0 draws) copies xfbCopies\n", f_);
+}
+FrameLogBackend::~FrameLogBackend() {
+    flush();
+    if (f_) std::fclose(f_);
+}
+void FrameLogBackend::draw(const DrawCommand& d) {
+    ++draws_;
+    vertices_ += d.vertexCount;
+    for (uint32_t i = 0; i < d.vertexCount; ++i) {
+        const float* c = d.vertices[i].pos;
+        if (c[3] > 0 && c[2] <= 0 && c[2] >= -c[3] && c[0] >= -c[3] && c[0] <= c[3] && c[1] >= -c[3] && c[1] <= c[3]) ++inView_;
+    }
+    if (d.state->numColorChannels && d.state->tev.stages[0].ras == RasColor::Color0A0) {
+        for (uint32_t i = 0; i < d.vertexCount; ++i)
+            for (int k = 0; k < 3; ++k) litSum_[k] += d.vertices[i].color[0][k];
+        litVertices_ += d.vertexCount;
+    }
+}
+void FrameLogBackend::efbCopy(const EfbCopyCommand& c) {
+    ++copies_;
+    if (c.target == CopyTarget::Xfb) ++xfbCopies_;
+}
+void FrameLogBackend::flush() {
+    if (f_ && open_ && (draws_ || copies_)) {
+        const double n = litVertices_ ? double(litVertices_) : 1.0;
+        std::fprintf(f_, "%u %llu %llu %.1f %.0f,%.0f,%.0f %llu %llu\n", retrace_, static_cast<unsigned long long>(draws_), static_cast<unsigned long long>(vertices_),
+                     vertices_ ? 100.0 * double(inView_) / double(vertices_) : 0.0, litSum_[0] / n, litSum_[1] / n, litSum_[2] / n, static_cast<unsigned long long>(copies_),
+                     static_cast<unsigned long long>(xfbCopies_));
+        std::fflush(f_);
+    }
+    draws_ = vertices_ = inView_ = litVertices_ = copies_ = xfbCopies_ = 0;
+    litSum_[0] = litSum_[1] = litSum_[2] = 0;
+}
+void FrameLogBackend::frameBoundary(uint32_t retrace) {
+    flush();
+    retrace_ = retrace;
+    open_ = true;
+}
+
 void BackendHub::remove(Backend* b) { list_.erase(std::remove(list_.begin(), list_.end(), b), list_.end()); }
 
 BackendHub& backendHub() {

@@ -110,6 +110,7 @@ public:
     }
     ~GxFeed() override {
         if (rec_) gx::backendHub().remove(rec_.get());
+        if (frameLog_) gx::backendHub().remove(frameLog_.get());
         if (std::getenv("AWL_GX_STATS")) {
             const gx::CoreStats& s = core_.stats();
             const double frames = p_.counters.retraces ? double(p_.counters.retraces) : 1.0;
@@ -126,6 +127,7 @@ public:
 
     void feed(Ctx& c, const uint8_t* data, size_t n) {
         const uint32_t retrace = static_cast<uint32_t>(p_.counters.retraces);
+        if (memAt_ && retrace >= memAt_ && !core_.midCommand()) dumpMemory();
         cap_.begin(retrace, !core_.midCommand());
         core_.setRetrace(retrace);
         try {
@@ -142,7 +144,19 @@ public:
     void reset() {}
 
 private:
+    // AWL_GX_MEM_AT=<retrace> AWL_GX_MEM_FILE=<file>: write MEM1 as it is when that retrace first sends commands (for awl-gx-bench).
+    void dumpMemory() {
+        const char* path = std::getenv("AWL_GX_MEM_FILE");
+        const uint8_t* base = p_.mem().ptr(0x80000000u, 0x01800000u);
+        memAt_ = 0;
+        if (!path || !base) return;
+        if (FILE* f = std::fopen(path, "wb")) {
+            std::fwrite(base, 1, 0x01800000u, f);
+            std::fclose(f);
+        }
+    }
     void parseOptions() {
+        if (const char* m = std::getenv("AWL_GX_MEM_AT")) memAt_ = static_cast<uint32_t>(std::strtoul(m, nullptr, 0));
         uint32_t count = 0, from = 0;
         std::string dir = std::getenv("AWL_GX_DUMP_DIR") ? std::getenv("AWL_GX_DUMP_DIR") : "build/gxdump";
         for (int i = 1; i + 1 < __argc; ++i) {
@@ -150,6 +164,10 @@ private:
             if (a == "--gx-dump") count = static_cast<uint32_t>(std::strtoul(__argv[i + 1], nullptr, 0));
             else if (a == "--gx-dump-from") from = static_cast<uint32_t>(std::strtoul(__argv[i + 1], nullptr, 0));
             else if (a == "--gx-dump-dir") dir = __argv[i + 1];
+        }
+        if (const char* fl = std::getenv("AWL_GX_FRAMELOG")) {
+            frameLog_ = std::make_unique<gx::FrameLogBackend>(fl);
+            gx::backendHub().add(frameLog_.get());
         }
         if (count) {
             rec_ = std::make_unique<gx::RecordingBackend>(dir, from, count);
@@ -161,7 +179,9 @@ private:
     PlatformHost host_;
     gx::Core core_;
     Capture cap_;
+    uint32_t memAt_ = 0;
     std::unique_ptr<gx::RecordingBackend> rec_;
+    std::unique_ptr<gx::FrameLogBackend> frameLog_;
 };
 
 // ---- Shared GX state -------------------------------------------------------------------------------------------

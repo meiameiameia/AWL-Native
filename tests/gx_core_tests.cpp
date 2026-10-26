@@ -499,6 +499,82 @@ void testBatchPathEqualsScalar() {
     check(!batch.empty() && !batch.back().v.empty() && std::isfinite(batch.back().v[0].pos[0]) && batch.back().v[0].pos[3] > 0.0f, "perspective w = -z is positive for points in front of the camera");
 }
 
+// A perspective object as the title scene draws it: indexed s16 positions (shift 14), a rotation + translation model-view matrix,
+// the game's projection shape (near 0.3, far 1024), and a light behind the camera whose diffuse term is negative for an upward
+// normal, so only the ambient term remains. Expected values are computed here in double precision from the formulas (YAGCD XF
+// projection, libogc lighting API), not from the implementation.
+void testPerspectiveObjectAndDarkLight() {
+    Rig r;
+    Mem& m = r.mem;
+    // array 0 (pos): three vertices as s16 / 2^14: (-0.75, 0.25, -0.5), (0.5, 0.25, -0.25), (0, 0.5, 0.5)
+    const int16_t pos[3][3] = {{-12288, 4096, -8192}, {8192, 4096, -4096}, {0, 8192, 8192}};
+    for (int v = 0; v < 3; ++v)
+        for (int c = 0; c < 3; ++c) m.put16(0x1000 + 6 * v + 2 * c, uint16_t(pos[v][c]));
+    // normal array: the same unit normal for all (indexed, f32): (0.28, 0.93, -0.24) normalised
+    double n[3] = {0.28, 0.93, -0.24};
+    const double nl = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+    for (double& x : n) x /= nl;
+    for (int c = 0; c < 3; ++c) m.putf(0x2000 + 4 * c, float(n[c]));
+    // color array: RGBA4444 0x8880 (r=g=b=8, a=0), one entry
+    m.put16(0x3000, 0x8880);
+    Stream s;
+    // model-view: rotation by 25 degrees about the y axis and by 10 degrees about x, translation (-20, -11, -93)
+    const double ay = 25.0 * 3.14159265358979 / 180.0, ax = 10.0 * 3.14159265358979 / 180.0;
+    const double cy = std::cos(ay), sy = std::sin(ay), cx = std::cos(ax), sx = std::sin(ax);
+    const double R[3][3] = {{cy, 0, sy}, {sx * sy, cx, -sx * cy}, {-cx * sy, sx, cx * cy}};
+    const double T[3] = {-20.0, -11.0, -93.0};
+    std::vector<float> mv;
+    for (int i = 0; i < 3; ++i) { for (int j = 0; j < 3; ++j) mv.push_back(float(R[i][j])); mv.push_back(float(T[i])); }
+    s.xff(0x0000, mv);
+    std::vector<float> nm;
+    for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) nm.push_back(float(R[i][j]));
+    s.xff(0x0400, nm);
+    // projection: x' = A x + B z, y' = C y + D z, z' = E z + F, w' = -z (near 0.3, far 1024: E = -n/(f-n), F = -f n/(f-n))
+    const double A = 2.78, C = 3.7, E = -0.3 / (1024.0 - 0.3), F = -1024.0 * 0.3 / (1024.0 - 0.3);
+    s.xff(0x1020, {float(A), 0.0f, float(C), 0.0f, float(E), float(F)});
+    s.xf(0x1026, {0});
+    s.xf(0x1018, {0}).xf(0x1019, {0});
+    // lighting channel 0: material from the vertex color, ambient register (76, 82, 87), light 0 at the title's position, clamped diffuse, spot attenuation flag
+    s.xf(0x1009, {1}).xf(0x100A, {0x4C525700u});
+    s.xf(0x100E, {(1u << 0) | (1u << 1) | (1u << 2) | (2u << 7) | (1u << 9) | (1u << 10)}).xf(0x1010, {1});
+    std::vector<uint32_t> light(16, 0);
+    light[3] = 0x6E7DFFFFu;
+    const float lp[3] = {1715.85f, -1920.4f, 9662.79f}, la[3] = {1, 0, 0}, lk[3] = {1, 0, 0};
+    for (int i = 0; i < 3; ++i) { std::memcpy(&light[10 + i], &lp[i], 4); std::memcpy(&light[4 + i], &la[i], 4); std::memcpy(&light[7 + i], &lk[i], 4); }
+    s.xf(0x0600, light);
+    s.xf(0x103F, {0});
+    s.bp(0x00, 1u << 4);
+    // vertex: pos idx8 (s16 xyz, shift 14), normal idx8 (f32), color0 idx8 (RGBA4444)
+    s.cp(0x50, (2u << 9) | (2u << 11) | (2u << 13)).cp(0x60, 0);
+    s.cp(0x70, 1u | (3u << 1) | (14u << 4) | (4u << 10) | (3u << 14) | (1u << 13));
+    s.cp(0xA0, 0x1000).cp(0xB0, 6).cp(0xA1, 0x2000).cp(0xB1, 12).cp(0xA2, 0x3000).cp(0xB2, 2);
+    s.drawHdr(0x90, 3);
+    for (int i = 0; i < 3; ++i) s.u8(i).u8(0).u8(0);
+    r.feed(s);
+    if (r.rec.draws.size() != 1) { check(false, "perspective object: one draw"); return; }
+    const auto& v = r.rec.draws[0].v;
+    check(r.core.stats().batchedDraws == 1, "the indexed draw runs on the 4-wide path");
+    for (int i = 0; i < 3; ++i) {
+        double p[3];
+        for (int c = 0; c < 3; ++c) p[c] = pos[i][c] / 16384.0;
+        double vp[3];
+        for (int k = 0; k < 3; ++k) vp[k] = float(R[k][0]) * p[0] + float(R[k][1]) * p[1] + float(R[k][2]) * p[2] + float(T[k]);
+        const double ex = float(A) * vp[0], ey = float(C) * vp[1], ez = float(E) * vp[2] + float(F), ew = -vp[2];
+        check(std::fabs(v[i].pos[0] - ex) < 1e-3 * std::fabs(ex) + 1e-4 && std::fabs(v[i].pos[1] - ey) < 1e-3 * std::fabs(ey) + 1e-4 && std::fabs(v[i].pos[2] - ez) < 1e-5 && std::fabs(v[i].pos[3] - ew) < 1e-4,
+              "perspective clip position (x', y', z' = E z + F, w' = -z) of an indexed s16 vertex");
+        check(v[i].pos[3] > 80.0f && v[i].pos[3] < 105.0f && std::fabs(v[i].pos[0] / v[i].pos[3]) < 1.0f && std::fabs(v[i].pos[1] / v[i].pos[3]) < 1.0f && v[i].pos[2] / v[i].pos[3] < 0.0f && v[i].pos[2] / v[i].pos[3] > -1.0f,
+              "the object lies inside the clip volume (-w <= x,y <= w, -w <= z <= 0)");
+        // lighting: view-space normal N = R n, direction to the light L = normalize(lightpos - vp); N.L < 0 -> clamped to 0 -> ambient only
+        double nv[3], L[3], len = 0, dot = 0;
+        for (int k = 0; k < 3; ++k) nv[k] = R[k][0] * n[0] + R[k][1] * n[1] + R[k][2] * n[2];
+        for (int k = 0; k < 3; ++k) { L[k] = double(lp[k]) - vp[k]; len += L[k] * L[k]; }
+        len = std::sqrt(len);
+        for (int k = 0; k < 3; ++k) dot += nv[k] * L[k] / len;
+        check(dot < 0.0, "the title's light is behind an upward surface: N.L < 0 (hand calculation)");
+        // colors: material 0x88 from the vertex, lacc = ambient only: (mat * (l + (l >> 7))) >> 8 = 40, 43, 46; alpha channel from the vertex = 0
+        check(v[i].color[0][0] == 40 && v[i].color[0][1] == 43 && v[i].color[0][2] == 46 && v[i].color[0][3] == 0, "ambient-only lit color: 0x88 * (76, 82, 87) / 255 = (40, 43, 46), alpha 0");
+    }
+}
 void testStreamHandling() {
     Rig r;
     // Commands split over feed() calls
@@ -618,6 +694,7 @@ int main() {
     testTextureFormats();
     testEfbCopies();
     testBatchPathEqualsScalar();
+    testPerspectiveObjectAndDarkLight();
     testStreamHandling();
     testFailures();
     testRecorderText();
