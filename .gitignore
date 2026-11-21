@@ -22,3 +22,8 @@ docs/research/functions.csv
 *.rel
 *.iso
 *.rvz
+
+# Frame captures and texture dumps are derived from game data: never tracked, wherever they land
+*.bmp
+*.png
+*.raw
