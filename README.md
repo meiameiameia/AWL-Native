@@ -4,7 +4,7 @@
 
 The goal is to play the game on a modern PC without an emulator in the loop: native performance, a clean installer and settings, opt-in enhancements such as higher resolution and widescreen, and mod support. By default it should look and behave exactly like the original. The target is the North American GameCube release (`GYWEE9`). This is an unofficial fan project. You need your own copy of the game: no game code or data is included here, now or later.
 
-> **Status: pre-playable, early development.** The whole game program is recompiled to native code and boots into its main loop, verified against the original. Nothing is drawn yet: graphics are the current phase.
+> **Status: early development, not yet playable.** The whole game program is recompiled to native code and runs in a native window: the logos and the title screen draw at full speed. Starting a new game now plays the opening scenes up to the moment you first control the hero. There is no saving and no sound yet.
 
 ## How it works
 
@@ -20,17 +20,17 @@ The recompiled code is generated on your machine from your own disc. It is never
 | --- | --- | --- |
 | P0 | Prove that recompilation works for this game | ✅ Done |
 | P1 | The recompiled game boots into its main loop | ✅ Done, checked against the original |
-| P2 | Graphics: logos, title screen and menus in a game window | 🔧 In progress |
-| P3 | A playable farm: input, saves, gameplay | Planned |
+| P2 | Graphics: logos, title screen and menus in a game window | ✅ Done |
+| P3 | A playable farm: input, saves, gameplay | 🔧 In progress: New Game reaches the farm; no saving yet |
 | P4 | Music and sound | Planned |
 | P5 | Installer, first-run setup from your disc, settings, mod loading | Planned |
 | P6 | Enhancements: resolution, widescreen, texture packs, code mods | Planned |
 
-Details, decisions and the list of current placeholders are in the [roadmap](docs/roadmap.md).
+This table is updated when a phase is finished.
 
 ## Building (developers)
 
-There is no playable build yet. These steps are for following development.
+There is no playable release yet. These steps are for following development.
 
 Requirements: Windows, Visual Studio 2022 (MSVC), CMake, the Windows SDK, and your own disc image of the NTSC-U game.
 
@@ -51,15 +51,15 @@ build\Release\awl-recomp.exe gen --full --dol rom\main.dol --rel-dir disc\files 
 cmake -S . -B build
 cmake --build build --config Release --target awl-host
 
-# 4. Boot it (console only for now: it reports when the game's main loop is reached)
-build\Release\awl-host.exe --dol rom\main.dol --disc disc
+# 4. Run it in a window (Enter = Start, Space = A, Backspace = B, WASD = stick, F11 fullscreen, Esc quits)
+build\Release\awl-host.exe --dol rom\main.dol --window
 ```
 
 `rom/`, `disc/`, `build/` and everything generated from the game are ignored by Git.
 
 ## Earlier work
 
-The project began as a hand translation of individual game systems into C++. That code and its research notes (`src/world_map_*`, `docs/research/`) are kept as reference. The ground-rendering and asset-format work from that phase feeds into the current graphics phase.
+The project began as a hand translation of individual game systems into C++. That code (`src/world_map_*`) is kept as reference; the ground-rendering and asset-format work from that phase fed into the graphics phase.
 
 ## Credits and legal
 
