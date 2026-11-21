@@ -85,6 +85,18 @@ Owner window check (a few minutes; `build\Release\awl-host.exe --dol rom\main.do
 4. Arrow keys on the title screen do nothing (expected, original behaviour); W / S move the cursor. Optional: the same check in Dolphin.
 5. Esc closes it; the console ends with `EXIT: window closed`.
 
+### XFB copy vertical filter: seven coefficients, three rows (2026-11-21)
+
+Owner report: the picture "trembles" from the first logos, on 144 Hz and 60 Hz monitors, and screenshots show nothing. Captured logo frames are pixel-identical from frame to frame, so nothing moved: the effect was a vertical ghost. Cause: the copy pixel shader applied the seven `vfilter` coefficients ({8,8,10,12,10,8,8}/64 as the game sets them) to seven different EFB rows (y-3..y+3) with almost equal weights, smearing every line over seven. On the console the seven coefficients are the weights of the anti-aliasing subsamples of **three** rows (2 + 3 + 2): coefficients 0-1 weigh the row above, 2-4 the row itself, 5-6 the row below, so the game's set is 16/64, 32/64, 16/64, a light deflicker.
+
+Now: `out(y) = ((c0 + c1) * in(y-1) + (c2 + c3 + c4) * in(y) + (c5 + c6) * in(y+1)) / 64`, rows clamped to the copy's first and last readable row (as before), same constant-buffer layout (weights in `f0.xyz`). The CPU reference renderer (`src/gx/gx_soft.cpp`) applies no copy filter at all, so it has no mapping to fix. The filter stays on by default (`--no-copy-filter` for comparison).
+
+Evidence: the public GX API documentation of `GXSetCopyFilter(aa, sample_pattern, vf, vfilter[7])` (Dolphin SDK programming manual; libogc `GX_SetCopyFilter`): the seven `vfilter` values are 6-bit coefficients summing to 64 that blend the vertical neighbours of each copied line (a deflicker filter), enabled by `vf`. The assignment of the seven values to three lines follows the layout of the sample pattern (2 + 3 + 2 per pixel) and Dolphin's behaviour, read for understanding only (no code copied). Not verified against hardware captures; if something still looks off in the window, an owner Dolphin capture is the next evidence.
+
+Tests (`gfx_renderer_tests` sections 5 and 5a, expected values by hand): a white top half over black gives 255 up to row 222, 48/64 = 191 on row 223, 16/64 = 64 on row 224 and 0 from row 225; a single white row gives 16/64, 32/64, 16/64 (64, 128, 64) on the row above, the row and the row below.
+
+Measured after the fix (30 consecutive presented frames 1500-1529 of the title, each aligned to the next by a +-3 pixel shift search, mean absolute green-channel difference): filtered 3.2, unfiltered (`--no-copy-filter`) 4.7, no pair identical in either. The remaining frame-to-frame change is therefore real scene content (trees, houses, water), not filter noise; the filter lowers it. Unchanged: the `--calls 16` trace (byte-identical with and without the filter), `EXIT: main loop reached after 11135124000 instructions`, bench 126-133% of real time (run-to-run noise of this busy PC; the copy now does 3 texture reads instead of 7).
+
 ### Owner window test (done 2026-11-21, kept for the controls and report list; the speed remark below is from before the speed block)
 
 Goal: see the game's logos and title screen in a real window for the first time, and report how it behaves. **The game runs slower than real time for now** (roughly a fifth of the original speed, measured before this window existed); that is expected, the window says so, and fixing it is the next work block. Expect the logos and the title screen to take a while to appear and to move in slow motion.

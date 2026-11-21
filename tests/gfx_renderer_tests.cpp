@@ -1,6 +1,6 @@
 // Renderer tests on hand-built IR scenes (src/gx/gx_ir.h), offscreen, no window. Expected pixels are worked out by hand from the
 // GX equations: TEV out = (d + (1-c)*a + c*b + bias) * scale, blend src*sf + dst*df, GX depth = near + (z/w + 1) * (far - near),
-// and the XFB copy filter out(y) = sum over k of coef[k] * in(y + k - 3) / 64.
+// and the XFB copy filter out(y) = ((c0 + c1) * in(y - 1) + (c2 + c3 + c4) * in(y) + (c5 + c6) * in(y + 1)) / 64.
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -206,7 +206,8 @@ int main() {
         CHECK(near3(img, 500, 300, 255, 0, 0));      // s,t in [0, 0.5) -> only texel (0,0)
     }
 
-    // 5. The XFB copy's vertical filter {8,8,10,12,10,8,8}/64 on a white top half (rows 0..223) and black bottom half.
+    // 5. The XFB copy's vertical filter {8,8,10,12,10,8,8}/64 on a white top half (rows 0..223) and black bottom half. The seven
+    //    coefficients weigh three rows: above 8+8 = 16, itself 10+12+10 = 32, below 8+8 = 16 (of 64).
     {
         const uint8_t white[4] = {255, 255, 255, 255};
         gx::EfbCopyCommand c = xfbCopy(8, 0x8000, false);
@@ -218,14 +219,30 @@ int main() {
         r.efbCopy(xfbCopy(9, 0x9000, true));
         CHECK(r.xfbImage(0x9000, img, why));
         CHECK(near3(img, 10, 100, 255, 255, 255));                 // far from the edge: unchanged
-        CHECK(near3(img, 10, 220, 255, 255, 255));                 // taps 217..223 all white
-        CHECK(near3(img, 10, 221, 223, 223, 223, 1));              // taps 218..223 white = 56/64 * 255 = 223.1
-        CHECK(near3(img, 10, 222, 191, 191, 191, 1));              // 48/64 * 255 = 191.25
-        CHECK(near3(img, 10, 223, 151, 151, 151, 1));              // 38/64 * 255 = 151.4
-        CHECK(near3(img, 10, 224, 104, 104, 104, 1));              // 26/64 * 255 = 103.6
-        CHECK(near3(img, 10, 225, 64, 64, 64, 1));                 // 16/64 * 255 = 63.75
-        CHECK(near3(img, 10, 226, 32, 32, 32, 1));                 // tap 223 only (k = 0): 8/64 * 255 = 31.9
-        CHECK(near3(img, 10, 227, 0, 0, 0));                       // beyond the filter
+        CHECK(near3(img, 10, 222, 255, 255, 255));                 // rows 221..223 all white
+        CHECK(near3(img, 10, 223, 191, 191, 191, 1));              // row 224 below is black: 48/64 * 255 = 191.25
+        CHECK(near3(img, 10, 224, 64, 64, 64, 1));                 // only the row above is white: 16/64 * 255 = 63.75
+        CHECK(near3(img, 10, 225, 0, 0, 0));                       // the filter reaches one row only
+    }
+
+    // 5a. One white row (row 100) on black, same filter: 16/64, 32/64, 16/64 on rows 99, 100, 101 and nothing elsewhere.
+    {
+        const uint8_t white[4] = {255, 255, 255, 255};
+        gx::EfbCopyCommand c = xfbCopy(10, 0xB000, false);
+        c.clear.color = c.clear.alpha = c.clear.z = true; c.clear.rgba[3] = 255; c.clear.z24 = 0xFFFFFF;
+        r.efbCopy(c);
+        gx::PipelineState s = baseState();
+        // NDC y = 1 - 2 * row / 448: the quad covers rows 100..101 exactly.
+        const float top = 1.0f - 2.0f * 100.0f / 448.0f, bottom = 1.0f - 2.0f * 101.0f / 448.0f;
+        Quad q(-1, bottom, 1, top, -1.0f, white);
+        r.draw(q.cmd(s));
+        r.efbCopy(xfbCopy(11, 0xC000, true));
+        CHECK(r.xfbImage(0xC000, img, why));
+        CHECK(near3(img, 10, 98, 0, 0, 0));
+        CHECK(near3(img, 10, 99, 64, 64, 64, 1));                  // 16/64 * 255 = 63.75
+        CHECK(near3(img, 10, 100, 128, 128, 128, 1));              // 32/64 * 255 = 127.5
+        CHECK(near3(img, 10, 101, 64, 64, 64, 1));
+        CHECK(near3(img, 10, 102, 0, 0, 0));
     }
 
     // 5b. Fog on a white quad at depth 0.5 (z/w = -0.5), fog colour black. Parameters of GX_SetFog(near 1, far 3, start 1, end 3):

@@ -18,8 +18,8 @@ Texture2D efb : register(t0);
 cbuffer C : register(b0) {
     int4 src;      // x, y, w, h of the EFB rectangle
     int4 dst;      // w, h of the result, first and last EFB row the filter may read
-    float4 f0;     // vertical filter taps 0-3 (each already divided by 64)
-    float4 f1;     // taps 4-6, w = 1: 2x2 box average instead (half-scale texture copies)
+    float4 f0;     // vertical filter weights of the row above, the row itself, the row below (x, y, z; each already divided by 64)
+    float4 f1;     // w = 1: 2x2 box average instead (half-scale texture copies)
 };
 struct VOut { float4 pos : SV_Position; };
 VOut vs(uint id : SV_VertexID) {
@@ -37,12 +37,9 @@ float4 ps(VOut i) : SV_Target {
     } else {
         int sx = src.x + ((2 * p.x + 1) * src.z) / (2 * dst.x);
         int sy = src.y + ((2 * p.y + 1) * src.w) / (2 * dst.y);
-        float c[7] = { f0.x, f0.y, f0.z, f0.w, f1.x, f1.y, f1.z };
-        acc = float4(0, 0, 0, 0);
-        [unroll] for (int k = 0; k < 7; ++k) {
-            int y = clamp(sy + k - 3, dst.z, dst.w);
-            acc += c[k] * efb.Load(int3(sx, y, 0));
-        }
+        acc = f0.x * efb.Load(int3(sx, clamp(sy - 1, dst.z, dst.w), 0))
+            + f0.y * efb.Load(int3(sx, clamp(sy, dst.z, dst.w), 0))
+            + f0.z * efb.Load(int3(sx, clamp(sy + 1, dst.z, dst.w), 0));
     }
     return acc;
 }
@@ -906,17 +903,22 @@ void Renderer::efbCopy(const gx::EfbCopyCommand& cc) {
 
     // The filter: the vertical taps apply only when the copy is not scaled; a half-scale texture copy averages 2x2 texels.
     const bool box = cc.target == gx::CopyTarget::Texture && cc.halfScale;
-    float taps[7] = {0, 0, 0, 1, 0, 0, 0};
+    // The seven coefficients belong to three rows (the 2 + 3 + 2 anti-aliasing sample layout): 0-1 the row above, 2-4 the row itself,
+    // 5-6 the row below.
+    float taps[3] = {0, 1, 0};
     if (cc.target == gx::CopyTarget::Xfb && copyFilter_) {
-        int sum = 0;
-        for (int i = 0; i < 7; ++i) sum += cc.vfilter[i];
-        if (sum > 0) for (int i = 0; i < 7; ++i) taps[i] = cc.vfilter[i] / static_cast<float>(sum);
+        const int sum = cc.vfilter[0] + cc.vfilter[1] + cc.vfilter[2] + cc.vfilter[3] + cc.vfilter[4] + cc.vfilter[5] + cc.vfilter[6];
+        if (sum > 0) {
+            taps[0] = (cc.vfilter[0] + cc.vfilter[1]) / static_cast<float>(sum);
+            taps[1] = (cc.vfilter[2] + cc.vfilter[3] + cc.vfilter[4]) / static_cast<float>(sum);
+            taps[2] = (cc.vfilter[5] + cc.vfilter[6]) / static_cast<float>(sum);
+        }
     }
     struct { int32_t src[4]; int32_t dst[4]; float f0[4]; float f1[4]; } cb = {
         {static_cast<int32_t>(cc.srcX), static_cast<int32_t>(cc.srcY), static_cast<int32_t>(cc.srcWidth), static_cast<int32_t>(cc.srcHeight)},
         {static_cast<int32_t>(cc.destWidth), static_cast<int32_t>(cc.destHeight), cc.clampTop ? static_cast<int32_t>(cc.srcY) : 0,
          cc.clampBottom ? static_cast<int32_t>(cc.srcY + cc.srcHeight - 1) : static_cast<int32_t>(kEfbHeight - 1)},
-        {taps[0], taps[1], taps[2], taps[3]}, {taps[4], taps[5], taps[6], box ? 1.0f : 0.0f}};
+        {taps[0], taps[1], taps[2], 0.0f}, {0.0f, 0.0f, 0.0f, box ? 1.0f : 0.0f}};
     ID3D11DeviceContext* c = dev_->context();
     D3D11_MAPPED_SUBRESOURCE m;
     if (FAILED(c->Map(copyCb_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) { report("copy constant buffer upload failed"); return; }
