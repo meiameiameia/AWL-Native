@@ -2,6 +2,8 @@
 
 #include <windows.h>
 
+#include <cmath>
+
 namespace awl::gfx {
 
 int64_t RetracePacer::dueOffset(int64_t k) const {
@@ -34,22 +36,40 @@ bool SpeedMeter::onRetrace(int64_t now) {
     return true;
 }
 
-std::string windowTitle(const std::string& base, int speedPercent) {
-    std::string t = base + " - Esc quit, F11 fullscreen, F1 help text, arrows = D-pad, WASD = stick, Space = A, Backspace = B, Enter = Start";
-    if (speedPercent >= 0) t += " - speed " + std::to_string(speedPercent) + "% of real time";
+std::string windowTitle(const std::string& base, int speedPercent, bool paused) {
+    std::string t = paused ? "PAUSED - click this window to continue - " + base : base;
+    if (!paused && speedPercent >= 0) t += " - speed " + std::to_string(speedPercent) + "% of real time";
+    t += " - Esc quit, F11 fullscreen, F1 help text";
     return t;
 }
 
-std::vector<std::string> overlayLines(int speedPercent) {
+std::string displayLine(int hz) {
+    if (hz <= 0) return std::string();
+    const double ratio = hz / (60000.0 / 1001.0);
+    const std::string head = "DISPLAY " + std::to_string(hz) + " HZ: ";
+    if (ratio < 0.98) return head + "BELOW 59.94 HZ, THE GAME CANNOT RUN AT FULL SPEED";
+    const int whole = static_cast<int>(ratio + 0.03);
+    if (std::fabs(ratio - whole) <= 0.03) {
+        if (whole <= 1) return head + "EVERY GAME FRAME SHOWN FOR 1 REFRESH";
+        return head + "EVERY GAME FRAME SHOWN FOR " + std::to_string(whole) + " REFRESHES";
+    }
+    return head + "GAME FRAMES SHOWN FOR " + std::to_string(whole) + " OR " + std::to_string(whole + 1) + " REFRESHES";
+}
+
+std::vector<std::string> overlayLines(int speedPercent, int displayHz) {
     std::vector<std::string> l;
     if (speedPercent < 0) l.push_back("SPEED: MEASURING...");
     else if (speedPercent < 95) l.push_back("SPEED " + std::to_string(speedPercent) + "% OF REAL TIME - SLOWER THAN THE ORIGINAL (EXPECTED FOR NOW)");
     else l.push_back("SPEED " + std::to_string(speedPercent) + "% OF REAL TIME");
+    const std::string d = displayLine(displayHz);
+    if (!d.empty()) l.push_back(d);
     l.push_back("ARROWS = D-PAD   WASD = STICK   SPACE = A   BACKSPACE = B   ENTER = START");
     l.push_back("X, TAB, Z, Q, E = X, Y, Z, L, R");
     l.push_back("F1 HIDE/SHOW THIS TEXT   F11 FULLSCREEN   ESC QUIT");
     return l;
 }
+
+std::vector<std::string> pausedLines() { return {"PAUSED", "CLICK THIS WINDOW TO CONTINUE"}; }
 
 int64_t hostClockNow() {
     LARGE_INTEGER t;

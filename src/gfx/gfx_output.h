@@ -52,6 +52,10 @@ struct OutputOptions {
     WindowOptions windowOptions;
 };
 
+// The picture shown while the game is paused: `last` dimmed to half brightness with "PAUSED" and "CLICK THIS WINDOW TO CONTINUE" panels
+// centred on it (a black 640 x 448 picture when there is no last picture yet).
+Image makePausedImage(const Image& last);
+
 enum class RetraceAction { Continue, Quit };
 
 class VideoOutput {
@@ -87,7 +91,10 @@ public:
 
 private:
     void waitUntil(int64_t deadline);
-    bool presentFrame(const FrameDesc& frame);
+    // Shows `img` in the window (or `shown`, the same picture with the help text, when given) and writes a capture if one is due.
+    bool presentImage(const Image& img, const Image* shown);
+    // The paused notice over the last picture (window mode).
+    bool presentPaused();
 
     OutputOptions opts_;
     Device device_;
@@ -105,6 +112,7 @@ private:
     bool f1Down_ = false;
     DiagnosticSource diagnostic_;
     FrameSource* source_ = &diagnostic_;
+    Image lastFrame_;            // the last picture shown in the window, for the paused screen
     uint64_t presented_ = 0, captured_ = 0;
     uint64_t retraces_ = 0;      // calls of onRetrace so far (guest retraces, 1-based)
     uint64_t benchStartRetrace_ = 0, benchLastRetrace_ = 0;

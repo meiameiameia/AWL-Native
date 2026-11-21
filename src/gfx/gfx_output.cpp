@@ -59,6 +59,7 @@ bool VideoOutput::init(const OutputOptions& opts, std::string& err) {
             input_.setFocus(f);
         };
         window_->setTitle(windowTitle(opts_.windowOptions.title, -1));
+        std::printf("awl-host: display refresh rate %d Hz\n", window_->refreshHz());
         input_.setFocus(window_->focused());
     }
     return true;
@@ -83,20 +84,8 @@ void VideoOutput::waitUntil(int64_t deadline) {
     }
 }
 
-bool VideoOutput::presentFrame(const FrameDesc& frame) {
-    Image img;
-    if (!source_->produce(frame, img, error_)) return false;
-    if (window_) {
-        bool ok;
-        if (overlay_) {   // the help text goes onto a copy: captures and the renderer's own image stay clean
-            Image shown = img;
-            drawTextPanel(shown, 4, 4, std::max<uint32_t>(1, shown.width / 640), overlayLines(speedPercent_));
-            ok = window_->present(shown, error_);
-        } else {
-            ok = window_->present(img, error_);
-        }
-        if (!ok) return false;
-    }
+bool VideoOutput::presentImage(const Image& img, const Image* shown) {
+    if (window_ && !window_->present(shown ? *shown : img, error_)) return false;
     if (captured_ < opts_.captureFrames && presented_ >= opts_.captureFrom && (presented_ - opts_.captureFrom) % std::max<uint32_t>(1, opts_.captureEvery) == 0) {
         Image readback;
         if (!renderOffscreen(img, readback, error_)) return false;
@@ -108,6 +97,34 @@ bool VideoOutput::presentFrame(const FrameDesc& frame) {
     ++presented_;
     source_->afterPresent();
     return true;
+}
+
+Image makePausedImage(const Image& last) {
+    // The last picture, dimmed, with a big notice in the middle: the paused window must say so on its own, also in fullscreen (no title bar).
+    Image p = last;
+    if (p.width == 0 || p.height == 0) { p.resize(640, 448); p.fill(0, 0, 0); }
+    for (uint32_t y = 0; y < p.height; ++y)
+        for (uint32_t x = 0; x < p.width; ++x) {
+            uint8_t* d = p.px(x, y);
+            d[0] = static_cast<uint8_t>(d[0] / 2); d[1] = static_cast<uint8_t>(d[1] / 2); d[2] = static_cast<uint8_t>(d[2] / 2);
+        }
+    const std::vector<std::string> lines = pausedLines();
+    const uint32_t k = std::max<uint32_t>(1, p.width / 640);
+    const uint32_t scales[2] = {6 * k, 2 * k};
+    const uint32_t totalH = 16 * (scales[0] + scales[1]);
+    uint32_t y = p.height > totalH ? (p.height - totalH) / 2 : 0;
+    for (size_t i = 0; i < lines.size() && i < 2; ++i) {
+        const uint32_t w = textWidth(lines[i], scales[i]) + 6 * scales[i];
+        drawTextPanel(p, p.width > w ? (p.width - w) / 2 : 0, y, scales[i], {lines[i]});
+        y += 16 * scales[i];
+    }
+    return p;
+}
+
+bool VideoOutput::presentPaused() {
+    const bool ok = window_->present(makePausedImage(lastFrame_), error_);
+    source_->afterPresent();   // the blit used the device context: the renderer must not trust the state it set last
+    return ok;
 }
 
 std::string VideoOutput::benchReport() const {
@@ -140,9 +157,17 @@ RetraceAction VideoOutput::onRetrace(const FrameDesc* frame) {
             // Focus loss pauses the game: the guest does not run, the pacer restarts on return (no catch-up burst), input is cleared.
             pacer_.pause();
             input_.clear();
-            window_->setTitle(opts_.windowOptions.title + " - paused: click this window to continue");
+            window_->setTitle(windowTitle(opts_.windowOptions.title, -1, true));
+            if (!presentPaused()) {   // the paused picture is shown once, and again whenever the window changes size or comes back from minimized
+                std::fprintf(stderr, "video output: %s\n", error_.c_str());
+                return RetraceAction::Quit;
+            }
             while ((!window_->focused() || window_->minimized()) && !window_->closeRequested()) {
                 window_->pump();
+                if (!window_->minimized() && window_->needsRedraw() && !presentPaused()) {
+                    std::fprintf(stderr, "video output: %s\n", error_.c_str());
+                    return RetraceAction::Quit;
+                }
                 Sleep(20);
             }
             if (window_->closeRequested()) return RetraceAction::Quit;
@@ -153,6 +178,19 @@ RetraceAction VideoOutput::onRetrace(const FrameDesc* frame) {
             window_->setTitle(windowTitle(opts_.windowOptions.title, -1));
         }
     }
+    // The picture is made before the pacer waits, so the wait absorbs the work and the present happens right at the due time.
+    Image img, shown;
+    const bool haveFrame = frame && (window_ || opts_.captureFrames);
+    if (haveFrame) {
+        if (!source_->produce(*frame, img, error_)) {
+            std::fprintf(stderr, "video output: %s\n", error_.c_str());
+            return RetraceAction::Quit;
+        }
+        if (window_ && overlay_) {   // the help text goes onto a copy: captures and the renderer's own image stay clean
+            shown = img;
+            drawTextPanel(shown, 4, 4, std::max<uint32_t>(1, shown.width / 640), overlayLines(speedPercent_, window_->refreshHz()));
+        }
+    }
     if (opts_.pace) {
         const int64_t due = pacer_.onRetrace(hostClockNow());
         if (due > hostClockNow()) waitUntil(due);
@@ -161,11 +199,12 @@ RetraceAction VideoOutput::onRetrace(const FrameDesc* frame) {
         speedPercent_ = speed_.percent();
         window_->setTitle(windowTitle(opts_.windowOptions.title, speedPercent_));
     }
-    if (frame && (window_ || opts_.captureFrames)) {
-        if (!presentFrame(*frame)) {
+    if (haveFrame) {
+        if (!presentImage(img, shown.width ? &shown : nullptr)) {
             std::fprintf(stderr, "video output: %s\n", error_.c_str());
             return RetraceAction::Quit;
         }
+        if (window_) lastFrame_ = std::move(img);
     } else if (frame) {
         ++presented_;
     }

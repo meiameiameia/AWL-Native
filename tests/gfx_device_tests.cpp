@@ -119,6 +119,35 @@ static void testDeviceAndOffscreen(bool forceWarp) {
     CHECK(closeTo(out2.px(0, 8), 200, 100, 50) && closeTo(out2.px(32, 32), 200, 100, 50) && closeTo(out2.px(63, 55), 200, 100, 50));
     CHECK(closeTo(out2.px(5, 60), 0, 0, 0) && closeTo(out2.px(63, 56), 0, 0, 0));
     CHECK(out2.px(32, 32)[3] == 255);
+
+    // Sharp-bilinear at an exact 2x: every destination pixel centre falls at 1/4 or 3/4 of a source pixel, which the filter maps to the
+    // source pixel's centre, so the result is the plain pixel repetition (hand-derived: sample position = texel centre).
+    const Image tinySrc = gradient(5, 4);
+    ImageTexture tex3;
+    CHECK(tex3.update(dev, tinySrc, err));
+    OffscreenTarget t3;
+    CHECK(t3.create(dev, 10, 8, err));
+    blit.blit(dev, t3.rtv(), 10, 8, tex3.srv(), tinySrc.width, tinySrc.height, Rect{0, 0, 10, 8}, BlitFilter::Sharp);
+    Image out3;
+    CHECK(t3.readback(dev, out3, err));
+    bool repeated = true;
+    for (uint32_t y = 0; y < 8; ++y)
+        for (uint32_t x = 0; x < 10; ++x)
+            for (int c = 0; c < 3; ++c)
+                if (std::abs(int(out3.px(x, y)[c]) - int(tinySrc.px(x / 2, y / 2)[c])) > 1) repeated = false;
+    CHECK(repeated);
+    // At a non-integer scale (5 -> 8 pixels wide) most destination pixels still equal a source pixel (flat footprint), unlike plain bilinear.
+    OffscreenTarget t4;
+    CHECK(t4.create(dev, 8, 4, err));
+    blit.blit(dev, t4.rtv(), 8, 4, tex3.srv(), tinySrc.width, tinySrc.height, Rect{0, 0, 8, 4}, BlitFilter::Sharp);
+    Image out4;
+    CHECK(t4.readback(dev, out4, err));
+    int pure = 0;
+    for (uint32_t x = 0; x < 8; ++x) {
+        for (uint32_t sx = 0; sx < 5; ++sx)
+            if (std::abs(int(out4.px(x, 1)[0]) - int(tinySrc.px(sx, 1)[0])) <= 1 && std::abs(int(out4.px(x, 1)[2]) - int(tinySrc.px(sx, 1)[2])) <= 1) { ++pure; break; }
+    }
+    CHECK(pure >= 4);   // 5 -> 8 is 1.6x: range = 0.5 - 0.5/1.6 = 0.1875 each side, so a flat run of 0.375 of a texel = 0.6 destination pixel; at least half are pure
 }
 
 static void testCapture() {

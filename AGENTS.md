@@ -34,7 +34,7 @@ build\Debug\awl-decomp.exe --scene-smoke
 - A finished code increment needs clean Debug and Release builds at `/W4` plus its relevant tests. Iterate with focused checks.
 - Run the executable from the root (it mounts `disc/` relative to it). A smoke passes only after ten presented frames; fallback geometry never satisfies acceptance.
 - `tools/extract_disc.ps1` is the only way to (re)extract the disc; it verifies Game ID and DOL hash.
-- `AWL_CAPTURE_FRAME` / `AWL_PREVIEW_GPL` are debug env vars; clear them afterwards.
+- `AWL_CAPTURE_FRAME` / `AWL_PREVIEW_GPL` / `AWL_PAD_SCRIPT` are debug env vars; clear them afterwards.
 - `build/` is regenerable and may be deleted by the owner's cleanup. Use git worktrees only for parallel work and remove them after merge.
 
 ## Read on demand

@@ -14,17 +14,27 @@ struct Rect {
 // the source aspect srcW:srcH (square pixels). Integer arithmetic with truncation, so the result is exact for the tests.
 Rect letterbox(uint32_t srcW, uint32_t srcH, uint32_t aspectNum, uint32_t aspectDen, uint32_t dstW, uint32_t dstH);
 
+// Point keeps a 1:1 blit bit exact (captures). Linear is plain bilinear. Sharp is "sharp bilinear" for upscaling to a non-integer
+// size: each source pixel is held flat across most of its footprint and blended only over about one destination pixel at the edge,
+// so the picture is crisp at any window size and never shimmers (below 1x it is plain bilinear). Window presentation only.
+enum class BlitFilter { Point, Linear, Sharp };
+
 class Blitter {
 public:
     bool init(Device& dev, std::string& err);
-    // Clears the target to opaque black and draws `src` into `dest` (target pixels). `linear` selects bilinear
-    // filtering; point sampling keeps a 1:1 blit bit exact.
+    // Clears the target to opaque black and draws `src` (srcW x srcH texels) into `dest` (target pixels) with the chosen filter.
     void blit(Device& dev, ID3D11RenderTargetView* target, uint32_t targetW, uint32_t targetH, ID3D11ShaderResourceView* src,
-              const Rect& dest, bool linear);
+              uint32_t srcW, uint32_t srcH, const Rect& dest, BlitFilter filter);
+    // Same without a source size: Linear or Point only.
+    void blit(Device& dev, ID3D11RenderTargetView* target, uint32_t targetW, uint32_t targetH, ID3D11ShaderResourceView* src,
+              const Rect& dest, bool linear) {
+        blit(dev, target, targetW, targetH, src, 0, 0, dest, linear ? BlitFilter::Linear : BlitFilter::Point);
+    }
 
 private:
     ComPtr<ID3D11VertexShader> vs_;
-    ComPtr<ID3D11PixelShader> ps_;
+    ComPtr<ID3D11PixelShader> ps_, psSharp_;
+    ComPtr<ID3D11Buffer> sharpParams_;
     ComPtr<ID3D11SamplerState> point_, linear_;
     ComPtr<ID3D11RasterizerState> raster_;
     ComPtr<ID3D11BlendState> blend_;

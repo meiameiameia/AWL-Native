@@ -36,13 +36,21 @@ bool GameWindow::create(Device& dev, const WindowOptions& opts, std::string& err
     if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) { err = "RegisterClassEx failed"; return false; }
 
     const DWORD style = WS_OVERLAPPEDWINDOW;
-    RECT r = {0, 0, static_cast<LONG>(opts.clientWidth), static_cast<LONG>(opts.clientHeight)};
+    uint32_t cw = opts.clientWidth, ch = opts.clientHeight;
+    if (opts.fitLarge) {   // 2x when the work area has room for the frame plus the window borders, otherwise 1x: an exact multiple either way
+        RECT work = {};
+        RECT big = {0, 0, static_cast<LONG>(cw * 2), static_cast<LONG>(ch * 2)};
+        AdjustWindowRect(&big, style, FALSE);
+        if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0) && big.right - big.left <= work.right - work.left && big.bottom - big.top <= work.bottom - work.top) { cw *= 2; ch *= 2; }
+    }
+    RECT r = {0, 0, static_cast<LONG>(cw), static_cast<LONG>(ch)};
     AdjustWindowRect(&r, style, FALSE);
     hwnd_ = CreateWindowExW(0, kClassName, widen(opts.title).c_str(), style, CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top,
                             nullptr, nullptr, inst, this);
     if (!hwnd_) { err = "CreateWindowEx failed"; return false; }
     if (!blitter_.init(dev, err) || !createBackBuffer(err)) { destroy(); return false; }
     ShowWindow(hwnd_, SW_SHOW);
+    updateRefreshRate();
     SetForegroundWindow(hwnd_);   // may be refused by Windows; the host then waits for a click (focus loss pauses the game)
     if (opts.fullscreen) toggleFullscreen();
     focused_ = GetForegroundWindow() == hwnd_;
@@ -72,6 +80,9 @@ bool GameWindow::createBackBuffer(std::string& err) {
     HRESULT hr = dev_->factory()->CreateSwapChainForHwnd(dev_->device(), hwnd_, &d, nullptr, nullptr, swap_.ReleaseAndGetAddressOf());
     if (FAILED(hr)) { err = "swap chain: " + hresultText(hr); return false; }
     dev_->factory()->MakeWindowAssociation(hwnd_, DXGI_MWA_NO_ALT_ENTER | DXGI_MWA_NO_WINDOW_CHANGES);
+    // One queued frame at most: with vsync a frame then reaches the screen at the next refresh instead of up to three refreshes later.
+    ComPtr<IDXGIDevice1> dxgi;
+    if (SUCCEEDED(dev_->device()->QueryInterface(IID_PPV_ARGS(dxgi.GetAddressOf())))) dxgi->SetMaximumFrameLatency(1);
     return resizeBackBuffer(err);
 }
 
@@ -119,6 +130,18 @@ void GameWindow::toggleFullscreen() {
         fullscreen_ = false;
     }
     needResize_ = true;
+    updateRefreshRate();
+}
+
+void GameWindow::updateRefreshRate() {
+    refreshHz_ = 0;
+    if (!hwnd_) return;
+    MONITORINFOEXW mi = {};
+    mi.cbSize = sizeof mi;
+    if (!GetMonitorInfoW(MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST), &mi)) return;
+    DEVMODEW dm = {};
+    dm.dmSize = sizeof dm;
+    if (EnumDisplaySettingsExW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm, 0) && dm.dmDisplayFrequency > 1) refreshHz_ = static_cast<int>(dm.dmDisplayFrequency);
 }
 
 void GameWindow::setTitle(const std::string& title) {
@@ -136,8 +159,8 @@ bool GameWindow::present(const Image& img, std::string& err) {
     if (!tex_.update(*dev_, img, err)) return false;
     const Rect dest = letterbox(img.width, img.height, opts_.aspectNum, opts_.aspectDen, bbW_, bbH_);
     const bool oneToOne = dest.w == static_cast<int32_t>(img.width) && dest.h == static_cast<int32_t>(img.height);
-    blitter_.blit(*dev_, rtv_.Get(), bbW_, bbH_, tex_.srv(), dest, !oneToOne);
-    const HRESULT hr = swap_->Present(0, 0);
+    blitter_.blit(*dev_, rtv_.Get(), bbW_, bbH_, tex_.srv(), img.width, img.height, dest, oneToOne ? BlitFilter::Point : BlitFilter::Sharp);
+    const HRESULT hr = swap_->Present(1, 0);   // vsync: the host's pacer decides when this is called, the display decides which refresh shows it
     if (FAILED(hr)) { err = "present: " + hresultText(hr); return false; }
     return true;
 }
@@ -172,6 +195,10 @@ LRESULT GameWindow::handle(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             minimized_ = wp == SIZE_MINIMIZED;
             if (!minimized_) needResize_ = true;
             return 0;
+        case WM_EXITSIZEMOVE:   // the window may have moved to another monitor
+        case WM_DISPLAYCHANGE:
+            updateRefreshRate();
+            break;
         case WM_ERASEBKGND:
             return 1;
         case WM_SETCURSOR:

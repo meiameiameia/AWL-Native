@@ -61,12 +61,22 @@ private:
     int percent_ = 0;
 };
 
-// Window title: the product name, the controls and the speed. speedPercent < 0 leaves the speed out.
-std::string windowTitle(const std::string& base, int speedPercent);
+// Window title: product name, speed and the main keys, kept short so that a narrow title bar still shows the state. speedPercent < 0
+// leaves the speed out. paused puts "PAUSED - click this window to continue" first, where truncation cannot hide it.
+std::string windowTitle(const std::string& base, int speedPercent, bool paused = false);
+
+// How the display's refresh rate relates to the game's 59.94 Hz, in the overlay's capital letters: e.g. 60 Hz -> every game frame
+// shown for exactly one refresh; 144 Hz -> each shown for 2 or 3 refreshes (whole refreshes only, never torn); below 59.94 the game
+// cannot keep full speed. hz <= 0 (unknown) gives an empty string.
+std::string displayLine(int hz);
 
 // The help text drawn in the top-left corner of the picture (visible in fullscreen too): speed first (with a note when the game
-// runs slower than the original), then the controls. speedPercent < 0 = not measured yet.
-std::vector<std::string> overlayLines(int speedPercent);
+// runs slower than the original), the display line when the refresh rate is known (displayHz > 0), then the controls.
+// speedPercent < 0 = not measured yet.
+std::vector<std::string> overlayLines(int speedPercent, int displayHz = 0);
+
+// The big notice drawn in the middle of the last picture while the game is paused (focus lost); shown even when F1 hid the help text.
+std::vector<std::string> pausedLines();
 
 // Host clock helpers (QueryPerformanceCounter). sleepUntil sleeps coarsely and spins for the last stretch.
 int64_t hostClockNow();

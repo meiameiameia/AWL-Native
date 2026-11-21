@@ -90,6 +90,28 @@ static void testSpeedMeter() {
     CHECK(t.find("Game") == 0 && t.find("Esc quit") != std::string::npos && t.find("F11 fullscreen") != std::string::npos);
     CHECK(t.find("speed 31% of real time") != std::string::npos);
     CHECK(windowTitle("Game", -1).find("speed") == std::string::npos);
+    // paused: the state comes first so that a narrow title bar cannot cut it off; speed is left out while paused
+    const std::string p = windowTitle("Game", 100, true);
+    CHECK(p.find("PAUSED - click this window to continue") == 0 && p.find("Game") != std::string::npos && p.find("speed") == std::string::npos);
+    // not paused: the speed comes before the key list, and the whole title stays short enough for a 640 pixel window (about 75 characters fit)
+    CHECK(t.find("speed") < t.find("Esc quit"));
+    CHECK(windowTitle("Harvest Moon: A Wonderful Life (native)", 100).find("speed 100%") < 80);
+}
+
+static void testDisplayLine() {
+    CHECK(displayLine(0).empty() && displayLine(-5).empty());
+    CHECK(displayLine(60).find("DISPLAY 60 HZ") == 0 && displayLine(60).find("1 REFRESH") != std::string::npos);
+    CHECK(displayLine(59).find("1 REFRESH") != std::string::npos);                            // 59.94 reported as 59
+    CHECK(displayLine(120).find("2 REFRESHES") != std::string::npos && displayLine(120).find(" OR ") == std::string::npos);
+    CHECK(displayLine(180).find("3 REFRESHES") != std::string::npos);
+    CHECK(displayLine(144).find("2 OR 3 REFRESHES") != std::string::npos);                    // 144 / 59.94 = 2.40
+    CHECK(displayLine(75).find("1 OR 2 REFRESHES") != std::string::npos);                     // 75 / 59.94 = 1.25
+    CHECK(displayLine(50).find("CANNOT RUN AT FULL SPEED") != std::string::npos);
+    // the overlay carries it right after the speed line, only when the rate is known
+    CHECK(overlayLines(100, 144)[1] == displayLine(144));
+    CHECK(overlayLines(100, 0).size() + 1 == overlayLines(100, 144).size());
+    const std::vector<std::string> pz = pausedLines();
+    CHECK(pz.size() == 2 && pz[0] == "PAUSED" && pz[1].find("CLICK THIS WINDOW") != std::string::npos);
 }
 
 static void testOverlay() {
@@ -130,6 +152,31 @@ static void testOverlay() {
     CHECK(textWidth("abc", 2) == 36);
 }
 
+static void testPausedImage() {
+    Image last;
+    last.resize(640, 448);
+    last.fill(200, 100, 50);
+    const Image p = makePausedImage(last);
+    CHECK(p.width == 640 && p.height == 448);
+    CHECK(p.px(0, 0)[0] == 100 && p.px(0, 0)[1] == 50 && p.px(0, 0)[2] == 25);   // dimmed to half brightness
+    // the notice is in the middle: white text pixels on a darkened box, and nothing in the top rows
+    bool white = false, topChanged = false;
+    for (uint32_t y = 0; y < 448; ++y)
+        for (uint32_t x = 0; x < 640; ++x) {
+            const uint8_t* d = p.px(x, y);
+            if (y >= 100 && y <= 350 && d[0] == 255 && d[1] == 255 && d[2] == 255) white = true;
+            if (y < 40 && !(d[0] == 100 && d[1] == 50 && d[2] == 25)) topChanged = true;
+        }
+    CHECK(white && !topChanged);
+    CHECK(last.px(0, 0)[0] == 200);                                              // the input is not touched
+    const Image blank = makePausedImage(Image());                                // no picture yet: black 640 x 448 with the notice
+    CHECK(blank.width == 640 && blank.height == 448 && blank.px(0, 0)[0] == 0);
+    last.resize(1280, 896);
+    last.fill(10, 10, 10);
+    const Image big = makePausedImage(last);                                     // twice the size: twice the text
+    CHECK(big.width == 1280 && big.height == 896);
+}
+
 static void testHostClock() {
     const int64_t f = hostClockFrequency();
     CHECK(f > 0);
@@ -162,6 +209,8 @@ int main() {
     testPauseResume();
     testSpeedMeter();
     testOverlay();
+    testDisplayLine();
+    testPausedImage();
     testHostClock();
     testVideoOutputPacing();
     if (g_failures) { std::fprintf(stderr, "%d check(s) failed\n", g_failures); return 1; }

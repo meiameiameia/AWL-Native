@@ -44,6 +44,16 @@ VOut vs(uint id : SV_VertexID) {
     return o;
 }
 float4 ps(VOut i) : SV_Target { return src.Sample(smp, i.uv); }
+cbuffer SharpParams : register(b0) { float2 srcSize; float2 scale; };   // scale = destination pixels per source texel, per axis
+float4 psSharp(VOut i) : SV_Target {
+    const float2 texel = i.uv * srcSize;
+    const float2 base = floor(texel);
+    const float2 sc = max(scale, 1.0);
+    const float2 range = 0.5 - 0.5 / sc;                  // flat part of the footprint, each side of the texel centre
+    const float2 cd = texel - base - 0.5;
+    const float2 f = (cd - clamp(cd, -range, range)) * sc + 0.5;
+    return src.Sample(smp, (base + f) / srcSize);
+}
 )";
 }  // namespace
 
@@ -51,8 +61,19 @@ bool Blitter::init(Device& dev, std::string& err) {
     ComPtr<ID3DBlob> vsCode, psCode;
     if (!compileHlsl(kBlitHlsl, "vs", "vs_5_0", vsCode, err) || !compileHlsl(kBlitHlsl, "ps", "ps_5_0", psCode, err)) return false;
     ID3D11Device* d = dev.device();
+    ComPtr<ID3DBlob> sharpCode;
+    if (!compileHlsl(kBlitHlsl, "psSharp", "ps_5_0", sharpCode, err)) return false;
     HRESULT hr = d->CreateVertexShader(vsCode->GetBufferPointer(), vsCode->GetBufferSize(), nullptr, vs_.ReleaseAndGetAddressOf());
     if (SUCCEEDED(hr)) hr = d->CreatePixelShader(psCode->GetBufferPointer(), psCode->GetBufferSize(), nullptr, ps_.ReleaseAndGetAddressOf());
+    if (SUCCEEDED(hr)) hr = d->CreatePixelShader(sharpCode->GetBufferPointer(), sharpCode->GetBufferSize(), nullptr, psSharp_.ReleaseAndGetAddressOf());
+    if (SUCCEEDED(hr)) {
+        D3D11_BUFFER_DESC bd = {};
+        bd.ByteWidth = 16;
+        bd.Usage = D3D11_USAGE_DYNAMIC;
+        bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        hr = d->CreateBuffer(&bd, nullptr, sharpParams_.ReleaseAndGetAddressOf());
+    }
     if (FAILED(hr)) { err = "blit shaders: " + hresultText(hr); return false; }
     D3D11_SAMPLER_DESC s = {};
     s.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
@@ -74,7 +95,7 @@ bool Blitter::init(Device& dev, std::string& err) {
 }
 
 void Blitter::blit(Device& dev, ID3D11RenderTargetView* target, uint32_t targetW, uint32_t targetH, ID3D11ShaderResourceView* src,
-                   const Rect& dest, bool linear) {
+                   uint32_t srcW, uint32_t srcH, const Rect& dest, BlitFilter filter) {
     ID3D11DeviceContext* c = dev.context();
     const float black[4] = {0, 0, 0, 1};
     c->ClearRenderTargetView(target, black);
@@ -88,13 +109,26 @@ void Blitter::blit(Device& dev, ID3D11RenderTargetView* target, uint32_t targetW
     c->IASetInputLayout(nullptr);
     c->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     c->VSSetShader(vs_.Get(), nullptr, 0);
-    c->PSSetShader(ps_.Get(), nullptr, 0);
-    ID3D11SamplerState* smp = linear ? linear_.Get() : point_.Get();
+    const bool sharp = filter == BlitFilter::Sharp && srcW && srcH;
+    c->PSSetShader(sharp ? psSharp_.Get() : ps_.Get(), nullptr, 0);
+    if (sharp) {
+        D3D11_MAPPED_SUBRESOURCE m;
+        if (SUCCEEDED(c->Map(sharpParams_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
+            float* p = static_cast<float*>(m.pData);
+            p[0] = static_cast<float>(srcW); p[1] = static_cast<float>(srcH);
+            p[2] = static_cast<float>(dest.w) / static_cast<float>(srcW); p[3] = static_cast<float>(dest.h) / static_cast<float>(srcH);
+            c->Unmap(sharpParams_.Get(), 0);
+        }
+        ID3D11Buffer* cb = sharpParams_.Get();
+        c->PSSetConstantBuffers(0, 1, &cb);
+    }
+    ID3D11SamplerState* smp = filter == BlitFilter::Point ? point_.Get() : linear_.Get();
     c->PSSetSamplers(0, 1, &smp);
     c->PSSetShaderResources(0, 1, &src);
     c->Draw(3, 0);
     ID3D11ShaderResourceView* none = nullptr;
     c->PSSetShaderResources(0, 1, &none);
+    if (sharp) { ID3D11Buffer* nb = nullptr; c->PSSetConstantBuffers(0, 1, &nb); }
 }
 
 }  // namespace awl::gfx
