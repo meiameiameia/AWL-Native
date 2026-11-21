@@ -487,6 +487,36 @@ int main() {
         CHECK(near3(img, 400, 50, 0, 255, 0, 0));
     }
 
+    // 8. The clear that follows an EFB copy writes the clear colour of the copy (BP 0x4F/0x50), not black. The game clears its light map
+    //    to neutral gray 0x808080 this way, right after copying the frame to the XFB. (a) gray after an XFB copy; (b) another colour right
+    //    after a texture copy (the copy constants are what the pixel shader's buffer slot held when the colour was read from the wrong stage).
+    {
+        const uint8_t red[4] = {255, 0, 0, 255};
+        gx::PipelineState s = baseState();
+        Quad full(-1, -1, 1, 1, -1.0f, red);
+        r.draw(full.cmd(s));
+        gx::EfbCopyCommand c = xfbCopy(60, 0x8100, false);
+        c.clear.color = c.clear.alpha = c.clear.z = true;
+        c.clear.rgba[0] = c.clear.rgba[1] = c.clear.rgba[2] = 0x80; c.clear.rgba[3] = 0xFF;
+        c.clear.z24 = 0xFFFFFF;
+        r.efbCopy(c);                                    // the copy still sees the red frame, then the EFB becomes gray
+        CHECK(r.xfbImage(0x8100, img, why));
+        CHECK(near3(img, 100, 100, 255, 0, 0));
+        r.efbCopy(xfbCopy(61, 0x8200, false));
+        CHECK(r.xfbImage(0x8200, img, why));
+        CHECK(near3(img, 100, 100, 128, 128, 128, 0) && near3(img, 600, 400, 128, 128, 128, 0));   // (a)
+        gx::EfbCopyCommand tc{};
+        tc.id = 62; tc.target = gx::CopyTarget::Texture;
+        tc.srcX = 0; tc.srcY = 0; tc.srcWidth = 640; tc.srcHeight = 448;
+        tc.destAddr = 0x2000; tc.destWidth = 320; tc.destHeight = 224; tc.halfScale = tc.mipmap = true;
+        tc.efbFormat = gx::PixelFormat::RGB8_Z24; tc.texFormat = 5; tc.yScale = 1.0f;   // GX_TF_RGB5A3 half scale, as the game's light map
+        tc.clear.color = true; tc.clear.rgba[0] = 0x20; tc.clear.rgba[1] = 0x60; tc.clear.rgba[2] = 0xA0; tc.clear.rgba[3] = 0xFF;
+        r.efbCopy(tc);
+        r.efbCopy(xfbCopy(63, 0x8300, false));
+        CHECK(r.xfbImage(0x8300, img, why));
+        CHECK(near3(img, 100, 100, 0x20, 0x60, 0xA0, 0) && near3(img, 600, 400, 0x20, 0x60, 0xA0, 0));   // (b)
+    }
+
     r.printSummary();
     if (g_failures) { std::fprintf(stderr, "%d check(s) failed\n", g_failures); return 1; }
     std::printf("gfx_renderer_tests: all checks passed\n");

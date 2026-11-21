@@ -127,6 +127,10 @@ std::string describePipeline(const PipelineState& s) {
         if (t.indirect.indStage != kNoMap) o += fmt(" | ind stage=%u fmt=%u bias=%u mtx=%u wrap=%u,%u prev=%d", t.indirect.indStage, t.indirect.format, t.indirect.biasMask, t.indirect.matrix, t.indirect.wrapS, t.indirect.wrapT, t.indirect.addPrevious);
         o += "\n";
     }
+    static const char kRgba[] = "rgba";
+    o += "    swap";
+    for (int t = 0; t < 4; ++t) o += fmt(" %d=%c%c%c%c", t, kRgba[s.tev.swap[t][0] & 3], kRgba[s.tev.swap[t][1] & 3], kRgba[s.tev.swap[t][2] & 3], kRgba[s.tev.swap[t][3] & 3]);
+    o += "\n";
     for (int c = 0; c < 4; ++c)
         o += fmt("    reg%d=%d,%d,%d,%d konst%d=%u,%u,%u,%u\n", c, s.tev.reg[c][0], s.tev.reg[c][1], s.tev.reg[c][2], s.tev.reg[c][3], c, s.tev.konst[c][0], s.tev.konst[c][1], s.tev.konst[c][2], s.tev.konst[c][3]);
     for (int m = 0; m < 8; ++m) {

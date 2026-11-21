@@ -852,8 +852,12 @@ void Renderer::clearRect(const gx::EfbCopyCommand& cc) {
     c->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     c->VSSetShader(clearVs_.Get(), nullptr, 0);
     c->PSSetShader(clearPs_.Get(), nullptr, 0);
+    // The colour is read by the pixel shader and the depth by the vertex shader: the buffer goes to both stages. (Bound to the vertex
+    // shader only, the pixel shader read whatever buffer was left in its slot, the copy constants after an EFB copy, and every colour clear
+    // came out black: the game's light map, cleared to neutral gray 0x808080, was black and its shadows showed inverted.)
     ID3D11Buffer* cbuf = clearCb_.Get();
     c->VSSetConstantBuffers(0, 1, &cbuf);
+    c->PSSetConstantBuffers(0, 1, &cbuf);
     c->Draw(3, 0);
 }
 
