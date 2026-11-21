@@ -52,7 +52,8 @@ static void testRejections() {
     k = passRaster(); k.efbFormat = 1;                        CHECK(rejects(k, "EFB pixel format"));
     k = passRaster(); k.stages[0].alpCmp = CMP_R8_GT;         CHECK(rejects(k, "alpha compare mode"));
     k = passRaster(); k.stages[0].colCmp = 9;                 CHECK(rejects(k, "compare mode out of range"));
-    k = passRaster(); k.fogType = 4; k.fogOrtho = 1;          CHECK(rejects(k, "orthographic"));
+    k = passRaster(); k.fogType = 4; k.fogOrtho = 1;          CHECK(generatePixelShader(k).ok);   // orthographic fog is generated (ze = a * z)
+    { PixelShaderKey p = k; p.fogOrtho = 0; CHECK(keyBytes(p) != keyBytes(k) && generatePixelShader(p).hlsl != generatePixelShader(k).hlsl); }
     k = passRaster(); k.fogType = 3;                          CHECK(rejects(k, "not a GX fog type"));
     k = passRaster(); k.stages[0].indStage = 0;               CHECK(rejects(k, "indirect"));
     k = passRaster(); k.stages[0].rasChannel = RAS_ALPHA_BUMP; CHECK(rejects(k, "bump"));
@@ -311,7 +312,7 @@ static void testDraws() {
     CHECK(st.hits > 0 && st.lookups == st.hits + st.compiled);
     // an unsupported key is cached as a failure with its reason
     PixelShaderKey bad = passRaster();
-    bad.fogType = 4; bad.fogOrtho = 1;
+    bad.fogType = 3;   // not a GX fog type (the FSEL field has no value 3)
     std::string e;
     CHECK(f.cache.get(f.dev, bad, e) == nullptr && e.find("fog") != std::string::npos);
     e.clear();

@@ -56,8 +56,8 @@ struct PixelShaderKey {
     uint8_t projectiveMask = 0;   // unused: the texture unit always divides by q (IR convention 4)
     // alpha compare: comparison codes GX_NEVER..GX_ALWAYS = 0..7, logic AND/OR/XOR/XNOR = 0..3
     uint8_t alphaComp0 = 7, alphaComp1 = 7, alphaLogic = 0;
-    uint8_t fogType = 0;          // 0 = none, else GX_FOG_LIN 2, EXP 4, EXP2 5, REVEXP 6, REVEXP2 7 (perspective projections only)
-    uint8_t fogOrtho = 0;         // orthographic fog is rejected (parameters unverified)
+    uint8_t fogType = 0;          // 0 = none, else GX_FOG_LIN 2, EXP 4, EXP2 5, REVEXP 6, REVEXP2 7 (perspective or orthographic: see fogOrtho)
+    uint8_t fogOrtho = 0;         // 1 = orthographic fog: ze = a * z instead of a / (b - z) (game GXSetFog at 0x801D1978; gfx_tev.cpp)
     uint8_t efbFormat = 0;        // 0 = RGB8_Z24; others are rejected for now (precision rules: design note section 7)
     uint8_t reserved = 0;          // must be 0
 };

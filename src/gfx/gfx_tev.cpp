@@ -112,7 +112,6 @@ HlslResult generatePixelShader(const PixelShaderKey& key) {
     Gen g;
     if (key.numStages < 1 || key.numStages > 16) { res.unsupported = "stage count " + std::to_string(key.numStages) + " outside 1-16"; return res; }
     if (key.fogType != 0 && (key.fogType < 2 || key.fogType > 7 || key.fogType == 3)) { res.unsupported = "fog type " + std::to_string(key.fogType) + " is not a GX fog type"; return res; }
-    if (key.fogType != 0 && key.fogOrtho) { res.unsupported = "fog with an orthographic projection (parameters not verified against a stream)"; return res; }
     if (key.reserved != 0) { res.unsupported = "reserved key byte is not zero"; return res; }
     if (key.efbFormat != 0) { res.unsupported = "EFB pixel format " + std::to_string(key.efbFormat) + " is not emulated yet (only RGB8)"; return res; }
 
@@ -238,10 +237,15 @@ HlslResult generatePixelShader(const PixelShaderKey& key) {
     }
     if (!g.why.empty()) { res.unsupported = g.why; return res; }
 
-    // Fog (GX_SetFog): ze = a / (b - z) with z the screen depth in [0, 1], f = clamp(ze - c, 0, 1), then the type's curve, and the colour
-    // moves towards the fog colour by that amount. fogParam = (a, b, c), fogColor in 0..1 (libogc GX_SetFog derives a, b, c).
+    // Fog (GX_SetFog): perspective ze = a / (b - z), orthographic ze = a * z, with z the screen depth in [0, 1]; f = clamp(ze - c, 0, 1), then
+    // the type's curve, and the colour moves towards the fog colour by that amount. fogParam = (a, b, c), fogColor in 0..1.
+    // Orthographic: the game's own GXSetFog (main.dol 0x801D1978, projection bit set) stores a = (far - near) / (end - start),
+    // c = (start - near) / (end - start) and zeroes b (FOG_PARAM_1) and the exponent shift, so ze - c = (d - start) / (end - start) for the
+    // eye depth d = near + z * (far - near): linear between start and end. The perspective branch of the same function builds
+    // a = far*near / ((far-near)*(end-start)), b = far / (far-near), c = start / (end-start).
     if (key.fogType != 0) {
-        g.line("float fz = saturate(fogParam.x / (fogParam.y - i.pos.z) - fogParam.z);");
+        g.line(key.fogOrtho ? "float fz = saturate(fogParam.x * i.pos.z - fogParam.z);"
+                            : "float fz = saturate(fogParam.x / (fogParam.y - i.pos.z) - fogParam.z);");
         const char* curve = key.fogType == 2 ? "fz" : key.fogType == 4 ? "1.0 - exp2(-8.0 * fz)" : key.fogType == 5 ? "1.0 - exp2(-8.0 * fz * fz)" :
                             key.fogType == 6 ? "exp2(-8.0 * (1.0 - fz))" : "exp2(-8.0 * (1.0 - fz) * (1.0 - fz))";
         g.line(std::string("float fogAmount = ") + curve + ";");

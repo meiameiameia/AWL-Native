@@ -278,6 +278,35 @@ int main() {
         CHECK(near3(img, 500, 100, 0, 0, 0));
     }
 
+    // 5b1. Orthographic fog (FOG_PARAM_3 projection bit): ze = a * z with z the screen depth in [0, 1]. The game's GXSetFog (main.dol
+    //      0x801D1978) stores a = (far-near)/(end-start), c = (start-near)/(end-start), b = 0. For GX_SetFog(ortho, start 20, end 60, near 0,
+    //      far 100): a = 100/40 = 2.5, c = 20/40 = 0.5. Eye depth d = 100 z, f = ze - c = (d - 20) / 40. Quads at z/w = -0.8, -0.6, -0.4
+    //      are depth 0.2, 0.4, 0.6 (d = 20, 40, 60): f = 0 (start), 0.5 (middle), 1 (end). Linear amount f; fog colour black.
+    {
+        const uint8_t white[4] = {255, 255, 255, 255};
+        gx::PipelineState s = baseState();
+        s.fog.type = gx::FogType::Linear; s.fog.orthographic = true; s.fog.a = 2.5f; s.fog.b = 0.0f; s.fog.c = 0.5f;
+        s.depth = {true, gx::CompareFunc::Always, false, false, gx::ZFormat::Linear};
+        Quad startQ(-1, -1, -0.5f, 1, -0.8f, white), midQ(-0.5f, -1, 0, 1, -0.6f, white), endQ(0, -1, 1, 1, -0.4f, white);
+        r.draw(startQ.cmd(s));
+        r.draw(midQ.cmd(s));
+        r.draw(endQ.cmd(s));
+        r.efbCopy(xfbCopy(22, 0xF800, false));
+        CHECK(r.xfbImage(0xF800, img, why));
+        CHECK(near3(img, 80, 100, 255, 255, 255, 2));    // at the start: no fog
+        CHECK(near3(img, 240, 100, 128, 128, 128, 2));   // middle: 255 * (1 - 0.5) = 127.5
+        CHECK(near3(img, 480, 100, 0, 0, 0, 2));         // at the end: all fog
+        // exp (1 - 2^(-8f)) at f = 0.5: 1 - 2^-4; with the perspective formula this depth would not give the same colour (a / (b - z) with b = 0)
+        gx::PipelineState e = s;
+        e.fog.type = gx::FogType::Exp;
+        Quad eq(-1, -1, 1, 1, -0.6f, white);
+        r.draw(eq.cmd(e));
+        r.efbCopy(xfbCopy(23, 0xF900, false));
+        CHECK(r.xfbImage(0xF900, img, why));
+        const int expect = static_cast<int>(std::lround(255.0 * std::pow(2.0, -4.0)));   // 255 * (1 - (1 - 2^-4)) = 15.94
+        CHECK(near3(img, 100, 100, expect, expect, expect, 2));
+    }
+
     // 5b2. Points and lines expand to quads. A point of size 120 (1/6 pixel units) is a 20 pixel square centred on the vertex; a line of width 12
     //      is 2 pixels thick, centred on the line. Clip (0, 0) is window pixel (320, 224) in the 640x448 viewport.
     {
@@ -406,9 +435,6 @@ int main() {
         s.fog.type = gx::FogType::Linear; s.fog.rangeAdjustEnable = true;
         Quad q(-1, -1, 1, 1, -1.0f, red);
         r.draw(q.cmd(s));
-        gx::PipelineState s4 = baseState();
-        s4.fog.type = gx::FogType::Exp; s4.fog.orthographic = true;
-        r.draw(q.cmd(s4));
         gx::PipelineState s2 = baseState();
         s2.depth.test = true; s2.depth.compareBeforeTexture = true;
         s2.alphaCompare.comp0 = gx::CompareFunc::Greater;
@@ -416,15 +442,14 @@ int main() {
         gx::PipelineState s3 = baseState();
         s3.blend.mode = gx::BlendMode::Logic; s3.blend.logicOp = gx::LogicOp::Xor;
         r.draw(q.cmd(s3));
-        CHECK(r.stats().drawsSkipped == skippedBefore + 4);
-        bool ortho = false, fog = false, lines = false, logic = false;
+        CHECK(r.stats().drawsSkipped == skippedBefore + 3);
+        bool fog = false, lines = false, logic = false;
         for (const auto& u : r.unsupported()) {
             fog |= u.first.find("range adjustment") != std::string::npos;
-            ortho |= u.first.find("orthographic") != std::string::npos;
             lines |= u.first.find("early depth test") != std::string::npos;
             logic |= u.first.find("logic op") != std::string::npos;
         }
-        CHECK(fog && ortho && lines && logic);
+        CHECK(fog && lines && logic);
     }
 
     // 7. Pipeline state ids (the speed block): draws that share an id reuse the shader, constants and D3D state objects the first one
