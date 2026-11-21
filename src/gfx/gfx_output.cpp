@@ -33,13 +33,15 @@ bool VideoOutput::init(const OutputOptions& opts, std::string& err) {
         if (ec) { err = "cannot create " + opts_.captureDir + ": " + ec.message(); return false; }
     }
     if (opts_.pace && !timerPeriod_) { timeBeginPeriod(1); timerPeriod_ = true; }   // 1 ms sleep granularity for the pacer
-    if (opts_.window || opts_.captureFrames) {
+    if (opts_.window || opts_.captureFrames || opts_.bench) {
         DeviceOptions d;
         d.forceWarp = opts_.forceWarp;
         if (!device_.create(d, err)) return false;
         haveDevice_ = true;
-        if (!blitter_.init(device_, err)) return false;
-        haveBlitter_ = true;
+        if (!opts_.bench) {   // the bench never presents or captures, so it needs no blitter
+            if (!blitter_.init(device_, err)) return false;
+            haveBlitter_ = true;
+        }
     }
     if (opts_.window) {
         window_ = std::make_unique<GameWindow>();
@@ -104,10 +106,33 @@ bool VideoOutput::presentFrame(const FrameDesc& frame) {
         ++captured_;
     }
     ++presented_;
+    source_->afterPresent();
     return true;
 }
 
+std::string VideoOutput::benchReport() const {
+    if (!opts_.bench || !benchStartRetrace_ || benchLastRetrace_ <= benchStartRetrace_) return std::string();
+    const double wall = static_cast<double>(benchLastClock_ - benchStartClock_) / static_cast<double>(hostClockFrequency());
+    const double game = static_cast<double>(benchLastRetrace_ - benchStartRetrace_) * 1001.0 / 60000.0;   // one retrace = 1001/60000 s
+    char line[200];
+    std::snprintf(line, sizeof line, "speed: retraces %llu-%llu, game %.2f s, wall %.2f s, %.0f%% of real time", static_cast<unsigned long long>(benchStartRetrace_),
+                  static_cast<unsigned long long>(benchLastRetrace_), game, wall, wall > 0 ? 100.0 * game / wall : 0.0);
+    return line;
+}
+
 RetraceAction VideoOutput::onRetrace(const FrameDesc* frame) {
+    ++retraces_;
+    if (opts_.bench) {
+        const int64_t now = hostClockNow();
+        if (retraces_ == opts_.benchFrom) { benchStartRetrace_ = retraces_; benchStartClock_ = now; }
+        if (benchStartRetrace_) { benchLastRetrace_ = retraces_; benchLastClock_ = now; }
+        if (frame) {   // what the window has to produce for this frame (the renderer's XFB readback), without presenting it
+            Image img;
+            if (!source_->produce(*frame, img, error_)) { std::fprintf(stderr, "video output: %s\n", error_.c_str()); return RetraceAction::Quit; }
+            ++presented_;
+        }
+        return RetraceAction::Continue;
+    }
     if (window_) {
         window_->pump();
         if (window_->closeRequested()) return RetraceAction::Quit;

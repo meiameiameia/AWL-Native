@@ -31,6 +31,8 @@ class FrameSource {
 public:
     virtual ~FrameSource() = default;
     virtual bool produce(const FrameDesc& frame, Image& out, std::string& err) = 0;
+    // Called after the frame was presented or captured: the window and the blitter used the device context in the meantime.
+    virtual void afterPresent() {}
 };
 
 class DiagnosticSource : public FrameSource {
@@ -45,6 +47,8 @@ struct OutputOptions {
     uint32_t captureFrom = 0, captureEvery = 1;   // only every captureEvery-th presented frame from captureFrom on
     std::string captureDir;         // folder for the captures (under build/)
     bool forceWarp = false;         // software device for byte-reproducible captures on any machine
+    bool bench = false;             // speed measurement: device and renderer offscreen, no window, no pacing, no capture files
+    uint32_t benchFrom = 0;         // retrace number (1-based) the measurement starts at
     WindowOptions windowOptions;
 };
 
@@ -70,6 +74,10 @@ public:
     Device& device() { return device_; }
     bool haveDevice() const { return haveDevice_; }
     const std::string& adapterName() const { return device_.adapterName(); }
+
+    // Bench mode: "speed: retraces A-B, game X s, wall Y s, Z% of real time", measured from retrace benchFrom to the last retrace seen
+    // (empty when the run ended before benchFrom).
+    std::string benchReport() const;
 
     // Shows a message over the window (window mode); otherwise does nothing.
     void notify(const std::string& title, const std::string& text) { if (window_) window_->showMessage(title, text); }
@@ -98,6 +106,9 @@ private:
     DiagnosticSource diagnostic_;
     FrameSource* source_ = &diagnostic_;
     uint64_t presented_ = 0, captured_ = 0;
+    uint64_t retraces_ = 0;      // calls of onRetrace so far (guest retraces, 1-based)
+    uint64_t benchStartRetrace_ = 0, benchLastRetrace_ = 0;
+    int64_t benchStartClock_ = 0, benchLastClock_ = 0;
     std::string error_;
     bool timerPeriod_ = false;   // timeBeginPeriod(1) is active
 };

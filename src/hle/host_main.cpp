@@ -3,7 +3,11 @@
 //   awl-host --dol rom/main.dol [--disc disc] [--trace build/boot-trace.log] [--retraces N] [--limit N] [--pad neutral|xinput]
 //            [--calls DEPTH] [--dump-boot FILE] [--dump-mem FILE] [--realtime]
 //            [--window] [--realtime-pace] [--capture-frames N DIR [--capture-from F [--capture-every K]]] [--gfx-warp] [--no-copy-filter]
-// --calls records the calls of the functions in capture_parse.h (to DEPTH) as "call" trace lines, for awl-capture-compare;
+//            [--bench RETRACE]
+// --bench RETRACE: speed measurement without a window: the DX11 device and renderer run offscreen (no pacing, no capture files) and at the end
+// one line reports the speed from that retrace (59.94 Hz fields) to the last one: "speed: retraces A-B, game X s, wall Y s, Z% of real time".
+// --calls DEPTH (default 0 = off) records the calls of the functions in capture_parse.h (to DEPTH) as "call" trace lines, for awl-capture-compare
+// (the capture-comparison workflow passes --calls 16);
 // --dump-boot writes MEM1 as the game program starts, --dump-mem writes MEM1 when the run ends (use --limit to stop at an instruction).
 // P2 video (src/gfx): --window opens the game window and runs until it is closed (Esc, close button, Alt+F4) unless --retraces or --limit
 // is given; --realtime-pace sleeps so guest retraces happen at 59.94 Hz of wall time (implied by --window; it never changes what the guest
@@ -108,9 +112,10 @@ int main(int argc, char** argv) {
     std::string tracePath = "build/boot-trace.log";
     Config cfg;
     uint64_t limit = 4000000000ull;     // instruction budget; --limit 0 removes it
-    uint32_t callDepth = 16;            // --calls: deepest call level recorded for the capture comparison (0 = off)
+    uint32_t callDepth = 0;             // --calls: deepest call level recorded for the capture comparison (0 = off, the default; the record grows for the whole run)
     std::string dumpBoot, dumpMem;
-    bool optNoCopyFilter = false, optWindow = false, optPace = false, optWarp = false, retracesGiven = false, limitGiven = false;
+    bool optNoCopyFilter = false, optWindow = false, optPace = false, optWarp = false, retracesGiven = false, limitGiven = false, optBench = false;
+    uint32_t benchFrom = 0;
     uint32_t captureFrames = 0, captureFrom = 0, captureEvery = 1;
     std::string captureDir;
     for (int i = 1; i < argc; ++i) {
@@ -123,6 +128,7 @@ int main(int argc, char** argv) {
         else if (a == "--limit" && i + 1 < argc) { limit = std::strtoull(argv[++i], nullptr, 0); limitGiven = true; }
         else if (a == "--no-idle-skip") cfg.idleSkip = false;      // execute the scheduler idle spin instead of fast-forwarding it (same result, slower)
         else if (a == "--window") optWindow = true;
+        else if (a == "--bench" && i + 1 < argc) { optBench = true; benchFrom = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0)); }
         else if (a == "--realtime-pace") optPace = true;
         else if (a == "--gfx-warp") optWarp = true;
         else if (a == "--no-copy-filter") optNoCopyFilter = true;
@@ -135,7 +141,8 @@ int main(int argc, char** argv) {
         else if (a == "--dump-mem" && i + 1 < argc) dumpMem = argv[++i];
     }
     if (limit == 0) limit = ~0ull;
-    const bool useVideo = optWindow || optPace || captureFrames != 0;
+    if (optBench && (optWindow || optPace || captureFrames != 0)) { std::fprintf(stderr, "--bench cannot be combined with --window, --realtime-pace or --capture-frames\n"); return 2; }
+    const bool useVideo = optWindow || optPace || captureFrames != 0 || optBench;
 #ifndef AWL_HAVE_GFX
     if (useVideo) { std::fprintf(stderr, "this build has no video support (awl_gfx)\n"); return 2; }
 #endif
@@ -145,7 +152,7 @@ int main(int argc, char** argv) {
     }
     if (dolPath.empty()) {
         std::fprintf(stderr, "usage: awl-host --dol <main.dol> [--disc disc] [--trace file] [--retraces N] [--limit N] [--pad neutral|xinput]\n"
-                             "                [--calls DEPTH] [--dump-boot FILE] [--dump-mem FILE] [--realtime]\n");
+                             "                [--calls DEPTH] [--dump-boot FILE] [--dump-mem FILE] [--realtime] [--bench RETRACE]\n");
         return 2;
     }
     recomp::DolImage dol;
@@ -186,6 +193,8 @@ int main(int argc, char** argv) {
         go.captureEvery = captureEvery;
         go.captureDir = captureDir;
         go.forceWarp = optWarp;
+        go.bench = optBench;
+        go.benchFrom = benchFrom;
         video = std::make_unique<gfx::VideoOutput>();
         if (!video->init(go, err)) {
             std::fprintf(stderr, "video: %s\n", err.c_str());
@@ -292,6 +301,10 @@ int main(int argc, char** argv) {
     if (renderer) renderer->printSummary();
     if (video) std::printf("video: %llu frames presented, %llu captured, %llu pacing re-anchors\n", static_cast<unsigned long long>(video->presented()),
                            static_cast<unsigned long long>(video->captured()), static_cast<unsigned long long>(video->reanchors()));
+    if (video && optBench) {
+        const std::string line = video->benchReport();
+        std::printf("%s\n", line.empty() ? "speed: the run ended before the bench start retrace" : line.c_str());
+    }
 #endif
     if (std::getenv("AWL_IDLE_STATS"))
         std::printf("idle skip: %llu probes, %llu skips, %llu instructions fast-forwarded of %llu retired\n", (unsigned long long)plat.idle.probes,

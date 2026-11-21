@@ -4,8 +4,7 @@ namespace awl::gfx {
 
 ID3D11PixelShader* PixelShaderCache::get(Device& dev, const tev::PixelShaderKey& key, std::string& err) {
     ++stats_.lookups;
-    const std::string bytes = tev::keyBytes(key);
-    auto it = map_.find(bytes);
+    auto it = map_.find(key);
     if (it != map_.end()) {
         ++stats_.hits;
         if (!it->second.ps) err = it->second.error;
@@ -27,7 +26,7 @@ ID3D11PixelShader* PixelShaderCache::get(Device& dev, const tev::PixelShaderKey&
             else ++stats_.compiled;
         }
     }
-    auto res = map_.emplace(bytes, std::move(e));
+    auto res = map_.emplace(key, std::move(e));
     if (!res.first->second.ps) err = res.first->second.error;
     return res.first->second.ps.Get();
 }

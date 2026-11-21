@@ -35,6 +35,9 @@ public:
     void draw(const gx::DrawCommand& d) override;
     void efbCopy(const gx::EfbCopyCommand& c) override;
 
+    // Something else used the device context (a present, a blit): the next draw sets every D3D state again.
+    void invalidateBoundState() { bound_.valid = false; }
+
     // The image the latest copy to the XFB wrote at `addr` (or the copy whose destination range contains it).
     bool xfbImage(uint32_t addr, Image& out, std::string& why);
     // One pixel of the EFB depth buffer, 24 bits (0xFFFFFF = far plane). Flushes nothing: D3D orders it after the draws.
@@ -60,12 +63,49 @@ private:
     struct XfbEntry { Gpu gpu; uint32_t addr = 0; uint64_t seq = 0; };
 
     void report(const std::string& reason);
+    void report(const char* literal);   // for string literals only (identified by address)
+    void readDebugEnv();
+    // The part of a draw that depends only on its pipeline state (see prepare()), kept for the next draw with the same state id.
+    struct Prepared {
+        uint32_t stateId = 0;                      // 0 = nothing reusable
+        ID3D11PixelShader* ps = nullptr;           // owned by shaders_
+        tev::TevConstants cb = {};
+        ID3D11SamplerState* smps[8] = {};          // owned by samplers_
+        ID3D11BlendState* blend = nullptr;         // owned by blends_
+        ID3D11DepthStencilState* depth = nullptr;  // owned by depths_
+        D3D11_VIEWPORT viewport = {};
+        D3D11_RECT scissor = {};
+        uint8_t maps[8] = {};                      // texture maps to bind, in the order the full path binds them
+        uint8_t mapCount = 0;
+        uint8_t rangeBiasStages = 0;               // stages whose coordinate set has a range bias (reported once per stage per draw)
+        bool indirect = false;                     // some stage uses indirect texturing (reported once per draw)
+    };
+    bool prepare(const gx::DrawCommand& dc, ID3D11ShaderResourceView* (&srvs)[8]);
+    // What draw() last set on the device context (raw pointers; D3D keeps the objects alive while they are bound). valid = false means
+    // unknown: the next draw sets everything.
+    struct BoundState {
+        bool valid = false;
+        ID3D11RenderTargetView* rtv = nullptr;
+        ID3D11DepthStencilView* dsv = nullptr;
+        D3D11_VIEWPORT viewport = {};
+        D3D11_RECT scissor = {};
+        ID3D11RasterizerState* raster = nullptr;
+        ID3D11BlendState* blend = nullptr;
+        ID3D11DepthStencilState* depth = nullptr;
+        ID3D11Buffer* vb = nullptr;
+        ID3D11Buffer* ib = nullptr;
+        ID3D11PixelShader* ps = nullptr;
+        ID3D11ShaderResourceView* srv[8] = {};
+        ID3D11SamplerState* smp[8] = {};
+    };
     void trimCaches();
     bool uploadTexture(const gx::Texture& t, Gpu& out);
     ID3D11ShaderResourceView* mapSrv(const gx::TexBinding& b, std::string& why);
     ID3D11SamplerState* sampler(const gx::Sampler& s);
     ID3D11BlendState* blendState(const gx::BlendState& b);
     ID3D11DepthStencilState* depthState(const gx::DepthState& d);
+    uint8_t* mapRange(ComPtr<ID3D11Buffer>& buf, uint32_t& capacity, uint32_t& cursor, uint32_t bind, uint32_t bytes, uint32_t& offset);
+    void unmapRange(ComPtr<ID3D11Buffer>& buf);
     bool upload(ComPtr<ID3D11Buffer>& buf, uint32_t& capacity, uint32_t& cursor, uint32_t bind, const void* data, uint32_t bytes, uint32_t& offset);
     bool createGpu(Gpu& g, uint32_t w, uint32_t h, bool renderTarget);
     void clearRect(const gx::EfbCopyCommand& c);
@@ -74,6 +114,18 @@ private:
     PixelShaderCache shaders_;
     Stats stats_;
     std::map<std::string, uint64_t> unsupported_;
+    std::unordered_map<const char*, uint64_t*> literalSlots_;   // string literal -> its count in unsupported_
+    Prepared prep_;
+    BoundState bound_;
+    uint32_t tevCbStateId_ = 0;   // state id whose constants tevCb_ holds (0 = unknown)
+
+    // The AWL_GFX_* debugging variables, read once in init().
+    struct DebugEnv {
+        bool noAlpha = false, noScissor = false, noDepth = false, solid = false, vpCheck = false;
+        bool litProbe = false, dumpDraw = false;
+        uint32_t litProbeSeq = 0, dumpDrawSeq = 0;
+        std::string dumpDrawFile;
+    } env_;
 
     Gpu efb_;
     ComPtr<ID3D11RenderTargetView> efbRtv_;
@@ -112,6 +164,7 @@ class RendererSource : public FrameSource {
 public:
     explicit RendererSource(Renderer& r) : r_(r) {}
     bool produce(const FrameDesc& frame, Image& out, std::string& err) override;
+    void afterPresent() override { r_.invalidateBoundState(); }
     uint64_t missing() const { return missing_; }
 
 private:

@@ -99,7 +99,7 @@ D3D11_BLEND alphaFactor(D3D11_BLEND f) {
 template <class T> std::string bytesOf(const T& v) { return std::string(reinterpret_cast<const char*>(&v), sizeof v); }
 
 // IR pipeline state -> pixel shader key; returns false with the reason when the state is not expressible yet.
-bool buildKey(const gx::PipelineState& s, tev::PixelShaderKey& k, std::string& why) {
+bool buildKey(const gx::PipelineState& s, tev::PixelShaderKey& k, std::string& why, bool noAlpha) {
     using namespace tev;
     if (s.tev.numStages < 1 || s.tev.numStages > 16) { why = "TEV stage count outside 1-16"; return false; }
     k.numStages = s.tev.numStages;
@@ -130,7 +130,6 @@ bool buildKey(const gx::PipelineState& s, tev::PixelShaderKey& k, std::string& w
     }
     for (int t = 0; t < 4; ++t) { k.swaps[t].r = s.tev.swap[t][0]; k.swaps[t].g = s.tev.swap[t][1]; k.swaps[t].b = s.tev.swap[t][2]; k.swaps[t].a = s.tev.swap[t][3]; }
     k.projectiveMask = 0xFF;   // IR convention 4: the texture unit always divides by q (q = 1 for ST texgens)
-    static const bool noAlpha = std::getenv("AWL_GFX_DEBUG_NOALPHA") != nullptr;   // debugging aid: ignore the alpha test
     k.alphaComp0 = static_cast<uint8_t>(s.alphaCompare.comp0);
     if (noAlpha) { k.alphaComp0 = k.alphaComp1 = 7; k.alphaLogic = 0; }
     if (!noAlpha) { k.alphaComp1 = static_cast<uint8_t>(s.alphaCompare.comp1); k.alphaLogic = static_cast<uint8_t>(s.alphaCompare.logic); }
@@ -159,9 +158,35 @@ static size_t countLit(Device& dev, ID3D11Texture2D* tex, uint32_t w, uint32_t h
     return lit;
 }
 
+const char* const kRangeBiasReason = "texture coordinate range bias (ignored: coordinates are used unbiased)";
+const char* const kIndirectReason = "indirect texturing offsets use the matrix / 256 in texels (scale not verified against hardware)";
+
 void Renderer::report(const std::string& reason) {
     uint64_t& n = unsupported_[reason];
     if (n++ == 0) std::fprintf(stderr, "gfx: not rendered exactly: %s (counted, reported once)\n", reason.c_str());
+}
+
+// Per-draw path: a string literal is looked up by address, so no std::string is built and no string is compared after the first use.
+void Renderer::report(const char* literal) {
+    const auto it = literalSlots_.find(literal);
+    if (it != literalSlots_.end()) { ++*it->second; return; }
+    uint64_t& n = unsupported_[literal];
+    if (n++ == 0) std::fprintf(stderr, "gfx: not rendered exactly: %s (counted, reported once)\n", literal);
+    literalSlots_.emplace(literal, &n);   // std::map nodes keep their address
+}
+
+// The AWL_GFX_* debugging variables are read once here, never per draw.
+void Renderer::readDebugEnv() {
+    const auto set = [](const char* name) { return std::getenv(name) != nullptr; };
+    env_.noAlpha = set("AWL_GFX_DEBUG_NOALPHA");
+    env_.noScissor = set("AWL_GFX_DEBUG_NOSCISSOR");
+    env_.noDepth = set("AWL_GFX_DEBUG_NODEPTH");
+    env_.solid = set("AWL_GFX_DEBUG_SOLID");
+    env_.vpCheck = set("AWL_GFX_VPCHECK");
+    if (const char* v = std::getenv("AWL_GFX_LITPROBE")) { env_.litProbe = true; env_.litProbeSeq = static_cast<uint32_t>(std::strtoul(v, nullptr, 0)); }
+    if (const char* v = std::getenv("AWL_GFX_DUMPDRAW")) {
+        if (const char* f = std::getenv("AWL_GFX_DUMPDRAW_FILE")) { env_.dumpDraw = true; env_.dumpDrawSeq = static_cast<uint32_t>(std::strtoul(v, nullptr, 0)); env_.dumpDrawFile = f; }
+    }
 }
 
 void Renderer::printSummary() const {
@@ -188,6 +213,7 @@ bool Renderer::createGpu(Gpu& g, uint32_t w, uint32_t h, bool renderTarget) {
 
 bool Renderer::init(Device& dev, std::string& err) {
     dev_ = &dev;
+    readDebugEnv();
     ID3D11Device* d = dev.device();
     if (!createGpu(efb_, kEfbWidth, kEfbHeight, true)) { err = "EFB colour target"; return false; }
     if (FAILED(d->CreateRenderTargetView(efb_.tex.Get(), nullptr, efbRtv_.GetAddressOf()))) { err = "EFB RTV"; return false; }
@@ -250,23 +276,35 @@ bool Renderer::init(Device& dev, std::string& err) {
     return true;
 }
 
-// Appends to a dynamic buffer used as a ring: NO_OVERWRITE while there is room, DISCARD (a fresh buffer behind the scenes) when it wraps.
-bool Renderer::upload(ComPtr<ID3D11Buffer>& buf, uint32_t& capacity, uint32_t& cursor, uint32_t bind, const void* data, uint32_t bytes, uint32_t& offset) {
+static_assert(sizeof(tev::Vertex) % 16 == 0, "ring offsets are multiples of 16, and draw() derives the base vertex from them");
+
+// Reserves `bytes` at the end of a dynamic buffer used as a ring and maps it for writing: NO_OVERWRITE while there is room, DISCARD (a fresh
+// buffer behind the scenes) when it wraps. Returns the address to write at, or null; `offset` is where the data lands in the buffer
+// (a multiple of 16). The caller writes exactly `bytes` and calls unmapRange().
+uint8_t* Renderer::mapRange(ComPtr<ID3D11Buffer>& buf, uint32_t& capacity, uint32_t& cursor, uint32_t bind, uint32_t bytes, uint32_t& offset) {
     if (!buf || bytes > capacity) {
         capacity = std::max<uint32_t>(bytes, std::max<uint32_t>(capacity * 2, 4u << 20));
         D3D11_BUFFER_DESC bd = {};
         bd.ByteWidth = capacity; bd.Usage = D3D11_USAGE_DYNAMIC; bd.BindFlags = bind; bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-        if (FAILED(dev_->device()->CreateBuffer(&bd, nullptr, buf.ReleaseAndGetAddressOf()))) return false;
+        if (FAILED(dev_->device()->CreateBuffer(&bd, nullptr, buf.ReleaseAndGetAddressOf()))) return nullptr;
         cursor = capacity;   // forces the discard path below
     }
     D3D11_MAP mode = D3D11_MAP_WRITE_NO_OVERWRITE;
     if (cursor + bytes > capacity) { mode = D3D11_MAP_WRITE_DISCARD; cursor = 0; }
     D3D11_MAPPED_SUBRESOURCE m;
-    if (FAILED(dev_->context()->Map(buf.Get(), 0, mode, 0, &m))) return false;
-    std::memcpy(static_cast<uint8_t*>(m.pData) + cursor, data, bytes);
-    dev_->context()->Unmap(buf.Get(), 0);
+    if (FAILED(dev_->context()->Map(buf.Get(), 0, mode, 0, &m))) return nullptr;
     offset = cursor;
     cursor += (bytes + 15) & ~15u;
+    return static_cast<uint8_t*>(m.pData) + offset;
+}
+
+void Renderer::unmapRange(ComPtr<ID3D11Buffer>& buf) { dev_->context()->Unmap(buf.Get(), 0); }
+
+bool Renderer::upload(ComPtr<ID3D11Buffer>& buf, uint32_t& capacity, uint32_t& cursor, uint32_t bind, const void* data, uint32_t bytes, uint32_t& offset) {
+    uint8_t* dst = mapRange(buf, capacity, cursor, bind, bytes, offset);
+    if (!dst) return false;
+    std::memcpy(dst, data, bytes);
+    unmapRange(buf);
     return true;
 }
 
@@ -405,34 +443,37 @@ void Renderer::trimCaches() {
     }
 }
 
-void Renderer::draw(const gx::DrawCommand& dc) {
-    ++stats_.draws;
-    trimCaches();
-    depthDirty_ = true;
+// Everything a draw derives from its pipeline state alone (not from its vertices): the pixel shader, the constants, the sampler and
+// state objects, the viewport and scissor, and which texture maps to bind. Computed once per state id (the previous one is kept in
+// prep_) and reused by the draws that follow with the same id. Returns false when the draw is skipped (reported and counted).
+bool Renderer::prepare(const gx::DrawCommand& dc, ID3D11ShaderResourceView* (&srvs)[8]) {
     const gx::PipelineState& s = *dc.state;
-    auto skip = [&](const std::string& why) { report(why); ++stats_.drawsSkipped; };
-    if (!dc.indexCount || !dc.vertexCount) return;
-    if (dc.vertexCount > 65535) { skip("draw with more than 65535 vertices"); return; }
-    if (s.viewport.width <= 0 || s.viewport.height <= 0) { skip("empty viewport"); return; }
-    if (s.blend.mode == gx::BlendMode::Logic && s.blend.logicOp != gx::LogicOp::Copy && s.blend.logicOp != gx::LogicOp::NoOp) { skip("blend logic op other than copy/no-op"); return; }
+    Prepared& pr = prep_;
+    pr.stateId = 0;   // not reusable until complete
+    std::string why;
+    auto skip = [&](const auto& reason) { report(reason); ++stats_.drawsSkipped; };   // a string literal or a std::string
+    if (s.viewport.width <= 0 || s.viewport.height <= 0) { skip("empty viewport"); return false; }
+    if (s.blend.mode == gx::BlendMode::Logic && s.blend.logicOp != gx::LogicOp::Copy && s.blend.logicOp != gx::LogicOp::NoOp) { skip("blend logic op other than copy/no-op"); return false; }
     if (s.depth.compareBeforeTexture && s.depth.test && (s.alphaCompare.comp0 != gx::CompareFunc::Always || s.alphaCompare.comp1 != gx::CompareFunc::Always)) {
         skip("early depth test together with an alpha test (depth is updated before the alpha test on hardware)");
-        return;
+        return false;
     }
-    if (s.efbFormat != gx::PixelFormat::RGB8_Z24) { skip("EFB pixel format other than RGB8_Z24"); return; }
-    if (s.fog.type != gx::FogType::None && s.fog.rangeAdjustEnable) { skip("fog range adjustment (GX_SetFogRangeAdj)"); return; }
+    if (s.efbFormat != gx::PixelFormat::RGB8_Z24) { skip("EFB pixel format other than RGB8_Z24"); return false; }
+    if (s.fog.type != gx::FogType::None && s.fog.rangeAdjustEnable) { skip("fog range adjustment (GX_SetFogRangeAdj)"); return false; }
 
     tev::PixelShaderKey key;
-    std::string why;
-    if (!buildKey(s, key, why)) { skip(why); return; }
+    if (!buildKey(s, key, why, env_.noAlpha)) { skip(why); return false; }
     ID3D11PixelShader* ps = shaders_.get(*dev_, key, why);
-    if (!ps) { skip(why.substr(0, why.find('\n'))); return; }
+    if (!ps) { skip(why.substr(0, why.find('\n'))); return false; }
 
     // Textures and per-stage coordinate scale.
-    tev::TevConstants cb = {};
+    tev::TevConstants& cb = pr.cb;
+    cb = {};
+    pr.mapCount = 0;
+    pr.rangeBiasStages = 0;
     for (auto& sc : cb.stageScale) { sc[0] = 1.0f; sc[1] = 1.0f; sc[2] = 1.0f; sc[3] = 1.0f; }
-    ID3D11ShaderResourceView* srvs[8] = {};
-    ID3D11SamplerState* smps[8] = {};
+    ID3D11SamplerState** smps = pr.smps;
+    std::fill(smps, smps + 8, nullptr);
     bool mapDone[8] = {};
     auto bindMap = [&](uint32_t m) -> bool {
         if (m > 7) { skip("texture map out of range"); return false; }
@@ -441,20 +482,21 @@ void Renderer::draw(const gx::DrawCommand& dc) {
         if (!srvs[m]) { skip(why); return false; }
         smps[m] = sampler(s.maps[m].sampler);
         mapDone[m] = true;
+        pr.maps[pr.mapCount++] = static_cast<uint8_t>(m);
         return true;
     };
     for (uint32_t i = 0; i < s.tev.numStages; ++i) {
         const gx::TevStage& t = s.tev.stages[i];
         float* sc = cb.stageScale[i];
         if (t.texCoord != gx::kNoMap) {
-            if (t.texCoord > 7) { skip("texture coordinate set out of range"); return; }
+            if (t.texCoord > 7) { skip("texture coordinate set out of range"); return false; }
             const gx::TexCoordScale& ts = s.texScale[t.texCoord];
-            if (ts.cylWrapS || ts.cylWrapT) { skip("cylindrical texture coordinate wrapping"); return; }
-            if (ts.rangeBiasS || ts.rangeBiasT) report("texture coordinate range bias (ignored: coordinates are used unbiased)");
+            if (ts.cylWrapS || ts.cylWrapT) { skip("cylindrical texture coordinate wrapping"); return false; }
+            if (ts.rangeBiasS || ts.rangeBiasT) { report(kRangeBiasReason); ++pr.rangeBiasStages; }
             sc[0] = ts.sSize; sc[1] = ts.tSize;
         }
         if (t.texMap != gx::kNoMap) {
-            if (!bindMap(t.texMap)) return;
+            if (!bindMap(t.texMap)) return false;
             const gx::TexBinding& b = s.maps[t.texMap];
             if (b.width) sc[2] = 1.0f / b.width;
             if (b.height) sc[3] = 1.0f / b.height;
@@ -466,7 +508,7 @@ void Renderer::draw(const gx::DrawCommand& dc) {
         bool used = false;
         for (uint32_t i = 0; i < s.tev.numStages; ++i) used |= s.tev.stages[i].indirect.indStage == k;
         if (!used) continue;
-        if (!bindMap(is.texMap)) return;
+        if (!bindMap(is.texMap)) return false;
         const gx::TexCoordScale& ts = s.texScale[is.texCoord];
         const gx::TexBinding& b = s.maps[is.texMap];
         if (b.width) cb.indScale[k][0] = static_cast<float>(ts.sSize) / static_cast<float>(1u << is.scaleS) / b.width;
@@ -477,13 +519,56 @@ void Renderer::draw(const gx::DrawCommand& dc) {
             for (int col = 0; col < 3; ++col) cb.indMtx[2 * m + row][col] = s.tev.indirectMatrix[m][row][col];
     bool anyIndirect = false;
     for (uint32_t i = 0; i < s.tev.numStages; ++i) anyIndirect |= s.tev.stages[i].indirect.indStage != gx::kNoMap;
-    if (anyIndirect) report("indirect texturing offsets use the matrix / 256 in texels (scale not verified against hardware)");
+    pr.indirect = anyIndirect;
+    if (anyIndirect) report(kIndirectReason);
     for (int r = 0; r < 4; ++r)
         for (int c = 0; c < 4; ++c) { cb.tevreg[r][c] = s.tev.reg[r][c] / 255.0f; cb.kcolor[r][c] = s.tev.konst[r][c] / 255.0f; }
     cb.fogParam[0] = s.fog.a; cb.fogParam[1] = s.fog.b; cb.fogParam[2] = s.fog.c;
     for (int c = 0; c < 3; ++c) cb.fogColor[c] = s.fog.color[c] / 255.0f;
     cb.alphaRef[0] = s.alphaCompare.ref0;
     cb.alphaRef[1] = s.alphaCompare.ref1;
+
+    pr.ps = ps;
+    pr.blend = blendState(s.blend);
+    pr.depth = depthState(s.depth);
+    // D3D11 silently ignores a viewport whose depth range leaves [0, 1] and keeps the previous one. The XF registers give a far value of
+    // 16777216 / 16777215 (just above 1.0), so the range is clamped to what the depth buffer can hold.
+    const auto unit = [](float v) { return v < 0.0f ? 0.0f : v > 1.0f ? 1.0f : v; };
+    pr.viewport ={s.viewport.x, s.viewport.y, s.viewport.width, s.viewport.height, unit(s.viewport.nearZ), unit(s.viewport.farZ)};
+    pr.scissor = {s.scissor.x0, s.scissor.y0, s.scissor.x1 + 1, s.scissor.y1 + 1};
+    pr.stateId = dc.stateId;   // 0 (no id) never matches: such states are prepared on every draw
+    return true;
+}
+
+
+void Renderer::draw(const gx::DrawCommand& dc) {
+    ++stats_.draws;
+    trimCaches();
+    depthDirty_ = true;
+    const gx::PipelineState& s = *dc.state;
+    auto skip = [&](const auto& why) { report(why); ++stats_.drawsSkipped; };   // a string literal or a std::string
+    if (!dc.indexCount || !dc.vertexCount) return;
+    if (dc.vertexCount > 65535) { skip("draw with more than 65535 vertices"); return; }
+    ID3D11ShaderResourceView* srvs[8] = {};
+    const Prepared& pr = prep_;
+    bool reused = false;
+    if (dc.stateId != 0 && pr.stateId == dc.stateId) {   // same pipeline state as the draw prepared last: its shader, constants and objects still apply
+        std::string why;
+        reused = true;
+        for (uint32_t i = 0; i < pr.mapCount; ++i) {
+            const uint32_t m = pr.maps[i];
+            srvs[m] = mapSrv(s.maps[m], why);
+            if (!srvs[m]) { reused = false; break; }   // a texture went away: the full path reports it exactly as before
+        }
+        if (!reused) std::fill(srvs, srvs + 8, nullptr);
+    }
+    if (reused) {
+        shaders_.noteReuse();
+        for (uint32_t i = 0; i < pr.rangeBiasStages; ++i) report(kRangeBiasReason);
+        if (pr.indirect) report(kIndirectReason);
+    } else if (!prepare(dc, srvs)) {
+        return;
+    }
 
     // Vertices and indices to draw: triangles as they are; points become screen-aligned squares, lines quads along the line
     // (size in 1/6 pixel, EFB pixels), expanded here in clip space.
@@ -499,10 +584,23 @@ void Renderer::draw(const gx::DrawCommand& dc) {
     const float vpW = s.viewport.width, vpH = s.viewport.height;
     static const uint16_t kQuadIdx[6] = {0, 1, 2, 2, 1, 3};
     static const float kTexOffset[8] = {0.0f, 1.0f / 16, 1.0f / 8, 1.0f / 4, 0.5f, 1.0f, 0.0f, 0.0f};   // GX_TO_ZERO .. GX_TO_ONE
-    if (dc.primitive == gx::Primitive::Triangles) {
+    uint32_t vbOffset = 0, ibOffset = 0, indexCount = 0;
+    const bool direct = !env_.dumpDraw && !occFrom_;   // the debugging aids below read verts_ / idx_
+    if (dc.primitive == gx::Primitive::Triangles && !direct) {
         verts_.reserve(dc.vertexCount);
         for (uint32_t i = 0; i < dc.vertexCount; ++i) verts_.push_back(convert(dc.vertices[i]));
         idx_.assign(dc.indices, dc.indices + dc.indexCount);
+    } else if (dc.primitive == gx::Primitive::Triangles) {
+        // The common case: the converted vertices and the indices are written straight into the mapped ring buffers (no intermediate copy).
+        tev::Vertex* vdst = reinterpret_cast<tev::Vertex*>(mapRange(vb_, vbCap_, vbCursor_, D3D11_BIND_VERTEX_BUFFER, dc.vertexCount * sizeof(tev::Vertex), vbOffset));
+        if (!vdst) { skip("vertex/index buffer upload failed"); return; }
+        for (uint32_t i = 0; i < dc.vertexCount; ++i) vdst[i] = convert(dc.vertices[i]);
+        unmapRange(vb_);
+        uint16_t* idst = reinterpret_cast<uint16_t*>(mapRange(ib_, ibCap_, ibCursor_, D3D11_BIND_INDEX_BUFFER, dc.indexCount * 2, ibOffset));
+        if (!idst) { skip("vertex/index buffer upload failed"); return; }
+        std::memcpy(idst, dc.indices, size_t(dc.indexCount) * 2);
+        unmapRange(ib_);
+        indexCount = dc.indexCount;
     } else if (dc.primitive == gx::Primitive::Points) {
         const float half = s.pointSize / 6.0f * 0.5f;
         const float off = kTexOffset[s.pointTexOffset & 7];
@@ -549,42 +647,48 @@ void Renderer::draw(const gx::DrawCommand& dc) {
         }
         if (s.lineTexOffset) report("line texture coordinate offsets (ignored)");
     }
-    if (verts_.size() > 65535) { skip("primitive expansion produced more than 65535 vertices"); return; }
-    if (idx_.empty()) return;
-    uint32_t vbOffset = 0, ibOffset = 0;
-    if (!upload(vb_, vbCap_, vbCursor_, D3D11_BIND_VERTEX_BUFFER, verts_.data(), static_cast<uint32_t>(verts_.size() * sizeof(tev::Vertex)), vbOffset) ||
-        !upload(ib_, ibCap_, ibCursor_, D3D11_BIND_INDEX_BUFFER, idx_.data(), static_cast<uint32_t>(idx_.size() * 2), ibOffset)) { skip("vertex/index buffer upload failed"); return; }
-    D3D11_MAPPED_SUBRESOURCE m;
-    if (FAILED(dev_->context()->Map(tevCb_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) { skip("constant buffer upload failed"); return; }
-    std::memcpy(m.pData, &cb, sizeof cb);
-    dev_->context()->Unmap(tevCb_.Get(), 0);
+    if (!indexCount) {   // points and lines (and the debugging path): expanded into verts_ / idx_, uploaded here
+        if (verts_.size() > 65535) { skip("primitive expansion produced more than 65535 vertices"); return; }
+        if (idx_.empty()) return;
+        indexCount = static_cast<uint32_t>(idx_.size());
+        if (!upload(vb_, vbCap_, vbCursor_, D3D11_BIND_VERTEX_BUFFER, verts_.data(), static_cast<uint32_t>(verts_.size() * sizeof(tev::Vertex)), vbOffset) ||
+            !upload(ib_, ibCap_, ibCursor_, D3D11_BIND_INDEX_BUFFER, idx_.data(), static_cast<uint32_t>(idx_.size() * 2), ibOffset)) { skip("vertex/index buffer upload failed"); return; }
+    }
+    if (dc.stateId == 0 || tevCbStateId_ != dc.stateId) {   // the constants are a function of the state: unchanged while the state id is
+        tevCbStateId_ = 0;
+        D3D11_MAPPED_SUBRESOURCE m;
+        if (FAILED(dev_->context()->Map(tevCb_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) { skip("constant buffer upload failed"); return; }
+        std::memcpy(m.pData, &pr.cb, sizeof pr.cb);
+        dev_->context()->Unmap(tevCb_.Get(), 0);
+        tevCbStateId_ = dc.stateId;
+    }
 
-    if (const char* dd = std::getenv("AWL_GFX_DUMPDRAW")) {   // debugging aid: write one draw's clip-space vertices and indices to <file>
-        if (dc.seq == static_cast<uint32_t>(std::strtoul(dd, nullptr, 0)) && std::getenv("AWL_GFX_DUMPDRAW_FILE")) {
-            if (FILE* f = std::fopen(std::getenv("AWL_GFX_DUMPDRAW_FILE"), "wb")) {
-                const uint32_t nVerts = static_cast<uint32_t>(verts_.size()), nIdx = static_cast<uint32_t>(idx_.size());
-                std::fwrite(&nVerts, 4, 1, f); std::fwrite(&nIdx, 4, 1, f);
-                for (const tev::Vertex& v : verts_) std::fwrite(v.pos, 4, 4, f);
-                std::fwrite(idx_.data(), 2, nIdx, f);
-                std::fclose(f);
-            }
+    if (env_.dumpDraw && dc.seq == env_.dumpDrawSeq) {   // debugging aid: write one draw's clip-space vertices and indices to <file>
+        if (FILE* f = std::fopen(env_.dumpDrawFile.c_str(), "wb")) {
+            const uint32_t nVerts = static_cast<uint32_t>(verts_.size()), nIdx = static_cast<uint32_t>(idx_.size());
+            std::fwrite(&nVerts, 4, 1, f); std::fwrite(&nIdx, 4, 1, f);
+            for (const tev::Vertex& v : verts_) std::fwrite(v.pos, 4, 4, f);
+            std::fwrite(idx_.data(), 2, nIdx, f);
+            std::fclose(f);
         }
     }
     ID3D11DeviceContext* c = dev_->context();
+    // Every D3D state below is set only when it differs from what this renderer set last (bound_); the shadow is dropped (all = true)
+    // whenever something else may have touched the context: an EFB copy or clear, a present or blit.
+    BoundState& b = bound_;
+    const bool all = !b.valid;
+    b.valid = true;
     ID3D11RenderTargetView* rtv = efbRtv_.Get();
-    c->OMSetRenderTargets(1, &rtv, dsv_.Get());
-    // D3D11 silently ignores a viewport whose depth range leaves [0, 1] and keeps the previous one. The XF registers give a far value of
-    // 16777216 / 16777215 (just above 1.0), so the range is clamped to what the depth buffer can hold.
-    const auto unit = [](float v) { return v < 0.0f ? 0.0f : v > 1.0f ? 1.0f : v; };
-    D3D11_VIEWPORT vp = {s.viewport.x, s.viewport.y, s.viewport.width, s.viewport.height, unit(s.viewport.nearZ), unit(s.viewport.farZ)};
-    c->RSSetViewports(1, &vp);
-    if (std::getenv("AWL_GFX_LITPROBE") && dc.seq == static_cast<uint32_t>(std::strtoul(std::getenv("AWL_GFX_LITPROBE"), nullptr, 0))) {
+    if (all || b.rtv != rtv || b.dsv != dsv_.Get()) { c->OMSetRenderTargets(1, &rtv, dsv_.Get()); b.rtv = rtv; b.dsv = dsv_.Get(); }
+    const D3D11_VIEWPORT& vp = pr.viewport;
+    if (all || std::memcmp(&b.viewport, &vp, sizeof vp) != 0) { c->RSSetViewports(1, &vp); b.viewport = vp; }
+    if (env_.litProbe && dc.seq == env_.litProbeSeq) {
         UINT n1 = 1; D3D11_VIEWPORT g1[1] = {}; c->RSGetViewports(&n1, g1);
         std::fprintf(stderr, "fiber=%p thread=%lu ", GetCurrentFiber(), GetCurrentThreadId());
         std::fprintf(stderr, "vpset want(%.4f,%.4f,%.4f,%.4f z %.6f-%.6f) got n=%u (%.4f,%.4f,%.4f,%.4f z %.6f-%.6f)\n", vp.TopLeftX, vp.TopLeftY, vp.Width, vp.Height, vp.MinDepth, vp.MaxDepth, n1,
                      g1[0].TopLeftX, g1[0].TopLeftY, g1[0].Width, g1[0].Height, g1[0].MinDepth, g1[0].MaxDepth);
     }
-    if (std::getenv("AWL_GFX_VPCHECK")) {   // debugging aid: does the viewport we set stick?
+    if (env_.vpCheck) {   // debugging aid: does the viewport we set stick?
         UINT n1 = 1; D3D11_VIEWPORT g1[1] = {}; c->RSGetViewports(&n1, g1);
         const bool ok = g1[0].Width == vp.Width && g1[0].Height == vp.Height && g1[0].MinDepth == vp.MinDepth;
         static uint64_t good = 0, bad = 0;
@@ -596,35 +700,41 @@ void Renderer::draw(const gx::DrawCommand& dc) {
             lastFiber = GetCurrentFiber(); lastOk = ok;
         }
     }
-    D3D11_RECT sc = {s.scissor.x0, s.scissor.y0, s.scissor.x1 + 1, s.scissor.y1 + 1};
-    c->RSSetScissorRects(1, &sc);
-    static const bool noScissor = std::getenv("AWL_GFX_DEBUG_NOSCISSOR") != nullptr;   // debugging aid: no scissor
-    c->RSSetState(noScissor ? rasterNoScissor_.Get() : raster_.Get());
-    c->OMSetBlendState(blendState(s.blend), nullptr, 0xFFFFFFFFu);
-    static const bool noDepth = std::getenv("AWL_GFX_DEBUG_NODEPTH") != nullptr;   // debugging aid: depth test off
-    if (noDepth) c->OMSetDepthStencilState(noDepth_.Get(), 0); else c->OMSetDepthStencilState(depthState(s.depth), 0);
-    c->IASetInputLayout(layout_.Get());
-    c->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    UINT stride = sizeof(tev::Vertex), offset = vbOffset;
-    ID3D11Buffer* vb = vb_.Get();
-    c->IASetVertexBuffers(0, 1, &vb, &stride, &offset);
-    c->IASetIndexBuffer(ib_.Get(), DXGI_FORMAT_R16_UINT, ibOffset);
-    c->VSSetShader(vs_.Get(), nullptr, 0);
-    static const bool solid = std::getenv("AWL_GFX_DEBUG_SOLID") != nullptr;   // debugging aid: every pixel solid red
-    if (solid) {
+    const D3D11_RECT& sc = pr.scissor;
+    if (all || std::memcmp(&b.scissor, &sc, sizeof sc) != 0) { c->RSSetScissorRects(1, &sc); b.scissor = sc; }
+    ID3D11RasterizerState* rasterState = env_.noScissor ? rasterNoScissor_.Get() : raster_.Get();   // AWL_GFX_DEBUG_NOSCISSOR: no scissor
+    if (all || b.raster != rasterState) { c->RSSetState(rasterState); b.raster = rasterState; }
+    if (all || b.blend != pr.blend) { c->OMSetBlendState(pr.blend, nullptr, 0xFFFFFFFFu); b.blend = pr.blend; }
+    ID3D11DepthStencilState* depthStateObj = env_.noDepth ? noDepth_.Get() : pr.depth;   // AWL_GFX_DEBUG_NODEPTH: depth test off
+    if (all || b.depth != depthStateObj) { c->OMSetDepthStencilState(depthStateObj, 0); b.depth = depthStateObj; }
+    if (all) {   // constant for every draw of this renderer
+        c->IASetInputLayout(layout_.Get());
+        c->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        c->VSSetShader(vs_.Get(), nullptr, 0);
+        ID3D11Buffer* cbuf = tevCb_.Get();
+        c->PSSetConstantBuffers(0, 1, &cbuf);
+    }
+    // The ring buffers are bound at offset 0; each draw addresses its data with the start index and base vertex (the offsets are multiples
+    // of 2 and of sizeof(tev::Vertex), see upload()).
+    if (all || b.vb != vb_.Get()) {
+        UINT stride = sizeof(tev::Vertex), offset = 0;
+        ID3D11Buffer* vb = vb_.Get();
+        c->IASetVertexBuffers(0, 1, &vb, &stride, &offset);
+        b.vb = vb;
+    }
+    if (all || b.ib != ib_.Get()) { c->IASetIndexBuffer(ib_.Get(), DXGI_FORMAT_R16_UINT, 0); b.ib = ib_.Get(); }
+    ID3D11PixelShader* psh = pr.ps;
+    if (env_.solid) {   // AWL_GFX_DEBUG_SOLID: every pixel solid red
         if (!solidPs_) {
             ComPtr<ID3DBlob> solidCode; std::string e;
             if (compileHlsl("float4 main() : SV_Target0 { return float4(1,0,0,1); }", "main", "ps_5_0", solidCode, e))
                 dev_->device()->CreatePixelShader(solidCode->GetBufferPointer(), solidCode->GetBufferSize(), nullptr, solidPs_.GetAddressOf());
         }
-        c->PSSetShader(solidPs_.Get(), nullptr, 0);
-    } else {
-        c->PSSetShader(ps, nullptr, 0);
+        psh = solidPs_.Get();
     }
-    ID3D11Buffer* cbuf = tevCb_.Get();
-    c->PSSetConstantBuffers(0, 1, &cbuf);
-    c->PSSetShaderResources(0, 8, srvs);
-    c->PSSetSamplers(0, 8, smps);
+    if (all || b.ps != psh) { c->PSSetShader(psh, nullptr, 0); b.ps = psh; }
+    if (all || std::memcmp(b.srv, srvs, sizeof srvs) != 0) { c->PSSetShaderResources(0, 8, srvs); std::memcpy(b.srv, srvs, sizeof srvs); }
+    if (all || std::memcmp(b.smp, pr.smps, sizeof b.smp) != 0) { c->PSSetSamplers(0, 8, pr.smps); std::memcpy(b.smp, pr.smps, sizeof b.smp); }
     if (frameStats_ && !frameQuery_) {
         D3D11_QUERY_DESC qd = {D3D11_QUERY_OCCLUSION, 0};
         dev_->device()->CreateQuery(&qd, frameQuery_.GetAddressOf());
@@ -637,7 +747,7 @@ void Renderer::draw(const gx::DrawCommand& dc) {
         dev_->device()->CreateQuery(&qd, occ.GetAddressOf());
         if (occ) c->Begin(occ.Get());
     }
-    const bool probe = std::getenv("AWL_GFX_LITPROBE") && dc.seq == static_cast<uint32_t>(std::strtoul(std::getenv("AWL_GFX_LITPROBE"), nullptr, 0));
+    const bool probe = env_.litProbe && dc.seq == env_.litProbeSeq;
     if (probe) {   // the D3D11 state actually bound for this draw
         UINT nvp = 1; D3D11_VIEWPORT gv[1] = {}; c->RSGetViewports(&nvp, gv);
         UINT nsc = 1; D3D11_RECT gs[1] = {}; c->RSGetScissorRects(&nsc, gs);
@@ -660,7 +770,7 @@ void Renderer::draw(const gx::DrawCommand& dc) {
         if (gdsv) gdsv->Release();
     }
     const size_t litBefore = probe ? countLit(*dev_, efb_.tex.Get(), kEfbWidth, kEfbHeight) : 0;
-    c->DrawIndexed(static_cast<UINT>(idx_.size()), 0, 0);
+    c->DrawIndexed(indexCount, ibOffset / 2, static_cast<INT>(vbOffset / sizeof(tev::Vertex)));
     if (probe) std::fprintf(stderr, "litprobe seq=%u before=%zu after=%zu\n", dc.seq, litBefore, countLit(*dev_, efb_.tex.Get(), kEfbWidth, kEfbHeight));
     if (occ) {
         c->End(occ.Get());
@@ -717,9 +827,7 @@ void Renderer::draw(const gx::DrawCommand& dc) {
                      verts_.size(), idx_.size(), static_cast<unsigned long long>(samples), s.depth.test, static_cast<int>(s.depth.func), s.depth.write, static_cast<int>(s.blend.mode),
                      s.tev.numStages, s.maps[0].valid);
     }
-    ID3D11ShaderResourceView* none[8] = {};
-    c->PSSetShaderResources(0, 8, none);
-    stats_.triangles += idx_.size() / 3;
+    stats_.triangles += indexCount / 3;
 }
 
 void Renderer::clearRect(const gx::EfbCopyCommand& cc) {
@@ -754,6 +862,7 @@ void Renderer::clearRect(const gx::EfbCopyCommand& cc) {
 
 void Renderer::efbCopy(const gx::EfbCopyCommand& cc) {
     ++stats_.copies;
+    bound_.valid = false;   // the copy and the clear set their own render target and state on the shared context
     if (frameStats_ && frameQuery_ && cc.target == gx::CopyTarget::Xfb) {   // AWL_GFX_FRAMESTATS=1: samples passed by every draw since the previous XFB copy
         dev_->context()->End(frameQuery_.Get());
         UINT64 samples = 0;

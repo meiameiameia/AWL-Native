@@ -468,11 +468,11 @@ Console tool (no window, no game process). Inputs: the files of section 10.7 in 
 ```powershell
 cmake --build build --config Release --target awl-host awl-capture-compare
 # once per change of the platform: its own memory at the entry and after OSInit, and the trace with the call lines
-src\hle\dump_host_memory.ps1
+src\hle\dump_host_memory.ps1   # awl-host runs with --calls 16 (the call trace is off by default)
 build\Release\awl-capture-compare.exe
 ```
 
-Missing files give a "not captured" section and the rest still runs; lines the parser cannot read are listed under *Parse notes* (first ten per file) instead of stopping it. Options: `--capture`, `--trace`, `--disc`, `--host-dumps`, `--out`. `awl-host` gained `--calls DEPTH` (default 16: record the calls of the functions in `capture_parse.cpp` as `call` lines in the trace, plus `boot.after-osinit icount=N`), `--dump-boot FILE` and `--dump-mem FILE`; `dump_host_memory.ps1` runs it twice, the second time stopped at instruction N, which is where OSInit has returned (its callee `DVDInit` runs inside OSInit, so the drive-information buffer is filled by then in both).
+Missing files give a "not captured" section and the rest still runs; lines the parser cannot read are listed under *Parse notes* (first ten per file) instead of stopping it. Options: `--capture`, `--trace`, `--disc`, `--host-dumps`, `--out`. `awl-host` gained `--calls DEPTH` (default 0 = off since the speed block, because the record grows for the whole run; the comparison needs `--calls 16`, which `dump_host_memory.ps1` passes: record the calls of the functions in `capture_parse.cpp` as `call` lines in the trace, plus `boot.after-osinit icount=N`), `--dump-boot FILE` and `--dump-mem FILE`; `dump_host_memory.ps1` runs it twice, the second time stopped at instruction N, which is where OSInit has returned (its callee `DVDInit` runs inside OSInit, so the drive-information buffer is filled by then in both).
 
 What each section answers, and what to do with it:
 

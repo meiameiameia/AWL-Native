@@ -410,6 +410,41 @@ int main() {
         CHECK(fog && ortho && lines && logic);
     }
 
+    // 7. Pipeline state ids (the speed block): draws that share an id reuse the shader, constants and D3D state objects the first one
+    //    prepared, and still draw their own geometry; a new id prepares again; the D3D state is set again after an EFB copy (which
+    //    uses the same context). Expected pixels as in test 2: blending 50% blue (alpha 128) over the destination, per channel
+    //    out = 0 * 0.50196 + dst * 0.49804 for red, 255 * 0.50196 + dst * 0.49804 for blue.
+    {
+        gx::EfbCopyCommand c = xfbCopy(20, 0x7000, false);
+        c.clear.color = c.clear.alpha = c.clear.z = true;
+        c.clear.rgba[3] = 255;
+        c.clear.z24 = 0xFFFFFF;
+        r.efbCopy(c);   // everything black again
+        const uint8_t red[4] = {255, 0, 0, 255}, green[4] = {0, 255, 0, 255}, blue50[4] = {0, 0, 255, 128};
+        gx::PipelineState plain = baseState();
+        gx::PipelineState blend = baseState();
+        blend.blend.mode = gx::BlendMode::Blend;
+        blend.blend.src = gx::BlendFactor::SrcAlpha;
+        blend.blend.dst = gx::BlendFactor::InvSrcAlpha;
+        Quad left(-1, 0, 0, 1, -1.0f, red), right(0, 0, 1, 1, -1.0f, green), over(-1, 0, 0, 1, -1.0f, blue50);
+        auto withId = [](gx::DrawCommand d, uint32_t id) { d.stateId = id; return d; };
+        r.draw(withId(left.cmd(plain), 21));
+        const uint64_t hits = r.shaderStats().hits;
+        r.draw(withId(right.cmd(plain), 21));          // same id: reused, drawn at its own place
+        CHECK(r.shaderStats().hits == hits + 1);
+        r.draw(withId(over.cmd(blend), 22));           // new id: the blend state applies
+        r.draw(withId(over.cmd(blend), 22));           // reused: blends a second time
+        r.efbCopy(xfbCopy(21, 0x7100, false));
+        CHECK(r.xfbImage(0x7100, img, why));
+        CHECK(near3(img, 400, 50, 0, 255, 0, 0));      // right quad: plain green
+        CHECK(near3(img, 100, 50, 63, 0, 192, 2));     // left: red, then blue twice
+        r.draw(withId(over.cmd(blend), 22));           // after an EFB copy the context state is set again
+        r.efbCopy(xfbCopy(22, 0x7200, false));
+        CHECK(r.xfbImage(0x7200, img, why));
+        CHECK(near3(img, 100, 50, 31, 0, 224, 2));     // a third time
+        CHECK(near3(img, 400, 50, 0, 255, 0, 0));
+    }
+
     r.printSummary();
     if (g_failures) { std::fprintf(stderr, "%d check(s) failed\n", g_failures); return 1; }
     std::printf("gfx_renderer_tests: all checks passed\n");

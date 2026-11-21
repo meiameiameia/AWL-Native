@@ -61,7 +61,15 @@ Focus loss pauses the game: at the next retrace the host stops running the guest
 
 `src/gfx/gfx.cmake` defines `awl_gfx` and `awl_pad_input` (the one copy of `src/input.cpp`, used by both the PAD replacement and the window input; `tools/recomp/platform.cmake` links it instead of compiling the file twice). `awl-host` links `awl_gfx` and defines `AWL_HAVE_GFX` when the target exists. The tests (`gfx_device_tests`, `gfx_pacing_tests`, `gfx_input_tests`, `gfx_tev_tests`) never open a window.
 
-### Owner window test (pending: run it at a time agreed with the session, never started by an assistant)
+### Owner window re-check after the speed block (pending: at a time agreed with the session, never started by an assistant)
+
+Same command and controls as the test below (it was passed on 2026-11-21 at 40% of real time; the speed block of section 9c brought the title screen to about 136% in the offscreen bench). What to look at this time, a few minutes in total:
+1. The speed in the corner box and in the title bar once the title screen is up: it should read 95% or more and stay steady (the window paces itself at 100%, so it should not read much above 100%). Write down the lowest and the usual value, and what was on screen when it dipped.
+2. The picture is the same as before: logos, then the title screen (sign, town, "New Game / Continue", copyright); nothing flickers or looks different from the earlier test.
+3. Open finding (a) of the earlier test: do the arrow keys move the menu cursor? (W / S did.) Open finding (b): click another window while the game is open, once in the normal window and once after F11 fullscreen: does the game window minimize, and does the title say "paused: click this window to continue"?
+4. Esc closes it; the console ends with `EXIT: window closed`.
+
+### Owner window test (done 2026-11-21, kept for the controls and report list; the speed remark below is from before the speed block)
 
 Goal: see the game's logos and title screen in a real window for the first time, and report how it behaves. **The game runs slower than real time for now** (roughly a fifth of the original speed, measured before this window existed); that is expected, the window says so, and fixing it is the next work block. Expect the logos and the title screen to take a while to appear and to move in slow motion.
 
@@ -226,6 +234,33 @@ Caches: textures by content key with a 512 MB least-recently-used budget (trimme
 
 Evidence: the logos of the start-up sequence (three crossfaded textured quads over a cleared EFB) render as the game's own images with the XFB copy filter applied; `awl-host --capture-frames` gives byte-identical BMPs across runs and across devices for a given run (checked on the hardware adapter: two runs of frames 340-341 are identical, and the boot trace is unchanged by capturing). **Fixed: the scene after the logos was invisible because D3D ignored the viewport.** The GX core decodes the viewport depth range from the XF registers as near = 1/1024, far = 16777216 / 16777215, which is just above 1.0. D3D11 silently ignores `RSSetViewports` when MaxDepth exceeds 1 and keeps the previous viewport, here the 64x32 viewport of the render-to-texture copy pass, so every scene draw was clipped to a 64x32 corner. The renderer now clamps the depth range to [0, 1]. **Native difference:** GX's far value 16777216 / 16777215 maps a hair beyond 1.0; clamping it to 1.0 changes depth values by at most one step of the 24-bit depth buffer, which is negligible. Found by comparing the viewport that was set with `RSGetViewports` for the first failing draw (`AWL_GFX_VPCHECK=1`); a replay of the same vertices in a fresh renderer drew 23,624 pixels where the live draw drew 0. Regression test: `gfx_renderer_tests` section 5b3 (render-to-texture pass, then a full-screen composite with the game's exact depth range). The title screen now renders (sign, town, copyright line); the menu text is garbled by the font-atlas guest-memory bug that belongs to another track. Diagnostic switches kept: `AWL_GFX_FRAMESTATS`, `AWL_GFX_OCCLUSION`, `AWL_GFX_VPCHECK`, `AWL_GFX_LITPROBE=<seq>` (bound D3D state and lit-pixel counts around one draw), `AWL_GFX_DUMPDRAW=<seq>` with `AWL_GFX_DUMPDRAW_FILE`, `AWL_GFX_DEBUG_NOALPHA`, `AWL_GFX_DEBUG_NODEPTH`, `AWL_GFX_DEBUG_NOSCISSOR`, `AWL_GFX_DEBUG_SOLID`. **Sharpness against Dolphin.** The title picture with the XFB copy's vertical filter applied (the taps the game sets, {8,8,10,12,10,8,8}/64, as the hardware does) is visibly softer than the owner's Dolphin screenshots and the CPU reference render, which apply no filter; with `--no-copy-filter` the DX11 picture has the same sharpness as both. Dolphin's default setting leaves its copy filter off. Which one is the default here is a decision for the owner (faithful to the console, or matching the reference screenshots): the renderer applies the filter unless `--no-copy-filter` is given. Not yet compared with the owner's Dolphin captures: the vertical filter (applied exactly as the copy command supplies it, so the logos look softer than a raw EFB), gamma, the depth-test-off semantics, and the culling convention beyond the logo quads.
 
+## 9c. Performance (speed block, 2026-11-21)
+
+Goal: the title screen at 100% of real time in the window. The slowness was not the recompiled code (it runs the title at about 212% of real time alone); it was the per-draw cost of the renderer (about 4,500 draws per frame on the title screen, 11.5 million in the run) and the capture call trace that was on by default.
+
+**How it is measured.** `awl-host --bench <retrace>`: the DX11 device and the renderer run offscreen (no window, no pacing, no capture files; each presented frame still pays the renderer's XFB readback, as in the window) and at the end one line says `speed: retraces A-B, game X s, wall Y s, Z% of real time`, from retrace A (59.94 Hz fields) to the last. The acceptance command, on the title screen (23.66 s of game time), AMD RX 6600:
+
+```powershell
+build\Release\awl-host.exe --dol rom\main.dol --retraces 3000 --limit 0 --bench 2700
+```
+
+| Step (each one on top of the previous) | Speed | Wall time |
+| --- | --- | --- |
+| Before: main as it was (`--calls 16` call trace on by default) | 24% | 100.2 s |
+| 1. `--calls` defaults to 0 (the capture comparison passes `--calls 16`) | 30% | 79.7 s |
+| 3a+3b. The four `AWL_GFX_*` variables are read once at start (`getenv` per draw), `report()` counts string literals by address (no `std::string` per draw) | 83% | 28.4 s |
+| 3c. What a draw derives from its pipeline state alone (pixel shader, constants, sampler / blend / depth objects, viewport, scissor, the maps to bind) is prepared once per `stateId` and reused by the draws that follow with the same id (most consecutive draws share the id); the shader cache key is the fixed-size `PixelShaderKey` with a word-wise hash instead of a `std::string` | 104% | 22.7 s |
+| 3d. D3D state shadowing: a setter is called only when the value differs from the last one this renderer set; the vertex / index ring buffers stay bound at offset 0 and each draw addresses its data with the start index and base vertex; the constant buffer is rewritten only when the state id changes; the per-draw SRV unbind is gone | 128% | 18.5 s |
+| 3e. Triangle draws (the common case) convert the vertices straight into the mapped vertex buffer and copy the indices straight into the mapped index buffer (no intermediate vector) | 136% (reproduced: 136%, 137%) | 17.4 s |
+
+Not done because the target was met: batching several draws into one Map (the brief's last item) and step 4 (flat `lookupFunction` table, write-gather store fast path). What is left on the profile at 128% (sampling profiler, RelWithDebInfo): the GX core's vertex transform about 9%, the XFB readback wait about 7% (a synchronous GPU to CPU copy per presented frame), memory moves about 6%, the rest spread thin. If more speed is needed: present the XFB texture on the GPU instead of reading it back, then batching.
+
+**Rules that keep this exact.**
+- Output is byte-identical to before: the 121 BMPs of presented frames 0, 20, ..., 2400 (logos and title) of `--retraces 3000 --capture-frames`, the `--calls 16` `boot-trace.log` of the headless run, and `EXIT: main loop reached after 11135124000 instructions` were compared against baselines taken from the previous `main` (frames after step 3c, frames and traces after 3d and 3e); the renderer's counters (draws, triangles, shader hits, the "not exact" counts) are unchanged too.
+- `stateId == 0` is "no id": such draws (the hand-built scenes of the tests) are prepared on every draw. A texture that went away between two draws of one state sends the draw down the full path, which reports it exactly as before.
+- The shadowed D3D state is valid only while this renderer is the one using the device context. `efbCopy` drops it itself; anything else that draws or binds on the shared context between draws (presenting, blitting) must be followed by `Renderer::invalidateBoundState()`. `VideoOutput` does this through `FrameSource::afterPresent()` after every present or capture.
+- The debugging aids that read the expanded vertices (`AWL_GFX_DUMPDRAW`, `AWL_GFX_OCCLUSION`) switch the triangle path back to the vector-based upload.
+
 ## 10. Tests (all headless; no window is ever opened)
 
 | Test | Covers |
@@ -233,7 +268,7 @@ Evidence: the logos of the start-up sequence (three crossfaded textured quads ov
 | `gfx_device_tests` | hardware and forced-WARP device creation; 1:1 blit identity through the real pipeline; letterbox maths; BMP encode/decode round trip and file bytes; diagnostic frame; `VideoOutput` capture (first N of a mixed latch sequence, same bytes on hardware and WARP, loud failure on a bad folder) |
 | `gfx_pacing_tests` | the 1001/60000 s schedule at 10 MHz and 1 GHz counters (60,000 fields = 1001 s exactly; 10^7 fields by hand), early/late/re-anchor/pause behaviour, the speed meter (100%, 50%, 250%, reset), window title and overlay text, text drawing (clipping, case, darkened box only inside its area), host clock, four paced retraces take at least four field periods |
 | `gfx_input_tests` | key table against the SDK button constants, sticks, triggers, XInput values, focus rules |
-| `gfx_renderer_tests` | hand-built IR scenes through `Renderer` and the XFB copy: quad placement and orientation, blending (src alpha), depth test/write with the viewport depth range and depth peeks, a texture in four quadrants with nearest sampling and `TexCoordScale`, the copy filter on an edge (taps worked out by hand), the five fog curves, and loud reporting of unsupported states |
+| `gfx_renderer_tests` | hand-built IR scenes through `Renderer` and the XFB copy: pipeline state ids (reuse, a new id, drawing after an EFB copy), quad placement and orientation, blending (src alpha), depth test/write with the viewport depth range and depth peeks, a texture in four quadrants with nearest sampling and `TexCoordScale`, the copy filter on an edge (taps worked out by hand), the five fog curves, and loud reporting of unsupported states |
 | `gfx_tev_tests` | key identity and hashing; every unsupported feature is rejected with its reason; offscreen draws of hand-computed combiner results (pass-through, konst modulate, bias/scale/clamp, subtract with alpha scale, register chaining, alpha compare with the AND, OR, XOR and XNOR logics, texture with swap table); cache hits and cached rejection |
 
 The draw tests' expected pixels are worked out from the combiner equation in the test source, not produced by the generator.
