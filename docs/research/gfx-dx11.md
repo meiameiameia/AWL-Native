@@ -41,6 +41,8 @@ Display aspect is 4:3 (letterboxed in the window). Widescreen is an opt-in enhan
 
 `gfx::GameWindow`: Win32 window, flip-model swap chain (R8G8B8A8, two buffers, no vsync because the host paces), resizable with the back buffer resized on `WM_SIZE`, borderless fullscreen on F11 or Alt+Enter, close on Esc, the close button and Alt+F4 (all become a close request that makes the host stop the guest with the exit reason `window closed`; the host exits with code 0). A tap on Alt does not enter the menu loop (`SC_KEYMENU` is swallowed) because that loop would stall the host. The window is created on the thread that runs the guest; guest fibers share that thread, so messages are pumped from the retrace hook. A guest that makes no progress for a long time would make Windows mark the window as not responding; a separate presentation thread is the fix if that proves to matter.
 
+The title bar shows the controls and, every 30 retraces, the measured speed (`SpeedMeter`: 100% = 59.94 retraces per wall-clock second; a pause resets it). The same text is drawn in a dark box in the top-left corner of the picture (`overlayLines`, `drawTextPanel`; F1 hides it) onto a copy of the frame, so it appears in fullscreen too and never in `--capture-frames` images. When the run stops for any reason except the window being closed (a stop report, a failed present, the entry function returning), `awl-host` shows a message box with the reason before it exits; start-up failures (no device, renderer) get a message box too. The console keeps the full report.
+
 `--window` also lifts the main-loop and instruction limits so the game runs until the window is closed, unless `--retraces` or `--limit` is given. `--gfx-warp` forces the software device.
 
 ### Pacing (done for the maths; window verified by hand)
@@ -58,6 +60,46 @@ Focus loss pauses the game: at the next retrace the host stops running the guest
 ### Build structure
 
 `src/gfx/gfx.cmake` defines `awl_gfx` and `awl_pad_input` (the one copy of `src/input.cpp`, used by both the PAD replacement and the window input; `tools/recomp/platform.cmake` links it instead of compiling the file twice). `awl-host` links `awl_gfx` and defines `AWL_HAVE_GFX` when the target exists. The tests (`gfx_device_tests`, `gfx_pacing_tests`, `gfx_input_tests`, `gfx_tev_tests`) never open a window.
+
+### Owner window test (pending: run it at a time agreed with the session, never started by an assistant)
+
+Goal: see the game's logos and title screen in a real window for the first time, and report how it behaves. **The game runs slower than real time for now** (roughly a fifth of the original speed, measured before this window existed); that is expected, the window says so, and fixing it is the next work block. Expect the logos and the title screen to take a while to appear and to move in slow motion.
+
+Before you start: close fullscreen games (the window takes focus). From the project folder (`C:\Users\mperez\Projects\awl-native`) in PowerShell, build once if `build\Release\awl-host.exe` does not exist (`cmake --build build --config Release`, several minutes), then run:
+
+```powershell
+build\Release\awl-host.exe --dol rom\main.dol --disc disc --window
+```
+
+Leave the black console window open behind the game: it is where the program writes what it is doing.
+
+What should appear:
+1. A window titled "Harvest Moon: A Wonderful Life (native)" followed by the keys and, after a couple of seconds, the speed ("speed NN% of real time"). A small dark box in the top-left corner of the picture shows the same: the speed in percent and the controls. Below about 95% it adds "SLOWER THAN THE ORIGINAL (EXPECTED FOR NOW)". The first seconds, possibly half a minute at this speed, may be a black picture or the magenta start-up marker while the game boots.
+2. The company logos, then the title screen: the sign, the town behind it, "New Game / Continue" and the copyright line, as in your Dolphin screenshots. Colors, layout and the menu text are what to look at. The picture is a little softer than Dolphin's (a faithful console filter, a known and chosen difference).
+
+Controls (also written in the window): arrows = D-pad, W A S D = stick, Space = A, Backspace = B, Enter = Start, X / Tab / Z / Q / E = X / Y / Z / L / R. A connected Xbox-type controller works too. Esc, F11 and Alt+Enter belong to the window.
+
+What to try, in this order, a few seconds each:
+1. Wait for the title screen and press the Down and Up arrows: does the menu cursor move between "New Game" and "Continue"?
+2. Press Space or Enter on "New Game" only if you want to; what happens after that is not part of this test (the game may stop with a message; that is useful to report).
+3. F1: the help text in the corner hides and shows. The title bar keeps the speed.
+4. Drag the window edges to resize it: the picture stays 4:3 with black bars and does not stretch.
+5. F11 (or Alt+Enter): borderless fullscreen, the help text is still visible; press it again to come back.
+6. Click on another window or minimize this one: the game pauses (the title says "paused: click this window to continue") and the speed does not drop; click the game window to continue.
+7. Esc, Alt+F4 or the close button: the window closes by itself and the console says "EXIT: window closed" (exit code 0).
+
+If the game stops by itself, a message box shows the reason (for example a "MEMORY FAULT" or "UNTRANSLATED CODE" with a guest address) and the console window has the full report. That is a finding, not a failure of the test.
+
+What to report back (plain words are enough):
+- Did the window open and come to the front by itself, or did you need to click it?
+- Which screens appeared, and how long after starting (roughly)?
+- The speed percentage you saw on the title screen.
+- Did anything look wrong: colors, missing or garbled text, flicker, a stretched picture?
+- Did the arrows move the menu cursor? Did resize, F11, F1, pause and Esc behave as described?
+- If a message box appeared: take a photo or screenshot, or copy the text. Also copy the last 30 lines of the console window.
+- Anything surprising, including a crash with no message.
+
+How it was checked without a window (by the assistant): the text, overlay drawing, speed meter and key table are unit-tested (`gfx_pacing_tests`, `gfx_input_tests`); the host without video options is byte-identical across runs; headless captures of the title frame are unchanged. The window itself has never been opened by an assistant, so everything above that needs eyes is what this test is for.
 
 ## 3. Internal-resolution scale factor (design only; 1x default)
 
@@ -189,7 +231,7 @@ Evidence: the logos of the start-up sequence (three crossfaded textured quads ov
 | Test | Covers |
 | --- | --- |
 | `gfx_device_tests` | hardware and forced-WARP device creation; 1:1 blit identity through the real pipeline; letterbox maths; BMP encode/decode round trip and file bytes; diagnostic frame; `VideoOutput` capture (first N of a mixed latch sequence, same bytes on hardware and WARP, loud failure on a bad folder) |
-| `gfx_pacing_tests` | the 1001/60000 s schedule at 10 MHz and 1 GHz counters (60,000 fields = 1001 s exactly; 10^7 fields by hand), early/late/re-anchor/pause behaviour, host clock, four paced retraces take at least four field periods |
+| `gfx_pacing_tests` | the 1001/60000 s schedule at 10 MHz and 1 GHz counters (60,000 fields = 1001 s exactly; 10^7 fields by hand), early/late/re-anchor/pause behaviour, the speed meter (100%, 50%, 250%, reset), window title and overlay text, text drawing (clipping, case, darkened box only inside its area), host clock, four paced retraces take at least four field periods |
 | `gfx_input_tests` | key table against the SDK button constants, sticks, triggers, XInput values, focus rules |
 | `gfx_renderer_tests` | hand-built IR scenes through `Renderer` and the XFB copy: quad placement and orientation, blending (src alpha), depth test/write with the viewport depth range and depth peeks, a texture in four quadrants with nearest sampling and `TexCoordScale`, the copy filter on an edge (taps worked out by hand), the five fog curves, and loud reporting of unsupported states |
 | `gfx_tev_tests` | key identity and hashing; every unsupported feature is rejected with its reason; offscreen draws of hand-computed combiner results (pass-through, konst modulate, bias/scale/clamp, subtract with alpha scale, register chaining, alpha compare with the AND, OR, XOR and XNOR logics, texture with swap table); cache hits and cached rejection |

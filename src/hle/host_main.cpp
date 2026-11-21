@@ -189,6 +189,7 @@ int main(int argc, char** argv) {
         video = std::make_unique<gfx::VideoOutput>();
         if (!video->init(go, err)) {
             std::fprintf(stderr, "video: %s\n", err.c_str());
+            if (optWindow) gfx::showMessageBox("awl-host cannot open the window", "Video start-up failed:\n\n" + err);
             return 1;
         }
         std::printf("awl-host: video %s%s%s, Direct3D device %s%s\n", optWindow ? "window" : "headless", optPace || optWindow ? " paced at 59.94 Hz" : "",
@@ -197,7 +198,11 @@ int main(int argc, char** argv) {
         gfx::VideoOutput* v = video.get();
         if (v->haveDevice()) {   // window or capture: the DX11 renderer draws the GX core's commands
             renderer = std::make_unique<gfx::Renderer>();
-            if (!renderer->init(v->device(), err)) { std::fprintf(stderr, "renderer: %s\n", err.c_str()); return 1; }
+            if (!renderer->init(v->device(), err)) {
+                std::fprintf(stderr, "renderer: %s\n", err.c_str());
+                if (optWindow) gfx::showMessageBox("awl-host cannot start the renderer", "Renderer start-up failed:\n\n" + err);
+                return 1;
+            }
             if (const char* occ = std::getenv("AWL_GFX_OCCLUSION")) { unsigned a = 0, b = 0; if (std::sscanf(occ, "%u,%u", &a, &b) == 2) renderer->setOcclusionDebug(a, b); }
             renderer->setCopyFilter(!optNoCopyFilter);
             rendererSource = std::make_unique<gfx::RendererSource>(*renderer);
@@ -265,6 +270,24 @@ int main(int argc, char** argv) {
     } else if (ok) {
         std::printf("\nentry function returned after %llu instructions\n", static_cast<unsigned long long>(machine.icount));
     }
+#ifdef AWL_HAVE_GFX
+    // Window mode: anything but the owner closing the window gets a message box with the reason (the window would just vanish otherwise).
+    if (video && optWindow && (r.stopped || (plat.exitReason() != "window closed" && plat.exitReason() != "main loop reached"))) {
+        std::string text;
+        if (r.stopped) {
+            char where[128];
+            std::snprintf(where, sizeof where, "%s, guest pc 0x%08X", kindName(r.stop.kind), r.stop.pc);
+            text = std::string("The game stopped: ") + where + (r.stop.name ? std::string(", function ") + r.stop.name : std::string()) + "\n\n" + r.stop.what +
+                   "\n\nThe console window has the full report.";
+        } else if (!plat.exitReason().empty()) {
+            text = "The run ended: " + plat.exitReason();
+        } else {
+            text = ok ? "The game's entry function returned: the program ended by itself." : "The run ended without a reason (see the console window).";
+        }
+        if (!video->error().empty()) text += "\n\n" + video->error();
+        video->notify("awl-host stopped", text);
+    }
+#endif
 #ifdef AWL_HAVE_GFX
     if (renderer) renderer->printSummary();
     if (video) std::printf("video: %llu frames presented, %llu captured, %llu pacing re-anchors\n", static_cast<unsigned long long>(video->presented()),

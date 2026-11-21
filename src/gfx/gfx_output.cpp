@@ -44,8 +44,19 @@ bool VideoOutput::init(const OutputOptions& opts, std::string& err) {
     if (opts_.window) {
         window_ = std::make_unique<GameWindow>();
         if (!window_->create(device_, opts_.windowOptions, err)) { window_.reset(); return false; }
-        window_->onKey = [this](uint32_t vk, bool down) { input_.onKey(vk, down); };
-        window_->onFocus = [this](bool f) { input_.setFocus(f); };
+        window_->onKey = [this](uint32_t vk, bool down) {
+            if (vk == VK_F1) {   // F1 shows / hides the help text over the picture (a held key toggles once)
+                if (down && !f1Down_) overlay_ = !overlay_;
+                f1Down_ = down;
+                return;
+            }
+            input_.onKey(vk, down);
+        };
+        window_->onFocus = [this](bool f) {
+            if (!f) f1Down_ = false;   // a key-up that happens while unfocused is never seen
+            input_.setFocus(f);
+        };
+        window_->setTitle(windowTitle(opts_.windowOptions.title, -1));
         input_.setFocus(window_->focused());
     }
     return true;
@@ -73,7 +84,17 @@ void VideoOutput::waitUntil(int64_t deadline) {
 bool VideoOutput::presentFrame(const FrameDesc& frame) {
     Image img;
     if (!source_->produce(frame, img, error_)) return false;
-    if (window_ && !window_->present(img, error_)) return false;
+    if (window_) {
+        bool ok;
+        if (overlay_) {   // the help text goes onto a copy: captures and the renderer's own image stay clean
+            Image shown = img;
+            drawTextPanel(shown, 4, 4, std::max<uint32_t>(1, shown.width / 640), overlayLines(speedPercent_));
+            ok = window_->present(shown, error_);
+        } else {
+            ok = window_->present(img, error_);
+        }
+        if (!ok) return false;
+    }
     if (captured_ < opts_.captureFrames && presented_ >= opts_.captureFrom && (presented_ - opts_.captureFrom) % std::max<uint32_t>(1, opts_.captureEvery) == 0) {
         Image readback;
         if (!renderOffscreen(img, readback, error_)) return false;
@@ -94,6 +115,7 @@ RetraceAction VideoOutput::onRetrace(const FrameDesc* frame) {
             // Focus loss pauses the game: the guest does not run, the pacer restarts on return (no catch-up burst), input is cleared.
             pacer_.pause();
             input_.clear();
+            window_->setTitle(opts_.windowOptions.title + " - paused: click this window to continue");
             while ((!window_->focused() || window_->minimized()) && !window_->closeRequested()) {
                 window_->pump();
                 Sleep(20);
@@ -101,11 +123,18 @@ RetraceAction VideoOutput::onRetrace(const FrameDesc* frame) {
             if (window_->closeRequested()) return RetraceAction::Quit;
             input_.setFocus(true);
             pacer_.resume(hostClockNow());
+            speed_.reset();
+            speedPercent_ = -1;
+            window_->setTitle(windowTitle(opts_.windowOptions.title, -1));
         }
     }
     if (opts_.pace) {
         const int64_t due = pacer_.onRetrace(hostClockNow());
         if (due > hostClockNow()) waitUntil(due);
+    }
+    if (window_ && speed_.onRetrace(hostClockNow())) {
+        speedPercent_ = speed_.percent();
+        window_->setTitle(windowTitle(opts_.windowOptions.title, speedPercent_));
     }
     if (frame && (window_ || opts_.captureFrames)) {
         if (!presentFrame(*frame)) {

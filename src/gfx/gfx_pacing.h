@@ -7,6 +7,8 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace awl::gfx {
 
@@ -42,6 +44,29 @@ private:
     bool started_ = false, paused_ = false;
     uint64_t reanchors_ = 0;
 };
+
+// How fast the guest runs relative to real time, measured over windows of retraces: 100% = 59.94 retraces per second of wall time.
+// A pause (focus loss) must call reset() so that it does not count as slowness.
+class SpeedMeter {
+public:
+    explicit SpeedMeter(int64_t frequency, int64_t windowRetraces = 30) : freq_(frequency), window_(windowRetraces) {}
+    void reset() { count_ = 0; started_ = false; }
+    // Returns true when a new reading is available (percent()).
+    bool onRetrace(int64_t now);
+    int percent() const { return percent_; }
+
+private:
+    int64_t freq_, window_, start_ = 0, count_ = 0;
+    bool started_ = false;
+    int percent_ = 0;
+};
+
+// Window title: the product name, the controls and the speed. speedPercent < 0 leaves the speed out.
+std::string windowTitle(const std::string& base, int speedPercent);
+
+// The help text drawn in the top-left corner of the picture (visible in fullscreen too): speed first (with a note when the game
+// runs slower than the original), then the controls. speedPercent < 0 = not measured yet.
+std::vector<std::string> overlayLines(int speedPercent);
 
 // Host clock helpers (QueryPerformanceCounter). sleepUntil sleeps coarsely and spins for the last stretch.
 int64_t hostClockNow();

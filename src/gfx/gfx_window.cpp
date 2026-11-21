@@ -16,6 +16,10 @@ std::wstring widen(const std::string& s) {
 }
 }  // namespace
 
+void showMessageBox(const std::string& title, const std::string& text) {
+    MessageBoxW(nullptr, widen(text).c_str(), widen(title).c_str(), MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+}
+
 GameWindow::~GameWindow() { destroy(); }
 
 bool GameWindow::create(Device& dev, const WindowOptions& opts, std::string& err) {
@@ -39,6 +43,7 @@ bool GameWindow::create(Device& dev, const WindowOptions& opts, std::string& err
     if (!hwnd_) { err = "CreateWindowEx failed"; return false; }
     if (!blitter_.init(dev, err) || !createBackBuffer(err)) { destroy(); return false; }
     ShowWindow(hwnd_, SW_SHOW);
+    SetForegroundWindow(hwnd_);   // may be refused by Windows; the host then waits for a click (focus loss pauses the game)
     if (opts.fullscreen) toggleFullscreen();
     focused_ = GetForegroundWindow() == hwnd_;
     return true;
@@ -114,6 +119,14 @@ void GameWindow::toggleFullscreen() {
         fullscreen_ = false;
     }
     needResize_ = true;
+}
+
+void GameWindow::setTitle(const std::string& title) {
+    if (hwnd_) SetWindowTextW(hwnd_, widen(title).c_str());
+}
+
+void GameWindow::showMessage(const std::string& title, const std::string& text) {
+    MessageBoxW(hwnd_, widen(text).c_str(), widen(title).c_str(), MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
 }
 
 bool GameWindow::present(const Image& img, std::string& err) {

@@ -1,5 +1,6 @@
 // Pacing maths and behaviour, without a window. The expected values are computed by hand from the NTSC field rate:
 // 60000/1001 Hz, i.e. 60000 fields last exactly 1001 seconds.
+#include <algorithm>
 #include <cstdio>
 
 #include "gfx/gfx_output.h"
@@ -65,6 +66,70 @@ static void testPauseResume() {
     CHECK(p.reanchors() == 0);
 }
 
+static void testSpeedMeter() {
+    const int64_t freq = 10000000;
+    // 30 retraces last 30 * 1001/60000 s = 0.5005 s of guest time. The first call only starts the window.
+    SpeedMeter full(freq);
+    CHECK(!full.onRetrace(0));
+    for (int i = 1; i < 30; ++i) CHECK(!full.onRetrace(freq / 100 * i));
+    CHECK(full.onRetrace(5005000));                        // 0.5005 s of wall time: 100%
+    CHECK(full.percent() == 100);
+    // half speed: the same 30 retraces take 1.001 s
+    SpeedMeter half(freq);
+    half.onRetrace(1000);
+    bool got = false;
+    for (int i = 1; i <= 30; ++i) got = half.onRetrace(1000 + 10010000 * i / 30);
+    CHECK(got && half.percent() == 50);
+    // the next window is measured from the end of the previous one; a pause (reset) discards the partial window
+    for (int i = 1; i <= 30; ++i) got = half.onRetrace(1000 + 10010000 + 2002000 * i / 30);   // 0.2002 s for 0.5005 s of guest time: 250%
+    CHECK(got && half.percent() == 250);
+    half.reset();
+    CHECK(!half.onRetrace(999999999));                     // starts a new window, no reading
+    // titles: product name, controls, speed
+    const std::string t = windowTitle("Game", 31);
+    CHECK(t.find("Game") == 0 && t.find("Esc quit") != std::string::npos && t.find("F11 fullscreen") != std::string::npos);
+    CHECK(t.find("speed 31% of real time") != std::string::npos);
+    CHECK(windowTitle("Game", -1).find("speed") == std::string::npos);
+}
+
+static void testOverlay() {
+    // text: speed first, a slow-game note below 95%, the controls from the brief
+    const std::vector<std::string> slow = overlayLines(31);
+    CHECK(slow.size() >= 3 && slow[0].find("SPEED 31% OF REAL TIME") == 0 && slow[0].find("SLOWER THAN THE ORIGINAL") != std::string::npos);
+    const std::vector<std::string> fast = overlayLines(100);
+    CHECK(fast[0].find("SPEED 100% OF REAL TIME") == 0 && fast[0].find("SLOWER") == std::string::npos);
+    CHECK(overlayLines(-1)[0].find("MEASURING") != std::string::npos);
+    std::string all;
+    for (const std::string& l : slow) all += l + ' ';
+    for (const char* k : {"ARROWS = D-PAD", "WASD = STICK", "SPACE = A", "BACKSPACE = B", "ENTER = START", "F11 FULLSCREEN", "ESC QUIT"}) CHECK(all.find(k) != std::string::npos);
+    // drawing: a panel changes only its own box; text pixels are white, the box behind is darkened; lower case = upper case; unknown = blank
+    Image base;
+    base.resize(200, 100);
+    base.fill(200, 100, 50);
+    Image img = base;
+    drawTextPanel(img, 4, 4, 1, {"Ab 1%"});
+    const uint32_t boxW = 6 * 5 + 6, boxH = 10 + 6;
+    bool whiteSeen = false, darkSeen = false, outsideChanged = false;
+    for (uint32_t y = 0; y < img.height; ++y)
+        for (uint32_t x = 0; x < img.width; ++x) {
+            const bool inside = x >= 4 && x < 4 + boxW && y >= 4 && y < 4 + boxH;
+            const bool same = std::equal(img.px(x, y), img.px(x, y) + 4, base.px(x, y));
+            if (!inside && !same) outsideChanged = true;
+            if (inside && img.px(x, y)[0] == 255 && img.px(x, y)[1] == 255) whiteSeen = true;
+            if (inside && img.px(x, y)[0] == 70) darkSeen = true;
+        }
+    CHECK(whiteSeen && darkSeen && !outsideChanged);
+    Image lower = base, upper = base;
+    drawText(lower, 10, 10, 2, "hello", 255, 255, 255);
+    drawText(upper, 10, 10, 2, "HELLO", 255, 255, 255);
+    CHECK(lower == upper && !(lower == base));
+    Image blank = base;
+    drawText(blank, 10, 10, 1, "~ #", 255, 255, 255);
+    CHECK(blank == base);
+    drawText(blank, 190, 95, 3, "WWW", 255, 255, 255);   // partly outside the image: clipped, no crash
+    CHECK(textWidth("abc", 2) == 36);
+}
+
 static void testHostClock() {
     const int64_t f = hostClockFrequency();
     CHECK(f > 0);
@@ -95,6 +160,8 @@ int main() {
     testSchedule();
     testOnTimeLateAndReanchor();
     testPauseResume();
+    testSpeedMeter();
+    testOverlay();
     testHostClock();
     testVideoOutputPacing();
     if (g_failures) { std::fprintf(stderr, "%d check(s) failed\n", g_failures); return 1; }

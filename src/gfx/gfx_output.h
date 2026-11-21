@@ -71,6 +71,9 @@ public:
     bool haveDevice() const { return haveDevice_; }
     const std::string& adapterName() const { return device_.adapterName(); }
 
+    // Shows a message over the window (window mode); otherwise does nothing.
+    void notify(const std::string& title, const std::string& text) { if (window_) window_->showMessage(title, text); }
+
     // One frame through the device path without the window: render `img` 1:1 into an offscreen target and read it back.
     bool renderOffscreen(const Image& img, Image& out, std::string& err);
 
@@ -88,6 +91,10 @@ private:
     OffscreenTarget target_;
     ImageTexture tex_;
     RetracePacer pacer_{hostClockFrequency()};
+    SpeedMeter speed_{hostClockFrequency()};
+    int speedPercent_ = -1;      // last speed reading (-1 = none yet)
+    bool overlay_ = true;        // help text over the picture (F1)
+    bool f1Down_ = false;
     DiagnosticSource diagnostic_;
     FrameSource* source_ = &diagnostic_;
     uint64_t presented_ = 0, captured_ = 0;

@@ -30,4 +30,10 @@ std::vector<uint8_t> encodeBmp(const Image& img);
 void drawDiagnosticFrame(Image& out, uint32_t width, uint32_t height, uint64_t latchCount);
 void drawDigits(Image& img, uint32_t x, uint32_t y, uint32_t scale, uint64_t value, uint8_t r, uint8_t g, uint8_t b);
 
+// On-screen text for the window overlay: 5x7 glyphs (A-Z, 0-9 and a few signs; lower case is drawn as upper case, other characters
+// are blank), 6 px per character at scale 1. drawTextPanel darkens a box behind the lines first; lines are 10 px apart at scale 1.
+uint32_t textWidth(const std::string& text, uint32_t scale);
+void drawText(Image& img, uint32_t x, uint32_t y, uint32_t scale, const std::string& text, uint8_t r, uint8_t g, uint8_t b);
+void drawTextPanel(Image& img, uint32_t x, uint32_t y, uint32_t scale, const std::vector<std::string>& lines);
+
 }  // namespace awl::gfx

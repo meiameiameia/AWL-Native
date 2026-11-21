@@ -168,11 +168,12 @@ void Core::bindMap(uint32_t map, TexBinding& out) {
     const uint32_t addr = bitsOf(img3, 0, 24) << 5;
     const bool preloaded = bitsOf(regs[3], 21, 1) != 0;   // TX_SETIMAGE1 image type: 1 = the texture sits in TMEM (preloaded), bits 0-14 = its line offset
     uint32_t levels = 1;
-    if (usesMips(s.minFilter) && !preloaded) {
+    if (usesMips(s.minFilter)) {
         uint32_t possible = 1;
         for (uint32_t d = std::max<uint32_t>(b.width, b.height); d > 1; d >>= 1) ++possible;
         levels = std::min<uint32_t>({possible, static_cast<uint32_t>(std::ceil(s.maxLod)) + 1, 11u});
     }
+    if (preloaded && levels > 1) fail("preloaded texture with a mip chain (map " + std::to_string(map) + ", TMEM line offset " + std::to_string(bitsOf(regs[3], 0, 15)) + "): the bank layout of the lower levels is not modelled", base);
     // Aliasing of an earlier EFB copy (convention 8): same start address, destination bytes unchanged since the copy.
     bool aliased = false;
     for (CopyRecord& rec : copies_) {

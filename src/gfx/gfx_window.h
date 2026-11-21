@@ -25,6 +25,9 @@ struct WindowOptions {
     uint32_t aspectNum = 4, aspectDen = 3;            // display aspect of the picture (letterboxed in the client area)
 };
 
+// A modal message box with no parent window (start-up failures, before or without a game window).
+void showMessageBox(const std::string& title, const std::string& text);
+
 class GameWindow {
 public:
     ~GameWindow();
@@ -40,6 +43,10 @@ public:
     bool fullscreen() const { return fullscreen_; }
     bool minimized() const { return minimized_; }
     void toggleFullscreen();
+
+    void setTitle(const std::string& title);
+    // A modal message box over the window (the run stopped: show why instead of vanishing).
+    void showMessage(const std::string& title, const std::string& text);
 
     // Draws `img` into the back buffer (letterboxed, cleared to black around it) and presents.
     bool present(const Image& img, std::string& err);

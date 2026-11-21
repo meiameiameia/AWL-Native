@@ -403,6 +403,25 @@ void testTexturePreload() {
     m.bytes[0x5000] = 0; m.bytes[0x5001] = 0; m.bytes[0x5020] = 0; m.bytes[0x5021] = 0;
     t = bindWith(6, 4, 4, 0x5000, 0x200000 | 0x10, 0x20);
     check(t && t->rgba[0] == (0x10u | 0x20u << 8 | 0x30u << 16 | 0x80u << 24), "preloaded RGBA8 is gathered from the even and odd banks");
+    // A preloaded map that asks for a mip chain (mip filter and max LOD above 0) is not modelled: it must fail loudly, not silently use one
+    // level. With max LOD 0 the same mip filter needs only the base level and works.
+    auto bindMips = [&](uint32_t maxLod16) {
+        Stream s = base2d();
+        s.bp(0x28, 0x40).bp(0x88, 7u | 7u << 10).bp(0x94, 0x4000 >> 5).bp(0x8C, 0x200000 | 0x40).bp(0x90, 0).bp(0x80, 6u << 5).bp(0x84, maxLod16 << 8).bp(0x98, 0);
+        s.cp(0x50, 1u << 9).cp(0x70, 3u << 1);
+        s.drawHdr(0x90, 3);
+        for (int i = 0; i < 3; ++i) s.u16(uint16_t(i)).u16(0);
+        return s;
+    };
+    std::string msg;
+    check(r.feedFails(bindMips(32), &msg) && msg.find("preloaded texture with a mip chain") != std::string::npos, "a preloaded map with a mip chain fails loudly");
+    // (a failed feed leaves the stream mid-command, so the second case runs in a rig of its own)
+    Rig r2;
+    r2.mem.bytes[0x4000] = 0x1F;
+    Stream pre2;
+    pre2.bp(0x60, 0x4000 >> 5).bp(0x61, 0x40).bp(0x62, 0).bp(0x63, 1u | 1u << 15);
+    r2.feed(pre2);
+    check(!r2.feedFails(bindMips(0)) && r2.rec.draws.back().state.maps[0].image && r2.rec.draws.back().state.maps[0].image->levelCount == 1, "a preloaded map with max LOD 0 binds its single level");
 }
 
 void testEfbCopies() {
