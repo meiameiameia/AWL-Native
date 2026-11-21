@@ -262,6 +262,9 @@ uint32_t mfspr(Ctx& c, uint32_t, uint32_t n) {
 //   DMA_L (SPR 923): bits 0-26 LC_ADDR, bit 27 DMA_LD, bits 28-29 DMA_LEN[0:1], bit 30 DMA_T, bit 31 DMA_F
 // Writing DMA_L with DMA_T set starts a transfer of DMA_LEN 32-byte blocks (0 means 128) between memory
 // and the locked cache: DMA_LD set loads memory into the cache, clear stores the cache to memory.
+// MEM_ADDR is a PHYSICAL address (0 up to the MEM1 size): the original SDK code (0x801B2630 store, 0x801B2654 load)
+// clears the top four bits (clrlwi ...,4) of the effective address before mtspr 922. An 0x8.../0xC... address
+// therefore never comes from the game and stops loudly.
 // Completion is instantaneous, so DMA_T (and DMA_F, the queue flush) read back clear.
 static void lockedCacheDma(Ctx& c, uint32_t pc, uint32_t dmaL) {
     constexpr uint32_t kT = 0x2, kLd = 0x10;
@@ -272,12 +275,11 @@ static void lockedCacheDma(Ctx& c, uint32_t pc, uint32_t dmaL) {
     if (blocks == 0) blocks = 128;
     const uint32_t bytes = blocks * 32;
     const uint32_t memAddr = dmaU & ~0x1Fu, lcAddr = dmaL & ~0x1Fu;
-    const uint32_t memSeg = memAddr >> 28, memOff = memAddr & 0x0FFFFFFFu;
-    if (!((memSeg == 0x8 || memSeg == 0xC) && memOff <= kMem1Size && bytes <= kMem1Size - memOff))
-        stop(c, StopKind::Fault, pc, memAddr, "locked-cache DMA: memory range outside MEM1");
+    if (!(memAddr <= kMem1Size && bytes <= kMem1Size - memAddr))
+        stop(c, StopKind::Fault, pc, memAddr, "locked-cache DMA: physical memory range outside MEM1");
     if (!((lcAddr >> 28) == 0xE && (lcAddr & 0x0FFFFFFFu) <= kLockedCacheSize && bytes <= kLockedCacheSize - (lcAddr & 0x0FFFFFFFu)))
         stop(c, StopKind::Fault, pc, lcAddr, "locked-cache DMA: cache range outside the 16 KB locked cache at 0xE0000000");
-    uint8_t* mem = c.m->mem + memOff;
+    uint8_t* mem = c.m->mem + memAddr;
     uint8_t* lc = c.m->lc + (lcAddr & 0x0FFFFFFFu);
     if (dmaL & kLd) std::memcpy(lc, mem, bytes); else std::memcpy(mem, lc, bytes);
 }
