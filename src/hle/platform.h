@@ -18,6 +18,11 @@
 
 namespace awl::hle {
 
+// Thrown by OSLoadContext where the SDK calls it as an early exit that never returns on the console (an `rfi` back to the interrupted
+// context) and the platform's version would otherwise return into code that expects the context to be gone. The exception envelope
+// catches it, drops the handler's frames and ends the handler, exactly as the `rfi` does.
+struct ExceptionReturn {};
+
 // ---- Events --------------------------------------------------------------------------------------------
 enum class Ev : uint32_t {
     Decrementer = 1,   // a = generation
@@ -31,6 +36,7 @@ enum class Ev : uint32_t {
     PeFinish,
     CpInt,
     SiXfer,
+    ExiCard,           // memory card: a = 0 erase/program finished, a = 1 write-back check (b = due tick)
     Custom             // a = index into Platform::customEvents
 };
 
@@ -85,6 +91,7 @@ public:
     virtual ~Device() = default;
     virtual uint64_t read(Ctx& c, uint32_t addr, uint32_t size) = 0;
     virtual void write(Ctx& c, uint32_t addr, uint32_t size, uint64_t value) = 0;
+    virtual void flush() {}   // write any state kept in host files (the memory card image) to disk
 };
 
 class Platform;
@@ -112,6 +119,7 @@ struct Config {
     bool padXInput = false;                       // PAD channel 0 reads the first XInput controller (not deterministic); default neutral
     bool idleSkip = true;                         // fast-forward the scheduler's idle spin to the next event (no guest-visible effect)
     uint32_t rtcSeconds = bootValues().rtcSeconds;   // RTC counter (seconds since 2000-01-01): fixed for deterministic runs
+    std::string memcardPath;                      // raw card image for slot A; empty = no card inserted (the host defaults to saves/memcard_a.raw)
 };
 
 struct StopReport {
@@ -156,6 +164,7 @@ public:
 
     // Devices -----------------------------------------------------------------------------------------
     Device& dev(uint32_t block);
+    void flushDevices();                               // Device::flush on every block (called by the host before it exits)
     Dvd& dvd() { return *dvd_; }
     uint32_t& piMask() { return intMask_; }
     uint32_t piFifoBase = 0, piFifoEnd = 0, piFifoWp = 0;   // CPU FIFO registers (PI 0x0C, 0x10, 0x14); bit 26 of the write pointer is the wrap flag

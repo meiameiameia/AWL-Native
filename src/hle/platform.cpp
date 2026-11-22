@@ -81,6 +81,11 @@ void Platform::attach(Machine& m, const Config& cfg) {
 
 Device& Platform::dev(uint32_t block) { return *blocks_[block]; }
 
+void Platform::flushDevices() {
+    for (auto& b : blocks_)
+        if (b) b->flush();
+}
+
 void Platform::setLine(uint32_t piBit, bool level) {
     const uint32_t before = piStatus() & intMask_;
     if (level) level_ |= piBit; else level_ &= ~piBit;
@@ -242,6 +247,7 @@ Ctx* Platform::irqCtx(Thread* t, Ctx& from) {
 
 namespace {
 constexpr uint32_t kOffState = 0x1A2, kOffSrr0 = 0x198, kOffSrr1 = 0x19C;
+constexpr uint32_t kDecrementerEmptyExitLr = 0x801B1A98;   // return address of the early OSLoadContext call in DecrementerExceptionCallback
 constexpr uint32_t kOsCurrentContext = 0x800000D4;
 constexpr uint32_t kCurrentThread = 0x800000E4;                    // read by SelectThread
 // OSThread.state: OSExitThread stores 8 (moribund, joinable) or 0 (exited, detached); a running, ready or waiting thread has 2, 1 or 4.
@@ -298,7 +304,12 @@ void Platform::deliverException(Ctx& c, uint32_t exception, uint32_t fn, uint32_
         const uint32_t table = mem_.r32(i->r[13] - 21468);
         const uint32_t handler = table ? mem_.r32(table + 4 * exception) : 0;
         if (!handler) stopPlatform(c, exception, "exception with no registered handler");
-        rt::callGuest(*i, handler);
+        const uint32_t depth = i->sp;
+        try {
+            rt::callGuest(*i, handler);
+        } catch (const ExceptionReturn&) {
+            i->sp = depth;       // the handler's frames are abandoned, like an rfi (see Platform::osLoadContext)
+        }
     }
     --t->depth;
     rt::syncHostFp(c.fpscr);
@@ -377,7 +388,14 @@ void Platform::osLoadContext(Ctx& c) {
     }
     if (target) {
         if (target->dead) stopPlatform(c, x, "OSLoadContext of the context of an exited thread");
-        if (target == me) { c.msr |= kMsrFP; return; }          // returning into the activation that owns this context
+        if (target == me) {                                      // returning into the activation that owns this context
+            c.msr |= kMsrFP;
+            // DecrementerExceptionCallback (0x801B1A54) takes this exit when the alarm queue is empty at the exception (an alarm was cancelled
+            // after the decrementer was armed, which OSCancelAlarm does not undo): OSLoadContext(context) at 0x801B1A94 is an rfi that never
+            // returns, and the alarm code after it dereferences the empty queue. Its return address is 0x801B1A98.
+            if (c.lr == kDecrementerEmptyExitLr) throw ExceptionReturn{};
+            return;
+        }
         trace().line("switch thread %u -> %u ctx=%08X t=%llu", me->id, target->id, x, static_cast<unsigned long long>(now()));
         (target->depth > 0 ? target->irq[static_cast<size_t>(target->depth - 1)] : target->base)->msr |= kMsrFP;
         switchTo(target);

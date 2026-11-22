@@ -53,6 +53,15 @@ else()
     target_compile_options(hle_sched_tests PRIVATE -Wall -Wextra)
 endif()
 
+add_executable(hle_memcard_tests tests/hle_memcard_tests.cpp)
+target_link_libraries(hle_memcard_tests PRIVATE awl_hle)
+add_test(NAME hle_memcard_tests COMMAND hle_memcard_tests)
+if(MSVC)
+    target_compile_options(hle_memcard_tests PRIVATE /W4 /fp:strict)
+else()
+    target_compile_options(hle_memcard_tests PRIVATE -Wall -Wextra)
+endif()
+
 # Comparison of the Dolphin captures with the platform's boot assumptions (docs/research/hle-platform.md, section 10).
 add_executable(awl-capture-compare src/hle/capture_compare_main.cpp)
 target_compile_definitions(awl-capture-compare PRIVATE _CRT_SECURE_NO_WARNINGS)

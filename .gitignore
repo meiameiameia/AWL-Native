@@ -32,3 +32,6 @@ docs/research/functions.csv
 *.bmp
 *.png
 *.raw
+
+# Memory card images written by the game (awl-host --memcard): personal save data, never tracked
+saves/

@@ -3,7 +3,9 @@
 //   awl-host --dol rom/main.dol [--disc disc] [--trace build/boot-trace.log] [--retraces N] [--limit N] [--pad neutral|xinput]
 //            [--calls DEPTH] [--dump-boot FILE] [--dump-mem FILE] [--realtime]
 //            [--window] [--realtime-pace] [--capture-frames N DIR [--capture-from F [--capture-every K]]] [--gfx-warp] [--no-copy-filter]
-//            [--bench RETRACE]
+//            [--bench RETRACE] [--memcard FILE|none]
+// --memcard FILE: the raw memory card image in slot A (default saves/memcard_a.raw; a missing file is created blank, 2 MiB, 251 blocks;
+// an existing one is only changed by the game's own writes); --memcard none = no card (the game reports "No Memory Card inserted").
 // --bench RETRACE: speed measurement without a window: the DX11 device and renderer run offscreen (no pacing, no capture files) and at the end
 // one line reports the speed from that retrace (59.94 Hz fields) to the last one: "speed: retraces A-B, game X s, wall Y s, Z% of real time".
 // --calls DEPTH (default 0 = off) records the calls of the functions in capture_parse.h (to DEPTH) as "call" trace lines, for awl-capture-compare
@@ -26,6 +28,7 @@
 #include "dev_vi.h"
 #include "devices.h"
 #include "image.h"
+#include "memcard.h"
 #include "pad_source.h"
 #ifdef AWL_HAVE_GFX
 #include "gfx/gfx_output.h"
@@ -118,6 +121,7 @@ int main(int argc, char** argv) {
     uint32_t benchFrom = 0;
     uint32_t captureFrames = 0, captureFrom = 0, captureEvery = 1;
     std::string captureDir;
+    cfg.memcardPath = "saves/memcard_a.raw";
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--dol" && i + 1 < argc) dolPath = argv[++i];
@@ -126,6 +130,7 @@ int main(int argc, char** argv) {
         else if (a == "--pad" && i + 1 < argc) { const std::string v = argv[++i]; cfg.padXInput = v == "xinput"; if (v != "xinput" && v != "neutral") { std::fprintf(stderr, "--pad takes neutral or xinput\n"); return 2; } }
         else if (a == "--retraces" && i + 1 < argc) { cfg.mainLoopRetraces = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0)); retracesGiven = true; }
         else if (a == "--limit" && i + 1 < argc) { limit = std::strtoull(argv[++i], nullptr, 0); limitGiven = true; }
+        else if (a == "--memcard" && i + 1 < argc) { cfg.memcardPath = argv[++i]; if (cfg.memcardPath == "none") cfg.memcardPath.clear(); }
         else if (a == "--no-idle-skip") cfg.idleSkip = false;      // execute the scheduler idle spin instead of fast-forwarding it (same result, slower)
         else if (a == "--window") optWindow = true;
         else if (a == "--bench" && i + 1 < argc) { optBench = true; benchFrom = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0)); }
@@ -152,11 +157,15 @@ int main(int argc, char** argv) {
     }
     if (dolPath.empty()) {
         std::fprintf(stderr, "usage: awl-host --dol <main.dol> [--disc disc] [--trace file] [--retraces N] [--limit N] [--pad neutral|xinput]\n"
-                             "                [--calls DEPTH] [--dump-boot FILE] [--dump-mem FILE] [--realtime] [--bench RETRACE]\n");
+                             "                [--calls DEPTH] [--dump-boot FILE] [--dump-mem FILE] [--realtime] [--bench RETRACE] [--memcard FILE|none]\n");
         return 2;
     }
     recomp::DolImage dol;
     std::string err;
+    if (!cfg.memcardPath.empty() && !memcardPrepare(cfg.memcardPath, err)) {   // creates a missing image, never touches an existing one
+        std::fprintf(stderr, "memory card: %s\n(use --memcard none to run without a card)\n", err.c_str());
+        return 2;
+    }
     if (!recomp::loadDol(dolPath, dol, err)) {
         std::fprintf(stderr, "DOL: %s\n", err.c_str());
         return 1;
@@ -316,6 +325,7 @@ int main(int argc, char** argv) {
         for (size_t i = 0; i < top.size() && i < 25; ++i)
             std::printf("pc profile %08X %5.1f%%\n", top[i].second, 100.0 * double(top[i].first) / double(plat.idle.probes));
     }
+    plat.flushDevices();   // the memory card image, if the game changed it
     if (machine.traceMaxDepth) writeCallTrace(machine);
     if (!dumpMem.empty() && !writeMemory(dumpMem, mem)) rc = 1;
     const auto& k = plat.counters;
