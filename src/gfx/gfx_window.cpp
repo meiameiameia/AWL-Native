@@ -152,6 +152,14 @@ void GameWindow::showMessage(const std::string& title, const std::string& text) 
     MessageBoxW(hwnd_, widen(text).c_str(), widen(title).c_str(), MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
 }
 
+// Esc: Yes/No with No as the default button, so Space or Enter (also game buttons) answer "keep playing", and the box has no Cancel, so
+// more presses of Esc do nothing. The box is modal on the host thread: the game is frozen while it is open (and pauses on focus loss).
+bool GameWindow::confirmQuit() {
+    const int answer = MessageBoxW(hwnd_, L"Close the game?\n\nProgress since your last save will be lost.", L"AWL Native",
+                                   MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2 | MB_SETFOREGROUND);
+    return answer == IDYES;
+}
+
 bool GameWindow::present(const Image& img, std::string& err) {
     if (!hwnd_ || !swap_) { err = "window closed"; return false; }
     if (minimized_) return true;
@@ -208,7 +216,10 @@ LRESULT GameWindow::handle(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if ((wp & 0xFFF0) == SC_KEYMENU) return 0;   // a tap on Alt must not enter the menu loop (it would stall the host)
             break;
         case WM_KEYDOWN:
-            if (wp == VK_ESCAPE) { closeRequested_ = true; return 0; }
+            if (wp == VK_ESCAPE) {   // asks first: a stray Esc while playing must not throw away unsaved progress
+                if (!repeat && confirmQuit()) closeRequested_ = true;
+                return 0;
+            }
             if (wp == VK_F11) { if (!repeat) toggleFullscreen(); return 0; }
             if (onKey) onKey(static_cast<uint32_t>(wp), true);
             return 0;

@@ -1,5 +1,5 @@
 // The game window: a Win32 window with a flip-model swap chain. Resizable, borderless-fullscreen toggle (F11 or
-// Alt+Enter), closes on Esc, the close button and Alt+F4. Everything runs on the thread that creates it: the host's
+// Alt+Enter), closes on Esc (after a Yes/No question), the close button and Alt+F4. Everything runs on the thread that creates it: the host's
 // guest fibers share that thread, so pumping messages from a retrace hook is legal.
 //
 // Not exercised by the automated tests (they never open a window); verified by hand at an agreed time.
@@ -48,6 +48,7 @@ public:
     void setTitle(const std::string& title);
     // A modal message box over the window (the run stopped: show why instead of vanishing).
     void showMessage(const std::string& title, const std::string& text);
+    bool confirmQuit();                                     // Esc: "Close the game?" Yes/No, default No; true = quit
 
     // Draws `img` into the back buffer (letterboxed, cleared to black around it, sharp-bilinear when the size is not 1:1) and presents
     // in step with the display (vsync: one refresh at the earliest, never torn).
